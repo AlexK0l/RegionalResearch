@@ -335,6 +335,10 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
         contactCompany: row["Организация"] || "",
         contactStats: { ok, unavailable, notFound }
       });
+
+      if (i < companies.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
     }
   } finally {
     if (browser) await browser.close().catch(() => {});
