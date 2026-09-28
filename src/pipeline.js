@@ -250,6 +250,25 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
 
     for (let i = 0; i < companies.length; i++) {
       await assertNotCancelled();
+
+      if (i > 0 && i % 90 === 0) {
+        if (browser) {
+          await browser.close().catch(() => {});
+        }
+        browser = await launchResearchBrowser();
+        statuses[10].detail = `${i} / ${companies.length} · новая сессия поиска`;
+        await progress({
+          phase: "google_ai",
+          step: 11,
+          percent: 90 + Math.floor((i / Math.max(1, companies.length)) * 9),
+          contactCurrent: i,
+          contactTotal: companies.length,
+          contactCompany: "",
+          contactStats: { ok, unavailable, notFound }
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+
       const row = companies[i];
       statuses[10].detail = `${i} / ${companies.length} · ${row["Организация"] || ""}`;
       await progress({
