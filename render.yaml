@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: sat-region-research
+    runtime: node
+    region: frankfurt
+    plan: 1c-2g
+    branch: render-app
+    buildCommand: npm install && npx playwright install chromium
+    startCommand: node server.js
+    healthCheckPath: /health
