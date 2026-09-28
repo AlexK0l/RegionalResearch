@@ -1,86 +1,53 @@
-# Генератор промпта
+# RegionalResearch
 
-Node.js MVP that accepts text notes and voice notes, transcribes audio, and generates a final prompt from the combined input.
+Веб-приложение для регионального поиска потенциальных покупателей CAT.
 
-## Stack
+## Как работает
 
-- Backend: Node.js + Express
-- Frontend: HTML + CSS + vanilla JavaScript
-- LLM pipeline: OpenAI Responses API
-- Speech-to-text: OpenAI Audio Transcriptions API
+1. Пользователь выбирает регион.
+2. Шаги 1–9 выполняют последовательный поиск через OpenAI Responses API с web_search.
+3. Шаг 10 объединяет результаты и выполняет дедупликацию.
+4. Шаг 11 открывает Chromium через Playwright и пытается найти публичные контакты компаний через интерфейс Google AI Mode.
+5. После завершения формируется итоговый XLSX.
 
-## Quick start
+## Структура
 
-1. Copy `.env.example` to `.env`
-2. Fill in `OPENAI_API_KEY`
-3. If frontend and backend are split, set the backend URL in `public/config.js`
-4. Run `npm install`
-5. Run `npm run dev`
-6. Open `http://localhost:3000`
+- `server.js` — Express Web Service и API заданий.
+- `src/` — исследовательский pipeline, Google AI Mode и генерация XLSX.
+- `prompts/` — инструкции шагов 1–10.
+- `public/` — пользовательский интерфейс.
+- `render.yaml` — конфигурация Render.
 
-## What was fixed
+## Локальный запуск
 
-- Added more resilient audio handling for browser recordings.
-- Backend now accepts a wider range of browser MIME types, including `audio/ogg`, `video/webm`, and `video/mp4`.
-- Backend now normalizes browser MIME types and filenames before sending audio to OpenAI.
-- Empty recordings are rejected before upload.
-- Frontend can now work with same-origin backend by default when `API_BASE_URL` is empty.
-
-## Backend connection status on frontend
-
-The frontend shows a dedicated backend connection indicator in the page header.
-It checks `GET /api/health` on load and then repeats the check every 30 seconds.
-
-Before deploying the static site separately, update `public/config.js`:
-
-```js
-window.APP_CONFIG = {
-  API_BASE_URL: 'https://your-backend.onrender.com'
-};
+```bash
+npm install
+npx playwright install chromium
+OPENAI_API_KEY=... npm start
 ```
 
-If frontend and backend live on the same domain, keep `API_BASE_URL` empty.
+По умолчанию приложение слушает `PORT` или порт `10000`.
 
-## Render deployment (Variant A)
+## Render
 
-This project is configured for a split deployment:
+Основная ветка: `main`.
 
-- frontend on **Render Static Site**
-- backend on **Render Web Service**
+Build command:
 
-### Frontend configuration
-
-Edit `public/config.js` and set your backend URL only when frontend and backend are on different origins:
-
-```js
-window.APP_CONFIG = {
-  API_BASE_URL: 'https://your-backend.onrender.com'
-};
+```bash
+npm install && npx playwright install chromium
 ```
 
-### Backend configuration
+Start command:
 
-Set these environment variables in the Render Web Service:
+```bash
+node server.js
+```
+
+Обязательная переменная окружения:
 
 ```env
-PORT=10000
-CLIENT_ORIGIN=https://your-frontend.onrender.com
-OPENAI_API_KEY=your_openai_key_here
-OPENAI_MODEL=gpt-5.4-mini
-OPENAI_MAX_OUTPUT_TOKENS=2200
-OPENAI_REASONING_EFFORT=low
-OPENAI_TIMEOUT_MS=60000
-TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
-TRANSCRIPTION_LANGUAGE=ru
-TRANSCRIPTION_TIMEOUT_MS=90000
-MAX_AUDIO_SIZE_MB=25
+OPENAI_API_KEY=...
 ```
 
-### How frontend and backend communicate
-
-The frontend reads the backend base URL from `public/config.js` and sends requests to:
-
-- `${API_BASE_URL}/api/transcribe`
-- `${API_BASE_URL}/api/prompt/pipeline`
-
-If `API_BASE_URL` is empty, the frontend uses the current site origin.
+Google API не используется. Если Google показывает CAPTCHA, требует вход или не предоставляет AI Mode, приложение не пытается обходить защиту.
