@@ -1,0 +1,23 @@
+name: Check Render app
+on:
+  push:
+    branches: ["render-app"]
+  workflow_dispatch:
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: JavaScript syntax check
+        run: |
+          node --check server.js
+          node --check worker.js
+          node --check src/constants.js
+          node --check src/queue.js
+          node --check src/xlsx.js
+          node --check src/googleAiAgent.js
+          node --check src/pipeline.js
+          node --check public/app.js
