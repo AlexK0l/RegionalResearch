@@ -23,6 +23,8 @@ REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions
 let config=null;
 let currentJobId=localStorage.getItem("sat_current_job")||"";
 let pollTimer=null;
+let timerTick=null;
+let lastProgress=null;
 
 function headers(json=false){
   const h={};
@@ -37,6 +39,26 @@ async function api(url,options={}){
   return data;
 }
 
+function formatDuration(ms){
+  const total=Math.max(0,Math.floor(Number(ms||0)/1000));
+  const h=Math.floor(total/3600);
+  const m=Math.floor((total%3600)/60);
+  const s=total%60;
+  if(h>0)return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+  return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
+
+function stepStateText(item){
+  const base=item.detail||({waiting:"ожидает",running:"выполняется",done:"выполнен"}[item.status]||item.status);
+  if(item.status==="running"&&item.startedAt){
+    return base+" · "+formatDuration(Date.now()-Number(item.startedAt));
+  }
+  if(item.status==="done"&&item.startedAt&&item.completedAt){
+    return base+" · "+formatDuration(Number(item.completedAt)-Number(item.startedAt));
+  }
+  return base;
+}
+
 function renderSteps(statuses){
   if(!Array.isArray(statuses)||!statuses.length) return;
   e.steps.innerHTML="";
@@ -44,12 +66,13 @@ function renderSteps(statuses){
     const li=document.createElement("li");
     if(item.status==="running") li.classList.add("active");
     if(item.status==="done") li.classList.add("done");
-    li.innerHTML='<span class="dot">'+item.step+'</span><span>'+item.name+'</span><span class="state">'+(item.detail||({waiting:"ожидает",running:"выполняется",done:"выполнен"}[item.status]||item.status))+'</span>';
+    li.innerHTML='<span class="dot">'+item.step+'</span><span>'+item.name+'</span><span class="state">'+stepStateText(item)+'</span>';
     e.steps.append(li);
   }
 }
 
 function setProgress(p){
+  lastProgress=p||{};
   const value=Math.max(0,Math.min(100,Number(p.percent||0)));
   e.percent.textContent=value+"%";
   e.bar.style.width=value+"%";
@@ -162,6 +185,10 @@ async function download(){
 e.start.onclick=start;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
+
+timerTick=setInterval(()=>{
+  if(lastProgress?.statuses)renderSteps(lastProgress.statuses);
+},1000);
 
 (async()=>{
   try{
