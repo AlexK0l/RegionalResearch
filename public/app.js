@@ -1,9 +1,11 @@
+const API_BASE_URL="https://regionalresearch.onrender.com";
 const REGIONS=["Республика Адыгея","Республика Алтай","Республика Башкортостан","Республика Бурятия","Республика Дагестан","Республика Ингушетия","Кабардино-Балкарская Республика","Республика Калмыкия","Карачаево-Черкесская Республика","Республика Карелия","Республика Коми","Республика Марий Эл","Республика Мордовия","Республика Саха (Якутия)","Республика Северная Осетия — Алания","Республика Татарстан","Республика Тыва","Удмуртская Республика","Республика Хакасия","Чеченская Республика","Чувашская Республика","Алтайский край","Забайкальский край","Камчатский край","Краснодарский край","Красноярский край","Пермский край","Приморский край","Ставропольский край","Хабаровский край","Амурская область","Архангельская область","Астраханская область","Белгородская область","Брянская область","Владимирская область","Волгоградская область","Вологодская область","Воронежская область","Ивановская область","Иркутская область","Калининградская область","Калужская область","Кемеровская область — Кузбасс","Кировская область","Костромская область","Курганская область","Курская область","Ленинградская область","Липецкая область","Магаданская область","Московская область","Мурманская область","Нижегородская область","Новгородская область","Новосибирская область","Омская область","Оренбургская область","Орловская область","Пензенская область","Псковская область","Ростовская область","Рязанская область","Самарская область","Саратовская область","Сахалинская область","Свердловская область","Смоленская область","Тамбовская область","Тверская область","Томская область","Тульская область","Тюменская область","Ульяновская область","Челябинская область","Ярославская область","Москва","Санкт-Петербург","Еврейская автономная область","Ненецкий автономный округ","Ханты-Мансийский автономный округ — Югра","Чукотский автономный округ","Ямало-Ненецкий автономный округ"];
 
 const e={
   region:document.querySelector("#region"),
   regions:document.querySelector("#regions"),
   start:document.querySelector("#startBtn"),
+  serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
   progressCard:document.querySelector("#progressCard"),
   statusTitle:document.querySelector("#statusTitle"),
@@ -32,8 +34,12 @@ function headers(json=false){
   return h;
 }
 
+function apiUrl(url){
+  return API_BASE_URL+(url.startsWith("/")?url:"/"+url);
+}
+
 async function api(url,options={}){
-  const r=await fetch(url,{...options,headers:{...headers(Boolean(options.body)),...(options.headers||{})}});
+  const r=await fetch(apiUrl(url),{...options,headers:{...headers(Boolean(options.body)),...(options.headers||{})}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.error||("HTTP "+r.status));
   return data;
@@ -165,7 +171,7 @@ async function cancel(){
 async function download(){
   if(!currentJobId)return;
   try{
-    const r=await fetch("/api/jobs/"+encodeURIComponent(currentJobId)+"/download",{headers:headers(false)});
+    const r=await fetch(apiUrl("/api/jobs/"+encodeURIComponent(currentJobId)+"/download"),{headers:headers(false)});
     if(!r.ok){
       const d=await r.json().catch(()=>({}));
       throw new Error(d.error||("HTTP "+r.status));
@@ -182,6 +188,35 @@ async function download(){
   }
 }
 
+let backendReady=false;
+
+function setServiceStatus(text,state=""){
+  if(!e.serviceStatus)return;
+  e.serviceStatus.textContent=text;
+  e.serviceStatus.dataset.state=state;
+}
+
+async function waitForBackend(){
+  e.start.disabled=true;
+  setServiceStatus("Сервис запускается…","starting");
+  while(!backendReady){
+    try{
+      const controller=new AbortController();
+      const timeout=setTimeout(()=>controller.abort(),15000);
+      const r=await fetch(apiUrl("/health"),{signal:controller.signal,cache:"no-store"});
+      clearTimeout(timeout);
+      if(r.ok){
+        backendReady=true;
+        setServiceStatus("Сервис готов к работе.","ready");
+        if(!currentJobId)e.start.disabled=false;
+        return true;
+      }
+    }catch{}
+    setServiceStatus("Сервис запускается… это может занять до минуты.","starting");
+    await new Promise(resolve=>setTimeout(resolve,3000));
+  }
+}
+
 e.start.onclick=start;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
@@ -191,6 +226,7 @@ timerTick=setInterval(()=>{
 },1000);
 
 (async()=>{
+  await waitForBackend();
   try{
     config=await api("/api/config");
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
