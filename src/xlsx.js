@@ -7,16 +7,29 @@ function pick(rows, cols) {
   );
 }
 
+function addOrganizationComments(ws, rows) {
+  for (let index = 0; index < (rows || []).length; index++) {
+    const comment = String(rows[index]?.__comment || "").trim();
+    if (!comment) continue;
+
+    const ref = `A${index + 2}`;
+    if (!ws[ref]) {
+      ws[ref] = { t: "s", v: String(rows[index]?.["Организация"] || "") };
+    }
+    ws[ref].c = [{ a: "RegionalResearch", t: comment }];
+  }
+}
+
 export function buildWorkbookBuffer(result) {
   const wb = XLSX.utils.book_new();
   const sheets = [
-    ["Прямые покупатели", result.direct_buyers || [], COLS],
-    ["Посредники", result.intermediaries || [], COLS],
-    ["Лизинг", result.leasing || [], COLS],
-    ["Статистика", result.statistics || [], STAT_COLS]
+    ["Прямые покупатели", result.direct_buyers || [], COLS, true],
+    ["Посредники", result.intermediaries || [], COLS, true],
+    ["Лизинг", result.leasing || [], COLS, true],
+    ["Статистика", result.statistics || [], STAT_COLS, false]
   ];
 
-  for (const [name, rows, headers] of sheets) {
+  for (const [name, rows, headers, withComments] of sheets) {
     const ws = XLSX.utils.json_to_sheet(pick(rows, headers), {
       header: headers,
       skipHeader: false
@@ -24,6 +37,7 @@ export function buildWorkbookBuffer(result) {
     ws["!cols"] = headers.map((h) => ({
       wch: Math.min(48, Math.max(14, h.length + 2))
     }));
+    if (withComments) addOrganizationComments(ws, rows);
     XLSX.utils.book_append_sheet(wb, ws, name);
   }
 
