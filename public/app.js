@@ -59,7 +59,7 @@ function setProgress(p){
     starting:"Подготовка",
     research:"Исследование",
     dedupe:"Объединение и дедупликация",
-    google_ai:"Google AI Mode",
+    google_ai:"Поиск контактов",
     completed:"Готово",
     cancelled:"Остановлено"
   };
@@ -67,11 +67,11 @@ function setProgress(p){
 
   if(p.phase==="google_ai"){
     const cur=Number(p.contactCurrent||0),total=Number(p.contactTotal||0);
-    e.statusText.textContent="Шаг 11 из 11 · поиск контактов в виртуальном браузере";
+    e.statusText.textContent="Шаг 11 из 11 · поиск и проверка контактов";
     e.contactBox.hidden=false;
     const s=p.contactStats||{};
     e.contactBox.textContent=
-      "Google AI Mode: "+cur+" / "+total+
+      "Обработано компаний: "+cur+" / "+total+
       (p.contactCompany?" · "+p.contactCompany:"")+
       (s.ok!==undefined?" · найдено: "+(s.ok||0)+", недоступно: "+(s.unavailable||0)+", не найдено: "+(s.notFound||0):"");
   }else{
@@ -96,7 +96,7 @@ async function poll(){
         "Прямые покупатели: "+(c.direct_buyers||0)+
         ", посредники: "+(c.intermediaries||0)+
         ", лизинг: "+(c.leasing||0)+
-        ". Google AI Mode обработал "+(g.total||0)+" компаний; контакты подтверждены для "+(g.ok||0)+".";
+        ". Проверено компаний: "+(g.total||0)+", контакты подтверждены для "+(g.ok||0)+".";
       return;
     }
 
