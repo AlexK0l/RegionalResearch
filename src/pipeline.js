@@ -83,8 +83,21 @@ function initialStatuses() {
     step: index + 1,
     name,
     status: "waiting",
-    detail: ""
+    detail: "",
+    startedAt: null,
+    completedAt: null
   }));
+}
+
+function startStep(status) {
+  status.status = "running";
+  status.startedAt = Date.now();
+  status.completedAt = null;
+}
+
+function finishStep(status) {
+  status.status = "done";
+  status.completedAt = Date.now();
 }
 
 function mergePhone(current, found) {
@@ -105,7 +118,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
-  const region = String(job.data.region || "").trim();
+  const region = String(job.region || job.data?.region || "").trim();
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -127,7 +140,7 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
-    statuses[i].status = "running";
+    startStep(statuses[i]);
     statuses[i].detail = "исследование";
     await progress({ phase: "research", step: i + 1, percent: i * 9 });
 
@@ -141,13 +154,13 @@ export async function runResearchPipeline({ job, apiKey }) {
     );
     parts.push(output);
 
-    statuses[i].status = "done";
+    finishStep(statuses[i]);
     statuses[i].detail = `выполнен · ${rowCount(output)} записей`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
   await assertNotCancelled();
-  statuses[9].status = "running";
+  startStep(statuses[9]);
   statuses[9].detail = "финальная дедупликация";
   await progress({ phase: "dedupe", step: 10, percent: 82 });
 
@@ -167,7 +180,7 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
     true
   );
 
-  statuses[9].status = "done";
+  finishStep(statuses[9]);
   statuses[9].detail = `выполнен · ${rowCount(finalResult)} организаций`;
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
@@ -177,7 +190,7 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
     ...finalResult.leasing
   ];
 
-  statuses[10].status = "running";
+  startStep(statuses[10]);
   statuses[10].detail = companies.length ? `0 / ${companies.length}` : "нет компаний";
   await progress({
     phase: "google_ai",
@@ -250,7 +263,7 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
     if (browser) await browser.close().catch(() => {});
   }
 
-  statuses[10].status = "done";
+  finishStep(statuses[10]);
   statuses[10].detail = `выполнен · ${companies.length} компаний`;
   await progress({
     phase: "completed",
