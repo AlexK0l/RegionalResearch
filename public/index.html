@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Региональный поиск покупателей САТ</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="shell">
+  <section class="hero">
+    <div>
+      <p class="eyebrow">GPT + web_search + Google AI Mode</p>
+      <h1>Региональный поиск потенциальных покупателей САТ</h1>
+      <p class="lead">10 исследовательских инструкций, затем отдельный прогон всех найденных компаний через Google AI Mode в виртуальном Chromium для поиска контактов.</p>
+    </div>
+    <span class="badge">11 этапов</span>
+  </section>
+
+  <section class="card">
+    <label>
+      <span>Регион</span>
+      <input id="region" list="regions" placeholder="Например: Воронежская область" autocomplete="off">
+      <datalist id="regions"></datalist>
+    </label>
+    <div class="actions">
+      <button id="startBtn">Запустить исследование</button>
+      <button id="cancelBtn" class="secondary" disabled>Остановить</button>
+    </div>
+    <p class="note">OpenAI API key хранится в переменной окружения Render. Google API не используется. После 10-го шага GPT управляет Chromium и работает через интерфейс Google AI Mode.</p>
+  </section>
+
+  <section class="card" id="progressCard" hidden>
+    <div class="progress-head">
+      <div>
+        <h2 id="statusTitle">Подготовка</h2>
+        <p id="statusText">Инициализация…</p>
+      </div>
+      <strong id="percent">0%</strong>
+    </div>
+    <div class="progress-track"><div id="progressBar"></div></div>
+    <ol id="steps" class="steps"></ol>
+    <div id="contactBox" class="contact-box" hidden></div>
+    <div id="errorBox" class="error" hidden></div>
+  </section>
+
+  <section class="card result" id="resultCard" hidden>
+    <div>
+      <p class="eyebrow">Готово</p>
+      <h2>Итоговый файл сформирован</h2>
+      <p id="resultSummary"></p>
+    </div>
+    <button id="downloadBtn">Скачать XLSX</button>
+  </section>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
