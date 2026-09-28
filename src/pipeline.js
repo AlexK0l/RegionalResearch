@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
-import { enrichCompanyWithGoogleAI, launchResearchBrowser } from "./googleAiAgent.js";
+import { enrichCompanyWithGoogleAI, launchResearchBrowser, verifyPhoneForCompanyWithGoogleAI } from "./googleAiAgent.js";
 
 function parseJson(text) {
   const cleaned = String(text || "")
@@ -114,6 +114,45 @@ function applyContact(row, contact) {
   if (contact?.leader) row["Руководитель / ЛПР"] = contact.leader;
 }
 
+function normalizePhoneDigits(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("8")) digits = "7" + digits.slice(1);
+  if (digits.length === 10) digits = "7" + digits;
+  return digits.length === 11 && digits.startsWith("7") ? digits : "";
+}
+
+function splitPhoneEntries(value) {
+  return String(value || "")
+    .split(";")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function buildPhoneOwnerMap(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    for (const entry of splitPhoneEntries(row["Телефон"])) {
+      const normalized = normalizePhoneDigits(entry);
+      if (!normalized) continue;
+      if (!map.has(normalized)) map.set(normalized, []);
+      map.get(normalized).push(row);
+    }
+  }
+  return map;
+}
+
+function filterAlreadyInCurrentCell(currentValue, candidateValue) {
+  const existing = new Set(
+    splitPhoneEntries(currentValue)
+      .map(normalizePhoneDigits)
+      .filter(Boolean)
+  );
+  return splitPhoneEntries(candidateValue).filter((entry) => {
+    const normalized = normalizePhoneDigits(entry);
+    return normalized && !existing.has(normalized);
+  });
+}
+
 export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
@@ -189,6 +228,7 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
     ...finalResult.intermediaries,
     ...finalResult.leasing
   ];
+  const phoneOwners = buildPhoneOwnerMap(companies);
 
   startStep(statuses[10]);
   statuses[10].detail = companies.length ? `0 / ${companies.length}` : "нет компаний";
@@ -240,8 +280,45 @@ ${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data }))
       }
 
       if (contact.status === "ok") {
-        ok++;
-        applyContact(row, contact);
+        const candidates = filterAlreadyInCurrentCell(row["Телефон"], contact.phone);
+        const accepted = [];
+
+        for (const entry of candidates) {
+          const normalized = normalizePhoneDigits(entry);
+          if (!normalized) continue;
+
+          const owners = phoneOwners.get(normalized) || [];
+          const belongsElsewhere = owners.some((owner) => owner !== row);
+
+          if (belongsElsewhere) {
+            const verification = await verifyPhoneForCompanyWithGoogleAI({
+              client,
+              browser,
+              row,
+              region,
+              phone: normalized,
+              isCancelled: () => Boolean(job.cancelled)
+            });
+            if (!verification?.confirmed) continue;
+          }
+
+          accepted.push(entry);
+          if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
+          if (!phoneOwners.get(normalized).includes(row)) {
+            phoneOwners.get(normalized).push(row);
+          }
+        }
+
+        if (accepted.length) {
+          contact.phone = accepted.join("; ");
+          applyContact(row, contact);
+          ok++;
+        } else if (contact.leader) {
+          applyContact(row, { ...contact, phone: "" });
+          ok++;
+        } else {
+          notFound++;
+        }
       } else if (contact.status === "not_found") {
         notFound++;
       } else {
