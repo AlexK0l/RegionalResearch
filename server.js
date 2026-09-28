@@ -14,6 +14,26 @@ const jobs = new Map();
 
 app.use(express.json({ limit: "2mb" }));
 
+const allowedOrigins = new Set(
+  [
+    process.env.CLIENT_ORIGIN,
+    "https://regionalresearch-ui.onrender.com",
+    "http://localhost:3000"
+  ].filter(Boolean)
+);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "sat-region-research" });
 });
