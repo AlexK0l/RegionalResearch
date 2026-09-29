@@ -44,6 +44,14 @@ const RESEARCH_LOW_YIELD_THRESHOLD = Math.max(
   0,
   Math.min(10, Number(process.env.OPENAI_RESEARCH_LOW_YIELD_THRESHOLD || 3))
 );
+const RESEARCH_MICRO_MAX_OUTPUT_TOKENS = Math.min(
+  16000,
+  OPENAI_MAX_OUTPUT_TOKENS
+);
+const RESEARCH_GEO_GROUPS = Math.max(
+  2,
+  Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
+);
 
 const STAGE_SEARCH_BRANCHES = [
   [
@@ -315,34 +323,111 @@ function foundOrganizationNames(result, limit = 180) {
   return names;
 }
 
-function researchBranchInstruction({ stageIndex, branch, branchIndex, totalBranches, alreadyFound }) {
+function normalizeSearchScope(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+async function discoverRegionSearchScopes(client, region) {
+  const result = await askJson(client, {
+    input: `Верни ТОЛЬКО JSON без markdown:
+{"places":[],"clusters":[]}.
+Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров. Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
+    model: MODEL,
+    maxOutputTokens: 5000,
+    webSearch: true
+  });
+
+  const values = [
+    ...(Array.isArray(result?.places) ? result.places : []),
+    ...(Array.isArray(result?.clusters) ? result.clusters : [])
+  ]
+    .map(normalizeSearchScope)
+    .filter(Boolean);
+
+  const unique = [...new Set(values.map((x) => x.toLowerCase()))]
+    .map((lower) => values.find((x) => x.toLowerCase() === lower))
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (!unique.length) return [`весь регион: ${region}`];
+
+  const groupCount = Math.min(RESEARCH_GEO_GROUPS, unique.length);
+  const groups = Array.from({ length: groupCount }, () => []);
+  unique.forEach((value, index) => groups[index % groupCount].push(value));
+
+  return [
+    `весь регион: ${region}`,
+    ...groups
+      .filter((group) => group.length)
+      .map((group) => `география: ${group.join(", ")}`)
+  ];
+}
+
+function microSearchInstruction({ branch, scope, branchIndex, totalBranches }) {
+  return `МИКРО-ПОИСК. Это самостоятельная поисковая задача, а не обзор всего этапа.
+ТЕМА ${branchIndex + 1}/${totalBranches}: ${branch}
+ГЕОГРАФИЧЕСКИЙ СРЕЗ: ${scope}
+
+Выполни web_search именно для этой темы и этого географического среза. Используй несколько формулировок запроса и синонимов, если первый запрос даёт мало результатов.
+Ищи конкретные организации и юридические лица, а не статьи/каталоги сами по себе. Переходи от объявления, вакансии, тендера, проекта, сервиса или грузовладельца к фактической компании/перевозчику, если это предусмотрено инструкцией этапа.
+Не ограничивай ответ несколькими лучшими компаниями: верни ВСЕ подтверждённые релевантные организации, которые удалось выявить в этой микро-задаче.
+A/B/C присваивай после обнаружения. C разрешён при подтверждённом релевантном грузе/процессе, даже если техника ещё не подтверждена.
+Не выдумывай компании и не заполняй неизвестные поля предположениями.`;
+}
+
+function researchRecoveryInstruction({ theme, alreadyFound, uniqueCount, target, scope }) {
   const known = alreadyFound.length
-    ? `\nУЖЕ НАЙДЕННЫЕ ОРГАНИЗАЦИИ — не трать основной поиск на их повторное обнаружение; возвращай их повторно только если найдено существенное новое evidence:\n${alreadyFound.join("; ")}`
+    ? `\nУЖЕ НАЙДЕННЫЕ (не трать поиск на повторное обнаружение): ${alreadyFound.join("; ")}`
     : "";
-
-  return `ОБЯЗАТЕЛЬНАЯ ПОИСКОВАЯ ВЕТКА ${branchIndex + 1} ИЗ ${totalBranches}.
-ТЕМА: ${branch}
-
-Выполни серию разных web_search-запросов именно по этой теме, а не один общий запрос.
-Пройди регион географически: областной центр, другие города, муниципальные районы, промзоны и отраслевые кластеры, где тема релевантна.
-Исследуй не только первые результаты: используй синонимы, разные формулировки и несколько типов источников из инструкции этапа.
-Для каждого сильного исходного объекта переходи по цепочке к юридическому лицу, фактическому эксплуатанту/перевозчику/клиенту, если это предусмотрено инструкцией.
-A/B/C — классификация ПОСЛЕ обнаружения, а не фильтр допуска. C-кандидата сохраняй, если подтверждён релевантный груз/процесс и реалистична тяжёлая автомобильная логистика.
-Возвращай ВСЕ подтверждённые релевантные организации этой ветки, а не "топ-10". Не выдумывай компании ради количества.
+  return `ДОПОЛНИТЕЛЬНЫЙ МИКРО-ПОИСК ДЛЯ ПОЛНОТЫ.
+Сейчас найдено ${uniqueCount} уникальных релевантных организаций; мягкий ориентир — ${target}+ при наличии реального рынка.
+НАПРАВЛЕНИЕ: ${theme}
+ГЕОГРАФИЧЕСКИЙ СРЕЗ: ${scope}
+Сделай отдельный web_search по этому направлению и географии. Ищи только реальные НОВЫЕ организации и новые подтверждающие факты. Не выдумывай записи ради достижения ориентира.
 ${known}`;
 }
 
-function researchRecoveryInstruction({ theme, alreadyFound, uniqueCount, target }) {
-  const known = alreadyFound.length
-    ? `\nУЖЕ НАЙДЕНО: ${alreadyFound.join("; ")}`
-    : "";
-  return `ДОПОЛНИТЕЛЬНЫЙ ПОИСК ДЛЯ ПОЛНОТЫ.
-Сейчас найдено ${uniqueCount} уникальных релевантных организаций. Ориентир инструкции — стремиться к ${target}+ уникальным, если канал и регион объективно дают такой объём.
-${theme}
-Используй несколько web_search-запросов. Ищи НОВЫЕ организации. Не создавай записи без подтверждающего источника.
-${known}`;
-}
+async function runResearchMicroBatch({ client, prompt, region, stageIndex, branch, branchIndex, branches, scopes, extraContext = "" }) {
+  const tasks = scopes.map((scope) =>
+    askResearch(
+      client,
+      prompt +
+        contract(false) +
+        `\n\nРЕГИОН: ${region}
+${microSearchInstruction({
+  branch,
+  scope,
+  branchIndex,
+  totalBranches: branches.length
+})}
+${extraContext}
+Web search обязателен.`,
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS
+    )
+  );
 
+  const settled = await Promise.allSettled(tasks);
+  const merged = emptyResearchResult();
+  let successCount = 0;
+  let firstError = null;
+
+  for (let index = 0; index < settled.length; index++) {
+    const item = settled[index];
+    if (item.status === "fulfilled") {
+      appendResearchResult(
+        merged,
+        normalize(item.value),
+        `branch-${branchIndex + 1}-scope-${index + 1}`
+      );
+      successCount++;
+    } else if (!firstError) {
+      firstError = item.reason;
+    }
+  }
+
+  if (!successCount && firstError) throw firstError;
+  return merged;
+}
 
 function flattenCandidates(parts) {
   const rows = [];
@@ -849,6 +934,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const parts = [];
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
   const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
+  const researchScopes = await discoverRegionSearchScopes(client, region);
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
@@ -893,40 +979,37 @@ ${JSON.stringify(compactCourtArchive)}
     for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
-      const alreadyFound = foundOrganizationNames(combined, 300);
       statuses[i].detail =
-        `ветка ${branchIndex + 1} / ${branches.length} · ${before} уникальных`;
+        `ветка ${branchIndex + 1} / ${branches.length} · микро-поиски 0 / ${researchScopes.length} · ${before} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
         percent: i * 9 + Math.floor((branchIndex / Math.max(1, branches.length)) * 8)
       });
 
-      const output = normalize(
-        await askResearch(
-          client,
-          prompts[i] +
-            contract(false) +
-            `\n\nРЕГИОН: ${region}
-${researchBranchInstruction({
-  stageIndex: i,
-  branch: branches[branchIndex],
-  branchIndex,
-  totalBranches: branches.length,
-  alreadyFound
-})}
-${compactCourtArchiveContext}
-${i === 6 && COURT_VECTOR_STORE_ID
-  ? "До web-поиска по судам уже выполнен file_search по пользовательскому архиву. Перепроверяй найденные там организации и конкретные дела через официальные источники/web_search."
-  : ""}
-Web search обязателен.`
-        )
-      );
-      appendResearchResult(combined, output, `branch-${branchIndex + 1}`);
+      const extraContext = [
+        compactCourtArchiveContext,
+        i === 6 && COURT_VECTOR_STORE_ID
+          ? "До web-поиска по судам уже выполнен file_search по пользовательскому архиву. Перепроверяй найденные там организации и дела через официальные источники."
+          : ""
+      ].filter(Boolean).join("\n");
+
+      const branchResult = await runResearchMicroBatch({
+        client,
+        prompt: prompts[i],
+        region,
+        stageIndex: i,
+        branch: branches[branchIndex],
+        branchIndex,
+        branches,
+        scopes: researchScopes,
+        extraContext
+      });
+      appendResearchResult(combined, branchResult, `branch-${branchIndex + 1}`);
 
       const after = uniqueResearchCount(combined);
       statuses[i].detail =
-        `ветка ${branchIndex + 1} / ${branches.length} · +${Math.max(0, after - before)} новых · ${after} уникальных`;
+        `ветка ${branchIndex + 1} / ${branches.length} · ${researchScopes.length} микро-поисков · +${Math.max(0, after - before)} новых · ${after} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
@@ -943,15 +1026,15 @@ Web search обязателен.`
     ) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
-      const alreadyFound = foundOrganizationNames(combined, 350);
+      const alreadyFound = foundOrganizationNames(combined, 120);
       const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
 
       statuses[i].detail =
         `добор ${recoveryIndex + 1} · ${before} / ориентир ${RESEARCH_SOFT_TARGET}`;
       await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
 
-      const recovery = normalize(
-        await askResearch(
+      const tasks = researchScopes.map((scope) =>
+        askResearch(
           client,
           prompts[i] +
             contract(false) +
@@ -960,20 +1043,35 @@ ${researchRecoveryInstruction({
   theme,
   alreadyFound,
   uniqueCount: before,
-  target: RESEARCH_SOFT_TARGET
+  target: RESEARCH_SOFT_TARGET,
+  scope
 })}
-Web search обязателен.`
+Web search обязателен.`,
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS
         )
       );
-      appendResearchResult(combined, recovery, `recovery-${recoveryIndex + 1}`);
+
+      const settled = await Promise.allSettled(tasks);
+      let successes = 0;
+      for (let scopeIndex = 0; scopeIndex < settled.length; scopeIndex++) {
+        const item = settled[scopeIndex];
+        if (item.status !== "fulfilled") continue;
+        appendResearchResult(
+          combined,
+          normalize(item.value),
+          `recovery-${recoveryIndex + 1}-scope-${scopeIndex + 1}`
+        );
+        successes++;
+      }
+
+      if (!successes) throw new Error(`Все микро-поиски добора этапа ${i + 1} завершились ошибкой`);
 
       const after = uniqueResearchCount(combined);
       const added = Math.max(0, after - before);
       lowYieldStreak = added <= RESEARCH_LOW_YIELD_THRESHOLD ? lowYieldStreak + 1 : 0;
 
       if (lowYieldStreak >= 2) {
-        statuses[i].detail =
-          `поисковые ветки исчерпаны · ${after} уникальных`;
+        statuses[i].detail = `разумные поисковые направления исчерпаны · ${after} уникальных`;
         break;
       }
     }
@@ -981,7 +1079,7 @@ Web search обязателен.`
     parts.push(combined);
     finishStep(statuses[i]);
     statuses[i].detail =
-      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} обязательных веток`;
+      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток × ${researchScopes.length} микро-поиска`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
