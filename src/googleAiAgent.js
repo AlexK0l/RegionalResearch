@@ -1,7 +1,11 @@
 import { chromium } from "playwright";
 
-const COMPUTER_MODEL = process.env.COMPUTER_MODEL || "gpt-5.6-sol";
-const MAX_TURNS = Number(process.env.GOOGLE_AI_MAX_TURNS || 18);
+const COMPUTER_MODEL = process.env.COMPUTER_MODEL || "gpt-5.6-luna";
+const COMPUTER_FALLBACK_MODEL = process.env.COMPUTER_FALLBACK_MODEL || "gpt-5.6-sol";
+const MAX_TURNS = Math.max(1, Number(process.env.GOOGLE_AI_MAX_TURNS || 6));
+const VIEWPORT_WIDTH = Math.max(800, Number(process.env.GOOGLE_AI_VIEWPORT_WIDTH || 1024));
+const VIEWPORT_HEIGHT = Math.max(600, Number(process.env.GOOGLE_AI_VIEWPORT_HEIGHT || 768));
+const SCREENSHOT_DETAIL = process.env.GOOGLE_AI_SCREENSHOT_DETAIL || "low";
 
 export async function launchResearchBrowser() {
   return chromium.launch({
@@ -12,6 +16,29 @@ export async function launchResearchBrowser() {
       "--disable-setuid-sandbox"
     ]
   });
+}
+
+export async function createResearchSession(browser) {
+  const context = await browser.newContext({
+    viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
+    locale: "ru-RU",
+    userAgent:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  });
+  const page = await context.newPage();
+  return { context, page };
+}
+
+export async function closeResearchSession(session) {
+  if (session?.context) await session.context.close().catch(() => {});
+}
+
+async function resetGooglePage(page, query) {
+  await page.goto(
+    "https://www.google.com/search?q=" + encodeURIComponent(query),
+    { waitUntil: "domcontentloaded", timeout: 30000 }
+  );
+  await page.waitForTimeout(900);
 }
 
 function normalizeKey(key) {
@@ -117,11 +144,12 @@ function parseJson(text) {
   }
 }
 
-function agentPrompt(row, region) {
+function agentPrompt(row, region, { needPhone, needLeader }) {
   const org = row["Организация"] || "";
   const inn = row["ИНН"] || "";
   const city = row["Город/район"] || "";
   const currentPhone = row["Телефон"] || "";
+  const currentLeader = row["Руководитель / ЛПР"] || "";
 
   return `You operate a virtual Chromium browser. It is already open on Google.
 
@@ -132,22 +160,23 @@ INN: ${inn || "not known"}
 Region: ${region}
 City/district: ${city || "not known"}
 Existing phone cell: ${currentPhone || "empty"}
+Existing leader cell: ${currentLeader || "empty"}
+
+NEEDED FIELDS
+Phone needed: ${needPhone ? "yes" : "no"}
+Leader / decision-maker needed: ${needLeader ? "yes" : "no"}
 
 MANDATORY PROCEDURE
 1. Use the visible Google interface and switch to "Режим ИИ" / AI Mode through the page UI.
-2. First query exactly: "${org} ${inn} контакты".
-3. Wait for the complete answer and extract ALL phone numbers that explicitly belong to this exact legal entity.
-4. Verify the company primarily by INN. Never use phones of namesakes, related companies, parent/subsidiary companies, neighboring organizations, marketplaces, directories, or service providers unless the phone is explicitly tied to this INN.
-5. If the first query yields no confirmed phone, run a second query exactly: "${org} ${inn} телефон".
-6. Never invent, complete, extrapolate, or guess digits.
-7. Preserve existing phones conceptually: only report newly confirmed phone candidates.
-8. For every phone, include the department/person when the answer clearly identifies it. Format each candidate as:
-   7XXXXXXXXXX (department/person)
-   If no department/person is known, return only 7XXXXXXXXXX.
-9. Normalize Russian phones to 7XXXXXXXXXX before returning them. Multiple phones must be separated with "; ".
-10. Do not return emails, websites, comments, or sources in the phone field.
-11. Do not sign in, bypass CAPTCHA, bot checks, access controls, or paywalls. If blocked or AI Mode is unavailable, return "unavailable".
-12. Stay within Google / Google AI Mode.
+2. Query exactly: "${org} ${inn} контакты телефон руководитель".
+3. Verify the company primarily by INN. Never use contacts of namesakes or related legal entities unless explicitly tied to this INN.
+4. If phone is needed, extract only phone numbers explicitly belonging to this exact legal entity. If the first answer has no confirmed phone, use at most one second query: "${org} ${inn} телефон".
+5. If leader is needed, extract a named owner/director/transport or fleet decision-maker only when clearly tied to this exact legal entity.
+6. Never invent, complete, extrapolate, or guess contact data.
+7. If a field is already populated and not needed, do not spend additional searches trying to replace it.
+8. Normalize Russian phones to 7XXXXXXXXXX. Multiple new phones must be separated with "; ".
+9. Do not sign in, bypass CAPTCHA, bot checks, access controls, or paywalls. If blocked or AI Mode is unavailable, return "unavailable".
+10. Stay within Google / Google AI Mode.
 
 Return ONLY valid JSON:
 {
@@ -158,7 +187,7 @@ Return ONLY valid JSON:
   "note": ""
 }
 
-"phone" must contain only confirmed NEW phone candidates for this exact INN, separated by "; ".`;
+Return only newly confirmed values for missing fields.`;
 }
 
 function phoneVerificationPrompt({ row, region, phone }) {
@@ -189,9 +218,9 @@ Return ONLY valid JSON:
 }`;
 }
 
-async function runComputerJson({ client, page, prompt, unavailableResult }) {
+async function runComputerJsonOnce({ client, page, prompt, unavailableResult, model }) {
   let response = await client.responses.create({
-    model: COMPUTER_MODEL,
+    model,
     tools: [{ type: "computer" }],
     reasoning: { effort: "low" },
     input: prompt
@@ -212,7 +241,7 @@ async function runComputerJson({ client, page, prompt, unavailableResult }) {
 
     const screenshot = await page.screenshot({ type: "png" });
     response = await client.responses.create({
-      model: COMPUTER_MODEL,
+      model,
       tools: [{ type: "computer" }],
       previous_response_id: response.id,
       input: [
@@ -222,91 +251,97 @@ async function runComputerJson({ client, page, prompt, unavailableResult }) {
           output: {
             type: "computer_screenshot",
             image_url: `data:image/png;base64,${screenshot.toString("base64")}`,
-            detail: "original"
+            detail: SCREENSHOT_DETAIL
           }
         }
       ]
     });
   }
 
-  return unavailableResult;
+  return { ...unavailableResult, note: "Computer-use turn limit reached" };
 }
 
-export async function verifyPhoneForCompanyWithGoogleAI({ client, browser, row, region, phone, isCancelled }) {
-  if (isCancelled?.()) throw new Error("JOB_CANCELLED");
-
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    locale: "ru-RU",
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-  });
-  const page = await context.newPage();
-
+async function runComputerJson({ client, page, prompt, unavailableResult }) {
+  let primary;
   try {
-    await page.goto(
-      "https://www.google.com/search?q=" + encodeURIComponent(`${phone} ${row["ИНН"] || ""}`),
-      { waitUntil: "domcontentloaded", timeout: 30000 }
-    );
-    await page.waitForTimeout(1200);
-
-    if (await hasGoogleChallenge(page)) {
-      return { confirmed: false, phone, note: "Google challenge/CAPTCHA" };
-    }
-
-    return await runComputerJson({
+    primary = await runComputerJsonOnce({
       client,
       page,
-      prompt: phoneVerificationPrompt({ row, region, phone }),
-      unavailableResult: { confirmed: false, phone, note: "verification unavailable" }
+      prompt,
+      unavailableResult,
+      model: COMPUTER_MODEL
     });
-  } finally {
-    await context.close().catch(() => {});
+  } catch (error) {
+    primary = { ...unavailableResult, note: error?.message || "primary computer model failed" };
+  }
+
+  if (primary?.status !== "unavailable" && primary?.confirmed !== undefined) return primary;
+  if (primary?.status && primary.status !== "unavailable") return primary;
+  if (COMPUTER_FALLBACK_MODEL === COMPUTER_MODEL) return primary;
+
+  try {
+    return await runComputerJsonOnce({
+      client,
+      page,
+      prompt,
+      unavailableResult,
+      model: COMPUTER_FALLBACK_MODEL
+    });
+  } catch (error) {
+    return {
+      ...unavailableResult,
+      note: `Primary and fallback computer models failed: ${error?.message || "unknown error"}`
+    };
   }
 }
 
-export async function enrichCompanyWithGoogleAI({ client, browser, row, region, isCancelled }) {
+export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, region, phone, isCancelled }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
+  if (!session?.page) throw new Error("Research browser session is required");
+
+  const page = session.page;
+  await resetGooglePage(page, `${phone} ${row["ИНН"] || ""}`);
+
+  if (await hasGoogleChallenge(page)) {
+    return { confirmed: false, phone, note: "Google challenge/CAPTCHA" };
+  }
+
+  return await runComputerJson({
+    client,
+    page,
+    prompt: phoneVerificationPrompt({ row, region, phone }),
+    unavailableResult: { confirmed: false, phone, note: "verification unavailable" }
+  });
+}
+
+export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, isCancelled }) {
+  if (isCancelled?.()) throw new Error("JOB_CANCELLED");
+  if (!session?.page) throw new Error("Research browser session is required");
 
   const queryParts = [
     row["Организация"],
     row["ИНН"] ? `ИНН ${row["ИНН"]}` : "",
-    "контакты телефон директор"
+    needPhone ? "контакты телефон" : "",
+    needLeader ? "руководитель директор" : ""
   ].filter(Boolean);
 
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    locale: "ru-RU",
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-  });
+  const page = session.page;
+  await resetGooglePage(page, queryParts.join(" "));
 
-  const page = await context.newPage();
-
-  try {
-    await page.goto(
-      "https://www.google.com/search?q=" + encodeURIComponent(queryParts.join(" ")),
-      { waitUntil: "domcontentloaded", timeout: 30000 }
-    );
-    await page.waitForTimeout(1200);
-
-    if (await hasGoogleChallenge(page)) {
-      return { status: "unavailable", phone: "", leader: "", official_site: "", note: "Google challenge/CAPTCHA" };
-    }
-
-    return await runComputerJson({
-      client,
-      page,
-      prompt: agentPrompt(row, region),
-      unavailableResult: {
-        status: "unavailable",
-        phone: "",
-        leader: "",
-        official_site: "",
-        note: "Computer-use turn limit reached or unavailable"
-      }
-    });
-  } finally {
-    await context.close().catch(() => {});
+  if (await hasGoogleChallenge(page)) {
+    return { status: "unavailable", phone: "", leader: "", official_site: "", note: "Google challenge/CAPTCHA" };
   }
+
+  return await runComputerJson({
+    client,
+    page,
+    prompt: agentPrompt(row, region, { needPhone, needLeader }),
+    unavailableResult: {
+      status: "unavailable",
+      phone: "",
+      leader: "",
+      official_site: "",
+      note: "Computer-use turn limit reached or unavailable"
+    }
+  });
 }

@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
-import { enrichCompanyWithGoogleAI, launchResearchBrowser, verifyPhoneForCompanyWithGoogleAI } from "./googleAiAgent.js";
+import {
+  closeResearchSession,
+  createResearchSession,
+  enrichCompanyWithGoogleAI,
+  launchResearchBrowser,
+  verifyPhoneForCompanyWithGoogleAI
+} from "./googleAiAgent.js";
 
 const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
   1000,
@@ -415,6 +421,18 @@ function filterAlreadyInCurrentCell(currentValue, candidateValue) {
   });
 }
 
+function hasConfirmedPhone(row) {
+  return splitPhoneEntries(row?.["Телефон"]).some((entry) => Boolean(normalizePhoneDigits(entry)));
+}
+
+function hasConfirmedLeader(row) {
+  return Boolean(String(row?.["Руководитель / ЛПР"] || "").trim());
+}
+
+function needsGoogleResearch(row) {
+  return !hasConfirmedPhone(row) || !hasConfirmedLeader(row);
+}
+
 export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
@@ -545,64 +563,76 @@ ${JSON.stringify(qaRecords)}`,
     ...finalResult.leasing
   ];
   const phoneOwners = buildPhoneOwnerMap(companies);
+  const googleCompanies = companies.filter(needsGoogleResearch);
+  const skippedGoogle = companies.length - googleCompanies.length;
 
   startStep(statuses[10]);
-  statuses[10].detail = companies.length ? `0 / ${companies.length}` : "нет компаний";
+  statuses[10].detail = googleCompanies.length
+    ? `0 / ${googleCompanies.length} · пропущено готовых: ${skippedGoogle}`
+    : `контакты уже заполнены · пропущено: ${skippedGoogle}`;
   await progress({
     phase: "google_ai",
     step: 11,
     percent: 90,
     contactCurrent: 0,
-    contactTotal: companies.length
+    contactTotal: googleCompanies.length
   });
 
   let ok = 0;
   let unavailable = 0;
   let notFound = 0;
   let browser;
+  let session;
 
   try {
-    if (companies.length) browser = await launchResearchBrowser();
+    if (googleCompanies.length) {
+      browser = await launchResearchBrowser();
+      session = await createResearchSession(browser);
+    }
 
-    for (let i = 0; i < companies.length; i++) {
+    for (let i = 0; i < googleCompanies.length; i++) {
       await assertNotCancelled();
 
       if (i > 0 && i % 90 === 0) {
-        if (browser) {
-          await browser.close().catch(() => {});
-        }
+        if (session) await closeResearchSession(session);
+        if (browser) await browser.close().catch(() => {});
         browser = await launchResearchBrowser();
-        statuses[10].detail = `${i} / ${companies.length} · новая сессия поиска`;
+        session = await createResearchSession(browser);
+        statuses[10].detail = `${i} / ${googleCompanies.length} · новая сессия поиска`;
         await progress({
           phase: "google_ai",
           step: 11,
-          percent: 90 + Math.floor((i / Math.max(1, companies.length)) * 9),
+          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
           contactCurrent: i,
-          contactTotal: companies.length,
+          contactTotal: googleCompanies.length,
           contactCompany: "",
           contactStats: { ok, unavailable, notFound }
         });
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
 
-      const row = companies[i];
-      statuses[10].detail = `${i} / ${companies.length} · ${row["Организация"] || ""}`;
+      const row = googleCompanies[i];
+      statuses[10].detail = `${i} / ${googleCompanies.length} · ${row["Организация"] || ""}`;
       await progress({
         phase: "google_ai",
         step: 11,
-        percent: 90 + Math.floor((i / Math.max(1, companies.length)) * 9),
+        percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
         contactCurrent: i,
-        contactTotal: companies.length,
+        contactTotal: googleCompanies.length,
         contactCompany: row["Организация"] || ""
       });
 
       let contact;
       try {
+        const needPhone = !hasConfirmedPhone(row);
+        const needLeader = !hasConfirmedLeader(row);
         contact = await enrichCompanyWithGoogleAI({
           client,
-          browser,
+          session,
           row,
           region,
+          needPhone,
+          needLeader,
           isCancelled: () => Boolean(job.cancelled)
         });
       } catch (error) {
@@ -628,7 +658,7 @@ ${JSON.stringify(qaRecords)}`,
           if (belongsElsewhere) {
             const verification = await verifyPhoneForCompanyWithGoogleAI({
               client,
-              browser,
+              session,
               row,
               region,
               phone: normalized,
@@ -660,33 +690,34 @@ ${JSON.stringify(qaRecords)}`,
         unavailable++;
       }
 
-      statuses[10].detail = `${i + 1} / ${companies.length} · выполнено`;
+      statuses[10].detail = `${i + 1} / ${googleCompanies.length} · выполнено`;
       await progress({
         phase: "google_ai",
         step: 11,
-        percent: 90 + Math.floor(((i + 1) / Math.max(1, companies.length)) * 9),
+        percent: 90 + Math.floor(((i + 1) / Math.max(1, googleCompanies.length)) * 9),
         contactCurrent: i + 1,
-        contactTotal: companies.length,
+        contactTotal: googleCompanies.length,
         contactCompany: row["Организация"] || "",
         contactStats: { ok, unavailable, notFound }
       });
 
-      if (i < companies.length - 1) {
+      if (i < googleCompanies.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     }
   } finally {
+    if (session) await closeResearchSession(session);
     if (browser) await browser.close().catch(() => {});
   }
 
   finishStep(statuses[10]);
-  statuses[10].detail = `выполнен · ${companies.length} компаний`;
+  statuses[10].detail = `выполнен · проверено ${googleCompanies.length}, пропущено ${skippedGoogle}`;
   await progress({
     phase: "completed",
     step: 11,
     percent: 100,
-    contactCurrent: companies.length,
-    contactTotal: companies.length,
+    contactCurrent: googleCompanies.length,
+    contactTotal: googleCompanies.length,
     contactStats: { ok, unavailable, notFound }
   });
 
@@ -699,6 +730,13 @@ ${JSON.stringify(qaRecords)}`,
       leasing: finalResult.leasing.length,
       statistics: finalResult.statistics.length
     },
-    contacts: { total: companies.length, ok, unavailable, notFound }
+    contacts: {
+      total: companies.length,
+      checked: googleCompanies.length,
+      skipped: skippedGoogle,
+      ok,
+      unavailable,
+      notFound
+    }
   };
 }
