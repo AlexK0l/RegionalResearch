@@ -145,6 +145,7 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
 app.post("/api/jobs", async (req, res) => {
   const region = String(req.body?.region || "").trim();
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  const mode = req.body?.mode === "test12" ? "test12" : "full";
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
@@ -153,6 +154,7 @@ app.post("/api/jobs", async (req, res) => {
   const job = {
     id,
     region,
+    mode,
     state: "waiting",
     progress: {},
     result: null,
@@ -166,7 +168,7 @@ app.post("/api/jobs", async (req, res) => {
   };
   jobs.set(id, job);
 
-  res.status(202).json({ id, region });
+  res.status(202).json({ id, region, mode });
 
   queueMicrotask(async () => {
     job.state = "active";
@@ -205,7 +207,8 @@ app.get("/api/jobs/:id", (req, res) => {
       ? {
           region: job.result?.region,
           counts: job.result?.counts,
-          contacts: job.result?.contacts
+          contacts: job.result?.contacts,
+          mode: job.result?.mode || job.mode || "full"
         }
       : null,
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
