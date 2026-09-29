@@ -764,36 +764,13 @@ export async function runResearchPipeline({ job, apiKey }) {
 
     const combined = emptyResearchResult();
 
-    if (i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length) {
-      const compactOutput = emptyResearchResult();
-      for (const candidate of compactCourtArchive) {
-        compactOutput.direct_buyers.push({
-          "Организация": candidate.organization,
-          "Управляющая компания": "",
-          "ИНН": "",
-          "Город/район": "",
-          "Техника/сегмент": "",
-          "Основание": "C — кандидат из пользовательского архива судебных актов; требует проверки конкретного дела",
-          "Телефон": "",
-          "Следующее действие": "Найти и проверить конкретный судебный акт и роль организации",
-          "Почему им нужно звонить / потенциальный интерес к САТ": "Судебный архив содержит упоминание организации в транспортно-релевантном массиве; требуется подтверждение фактической эксплуатации техники",
-          "Руководитель / ЛПР": "",
-          "Выручка последнего подтвержденного года": "",
-          "Численность": "",
-          "__evidence": {
-            source_urls: [],
-            official_site: "",
-            email: "",
-            holding_source: "",
-            notes: [
-              `Пользовательский судебный архив: ${candidate.court}`,
-              `Индекс архива: ${compactCourtArchiveMeta?.documents || 10109} документов`
-            ]
-          }
-        });
-      }
-      appendResearchResult(combined, compactOutput, "archive-index");
-    }
+    const compactCourtArchiveContext =
+      i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length
+        ? `\n\nПОЛЬЗОВАТЕЛЬСКИЙ АРХИВ СУДЕБНЫХ АКТОВ — discovery-кандидаты:
+Архив содержит ${compactCourtArchiveMeta?.documents || 10109} документов. Для выбранного региона компактный индекс дал:
+${JSON.stringify(compactCourtArchive)}
+Не добавляй организацию в результат только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
+        : "";
 
     if (i === 6 && COURT_VECTOR_STORE_ID) {
       const archiveThemes = [
@@ -846,6 +823,7 @@ export async function runResearchPipeline({ job, apiKey }) {
             contract(false) +
             `\n\nРЕГИОН: ${region}
 ${researchPassInstruction(pass, alreadyFound)}
+${compactCourtArchiveContext}
 ${i === 6 && COURT_VECTOR_STORE_ID ? "Перед этим этапом уже выполнен file_search по пользовательскому судебному архиву. Используй найденные там организации как кандидатов и перепроверь конкретные дела/факты через web_search и официальные судебные источники." : ""}
 Web search обязателен. Возвращай все найденные в ЭТОМ проходе релевантные организации, а не только несколько лучших.`
         )
