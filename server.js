@@ -42,6 +42,106 @@ app.get("/api/config", (_req, res) => {
   res.json({ steps: STEPS });
 });
 
+
+function requireCourtArchiveAdmin(req, res, next) {
+  const expected = String(process.env.COURT_ARCHIVE_ADMIN_TOKEN || "").trim();
+  const provided = String(req.get("x-court-admin-token") || "").trim();
+  if (!expected || !provided || provided !== expected) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  next();
+}
+
+async function openAiAdminRequest(apiKey, apiPath, options = {}) {
+  const response = await fetch("https://api.openai.com/v1" + apiPath, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `OpenAI API HTTP ${response.status}`);
+  }
+  return data;
+}
+
+app.post("/api/admin/court-vector-store", requireCourtArchiveAdmin, async (_req, res) => {
+  try {
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY not configured" });
+    const store = await openAiAdminRequest(apiKey, "/vector_stores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "RegionalResearch court archive" })
+    });
+    res.json({ id: store.id, name: store.name, status: store.status });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || "Vector store creation failed" });
+  }
+});
+
+app.post(
+  "/api/admin/court-vector-store/:id/files",
+  requireCourtArchiveAdmin,
+  express.raw({ type: "text/plain", limit: "12mb" }),
+  async (req, res) => {
+    try {
+      const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+      if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY not configured" });
+      const name = String(req.query.name || "court_archive.txt").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "");
+      if (!bytes.length) return res.status(400).json({ error: "Empty file" });
+
+      const form = new FormData();
+      form.append("purpose", "assistants");
+      form.append("file", new Blob([bytes], { type: "text/plain" }), name);
+
+      const uploaded = await openAiAdminRequest(apiKey, "/files", {
+        method: "POST",
+        body: form
+      });
+      const attached = await openAiAdminRequest(
+        apiKey,
+        `/vector_stores/${encodeURIComponent(req.params.id)}/files`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_id: uploaded.id })
+        }
+      );
+      res.json({
+        file_id: uploaded.id,
+        filename: uploaded.filename,
+        bytes: uploaded.bytes,
+        vector_store_file_status: attached.status
+      });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Court archive upload failed" });
+    }
+  }
+);
+
+app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, async (req, res) => {
+  try {
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY not configured" });
+    const store = await openAiAdminRequest(
+      apiKey,
+      `/vector_stores/${encodeURIComponent(req.params.id)}`
+    );
+    res.json({
+      id: store.id,
+      status: store.status,
+      file_counts: store.file_counts,
+      usage_bytes: store.usage_bytes
+    });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || "Vector store status failed" });
+  }
+});
+
 app.post("/api/jobs", async (req, res) => {
   const region = String(req.body?.region || "").trim();
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
