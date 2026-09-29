@@ -218,13 +218,16 @@ Return ONLY valid JSON:
 }`;
 }
 
-async function runComputerJsonOnce({ client, page, prompt, unavailableResult, model }) {
-  let response = await client.responses.create({
-    model,
-    tools: [{ type: "computer" }],
-    reasoning: { effort: "low" },
-    input: prompt
-  });
+async function runComputerJsonOnce({ client, page, prompt, unavailableResult, model, signal }) {
+  let response = await client.responses.create(
+    {
+      model,
+      tools: [{ type: "computer" }],
+      reasoning: { effort: "low" },
+      input: prompt
+    },
+    signal ? { signal } : undefined
+  );
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const call = (response.output || []).find((item) => item.type === "computer_call");
@@ -240,28 +243,31 @@ async function runComputerJsonOnce({ client, page, prompt, unavailableResult, mo
     if (await hasGoogleChallenge(page)) return unavailableResult;
 
     const screenshot = await page.screenshot({ type: "png" });
-    response = await client.responses.create({
-      model,
-      tools: [{ type: "computer" }],
-      previous_response_id: response.id,
-      input: [
-        {
-          type: "computer_call_output",
-          call_id: call.call_id,
-          output: {
-            type: "computer_screenshot",
-            image_url: `data:image/png;base64,${screenshot.toString("base64")}`,
-            detail: SCREENSHOT_DETAIL
+    response = await client.responses.create(
+      {
+        model,
+        tools: [{ type: "computer" }],
+        previous_response_id: response.id,
+        input: [
+          {
+            type: "computer_call_output",
+            call_id: call.call_id,
+            output: {
+              type: "computer_screenshot",
+              image_url: `data:image/png;base64,${screenshot.toString("base64")}`,
+              detail: SCREENSHOT_DETAIL
+            }
           }
-        }
-      ]
-    });
+        ]
+      },
+      signal ? { signal } : undefined
+    );
   }
 
   return { ...unavailableResult, note: "Computer-use turn limit reached" };
 }
 
-async function runComputerJson({ client, page, prompt, unavailableResult, forceFallback = false }) {
+async function runComputerJson({ client, page, prompt, unavailableResult, forceFallback = false, signal }) {
   if (forceFallback) {
     try {
       return await runComputerJsonOnce({
@@ -269,7 +275,8 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
         page,
         prompt,
         unavailableResult,
-        model: COMPUTER_FALLBACK_MODEL
+        model: COMPUTER_FALLBACK_MODEL,
+        signal
       });
     } catch (error) {
       return {
@@ -286,7 +293,8 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       page,
       prompt,
       unavailableResult,
-      model: COMPUTER_MODEL
+      model: COMPUTER_MODEL,
+      signal
     });
   } catch (error) {
     primary = { ...unavailableResult, note: error?.message || "primary computer model failed" };
@@ -312,7 +320,7 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
   }
 }
 
-export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, region, phone, isCancelled }) {
+export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, region, phone, isCancelled, signal }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
@@ -327,11 +335,12 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
     client,
     page,
     prompt: phoneVerificationPrompt({ row, region, phone }),
-    unavailableResult: { confirmed: false, phone, note: "verification unavailable" }
+    unavailableResult: { confirmed: false, phone, note: "verification unavailable" },
+    signal
   });
 }
 
-export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, forceFallback = false, isCancelled }) {
+export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, forceFallback = false, isCancelled, signal }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
@@ -354,6 +363,7 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
     page,
     prompt: agentPrompt(row, region, { needPhone, needLeader }),
     forceFallback,
+    signal,
     unavailableResult: {
       status: "unavailable",
       phone: "",
