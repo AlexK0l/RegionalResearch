@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
-import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
   createResearchSession,
@@ -24,6 +23,12 @@ const FINAL_BATCH_MODEL = process.env.FINAL_BATCH_MODEL || "gpt-5.6-luna";
 const TARGETED_SEARCH_MODEL = process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna";
 const FINAL_QA_MODEL = process.env.FINAL_QA_MODEL || "gpt-5.6-luna";
 const CONFLICT_MODEL = process.env.CONFLICT_MODEL || "gpt-5.6-sol";
+const COURT_ARCHIVE_MODEL = process.env.COURT_ARCHIVE_MODEL || "gpt-5.6-luna";
+const COURT_VECTOR_STORE_ID = String(process.env.COURT_VECTOR_STORE_ID || "").trim();
+const COURT_FILE_SEARCH_MAX_RESULTS = Math.max(
+  5,
+  Math.min(50, Number(process.env.COURT_FILE_SEARCH_MAX_RESULTS || 40))
+);
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
   String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
 const RESEARCH_BASE_PASSES = Math.max(
@@ -467,15 +472,25 @@ async function askJson(client, {
   input,
   model = MODEL,
   maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS,
-  webSearch = false
+  webSearch = false,
+  fileSearchVectorStoreId = ""
 }) {
   const request = {
     model,
     input,
     max_output_tokens: maxOutputTokens
   };
-  if (webSearch) {
-    request.tools = [{ type: "web_search" }];
+  const tools = [];
+  if (webSearch) tools.push({ type: "web_search" });
+  if (fileSearchVectorStoreId) {
+    tools.push({
+      type: "file_search",
+      vector_store_ids: [fileSearchVectorStoreId],
+      max_num_results: COURT_FILE_SEARCH_MAX_RESULTS
+    });
+  }
+  if (tools.length) {
+    request.tools = tools;
     request.tool_choice = "required";
   }
 
@@ -511,6 +526,31 @@ function askTargetedSearch(client, input) {
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true
   });
+}
+
+function askCourtArchive(client, input) {
+  if (!COURT_VECTOR_STORE_ID) return null;
+  return askJson(client, {
+    input,
+    model: COURT_ARCHIVE_MODEL,
+    maxOutputTokens: RESEARCH_MAX_OUTPUT_TOKENS,
+    fileSearchVectorStoreId: COURT_VECTOR_STORE_ID
+  });
+}
+
+function courtArchiveInstruction(theme, region, alreadyFound = []) {
+  const known = alreadyFound.length
+    ? `\nУже найденные на предыдущих архивных проходах: ${alreadyFound.join("; ")}. Ищи прежде всего НОВЫЕ организации и новые дела.`
+    : "";
+  return `РЕГИОН: ${region}
+ИСТОЧНИК: загруженный пользователем архив судебных актов в file_search.
+ТЕМА АРХИВНОГО ПРОХОДА: ${theme}
+
+ОБЯЗАТЕЛЬНО используй file_search по архиву. Ищи документы, связанные именно с выбранным регионом — по суду, месту события, маршруту, адресу организации или обстоятельствам дела.
+Извлекай реальные организации, которые могут быть собственниками, перевозчиками, лизингополучателями, арендаторами или фактическими эксплуатантами тяжёлого транспорта.
+В "__evidence.source_urls" не выдумывай URL архивного файла; в "__evidence.notes" укажи номер дела, суд, дату, транспорт, госномер/VIN, статью и обстоятельства, если они явно есть в найденном тексте.
+Сам факт упоминания организации не даёт A/B. Не делай вывод о собственнике/эксплуатанте без текста судебного акта.
+Возвращай только организации, имеющие отношение к тяжёлой автологистике, прицепной технике, весогабаритному контролю, лизингу/ремонту техники или иному релевантному транспортному спору.${known}`;
 }
 
 function commentValue(comment, label) {
@@ -715,14 +755,42 @@ export async function runResearchPipeline({ job, apiKey }) {
   await progress({ phase: "starting", percent: 0 });
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
   const parts = [];
-  const courtArchive = courtArchiveCandidates(region, 180);
-  const courtArchiveMeta = courtArchiveStats();
-
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
 
     const combined = emptyResearchResult();
+
+    if (i === 6 && COURT_VECTOR_STORE_ID) {
+      const archiveThemes = [
+        "превышение массы и осевой нагрузки, автоматический весогабаритный контроль, ущерб дорогам, статья 12.21.1 КоАП",
+        "тягачи, полуприцепы и прицепы, VIN, госномера, собственник, перевозчик, фактический эксплуатант",
+        "лизинг, изъятие и возврат техники, ремонт полуприцепов, ДТП и страховые споры с идентификацией транспорта"
+      ];
+
+      for (let archivePass = 0; archivePass < archiveThemes.length; archivePass++) {
+        await assertNotCancelled();
+        const alreadyFound = foundOrganizationNames(combined);
+        statuses[i].detail = `судебный архив · ${archivePass + 1} / ${archiveThemes.length}`;
+        await progress({
+          phase: "research",
+          step: i + 1,
+          percent: i * 9 + archivePass
+        });
+
+        const archiveOutput = normalize(
+          await askCourtArchive(
+            client,
+            prompts[i] +
+              contract(false) +
+              "\n\n" +
+              courtArchiveInstruction(archiveThemes[archivePass], region, alreadyFound)
+          )
+        );
+        appendResearchResult(combined, archiveOutput, `archive-${archivePass + 1}`);
+      }
+    }
+
     const basePasses = i === 5
       ? Math.min(4, RESEARCH_BASE_PASSES + 1)
       : RESEARCH_BASE_PASSES;
@@ -730,12 +798,6 @@ export async function runResearchPipeline({ job, apiKey }) {
     for (let pass = 1; pass <= basePasses; pass++) {
       await assertNotCancelled();
       const alreadyFound = foundOrganizationNames(combined);
-      const courtArchiveContext = i === 6 && courtArchive.length
-        ? `\n\nЛОКАЛЬНЫЙ СУДЕБНЫЙ АРХИВ ПОЛЬЗОВАТЕЛЯ:
-Архив содержит ${courtArchiveMeta.documents} судебных документов; по выбранному региону индекс дал следующие организации-кандидаты:
-${JSON.stringify(courtArchive)}
-Используй этот список как отдельный источник discovery. Для релевантных кандидатов найди и проверь конкретный судебный акт через web_search/официальный судебный источник: номер дела, событие, роль организации, транспорт/полуприцеп/тягач, госномер/VIN при наличии, статью КоАП, перегруз/осевую нагрузку/весогабаритный контроль, лизинг или спор по технике. Само присутствие названия в архивном индексе не является достаточным доказательством A/B.`
-        : "";
       statuses[i].detail = `поиск · проход ${pass} / ${basePasses}`;
       await progress({
         phase: "research",
@@ -750,7 +812,7 @@ ${JSON.stringify(courtArchive)}
             contract(false) +
             `\n\nРЕГИОН: ${region}
 ${researchPassInstruction(pass, alreadyFound)}
-${courtArchiveContext}
+${i === 6 && COURT_VECTOR_STORE_ID ? "Перед этим этапом уже выполнен file_search по пользовательскому судебному архиву. Используй найденные там организации как кандидатов и перепроверь конкретные дела/факты через web_search и официальные судебные источники." : ""}
 Web search обязателен. Возвращай все найденные в ЭТОМ проходе релевантные организации, а не только несколько лучших.`
         )
       );
