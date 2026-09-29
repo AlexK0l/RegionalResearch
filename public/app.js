@@ -168,6 +168,21 @@ async function poll(){
       return;
     }
 
+    if(d.state==="cancelled"){
+      clearInterval(pollTimer);pollTimer=null;
+      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.statusTitle.textContent="Остановлено";
+      e.statusText.textContent=d.error||"Исследование остановлено пользователем.";
+      return;
+    }
+
+    if(d.state==="cancelling"){
+      e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=true;
+      e.statusTitle.textContent="Останавливаем";
+      e.statusText.textContent="Прерываем активные запросы…";
+      return;
+    }
+
     e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
