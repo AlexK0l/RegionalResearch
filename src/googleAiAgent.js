@@ -261,7 +261,24 @@ async function runComputerJsonOnce({ client, page, prompt, unavailableResult, mo
   return { ...unavailableResult, note: "Computer-use turn limit reached" };
 }
 
-async function runComputerJson({ client, page, prompt, unavailableResult }) {
+async function runComputerJson({ client, page, prompt, unavailableResult, forceFallback = false }) {
+  if (forceFallback) {
+    try {
+      return await runComputerJsonOnce({
+        client,
+        page,
+        prompt,
+        unavailableResult,
+        model: COMPUTER_FALLBACK_MODEL
+      });
+    } catch (error) {
+      return {
+        ...unavailableResult,
+        note: `Fallback computer model failed: ${error?.message || "unknown error"}`
+      };
+    }
+  }
+
   let primary;
   try {
     primary = await runComputerJsonOnce({
@@ -314,7 +331,7 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
   });
 }
 
-export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, isCancelled }) {
+export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, forceFallback = false, isCancelled }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
@@ -336,6 +353,7 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
     client,
     page,
     prompt: agentPrompt(row, region, { needPhone, needLeader }),
+    forceFallback,
     unavailableResult: {
       status: "unavailable",
       phone: "",
