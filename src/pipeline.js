@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
+import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
   createResearchSession,
@@ -755,11 +756,44 @@ export async function runResearchPipeline({ job, apiKey }) {
   await progress({ phase: "starting", percent: 0 });
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
   const parts = [];
+  const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
+  const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
 
     const combined = emptyResearchResult();
+
+    if (i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length) {
+      const compactOutput = emptyResearchResult();
+      for (const candidate of compactCourtArchive) {
+        compactOutput.direct_buyers.push({
+          "Организация": candidate.organization,
+          "Управляющая компания": "",
+          "ИНН": "",
+          "Город/район": "",
+          "Техника/сегмент": "",
+          "Основание": "C — кандидат из пользовательского архива судебных актов; требует проверки конкретного дела",
+          "Телефон": "",
+          "Следующее действие": "Найти и проверить конкретный судебный акт и роль организации",
+          "Почему им нужно звонить / потенциальный интерес к САТ": "Судебный архив содержит упоминание организации в транспортно-релевантном массиве; требуется подтверждение фактической эксплуатации техники",
+          "Руководитель / ЛПР": "",
+          "Выручка последнего подтвержденного года": "",
+          "Численность": "",
+          "__evidence": {
+            source_urls: [],
+            official_site: "",
+            email: "",
+            holding_source: "",
+            notes: [
+              `Пользовательский судебный архив: ${candidate.court}`,
+              `Индекс архива: ${compactCourtArchiveMeta?.documents || 10109} документов`
+            ]
+          }
+        });
+      }
+      appendResearchResult(combined, compactOutput, "archive-index");
+    }
 
     if (i === 6 && COURT_VECTOR_STORE_ID) {
       const archiveThemes = [
