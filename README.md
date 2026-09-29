@@ -50,6 +50,10 @@ node server.js
 OPENAI_API_KEY=...
 OPENAI_MAX_OUTPUT_TOKENS=128000
 OPENAI_FINAL_BATCH_SIZE=60
+FINAL_BATCH_MODEL=gpt-5.6-luna
+TARGETED_SEARCH_MODEL=gpt-5.6-luna
+FINAL_QA_MODEL=gpt-5.6-luna
+CONFLICT_MODEL=gpt-5.6-sol
 COMPUTER_MODEL=gpt-5.6-luna
 COMPUTER_FALLBACK_MODEL=gpt-5.6-sol
 GOOGLE_AI_MAX_TURNS=6
@@ -58,6 +62,6 @@ GOOGLE_AI_VIEWPORT_HEIGHT=768
 GOOGLE_AI_SCREENSHOT_DETAIL=low
 ```
 
-Шаги 1–9 ограничиваются 50 000 output tokens. Шаг 10 обрабатывает общий пул пакетами по 60 кандидатов, затем отдельным компактным QA-вызовом выполняет глобальную дедупликацию между пакетами и формирует статистику. Значение `OPENAI_MAX_OUTPUT_TOKENS` служит общим верхним потолком для API-вызовов.
+Шаги 1–9 ограничиваются 50 000 output tokens и сохраняют скрытый evidence (URL, официальный сайт, email и найденные подтверждения). Шаг 10 сначала программно строит canonical-компании, затем обрабатывает их пакетами по 60 на GPT-5.6 Luna БЕЗ web_search. Если после этого у конкретной компании остаются пробелы в примечании/ИНН, выполняется один точечный web_search только по этой компании на Luna. Конфликтные дубли отдельно передаются GPT-5.6 Sol без web_search. Глобальный QA выполняется Luna без поиска; региональная статистика собирается отдельным search-вызовом.
 
 Google API не используется. Google AI Mode запускается только для компаний, где после основного исследования отсутствует подтверждённый телефон или ЛПР. Одна Chromium-сессия переиспользуется между компаниями. Основная computer-use модель — GPT-5.6 Luna; GPT-5.6 Sol используется как fallback при технической недоступности/неудаче Luna. Лимит computer-use — 6 ходов, viewport 1024×768, screenshot detail — low. Если Google показывает CAPTCHA, требует вход или не предоставляет AI Mode, приложение не пытается обходить защиту.
