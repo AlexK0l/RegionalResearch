@@ -4,6 +4,18 @@ import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { enrichCompanyWithGoogleAI, launchResearchBrowser, verifyPhoneForCompanyWithGoogleAI } from "./googleAiAgent.js";
 
+const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
+  1000,
+  Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 128000)
+);
+const RESEARCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
+const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
+const FINAL_QA_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
+const FINAL_BATCH_SIZE = Math.max(
+  20,
+  Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
+);
+
 function parseJson(text) {
   const cleaned = String(text || "")
     .trim()
@@ -33,6 +45,31 @@ function contract(final = false) {
 {"direct_buyers":[],"intermediaries":[],"leasing":[]}.
 Каждый объект содержит ровно ключи: ${COLS.map((x) => `"${x}"`).join(", ")}.
 Не добавляй поле "Источник". Если значения нет — пустая строка. Не выдумывай данные.`;
+}
+
+function finalBatchContract() {
+  return `\n\nПАКЕТНЫЙ ТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
+{"direct_buyers":[],"intermediaries":[],"leasing":[]}.
+Обработай ТОЛЬКО компании текущего пакета. Внутри пакета удали дубли и отфильтруй нерелевантные организации.
+Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, а также "__comment".
+"__comment" обязателен и содержит ровно пять смысловых строк: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:".
+Не возвращай статистику и не добавляй другие служебные поля. Не выдумывай данные.`;
+}
+
+function finalQaContract() {
+  return `\n\nФИНАЛЬНЫЙ QA — верни ТОЛЬКО валидный JSON без markdown:
+{
+  "remove_ids": [],
+  "moves": [{"id":"","sheet":"direct_buyers|intermediaries|leasing"}],
+  "patches": [{"id":"","fields":{}}],
+  "statistics": []
+}
+Не возвращай полный список компаний.
+remove_ids — строки, которые нужно удалить как дубли или нерелевантные.
+moves — только строки, которые нужно перенести на другой коммерческий лист.
+patches — только исправления полей сохранённой строки; fields может содержать только видимые коммерческие поля и "__comment". При схлопывании дублей перенеси полезные сведения из удаляемых строк в сохраняемую строку через patches.
+statistics — ровно 8 обязательных показателей и ключи: ${STAT_COLS.map((x) => `"${x}"`).join(", ")}.
+Одна организация должна остаться только один раз во всей итоговой совокупности.`;
 }
 
 async function loadPrompt(n) {
@@ -65,7 +102,86 @@ function rowCount(result) {
   );
 }
 
-async function ask(client, input, maxOutputTokens = 50000) {
+function flattenCandidates(parts) {
+  const rows = [];
+  const groups = [
+    ["direct_buyers", "Прямые покупатели"],
+    ["intermediaries", "Посредники"],
+    ["leasing", "Лизинг"]
+  ];
+
+  for (let stepIndex = 0; stepIndex < parts.length; stepIndex++) {
+    const part = parts[stepIndex] || {};
+    for (const [key, sourceSheet] of groups) {
+      for (const row of part[key] || []) {
+        rows.push({
+          candidate_id: `c${String(rows.length + 1).padStart(6, "0")}`,
+          source_step: stepIndex + 1,
+          source_sheet: sourceSheet,
+          data: row
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function makeQaRecords(result) {
+  const records = [];
+  const groups = ["direct_buyers", "intermediaries", "leasing"];
+  for (const sheet of groups) {
+    for (const row of result[sheet] || []) {
+      records.push({
+        id: `q${String(records.length + 1).padStart(6, "0")}`,
+        sheet,
+        row
+      });
+    }
+  }
+  return records;
+}
+
+function applyFinalQa(records, qa) {
+  const allowedSheets = new Set(["direct_buyers", "intermediaries", "leasing"]);
+  const allowedFields = new Set([...COLS, "__comment"]);
+  const removeIds = new Set(Array.isArray(qa?.remove_ids) ? qa.remove_ids.map(String) : []);
+  const moves = new Map();
+
+  for (const item of Array.isArray(qa?.moves) ? qa.moves : []) {
+    const id = String(item?.id || "");
+    const sheet = String(item?.sheet || "");
+    if (id && allowedSheets.has(sheet)) moves.set(id, sheet);
+  }
+
+  const patches = new Map();
+  for (const item of Array.isArray(qa?.patches) ? qa.patches : []) {
+    const id = String(item?.id || "");
+    if (!id || !item?.fields || typeof item.fields !== "object") continue;
+    const filtered = {};
+    for (const [key, value] of Object.entries(item.fields)) {
+      if (allowedFields.has(key)) filtered[key] = value ?? "";
+    }
+    if (Object.keys(filtered).length) patches.set(id, filtered);
+  }
+
+  const result = {
+    direct_buyers: [],
+    intermediaries: [],
+    leasing: [],
+    statistics: Array.isArray(qa?.statistics) ? qa.statistics : []
+  };
+
+  for (const record of records) {
+    if (removeIds.has(record.id)) continue;
+    const row = { ...record.row, ...(patches.get(record.id) || {}) };
+    const sheet = moves.get(record.id) || record.sheet;
+    if (allowedSheets.has(sheet)) result[sheet].push(row);
+  }
+
+  return result;
+}
+
+async function ask(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS) {
   const response = await client.responses.create({
     model: MODEL,
     tools: [{ type: "web_search" }],
@@ -201,24 +317,71 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   await assertNotCancelled();
   startStep(statuses[9]);
-  statuses[9].detail = "финальная дедупликация";
-  await progress({ phase: "dedupe", step: 10, percent: 82 });
+  const candidatePool = flattenCandidates(parts);
+  const batchCount = Math.max(1, Math.ceil(candidatePool.length / FINAL_BATCH_SIZE));
+  const stagedResult = {
+    direct_buyers: [],
+    intermediaries: [],
+    leasing: []
+  };
 
-  const finalResult = normalize(
-    await ask(
-      client,
-      prompts[9] +
-        contract(true) +
-        `\n\nРЕГИОН: ${region}
-Ниже единый временный пул результатов шагов 1–9. Считай его эквивалентом входных XLSX.
-При необходимости используй web_search для точечной перепроверки.
+  for (let batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+    await assertNotCancelled();
+    const batch = candidatePool.slice(
+      batchIndex * FINAL_BATCH_SIZE,
+      (batchIndex + 1) * FINAL_BATCH_SIZE
+    );
 
-ВРЕМЕННЫЙ ПУЛ JSON:
-${JSON.stringify(parts.map((data, i) => ({ step: i + 1, name: STEPS[i], data })))}`,
-      65000
-    ),
-    true
+    statuses[9].detail = `пакет ${batchIndex + 1} / ${batchCount} · ${batch.length} кандидатов`;
+    await progress({
+      phase: "dedupe",
+      step: 10,
+      percent: 82 + Math.floor(((batchIndex + 1) / batchCount) * 5)
+    });
+
+    const batchResult = normalize(
+      await ask(
+        client,
+        prompts[9] +
+          finalBatchContract() +
+          `\n\nРЕГИОН: ${region}
+Это один пакет из общего пула шагов 1–9. Обработай только перечисленные записи.
+Сохраняй максимум полезной подтверждённой информации, выполняй точечный web_search для проверки конкретных компаний.
+Глобальная дедупликация между пакетами будет отдельным QA-вызовом после обработки всех пакетов.
+
+ПАКЕТ КАНДИДАТОВ JSON:
+${JSON.stringify(batch)}`,
+        FINAL_BATCH_MAX_OUTPUT_TOKENS
+      )
+    );
+
+    stagedResult.direct_buyers.push(...batchResult.direct_buyers);
+    stagedResult.intermediaries.push(...batchResult.intermediaries);
+    stagedResult.leasing.push(...batchResult.leasing);
+  }
+
+  await assertNotCancelled();
+  const qaRecords = makeQaRecords(stagedResult);
+  statuses[9].detail = `глобальный QA · ${qaRecords.length} организаций`;
+  await progress({ phase: "dedupe", step: 10, percent: 88 });
+
+  const qa = await ask(
+    client,
+    prompts[9] +
+      finalQaContract() +
+      `\n\nРЕГИОН: ${region}
+Ниже уже обработанные пакетами коммерческие строки с техническими id.
+Выполни ГЛОБАЛЬНУЮ дедупликацию между пакетами, финальную переклассификацию и QA.
+Не переписывай весь массив компаний: верни только remove_ids, moves, patches и statistics.
+Для дублей с одинаковым подтверждённым ИНН оставь одну лучшую строку и через patch сохрани в ней полезные сведения.
+Разные подтверждённые ИНН никогда не объединяй.
+
+КОММЕРЧЕСКИЕ СТРОКИ JSON:
+${JSON.stringify(qaRecords)}`,
+    FINAL_QA_MAX_OUTPUT_TOKENS
   );
+
+  const finalResult = applyFinalQa(qaRecords, qa);
 
   finishStep(statuses[9]);
   statuses[9].detail = `выполнен · ${rowCount(finalResult)} организаций`;
