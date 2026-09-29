@@ -23,6 +23,8 @@ const FINAL_BATCH_MODEL = process.env.FINAL_BATCH_MODEL || "gpt-5.6-luna";
 const TARGETED_SEARCH_MODEL = process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna";
 const FINAL_QA_MODEL = process.env.FINAL_QA_MODEL || "gpt-5.6-luna";
 const CONFLICT_MODEL = process.env.CONFLICT_MODEL || "gpt-5.6-sol";
+const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
+  String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
 const FINAL_BATCH_SIZE = Math.max(
   20,
   Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
@@ -597,6 +599,11 @@ function needsGoogleResearch(row) {
   return !hasConfirmedPhone(row) || !hasConfirmedLeader(row);
 }
 
+function isPriorityAB(row) {
+  const basis = String(row?.["Основание"] || "").trim().toUpperCase();
+  return basis.startsWith("A") || basis.startsWith("B");
+}
+
 export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
@@ -814,6 +821,8 @@ ${JSON.stringify(qaRecords)}`,
   let ok = 0;
   let unavailable = 0;
   let notFound = 0;
+  let solRetries = 0;
+  let solRecovered = 0;
   let browser;
   let session;
 
@@ -839,7 +848,7 @@ ${JSON.stringify(qaRecords)}`,
           contactCurrent: i,
           contactTotal: googleCompanies.length,
           contactCompany: "",
-          contactStats: { ok, unavailable, notFound }
+          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
         });
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
@@ -875,6 +884,43 @@ ${JSON.stringify(qaRecords)}`,
           leader: "",
           note: error?.message || "browser error"
         };
+      }
+
+      if (contact.status === "not_found" && GOOGLE_AI_SOL_RETRY_PRIORITY_AB && isPriorityAB(row)) {
+        solRetries++;
+        statuses[10].detail = `${i + 1} / ${googleCompanies.length} · Sol retry · ${row["Организация"] || ""}`;
+        await progress({
+          phase: "google_ai",
+          step: 11,
+          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
+          contactCurrent: i,
+          contactTotal: googleCompanies.length,
+          contactCompany: row["Организация"] || "",
+          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
+        });
+
+        try {
+          const needPhone = !hasConfirmedPhone(row);
+          const needLeader = !hasConfirmedLeader(row);
+          contact = await enrichCompanyWithGoogleAI({
+            client,
+            session,
+            row,
+            region,
+            needPhone,
+            needLeader,
+            forceFallback: true,
+            isCancelled: () => Boolean(job.cancelled)
+          });
+          if (contact.status === "ok") solRecovered++;
+        } catch (error) {
+          contact = {
+            status: "unavailable",
+            phone: "",
+            leader: "",
+            note: error?.message || "Sol retry browser error"
+          };
+        }
       }
 
       if (contact.status === "ok") {
@@ -931,7 +977,7 @@ ${JSON.stringify(qaRecords)}`,
         contactCurrent: i + 1,
         contactTotal: googleCompanies.length,
         contactCompany: row["Организация"] || "",
-        contactStats: { ok, unavailable, notFound }
+        contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
       });
 
       if (i < googleCompanies.length - 1) {
@@ -951,7 +997,7 @@ ${JSON.stringify(qaRecords)}`,
     percent: 100,
     contactCurrent: googleCompanies.length,
     contactTotal: googleCompanies.length,
-    contactStats: { ok, unavailable, notFound }
+    contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
   });
 
   return {
@@ -969,7 +1015,9 @@ ${JSON.stringify(qaRecords)}`,
       skipped: skippedGoogle,
       ok,
       unavailable,
-      notFound
+      notFound,
+      solRetries,
+      solRecovered
     }
   };
 }
