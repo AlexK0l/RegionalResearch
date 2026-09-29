@@ -25,6 +25,11 @@ const FINAL_QA_MODEL = process.env.FINAL_QA_MODEL || "gpt-5.6-luna";
 const CONFLICT_MODEL = process.env.CONFLICT_MODEL || "gpt-5.6-sol";
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
   String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
+const RESEARCH_BASE_PASSES = Math.max(
+  2,
+  Math.min(4, Number(process.env.OPENAI_RESEARCH_BASE_PASSES || 3))
+);
+const RESEARCH_MIN_UNIQUE = [30, 18, 20, 35, 25, 70, 18, 30, 30];
 const FINAL_BATCH_SIZE = Math.max(
   20,
   Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
@@ -147,6 +152,88 @@ function rowCount(result) {
     (result.leasing?.length || 0)
   );
 }
+
+function emptyResearchResult() {
+  return { direct_buyers: [], intermediaries: [], leasing: [] };
+}
+
+function appendResearchResult(target, source, passNumber) {
+  for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+    for (const row of source?.[sheet] || []) {
+      target[sheet].push({
+        ...row,
+        __research_pass: passNumber
+      });
+    }
+  }
+}
+
+function allResearchRows(result) {
+  return [
+    ...(result?.direct_buyers || []),
+    ...(result?.intermediaries || []),
+    ...(result?.leasing || [])
+  ];
+}
+
+function researchRowKey(row) {
+  const inn = normalizeInn(row?.["ИНН"]);
+  if (inn) return `inn:${inn}`;
+  const org = normalizeOrgKey(row?.["Организация"]);
+  const place = normalizePlaceKey(row?.["Город/район"]);
+  return org ? `org:${org}|${place}` : "";
+}
+
+function uniqueResearchCount(result) {
+  const keys = new Set();
+  let anonymous = 0;
+  for (const row of allResearchRows(result)) {
+    const key = researchRowKey(row);
+    if (key) keys.add(key);
+    else anonymous++;
+  }
+  return keys.size + anonymous;
+}
+
+function foundOrganizationNames(result, limit = 180) {
+  const names = [];
+  const seen = new Set();
+  for (const row of allResearchRows(result)) {
+    const name = String(row?.["Организация"] || "").trim();
+    const key = normalizeOrgKey(name);
+    if (!name || !key || seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+    if (names.length >= limit) break;
+  }
+  return names;
+}
+
+function researchPassInstruction(passNumber, alreadyFound) {
+  const known = alreadyFound.length
+    ? `\nУЖЕ НАЙДЕННЫЕ ОРГАНИЗАЦИИ — не трать поиск на повторное обнаружение, используй их только для цепочек и ищи НОВЫЕ компании:\n${alreadyFound.join("; ")}`
+    : "";
+
+  if (passNumber === 1) {
+    return `ПРОХОД 1 — широкий отраслевой поиск по всему региону.
+Сделай много разных web_search-запросов по всем семействам сигналов этого этапа. Не останавливайся после первых 5–10 организаций. Цель — получить максимально широкий первичный список реальных компаний.${known}`;
+  }
+  if (passNumber === 2) {
+    return `ПРОХОД 2 — географический long tail.
+Ищи НОВЫЕ компании отдельно по областному центру, другим городам, муниципальным районам, промзонам и локальным отраслевым кластерам региона. Используй сочетания названий населённых пунктов/районов с сигналами текущего этапа. Не повторяй уже найденных, если нет нового существенного evidence.${known}`;
+  }
+  if (passNumber === 3) {
+    return `ПРОХОД 3 — альтернативные источники и цепочки контрагентов.
+Ищи НОВЫЕ компании через клиентов, поставщиков, перевозчиков, участников тендеров, вакансии, сервисы, лизинг, отраслевые списки, новости и связанные организации — в зависимости от темы этапа. Проверяй второй порядок связей: найденный грузовладелец → его перевозчик; сервис → его клиент; проект → подрядчик/эксплуатант. Не повторяй уже найденных без нового evidence.${known}`;
+  }
+  if (passNumber === 4) {
+    return `ПРОХОД 4 — восстановление пропущенных сегментов.
+Предыдущие проходы дали недостаточное покрытие. Найди НОВЫЕ организации в тех сегментах, районах и типах источников, которые ещё представлены слабо или отсутствуют. Используй новые формулировки запросов, синонимы отраслей и локальные названия предприятий. Не ограничивайся крупными и хорошо индексируемыми компаниями.${known}`;
+  }
+  return `ДОПОЛНИТЕЛЬНЫЙ ПРОХОД — добор long tail.
+Ищи только НОВЫЕ релевантные организации, пропущенные предыдущими проходами. Смени поисковые формулировки, источники и географические срезы. Не выдумывай компании ради количества.${known}`;
+}
+
 
 function flattenCandidates(parts) {
   const rows = [];
@@ -631,21 +718,70 @@ export async function runResearchPipeline({ job, apiKey }) {
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
-    statuses[i].detail = "исследование";
-    await progress({ phase: "research", step: i + 1, percent: i * 9 });
 
-    const output = normalize(
-      await askResearch(
-        client,
-        prompts[i] +
-          contract(false) +
-          `\n\nРЕГИОН: ${region}\nВыполни полный поиск именно по этому региону. Web search обязателен.`
-      )
-    );
-    parts.push(output);
+    const combined = emptyResearchResult();
+    const basePasses = i === 5
+      ? Math.min(4, RESEARCH_BASE_PASSES + 1)
+      : RESEARCH_BASE_PASSES;
+
+    for (let pass = 1; pass <= basePasses; pass++) {
+      await assertNotCancelled();
+      const alreadyFound = foundOrganizationNames(combined);
+      statuses[i].detail = `поиск · проход ${pass} / ${basePasses}`;
+      await progress({
+        phase: "research",
+        step: i + 1,
+        percent: i * 9 + Math.floor(((pass - 1) / basePasses) * 8)
+      });
+
+      const output = normalize(
+        await askResearch(
+          client,
+          prompts[i] +
+            contract(false) +
+            `\n\nРЕГИОН: ${region}
+${researchPassInstruction(pass, alreadyFound)}
+Web search обязателен. Возвращай все найденные в ЭТОМ проходе релевантные организации, а не только несколько лучших.`
+        )
+      );
+      appendResearchResult(combined, output, pass);
+
+      statuses[i].detail =
+        `проход ${pass} / ${basePasses} · ${rowCount(output)} записей · ${uniqueResearchCount(combined)} уникальных`;
+      await progress({
+        phase: "research",
+        step: i + 1,
+        percent: i * 9 + Math.floor((pass / basePasses) * 8)
+      });
+    }
+
+    const minimum = RESEARCH_MIN_UNIQUE[i] || 20;
+    if (uniqueResearchCount(combined) < minimum) {
+      await assertNotCancelled();
+      const recoveryPass = basePasses + 1;
+      const alreadyFound = foundOrganizationNames(combined);
+      statuses[i].detail =
+        `добор · ${uniqueResearchCount(combined)} / цель ${minimum}`;
+      await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
+
+      const recovery = normalize(
+        await askResearch(
+          client,
+          prompts[i] +
+            contract(false) +
+            `\n\nРЕГИОН: ${region}
+${researchPassInstruction(recoveryPass, alreadyFound)}
+Сейчас найдено только ${uniqueResearchCount(combined)} уникальных кандидатов при ориентире не менее ${minimum}. Это не квота и не повод выдумывать компании: выполни дополнительный широкий web_search и верни только реально подтверждённые НОВЫЕ организации.`
+        )
+      );
+      appendResearchResult(combined, recovery, recoveryPass);
+    }
+
+    parts.push(combined);
 
     finishStep(statuses[i]);
-    statuses[i].detail = `выполнен · ${rowCount(output)} записей`;
+    statuses[i].detail =
+      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
