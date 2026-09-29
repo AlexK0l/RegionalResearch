@@ -5,6 +5,7 @@ const e={
   region:document.querySelector("#region"),
   regions:document.querySelector("#regions"),
   start:document.querySelector("#startBtn"),
+  test:document.querySelector("#testBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
   progressCard:document.querySelector("#progressCard"),
@@ -89,10 +90,11 @@ function resetIdleState(){
   e.error.hidden=true;
   e.error.textContent="";
   e.resultCard.hidden=true;
+  e.download.hidden=false;
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
-  if(backendReady)e.start.disabled=false;
+  if(backendReady){e.start.disabled=false;e.test.disabled=false;}
   if(config?.steps){
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
   }
@@ -139,25 +141,34 @@ async function poll(){
 
     if(d.state==="completed"){
       clearInterval(pollTimer);pollTimer=null;
-      e.start.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
       e.resultCard.hidden=false;
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
-      e.resultSummary.textContent=
-        "Прямые покупатели: "+(c.direct_buyers||0)+
-        ", посредники: "+(c.intermediaries||0)+
-        ", лизинг: "+(c.leasing||0)+
-        ". Проверено компаний: "+(g.total||0)+", контакты подтверждены для "+(g.ok||0)+".";
+      if(r.mode==="test12"){
+        e.resultSummary.textContent=
+          "Тест этапов 1–2 завершён. Записей: "+(c.total_rows||0)+
+          ", уникальных: "+(c.unique||0)+
+          ". Подробности каждого API-запроса записаны в Render Logs с префиксом [OPENAI_DIAG].";
+        e.download.hidden=true;
+      }else{
+        e.download.hidden=false;
+        e.resultSummary.textContent=
+          "Прямые покупатели: "+(c.direct_buyers||0)+
+          ", посредники: "+(c.intermediaries||0)+
+          ", лизинг: "+(c.leasing||0)+
+          ". Проверено компаний: "+(g.total||0)+", контакты подтверждены для "+(g.ok||0)+".";
+      }
       return;
     }
 
     if(d.state==="failed"){
       clearInterval(pollTimer);pollTimer=null;
-      e.start.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
       e.error.hidden=false;e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой");
       return;
     }
 
-    e.start.disabled=true;e.cancel.disabled=false;
+    e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
       resetIdleState();
@@ -167,24 +178,27 @@ async function poll(){
   }
 }
 
-async function start(){
+async function startJob(mode="full"){
   const region=e.region.value.trim();
   if(!region){alert("Выберите или введите регион.");return;}
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
-  e.start.disabled=true;e.cancel.disabled=false;
+  e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=false;
   try{
-    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region})});
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode})});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
     await poll();
     pollTimer=setInterval(poll,2000);
   }catch(err){
-    e.start.disabled=false;e.cancel.disabled=true;
+    e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
     e.error.hidden=false;e.error.textContent=err.message;
   }
 }
+
+async function start(){return startJob("full");}
+async function startTest(){return startJob("test12");}
 
 async function cancel(){
   if(!currentJobId)return;
@@ -223,6 +237,7 @@ function setServiceStatus(text,state=""){
 
 async function waitForBackend(){
   e.start.disabled=true;
+  e.test.disabled=true;
   setServiceStatus("Сервис запускается…","starting");
   while(!backendReady){
     try{
@@ -233,7 +248,7 @@ async function waitForBackend(){
       if(r.ok){
         backendReady=true;
         setServiceStatus("Сервис готов к работе.","ready");
-        if(!currentJobId)e.start.disabled=false;
+        if(!currentJobId){e.start.disabled=false;e.test.disabled=false;}
         return true;
       }
     }catch{}
@@ -243,6 +258,7 @@ async function waitForBackend(){
 }
 
 e.start.onclick=start;
+e.test.onclick=startTest;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
 
