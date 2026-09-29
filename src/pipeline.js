@@ -148,6 +148,11 @@ const FINAL_BATCH_SIZE = Math.max(
   20,
   Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
 );
+const IDENTITY_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, Number(process.env.OPENAI_IDENTITY_CONCURRENCY || 4))
+);
+const IDENTITY_MAX_OUTPUT_TOKENS = Math.min(6000, OPENAI_MAX_OUTPUT_TOKENS);
 
 function parseJson(text) {
   const cleaned = String(text || "")
@@ -195,6 +200,37 @@ function contract(final = false) {
 - Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
 - Возвращай ВСЕ подтверждённые релевантные организации текущей микро-задачи, а не выборку лучших.
 - Не выдумывай организации, URL и факты.`;
+}
+
+function identityResolutionContract() {
+  return `\n\nIDENTITY RESOLUTION — верни ТОЛЬКО валидный JSON без markdown:
+{
+  "entities":[
+    {
+      "candidate_ids":[],
+      "confirmed_inn":"",
+      "legal_name":"",
+      "city":"",
+      "source_urls":[],
+      "note":""
+    }
+  ]
+}
+
+На входе один вероятный кластер упоминаний, а НЕ доказанный дубль.
+Твоя задача — установить юридическую идентичность каждого упоминания.
+Используй web_search только для идентификации юридического лица и подтверждения ИНН.
+
+ПРАВИЛА:
+- Каждый входной candidate_id должен встретиться ровно в одном объекте entities.
+- Если несколько candidate_id относятся к одному и тому же юрлицу и подтверждён один и тот же ИНН — помести их вместе.
+- Если это разные юрлица — раздели их по разным entities.
+- confirmed_inn заполняй только подтверждённым 10- или 12-значным ИНН.
+- Если ИНН надёжно подтвердить не удалось — оставь confirmed_inn пустым и НЕ объединяй сомнительные упоминания: верни их отдельными entities.
+- Не ищи телефон, директора, email, выручку, численность, холдинг или другие сведения.
+- legal_name и city заполняй только если удалось подтвердить.
+- source_urls — 1–3 URL, подтверждающих идентичность/ИНН.
+- Не выдумывай связи между компаниями.`;
 }
 
 function finalBatchContract() {
@@ -523,6 +559,222 @@ function normalizePlaceKey(value) {
     .replace(/[^a-zа-яё0-9]+/gi, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function evidenceDomains(row) {
+  const urls = Array.isArray(row?.__evidence?.source_urls)
+    ? row.__evidence.source_urls
+    : [];
+  const domains = new Set();
+  for (const raw of urls) {
+    try {
+      const host = new URL(String(raw)).hostname
+        .toLowerCase()
+        .replace(/^www\./, "");
+      if (host) domains.add(host);
+    } catch {}
+  }
+  return domains;
+}
+
+function buildIdentityClusters(candidates) {
+  const parent = candidates.map((_, i) => i);
+
+  const find = (x) => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+
+  const byExactName = new Map();
+  const byNamePlace = new Map();
+  const byDomain = new Map();
+
+  for (let i = 0; i < candidates.length; i++) {
+    const row = candidates[i]?.data || {};
+    const org = normalizeOrgKey(row["Организация"]);
+    const place = normalizePlaceKey(row["Город/район"]);
+
+    if (org) {
+      const exact = byExactName.get(org);
+      if (exact !== undefined) union(i, exact);
+      else byExactName.set(org, i);
+
+      if (place) {
+        const key = `${org}|${place}`;
+        const known = byNamePlace.get(key);
+        if (known !== undefined) union(i, known);
+        else byNamePlace.set(key, i);
+      }
+    }
+
+    for (const domain of evidenceDomains(row)) {
+      // Один домен сам по себе не доказывает дубль. Объединяем по домену
+      // только если нормализованное название также совпадает.
+      if (!org) continue;
+      const key = `${domain}|${org}`;
+      const known = byDomain.get(key);
+      if (known !== undefined) union(i, known);
+      else byDomain.set(key, i);
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < candidates.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(candidates[i]);
+  }
+
+  return [...groups.values()].map((items, index) => ({
+    cluster_id: `i${String(index + 1).padStart(6, "0")}`,
+    items
+  }));
+}
+
+function compactIdentityCluster(cluster) {
+  return {
+    cluster_id: cluster.cluster_id,
+    mentions: cluster.items.map((item) => ({
+      candidate_id: item.candidate_id,
+      source_step: item.source_step,
+      source_sheet: item.source_sheet,
+      organization: item?.data?.["Организация"] || "",
+      city: item?.data?.["Город/район"] || "",
+      segment: item?.data?.["Техника/сегмент"] || "",
+      basis: item?.data?.["Основание"] || "",
+      evidence: item?.data?.__evidence || {}
+    }))
+  };
+}
+
+function applyIdentityResult(cluster, result) {
+  const byId = new Map(cluster.items.map((item) => [item.candidate_id, item]));
+  const assigned = new Set();
+  const resolved = [];
+
+  for (const entity of Array.isArray(result?.entities) ? result.entities : []) {
+    const ids = [...new Set(
+      (Array.isArray(entity?.candidate_ids) ? entity.candidate_ids : [])
+        .map(String)
+        .filter((id) => byId.has(id) && !assigned.has(id))
+    )];
+    if (!ids.length) continue;
+
+    const inn = normalizeInn(entity?.confirmed_inn);
+    // Без подтвержденного ИНН не разрешаем модели склеить несколько упоминаний.
+    const groups = inn ? [ids] : ids.map((id) => [id]);
+
+    for (const groupIds of groups) {
+      for (const id of groupIds) assigned.add(id);
+      for (const id of groupIds) {
+        const original = byId.get(id);
+        const data = { ...(original?.data || {}) };
+        if (inn) data["ИНН"] = inn;
+        if (String(entity?.legal_name || "").trim()) {
+          data["Организация"] = String(entity.legal_name).trim();
+        }
+        if (String(entity?.city || "").trim() && !String(data["Город/район"] || "").trim()) {
+          data["Город/район"] = String(entity.city).trim();
+        }
+
+        const existingEvidence = data.__evidence || {};
+        const sourceUrls = [
+          ...(Array.isArray(existingEvidence.source_urls) ? existingEvidence.source_urls : []),
+          ...(Array.isArray(entity?.source_urls) ? entity.source_urls : [])
+        ].map(String).filter(Boolean);
+        const notes = [
+          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
+          entity?.note ? `Identity: ${entity.note}` : "",
+          inn ? `Подтверждённый ИНН: ${inn}` : ""
+        ].filter(Boolean);
+        data.__evidence = {
+          ...existingEvidence,
+          source_urls: [...new Set(sourceUrls)],
+          notes: [...new Set(notes)]
+        };
+
+        resolved.push({ ...original, data });
+      }
+    }
+  }
+
+  for (const item of cluster.items) {
+    if (!assigned.has(item.candidate_id)) resolved.push(item);
+  }
+  return resolved;
+}
+
+async function resolveCandidateIdentities({
+  client,
+  candidates,
+  region,
+  prompt,
+  onProgress,
+  assertNotCancelled
+}) {
+  const clusters = buildIdentityClusters(candidates);
+  const resolved = [];
+  let completed = 0;
+  let confirmedInnMentions = 0;
+  let failedClusters = 0;
+
+  for (let offset = 0; offset < clusters.length; offset += IDENTITY_CONCURRENCY) {
+    await assertNotCancelled();
+    const batch = clusters.slice(offset, offset + IDENTITY_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map((cluster) =>
+        askJson(client, {
+          input:
+            prompt +
+            identityResolutionContract() +
+            `\n\nРЕГИОН: ${region}
+ВЕРОЯТНЫЙ КЛАСТЕР:
+${JSON.stringify(compactIdentityCluster(cluster))}`,
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
+          webSearch: true,
+          diagnosticLabel:
+            `identity | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`
+        })
+      )
+    );
+
+    for (let i = 0; i < settled.length; i++) {
+      const cluster = batch[i];
+      const item = settled[i];
+      if (item.status === "fulfilled") {
+        const rows = applyIdentityResult(cluster, item.value);
+        confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
+        resolved.push(...rows);
+      } else {
+        failedClusters++;
+        resolved.push(...cluster.items);
+      }
+      completed++;
+    }
+
+    await onProgress({
+      completed,
+      total: clusters.length,
+      confirmedInnMentions,
+      failedClusters
+    });
+  }
+
+  return {
+    candidates: resolved,
+    clusters: clusters.length,
+    confirmedInnMentions,
+    failedClusters
+  };
 }
 
 function canonicalizeCandidates(candidates) {
@@ -1305,7 +1557,38 @@ Web search обязателен.`,
   await assertNotCancelled();
   startStep(statuses[9]);
   const candidatePool = flattenCandidates(parts);
-  const canonicalPool = canonicalizeCandidates(candidatePool);
+
+  statuses[9].detail = `identity resolution · подготовка ${candidatePool.length} упоминаний`;
+  await progress({ phase: "dedupe", step: 10, percent: 81 });
+
+  const identityResolution = await resolveCandidateIdentities({
+    client,
+    candidates: candidatePool,
+    region,
+    prompt: prompts[9],
+    assertNotCancelled,
+    onProgress: async ({ completed, total, confirmedInnMentions, failedClusters }) => {
+      statuses[9].detail =
+        `identity resolution · ${completed} / ${total} кластеров · ИНН подтверждён для ${confirmedInnMentions} упоминаний` +
+        (failedClusters ? ` · ошибок: ${failedClusters}` : "");
+      await progress({
+        phase: "dedupe",
+        step: 10,
+        percent: 81 + Math.floor((completed / Math.max(1, total)) * 3)
+      });
+    }
+  });
+
+  const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
+  console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
+    region,
+    mentions: candidatePool.length,
+    probable_clusters: identityResolution.clusters,
+    confirmed_inn_mentions: identityResolution.confirmedInnMentions,
+    failed_clusters: identityResolution.failedClusters,
+    canonical_after_inn: canonicalPool.length
+  }));
+
   const batchCount = Math.max(1, Math.ceil(canonicalPool.length / FINAL_BATCH_SIZE));
   const stagedResult = {
     direct_buyers: [],
@@ -1333,8 +1616,9 @@ Web search обязателен.`,
         prompts[9] +
           finalBatchContract() +
           `\n\nРЕГИОН: ${region}
-Это пакет CANONICAL-компаний, предварительно собранных программно из всех шагов 1–9.
-В evidence каждой canonical-компании находятся ВСЕ исходные строки, которые были программно объединены только по одинаковому подтверждённому ИНН. Строки без подтверждённого ИНН заранее не схлопывались по названию/городу и должны разбираться на глобальном QA по совокупности признаков.
+Это пакет CANONICAL-компаний после discovery 1–9 и отдельного identity-resolution прохода.
+До этого шага похожие упоминания использовались только как вероятные кластеры для поиска юридической идентичности. Программно объединены только строки с одинаковым подтверждённым ИНН.
+Строки без подтверждённого ИНН НЕ были окончательно объединены только по названию, городу, домену или похожести и должны разбираться на глобальном QA по совокупности признаков.
 Не игнорируй отдельные элементы evidence: факты из разных шагов должны дополнять друг друга.
 Не удаляй canonical-компании и обязательно верни каждый "__canonical_id" ровно один раз.
 Сохраняй максимум полезной информации из evidence. Новый web_search здесь запрещён; пробелы будут обработаны отдельным точечным проходом.
@@ -1447,7 +1731,8 @@ ${JSON.stringify(qaRecords)}`,
   finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
 
   finishStep(statuses[9]);
-  statuses[9].detail = `выполнен · ${rowCount(finalResult)} организаций · точечных поисков: ${targetedSearches}`;
+  statuses[9].detail =
+    `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}`;
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = [
