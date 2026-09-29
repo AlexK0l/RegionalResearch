@@ -50,10 +50,12 @@ function contract(final = false) {
 function finalBatchContract() {
   return `\n\nПАКЕТНЫЙ ТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
 {"direct_buyers":[],"intermediaries":[],"leasing":[]}.
-Обработай ТОЛЬКО компании текущего пакета. Внутри пакета удали дубли и отфильтруй нерелевантные организации.
-Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, а также "__comment".
+На входе находятся CANONICAL-компании. Каждую входную canonical-компанию верни РОВНО ОДИН РАЗ и обязательно сохрани её "__canonical_id".
+Не удаляй компанию на этом этапе. Если она кажется нерелевантной, верни её как обычно и добавь "__decision":"exclude" и краткий "__decision_reason"; окончательное удаление выполняется только глобальным QA.
+Для каждой canonical-компании используй ВСЕ элементы массива evidence как единый набор доказательств. Не теряй сведения из отдельных шагов.
+Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, "__comment", "__canonical_id", "__decision", "__decision_reason".
 "__comment" обязателен и содержит ровно пять смысловых строк: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:".
-Не возвращай статистику и не добавляй другие служебные поля. Не выдумывай данные.`;
+Не возвращай статистику. Не выдумывай данные.`;
 }
 
 function finalQaContract() {
@@ -126,6 +128,148 @@ function flattenCandidates(parts) {
   return rows;
 }
 
+function normalizeInn(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length === 10 || digits.length === 12 ? digits : "";
+}
+
+function normalizeOrgKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[«»"'.,()]/g, " ")
+    .replace(/\b(ооо|ао|пао|зао|оао|ип)\b/g, " ")
+    .replace(/[^a-zа-яё0-9]+/gi, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function normalizePlaceKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9]+/gi, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function canonicalizeCandidates(candidates) {
+  const parent = candidates.map((_, i) => i);
+  const rank = candidates.map(() => 0);
+
+  const find = (x) => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+
+  const union = (a, b) => {
+    let ra = find(a);
+    let rb = find(b);
+    if (ra === rb) return;
+    if (rank[ra] < rank[rb]) [ra, rb] = [rb, ra];
+    parent[rb] = ra;
+    if (rank[ra] === rank[rb]) rank[ra]++;
+  };
+
+  const innOwners = new Map();
+  const orgPlaceOwners = new Map();
+
+  for (let i = 0; i < candidates.length; i++) {
+    const row = candidates[i]?.data || {};
+    const inn = normalizeInn(row["ИНН"]);
+    if (inn) {
+      if (innOwners.has(inn)) union(i, innOwners.get(inn));
+      else innOwners.set(inn, i);
+    }
+
+    const org = normalizeOrgKey(row["Организация"]);
+    const place = normalizePlaceKey(row["Город/район"]);
+    if (org && place) {
+      const key = `${org}|${place}`;
+      if (orgPlaceOwners.has(key)) union(i, orgPlaceOwners.get(key));
+      else orgPlaceOwners.set(key, i);
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < candidates.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(candidates[i]);
+  }
+
+  return [...groups.values()].map((evidence, index) => ({
+    canonical_id: `k${String(index + 1).padStart(6, "0")}`,
+    candidate_ids: evidence.map((x) => x.candidate_id),
+    source_steps: [...new Set(evidence.map((x) => x.source_step))],
+    source_sheets: [...new Set(evidence.map((x) => x.source_sheet))],
+    evidence
+  }));
+}
+
+function baselineRowFromCanonical(canonical) {
+  const row = {};
+  const evidenceRows = canonical?.evidence?.map((x) => x.data || {}) || [];
+
+  for (const col of COLS) {
+    const values = [...new Set(
+      evidenceRows
+        .map((item) => String(item?.[col] ?? "").trim())
+        .filter(Boolean)
+    )];
+
+    if (col === "Телефон") row[col] = values.join("; ");
+    else if (col === "Основание" || col === "Техника/сегмент") row[col] = values.join(" | ");
+    else row[col] = values[0] || "";
+  }
+
+  row.__canonical_id = canonical.canonical_id;
+  row.__decision = "review";
+  row.__decision_reason = "Восстановлено из исходных свидетельств: пакетный ответ пропустил canonical-компанию.";
+  row.__comment = [
+    "Сайт/источник: не подтверждено",
+    `ИНН: ${row["ИНН"] || "не подтверждено"}`,
+    "Деятельность: требуется финальная проверка",
+    `Холдинг/УК/группа: ${row["Управляющая компания"] || "не подтверждено"}`,
+    "Email: не найден"
+  ].join("\n");
+  return row;
+}
+
+function ensureBatchCoverage(batch, batchResult) {
+  const output = {
+    direct_buyers: [],
+    intermediaries: [],
+    leasing: []
+  };
+  const seen = new Set();
+  const byCanonicalId = new Map(batch.map((item) => [item.canonical_id, item]));
+
+  for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+    for (const row of batchResult?.[sheet] || []) {
+      const id = String(row?.__canonical_id || "");
+      if (!id || !byCanonicalId.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      output[sheet].push(row);
+    }
+  }
+
+  for (const canonical of batch) {
+    if (seen.has(canonical.canonical_id)) continue;
+
+    const fallback = baselineRowFromCanonical(canonical);
+    const preferred = canonical.source_sheets.includes("Лизинг")
+      ? "leasing"
+      : canonical.source_sheets.includes("Прямые покупатели")
+        ? "direct_buyers"
+        : "intermediaries";
+    output[preferred].push(fallback);
+  }
+
+  return output;
+}
+
 function makeQaRecords(result) {
   const records = [];
   const groups = ["direct_buyers", "intermediaries", "leasing"];
@@ -133,6 +277,7 @@ function makeQaRecords(result) {
     for (const row of result[sheet] || []) {
       records.push({
         id: `q${String(records.length + 1).padStart(6, "0")}`,
+        canonical_id: row?.__canonical_id || "",
         sheet,
         row
       });
@@ -143,7 +288,7 @@ function makeQaRecords(result) {
 
 function applyFinalQa(records, qa) {
   const allowedSheets = new Set(["direct_buyers", "intermediaries", "leasing"]);
-  const allowedFields = new Set([...COLS, "__comment"]);
+  const allowedFields = new Set([...COLS, "__comment", "__decision", "__decision_reason"]);
   const removeIds = new Set(Array.isArray(qa?.remove_ids) ? qa.remove_ids.map(String) : []);
   const moves = new Map();
 
@@ -318,7 +463,8 @@ export async function runResearchPipeline({ job, apiKey }) {
   await assertNotCancelled();
   startStep(statuses[9]);
   const candidatePool = flattenCandidates(parts);
-  const batchCount = Math.max(1, Math.ceil(candidatePool.length / FINAL_BATCH_SIZE));
+  const canonicalPool = canonicalizeCandidates(candidatePool);
+  const batchCount = Math.max(1, Math.ceil(canonicalPool.length / FINAL_BATCH_SIZE));
   const stagedResult = {
     direct_buyers: [],
     intermediaries: [],
@@ -327,34 +473,38 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   for (let batchIndex = 0; batchIndex < batchCount; batchIndex++) {
     await assertNotCancelled();
-    const batch = candidatePool.slice(
+    const batch = canonicalPool.slice(
       batchIndex * FINAL_BATCH_SIZE,
       (batchIndex + 1) * FINAL_BATCH_SIZE
     );
 
-    statuses[9].detail = `пакет ${batchIndex + 1} / ${batchCount} · ${batch.length} кандидатов`;
+    statuses[9].detail = `пакет ${batchIndex + 1} / ${batchCount} · ${batch.length} компаний`;
     await progress({
       phase: "dedupe",
       step: 10,
       percent: 82 + Math.floor(((batchIndex + 1) / batchCount) * 5)
     });
 
-    const batchResult = normalize(
+    const rawBatchResult = normalize(
       await ask(
         client,
         prompts[9] +
           finalBatchContract() +
           `\n\nРЕГИОН: ${region}
-Это один пакет из общего пула шагов 1–9. Обработай только перечисленные записи.
-Сохраняй максимум полезной подтверждённой информации, выполняй точечный web_search для проверки конкретных компаний.
-Глобальная дедупликация между пакетами будет отдельным QA-вызовом после обработки всех пакетов.
+Это пакет CANONICAL-компаний, предварительно собранных программно из всех шагов 1–9.
+В evidence каждой canonical-компании находятся ВСЕ исходные строки, которые были безопасно объединены по подтверждённому ИНН либо точному нормализованному названию + городу/району.
+Не игнорируй отдельные элементы evidence: факты из разных шагов должны дополнять друг друга.
+Не удаляй canonical-компании и обязательно верни каждый "__canonical_id" ровно один раз.
+Сохраняй максимум полезной подтверждённой информации и выполняй точечный web_search для проверки конкретных компаний.
+Глобальная дедупликация между canonical-компаниями будет отдельным QA-вызовом после обработки всех пакетов.
 
-ПАКЕТ КАНДИДАТОВ JSON:
+ПАКЕТ CANONICAL-КОМПАНИЙ JSON:
 ${JSON.stringify(batch)}`,
         FINAL_BATCH_MAX_OUTPUT_TOKENS
       )
     );
 
+    const batchResult = ensureBatchCoverage(batch, rawBatchResult);
     stagedResult.direct_buyers.push(...batchResult.direct_buyers);
     stagedResult.intermediaries.push(...batchResult.intermediaries);
     stagedResult.leasing.push(...batchResult.leasing);
@@ -370,8 +520,10 @@ ${JSON.stringify(batch)}`,
     prompts[9] +
       finalQaContract() +
       `\n\nРЕГИОН: ${region}
-Ниже уже обработанные пакетами коммерческие строки с техническими id.
-Выполни ГЛОБАЛЬНУЮ дедупликацию между пакетами, финальную переклассификацию и QA.
+Ниже уже обработанные пакетами canonical-компании с техническими id и canonical_id.
+Каждая canonical-компания была сохранена даже если пакетная модель сочла её нерелевантной или случайно пропустила.
+Выполни ГЛОБАЛЬНУЮ дедупликацию между canonical-компаниями, финальную переклассификацию и QA.
+Строки с "__decision":"exclude" не удаляй механически: проверь основание и только затем добавляй id в remove_ids.
 Не переписывай весь массив компаний: верни только remove_ids, moves, patches и statistics.
 Для дублей с одинаковым подтверждённым ИНН оставь одну лучшую строку и через patch сохрани в ней полезные сведения.
 Разные подтверждённые ИНН никогда не объединяй.
