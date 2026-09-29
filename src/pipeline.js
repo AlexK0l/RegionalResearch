@@ -628,7 +628,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     await progress({ phase: "research", step: i + 1, percent: i * 9 });
 
     const output = normalize(
-      await ask(
+      await askResearch(
         client,
         prompts[i] +
           contract(false) +
@@ -668,7 +668,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     });
 
     const rawBatchResult = normalize(
-      await ask(
+      await askWithoutSearch(
         client,
         prompts[9] +
           finalBatchContract() +
@@ -677,11 +677,12 @@ export async function runResearchPipeline({ job, apiKey }) {
 В evidence каждой canonical-компании находятся ВСЕ исходные строки, которые были безопасно объединены по подтверждённому ИНН либо точному нормализованному названию + городу/району.
 Не игнорируй отдельные элементы evidence: факты из разных шагов должны дополнять друг друга.
 Не удаляй canonical-компании и обязательно верни каждый "__canonical_id" ровно один раз.
-Сохраняй максимум полезной подтверждённой информации и выполняй точечный web_search для проверки конкретных компаний.
+Сохраняй максимум полезной информации из evidence. Новый web_search здесь запрещён; пробелы будут обработаны отдельным точечным проходом.
 Глобальная дедупликация между canonical-компаниями будет отдельным QA-вызовом после обработки всех пакетов.
 
 ПАКЕТ CANONICAL-КОМПАНИЙ JSON:
 ${JSON.stringify(batch)}`,
+        FINAL_BATCH_MODEL,
         FINAL_BATCH_MAX_OUTPUT_TOKENS
       )
     );
@@ -693,32 +694,100 @@ ${JSON.stringify(batch)}`,
   }
 
   await assertNotCancelled();
-  const qaRecords = makeQaRecords(stagedResult);
-  statuses[9].detail = `глобальный QA · ${qaRecords.length} организаций`;
-  await progress({ phase: "dedupe", step: 10, percent: 88 });
+  const stagedCompanies = [
+    ...stagedResult.direct_buyers,
+    ...stagedResult.intermediaries,
+    ...stagedResult.leasing
+  ];
+  let targetedSearches = 0;
 
-  const qa = await ask(
+  for (const row of stagedCompanies) {
+    const gaps = missingResearchFields(row);
+    if (!gaps.length) continue;
+
+    await assertNotCancelled();
+    targetedSearches++;
+    statuses[9].detail = `точечная проверка ${targetedSearches} · ${row["Организация"] || ""}`;
+    await progress({ phase: "dedupe", step: 10, percent: 87 });
+
+    const enriched = await askTargetedSearch(
+      client,
+      prompts[9] +
+        targetedSearchContract() +
+        `\n\nРЕГИОН: ${region}
+КОМПАНИЯ:
+${JSON.stringify(row)}
+НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
+${JSON.stringify(gaps)}
+Сделай один точечный web_search только по этой компании. Ищи недостающие сведения и верни аккуратный patch. Не перепроверяй заполненные поля без необходимости.`
+    );
+    applyTargetedPatch(row, enriched);
+  }
+
+  await assertNotCancelled();
+  let qaRecords = makeQaRecords(stagedResult);
+  const conflictGroups = buildConflictGroups(qaRecords);
+
+  if (conflictGroups.length) {
+    statuses[9].detail = `разрешение конфликтов · ${conflictGroups.length} групп`;
+    await progress({ phase: "dedupe", step: 10, percent: 88 });
+
+    const conflictQa = await askWithoutSearch(
+      client,
+      prompts[9] +
+        conflictContract() +
+        `\n\nКОНФЛИКТНЫЕ ГРУППЫ:
+${JSON.stringify(conflictGroups)}`,
+      CONFLICT_MODEL,
+      FINAL_QA_MAX_OUTPUT_TOKENS
+    );
+
+    const conflictResolved = applyFinalQa(qaRecords, conflictQa);
+    stagedResult.direct_buyers = conflictResolved.direct_buyers;
+    stagedResult.intermediaries = conflictResolved.intermediaries;
+    stagedResult.leasing = conflictResolved.leasing;
+    qaRecords = makeQaRecords(stagedResult);
+  }
+
+  statuses[9].detail = `глобальный QA · ${qaRecords.length} организаций`;
+  await progress({ phase: "dedupe", step: 10, percent: 89 });
+
+  const qa = await askWithoutSearch(
     client,
     prompts[9] +
       finalQaContract() +
       `\n\nРЕГИОН: ${region}
-Ниже уже обработанные пакетами canonical-компании с техническими id и canonical_id.
-Каждая canonical-компания была сохранена даже если пакетная модель сочла её нерелевантной или случайно пропустила.
-Выполни ГЛОБАЛЬНУЮ дедупликацию между canonical-компаниями, финальную переклассификацию и QA.
-Строки с "__decision":"exclude" не удаляй механически: проверь основание и только затем добавляй id в remove_ids.
-Не переписывай весь массив компаний: верни только remove_ids, moves, patches и statistics.
-Для дублей с одинаковым подтверждённым ИНН оставь одну лучшую строку и через patch сохрани в ней полезные сведения.
+Ниже уже обработанные canonical-компании с техническими id и canonical_id.
+Выполни глобальную дедупликацию, финальную переклассификацию и QA только по переданным данным.
+Строки с "__decision":"exclude" не удаляй механически: проверь основание.
+Не переписывай весь массив компаний: верни только remove_ids, moves и patches.
 Разные подтверждённые ИНН никогда не объединяй.
+Работай без web_search.
 
 КОММЕРЧЕСКИЕ СТРОКИ JSON:
 ${JSON.stringify(qaRecords)}`,
+    FINAL_QA_MODEL,
     FINAL_QA_MAX_OUTPUT_TOKENS
   );
 
   const finalResult = applyFinalQa(qaRecords, qa);
 
+  statuses[9].detail = "региональная статистика";
+  await progress({ phase: "dedupe", step: 10, percent: 89 });
+
+  const statsResult = await askJson(client, {
+    input:
+      prompts[9] +
+      statisticsContract() +
+      `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
+    webSearch: true
+  });
+  finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
+
   finishStep(statuses[9]);
-  statuses[9].detail = `выполнен · ${rowCount(finalResult)} организаций`;
+  statuses[9].detail = `выполнен · ${rowCount(finalResult)} организаций · точечных поисков: ${targetedSearches}`;
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = [
