@@ -229,8 +229,13 @@ function canonicalizeCandidates(candidates) {
     const place = normalizePlaceKey(row["Город/район"]);
     if (org && place) {
       const key = `${org}|${place}`;
-      if (orgPlaceOwners.has(key)) union(i, orgPlaceOwners.get(key));
-      else orgPlaceOwners.set(key, i);
+      if (orgPlaceOwners.has(key)) {
+        const otherIndex = orgPlaceOwners.get(key);
+        const otherInn = normalizeInn(candidates[otherIndex]?.data?.["ИНН"]);
+        if (!(inn && otherInn && inn !== otherInn)) union(i, otherIndex);
+      } else {
+        orgPlaceOwners.set(key, i);
+      }
     }
   }
 
@@ -355,7 +360,7 @@ function applyFinalQa(records, qa) {
     direct_buyers: [],
     intermediaries: [],
     leasing: [],
-    statistics: Array.isArray(qa?.statistics) ? qa.statistics : []
+    statistics: []
   };
 
   for (const record of records) {
@@ -368,19 +373,142 @@ function applyFinalQa(records, qa) {
   return result;
 }
 
-async function ask(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS) {
-  const response = await client.responses.create({
-    model: MODEL,
-    tools: [{ type: "web_search" }],
-    tool_choice: "required",
+async function askJson(client, {
+  input,
+  model = MODEL,
+  maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS,
+  webSearch = false
+}) {
+  const request = {
+    model,
     input,
     max_output_tokens: maxOutputTokens
-  });
+  };
+  if (webSearch) {
+    request.tools = [{ type: "web_search" }];
+    request.tool_choice = "required";
+  }
+
+  const response = await client.responses.create(request);
   if (response.status && response.status !== "completed") {
     throw new Error(`OpenAI response status: ${response.status}`);
   }
   return parseJson(response.output_text || "");
 }
+
+function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS) {
+  return askJson(client, {
+    input,
+    model: MODEL,
+    maxOutputTokens,
+    webSearch: true
+  });
+}
+
+function askWithoutSearch(client, input, model, maxOutputTokens) {
+  return askJson(client, {
+    input,
+    model,
+    maxOutputTokens,
+    webSearch: false
+  });
+}
+
+function askTargetedSearch(client, input) {
+  return askJson(client, {
+    input,
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
+    webSearch: true
+  });
+}
+
+function commentValue(comment, label) {
+  const line = String(comment || "")
+    .split(/\r?\n/)
+    .find((x) => x.trim().toLowerCase().startsWith(label.toLowerCase() + ":"));
+  return line ? line.slice(line.indexOf(":") + 1).trim() : "";
+}
+
+function isMissingText(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return !text ||
+    text === "н/д" ||
+    text.includes("не найден") ||
+    text.includes("не подтвержден") ||
+    text.includes("требуется финальная проверка");
+}
+
+function missingResearchFields(row) {
+  const gaps = [];
+  const comment = row?.__comment || "";
+  if (isMissingText(commentValue(comment, "Сайт/источник"))) gaps.push("сайт/источник");
+  if (!normalizeInn(row?.["ИНН"])) gaps.push("ИНН");
+  if (isMissingText(commentValue(comment, "Email"))) gaps.push("email");
+  if (isMissingText(commentValue(comment, "Деятельность"))) gaps.push("краткое описание деятельности");
+
+  const holding = commentValue(comment, "Холдинг/УК/группа");
+  const manager = String(row?.["Управляющая компания"] || "").trim();
+  if (isMissingText(holding) && (!manager || /не подтвержд/i.test(manager))) {
+    gaps.push("холдинг/УК/группа");
+  }
+  return [...new Set(gaps)];
+}
+
+function applyTargetedPatch(row, result) {
+  const allowed = new Set([
+    "Управляющая компания",
+    "ИНН",
+    "Телефон",
+    "Руководитель / ЛПР",
+    "Выручка последнего подтвержденного года",
+    "Численность"
+  ]);
+  for (const [key, value] of Object.entries(result?.fields || {})) {
+    if (!allowed.has(key)) continue;
+    if (value === undefined || value === null || String(value).trim() === "") continue;
+    if (key === "Телефон") row[key] = mergePhone(row[key], value);
+    else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) row[key] = value;
+  }
+  if (String(result?.__comment || "").trim()) row.__comment = String(result.__comment).trim();
+}
+
+function buildConflictGroups(records) {
+  const buckets = new Map();
+  const add = (key, record) => {
+    if (!key) return;
+    if (!buckets.has(key)) buckets.set(key, []);
+    const arr = buckets.get(key);
+    if (!arr.some((x) => x.id === record.id)) arr.push(record);
+  };
+
+  for (const record of records) {
+    const row = record.row || {};
+    const org = normalizeOrgKey(row["Организация"]);
+    const place = normalizePlaceKey(row["Город/район"]);
+    if (org && place) add(`orgplace:${org}|${place}`, record);
+
+    for (const phone of splitPhoneEntries(row["Телефон"])) {
+      const normalized = normalizePhoneDigits(phone);
+      if (normalized) add(`phone:${normalized}`, record);
+    }
+  }
+
+  const groups = [];
+  const seen = new Set();
+  for (const [key, items] of buckets) {
+    if (items.length < 2) continue;
+    const inns = [...new Set(items.map((x) => normalizeInn(x.row?.["ИНН"])).filter(Boolean))];
+    const canonicalIds = [...new Set(items.map((x) => x.canonical_id).filter(Boolean))];
+    if (inns.length <= 1 && canonicalIds.length <= 1) continue;
+    const signature = items.map((x) => x.id).sort().join("|");
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    groups.push({ key, records: items });
+  }
+  return groups;
+}
+
 
 function initialStatuses() {
   return STEPS.map((name, index) => ({
