@@ -158,6 +158,7 @@ app.post("/api/jobs", async (req, res) => {
     result: null,
     error: null,
     cancelled: false,
+    abortController: new AbortController(),
     createdAt: Date.now(),
     async updateProgress(progress) {
       this.progress = progress;
@@ -175,7 +176,12 @@ app.post("/api/jobs", async (req, res) => {
       job.result = output;
       job.state = "completed";
     } catch (error) {
-      if (error?.message === "JOB_CANCELLED") {
+      if (
+        error?.message === "JOB_CANCELLED" ||
+        error?.name === "AbortError" ||
+        job.cancelled ||
+        job.abortController?.signal?.aborted
+      ) {
         job.state = "cancelled";
         job.error = "Остановлено пользователем";
       } else {
@@ -211,7 +217,11 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
 
   job.cancelled = true;
-  res.json({ ok: true });
+  job.state = "cancelling";
+  if (!job.abortController?.signal?.aborted) {
+    job.abortController?.abort(new Error("JOB_CANCELLED"));
+  }
+  res.json({ ok: true, state: "cancelling" });
 });
 
 app.get("/api/jobs/:id/download", (req, res) => {
