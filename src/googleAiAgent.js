@@ -279,6 +279,9 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
         signal
       });
     } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") {
+        throw new Error("JOB_CANCELLED");
+      }
       return {
         ...unavailableResult,
         note: `Fallback computer model failed: ${error?.message || "unknown error"}`
@@ -297,6 +300,9 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       signal
     });
   } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") {
+      throw new Error("JOB_CANCELLED");
+    }
     primary = { ...unavailableResult, note: error?.message || "primary computer model failed" };
   }
 
@@ -310,9 +316,13 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       page,
       prompt,
       unavailableResult,
-      model: COMPUTER_FALLBACK_MODEL
+      model: COMPUTER_FALLBACK_MODEL,
+      signal
     });
   } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") {
+      throw new Error("JOB_CANCELLED");
+    }
     return {
       ...unavailableResult,
       note: `Primary and fallback computer models failed: ${error?.message || "unknown error"}`
