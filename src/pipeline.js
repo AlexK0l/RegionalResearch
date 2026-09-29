@@ -665,6 +665,23 @@ function diagnosticToolCounts(response) {
   return counts;
 }
 
+function diagnosticWebQueries(response) {
+  const queries = [];
+  for (const item of response?.output || []) {
+    if (item?.type !== "web_search_call") continue;
+    const action = item?.action || {};
+    if (typeof action.query === "string" && action.query.trim()) {
+      queries.push(action.query.trim());
+    }
+    if (Array.isArray(action.queries)) {
+      for (const query of action.queries) {
+        if (typeof query === "string" && query.trim()) queries.push(query.trim());
+      }
+    }
+  }
+  return [...new Set(queries)];
+}
+
 function compactDiagnosticQuery(input, explicitLabel = "") {
   if (explicitLabel) return explicitLabel;
   return String(input || "")
@@ -735,6 +752,7 @@ async function askJson(client, {
       reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
       cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
       tool_calls: diagnosticToolCounts(response),
+      web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
       rows_returned: parsed ? diagnosticRowCount(parsed) : null,
       parse_error: parseError || null
