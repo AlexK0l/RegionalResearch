@@ -5,6 +5,9 @@ services:
     region: frankfurt
     plan: free
     branch: main
-    buildCommand: npm install && npx playwright install chromium
+    buildCommand: PLAYWRIGHT_BROWSERS_PATH=0 npm install && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium
     startCommand: node server.js
     healthCheckPath: /health
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
