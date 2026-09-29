@@ -32,11 +32,110 @@ const COURT_FILE_SEARCH_MAX_RESULTS = Math.max(
 );
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
   String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
-const RESEARCH_BASE_PASSES = Math.max(
-  2,
-  Math.min(4, Number(process.env.OPENAI_RESEARCH_BASE_PASSES || 3))
+const RESEARCH_SOFT_TARGET = Math.max(
+  40,
+  Math.min(200, Number(process.env.OPENAI_RESEARCH_SOFT_TARGET || 100))
 );
-const RESEARCH_MIN_UNIQUE = [30, 18, 20, 35, 25, 70, 18, 30, 30];
+const RESEARCH_MAX_RECOVERY_BRANCHES = Math.max(
+  0,
+  Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 3))
+);
+const RESEARCH_LOW_YIELD_THRESHOLD = Math.max(
+  0,
+  Math.min(10, Number(process.env.OPENAI_RESEARCH_LOW_YIELD_THRESHOLD || 3))
+);
+
+const STAGE_SEARCH_BRANCHES = [
+  [
+    "Объявления о продаже/покупке прицепной техники: от собственника, с НДС, продаём парк, несколько единиц, обновление парка",
+    "Зерно, зерновозы, агроперевозки и объявления/вакансии компаний, работающих с зерновыми и масличными",
+    "Щебень, песок, ПГС, карьеры, самосвальные перевозки и владельцы/эксплуатанты соответствующего парка",
+    "Щепа, опилки, кора, биомасса, пеллетное сырьё: перевозки, объявления и вакансии",
+    "Отходы, вторсырьё, металлолом и вторчермет: перевозки, объявления и вакансии",
+    "Вакансии водителей категории CE/Е у компаний региона с тяжёлой логистикой",
+    "Вакансии главных механиков, начальников АТП/гаража/автоколонны, механиков и транспортных специалистов",
+    "Вакансии логистов/диспетчеров плюс цепочки работодателей, продавцов техники и связанных перевозчиков"
+  ],
+  [
+    "Лизинг прицепной техники и полуприцепов у компаний региона с целевыми грузами",
+    "Лизинговые сообщения одновременно по тягачам и прицепному парку; идентификация лизингополучателей",
+    "Конкретные модели, VIN, госномера и предметы финансовой аренды",
+    "Сроки окончания финансовой аренды, завершение договоров и цикл замены техники",
+    "Возврат, изъятие, реализация и торги по лизинговой грузовой/прицепной технике",
+    "Повторные сделки, расширение и обновление грузового парка",
+    "Залоги конкретной техники после идентификации VIN/модели; банки, Федресурс, реестры и официальные документы"
+  ],
+  [
+    "Сервисы грузовой прицепной техники и их публичные клиенты/кейсы",
+    "Гидравлика, гидроцилиндры, системы разгрузки и клиенты ремонтов",
+    "Ремонт кузовов, рам, осей, тормозов и подвески; повторные дорогие ремонты",
+    "Поставщики запчастей и дилеры прицепной техники с кейсами конкретных клиентов",
+    "Грузовые шинные центры и телематика как точки выхода на эксплуатантов тяжёлого транспорта",
+    "Экспедиторы и логистические посредники; отделять посредников от собственных эксплуатантов",
+    "Карты, каталоги, тендеры, портфолио, отзывы, фото и новости сервисов для поиска новых клиентов"
+  ],
+  [
+    "Перевозчики зерна, масличных, комбикорма и других агрогрузов",
+    "Перевозчики щебня, песка, ПГС, грунта, торфа и строительных сыпучих грузов",
+    "Перевозчики щепы, опилок, древесных отходов, биомассы",
+    "Перевозчики отходов, вторсырья, металлолома и вторчермета",
+    "Перевозчики крупных грузовладельцев региона: искать цепочку грузовладелец → фактический перевозчик",
+    "Автопарки, тягачи, прицепная техника, вакансии CE/Е, ремонт, продажа и расширение парка у найденных перевозчиков"
+  ],
+  [
+    "Закупки прицепной техники, полуприцепов, тягачей и комплектов автопоезда",
+    "Закупки ремонта прицепной техники, рам, кузовов, гидравлики, осей, тормозов и подвески",
+    "Закупки систем разгрузки и запасных частей с идентификацией заказчика/эксплуатанта",
+    "Закупки перевозки зерна, щебня, песка, отходов, древесных грузов и других целевых грузов",
+    "Новые крупные транспортные контракты и победители, которые могут фактически выполнять перевозку",
+    "Контракты и проекты, создающие дополнительный грузопоток и потребность в расширении/замене парка"
+  ],
+  [
+    "Агрохолдинги, растениеводческие хозяйства, КФХ/СПК с товарным потоком и физической логистикой",
+    "Элеваторы, ХПП, зернохранилища, зернотрейдеры с физической логистикой",
+    "Комбикормовые, мукомольные предприятия, переработчики масличных и производители масел",
+    "Карьеры, щебзаводы, нерудные материалы, песок, ПГС и добывающие предприятия",
+    "Дорожные ремонтно-строительные компании, АБЗ и крупные стройкомпании с потоком сыпучих материалов",
+    "Торфодобывающие предприятия",
+    "Лесные хозяйства, лесозаготовители, лесопилки и деревообработка",
+    "Фанерные/плитные производства, ДСП/ЛДСП, ЦБК",
+    "Пеллетные производства, биомасса, щепа, опилки и древесные отходы",
+    "Переработчики отходов, вторсырья, мусоросортировка и мусоропереработка",
+    "Перевозчики промышленных/бытовых отходов, металлолом и вторчермет",
+    "Промышленные предприятия с крупными регулярными потоками сыпучих/объёмных грузов; параллельно искать их постоянных перевозчиков"
+  ],
+  [
+    "Превышение массы и осевой нагрузки, автоматический весогабаритный контроль, ущерб дорогам",
+    "Тяжёлые автопоезда: тягач + полуприцеп, марки/модели, VIN и госномера",
+    "Собственник, лизингополучатель, арендатор и фактический эксплуатант в судебных/административных материалах",
+    "Споры по лизингу, возврату и изъятию грузовой/прицепной техники",
+    "Споры по ремонту прицепной техники, рам, кузовов, гидравлики, осей и подвески",
+    "ДТП и страховые споры, где идентифицируются техника, маршрут, груз и эксплуатант"
+  ],
+  [
+    "Выставки коммерческого транспорта и списки участников",
+    "Аграрные мероприятия, зерновые и элеваторные конференции",
+    "Лесные и деревообрабатывающие выставки/конференции",
+    "Мероприятия по отходам, переработке, вторсырью и металлолому",
+    "Союзы перевозчиков и транспортные профессиональные сообщества",
+    "Отраслевые объединения грузовладельцев; из участников извлекать конкретные компании и затем проверять логистику"
+  ],
+  [
+    "Расширение агрохолдингов, новые элеваторы/зернохранилища, рост производства зерна и масличных",
+    "Новые комбикормовые, мукомольные и маслоперерабатывающие мощности",
+    "Новые/расширяющиеся карьеры и рост добычи нерудных материалов",
+    "Дорожные и инфраструктурные проекты, создающие потоки сыпучих материалов",
+    "Расширение торфодобычи",
+    "Рост лесопиления/деревообработки, новые плитные, ДСП/ЛДСП и пеллетные мощности",
+    "Новые мощности по отходам, вторсырью, металлолому и вторчермету"
+  ]
+];
+
+const RESEARCH_RECOVERY_THEMES = [
+  "Географические пробелы: отдельно пройди областной центр, малые города, районы, промзоны и локальные кластеры, которые были слабо представлены.",
+  "Источник и синонимы: смени поисковые формулировки, площадки, должности, названия грузов/процессов и ищи long tail, которого нет в уже найденном списке.",
+  "Цепочки второго порядка: от найденных грузовладельцев иди к перевозчикам; от сервисов к клиентам; от проектов к подрядчикам/эксплуатантам; от лизинга/тендеров к фактическим пользователям."
+];
 const FINAL_BATCH_SIZE = Math.max(
   20,
   Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
@@ -216,29 +315,32 @@ function foundOrganizationNames(result, limit = 180) {
   return names;
 }
 
-function researchPassInstruction(passNumber, alreadyFound) {
+function researchBranchInstruction({ stageIndex, branch, branchIndex, totalBranches, alreadyFound }) {
   const known = alreadyFound.length
-    ? `\nУЖЕ НАЙДЕННЫЕ ОРГАНИЗАЦИИ — не трать поиск на повторное обнаружение, используй их только для цепочек и ищи НОВЫЕ компании:\n${alreadyFound.join("; ")}`
+    ? `\nУЖЕ НАЙДЕННЫЕ ОРГАНИЗАЦИИ — не трать основной поиск на их повторное обнаружение; возвращай их повторно только если найдено существенное новое evidence:\n${alreadyFound.join("; ")}`
     : "";
 
-  if (passNumber === 1) {
-    return `ПРОХОД 1 — широкий отраслевой поиск по всему региону.
-Сделай много разных web_search-запросов по всем семействам сигналов этого этапа. Не останавливайся после первых 5–10 организаций. Цель — получить максимально широкий первичный список реальных компаний.${known}`;
-  }
-  if (passNumber === 2) {
-    return `ПРОХОД 2 — географический long tail.
-Ищи НОВЫЕ компании отдельно по областному центру, другим городам, муниципальным районам, промзонам и локальным отраслевым кластерам региона. Используй сочетания названий населённых пунктов/районов с сигналами текущего этапа. Не повторяй уже найденных, если нет нового существенного evidence.${known}`;
-  }
-  if (passNumber === 3) {
-    return `ПРОХОД 3 — альтернативные источники и цепочки контрагентов.
-Ищи НОВЫЕ компании через клиентов, поставщиков, перевозчиков, участников тендеров, вакансии, сервисы, лизинг, отраслевые списки, новости и связанные организации — в зависимости от темы этапа. Проверяй второй порядок связей: найденный грузовладелец → его перевозчик; сервис → его клиент; проект → подрядчик/эксплуатант. Не повторяй уже найденных без нового evidence.${known}`;
-  }
-  if (passNumber === 4) {
-    return `ПРОХОД 4 — восстановление пропущенных сегментов.
-Предыдущие проходы дали недостаточное покрытие. Найди НОВЫЕ организации в тех сегментах, районах и типах источников, которые ещё представлены слабо или отсутствуют. Используй новые формулировки запросов, синонимы отраслей и локальные названия предприятий. Не ограничивайся крупными и хорошо индексируемыми компаниями.${known}`;
-  }
-  return `ДОПОЛНИТЕЛЬНЫЙ ПРОХОД — добор long tail.
-Ищи только НОВЫЕ релевантные организации, пропущенные предыдущими проходами. Смени поисковые формулировки, источники и географические срезы. Не выдумывай компании ради количества.${known}`;
+  return `ОБЯЗАТЕЛЬНАЯ ПОИСКОВАЯ ВЕТКА ${branchIndex + 1} ИЗ ${totalBranches}.
+ТЕМА: ${branch}
+
+Выполни серию разных web_search-запросов именно по этой теме, а не один общий запрос.
+Пройди регион географически: областной центр, другие города, муниципальные районы, промзоны и отраслевые кластеры, где тема релевантна.
+Исследуй не только первые результаты: используй синонимы, разные формулировки и несколько типов источников из инструкции этапа.
+Для каждого сильного исходного объекта переходи по цепочке к юридическому лицу, фактическому эксплуатанту/перевозчику/клиенту, если это предусмотрено инструкцией.
+A/B/C — классификация ПОСЛЕ обнаружения, а не фильтр допуска. C-кандидата сохраняй, если подтверждён релевантный груз/процесс и реалистична тяжёлая автомобильная логистика.
+Возвращай ВСЕ подтверждённые релевантные организации этой ветки, а не "топ-10". Не выдумывай компании ради количества.
+${known}`;
+}
+
+function researchRecoveryInstruction({ theme, alreadyFound, uniqueCount, target }) {
+  const known = alreadyFound.length
+    ? `\nУЖЕ НАЙДЕНО: ${alreadyFound.join("; ")}`
+    : "";
+  return `ДОПОЛНИТЕЛЬНЫЙ ПОИСК ДЛЯ ПОЛНОТЫ.
+Сейчас найдено ${uniqueCount} уникальных релевантных организаций. Ориентир инструкции — стремиться к ${target}+ уникальным, если канал и регион объективно дают такой объём.
+${theme}
+Используй несколько web_search-запросов. Ищи НОВЫЕ организации. Не создавай записи без подтверждающего источника.
+${known}`;
 }
 
 
@@ -311,7 +413,6 @@ function canonicalizeCandidates(candidates) {
   };
 
   const innOwners = new Map();
-  const orgPlaceOwners = new Map();
 
   for (let i = 0; i < candidates.length; i++) {
     const row = candidates[i]?.data || {};
@@ -321,18 +422,8 @@ function canonicalizeCandidates(candidates) {
       else innOwners.set(inn, i);
     }
 
-    const org = normalizeOrgKey(row["Организация"]);
-    const place = normalizePlaceKey(row["Город/район"]);
-    if (org && place) {
-      const key = `${org}|${place}`;
-      if (orgPlaceOwners.has(key)) {
-        const otherIndex = orgPlaceOwners.get(key);
-        const otherInn = normalizeInn(candidates[otherIndex]?.data?.["ИНН"]);
-        if (!(inn && otherInn && inn !== otherInn)) union(i, otherIndex);
-      } else {
-        orgPlaceOwners.set(key, i);
-      }
-    }
+    // Без подтвержденного ИНН строки не объединяем программно только по названию/городу.
+    // Такие возможные дубли разбираются позже глобальным QA по совокупности признаков.
   }
 
   const groups = new Map();
@@ -769,7 +860,7 @@ export async function runResearchPipeline({ job, apiKey }) {
         ? `\n\nПОЛЬЗОВАТЕЛЬСКИЙ АРХИВ СУДЕБНЫХ АКТОВ — discovery-кандидаты:
 Архив содержит ${compactCourtArchiveMeta?.documents || 10109} документов. Для выбранного региона компактный индекс дал:
 ${JSON.stringify(compactCourtArchive)}
-Не добавляй организацию в результат только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
+Не добавляй организацию только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
         : "";
 
     if (i === 6 && COURT_VECTOR_STORE_ID) {
@@ -781,13 +872,9 @@ ${JSON.stringify(compactCourtArchive)}
 
       for (let archivePass = 0; archivePass < archiveThemes.length; archivePass++) {
         await assertNotCancelled();
-        const alreadyFound = foundOrganizationNames(combined);
+        const alreadyFound = foundOrganizationNames(combined, 300);
         statuses[i].detail = `судебный архив · ${archivePass + 1} / ${archiveThemes.length}`;
-        await progress({
-          phase: "research",
-          step: i + 1,
-          percent: i * 9 + archivePass
-        });
+        await progress({ phase: "research", step: i + 1, percent: i * 9 });
 
         const archiveOutput = normalize(
           await askCourtArchive(
@@ -802,18 +889,17 @@ ${JSON.stringify(compactCourtArchive)}
       }
     }
 
-    const basePasses = i === 5
-      ? Math.min(4, RESEARCH_BASE_PASSES + 1)
-      : RESEARCH_BASE_PASSES;
-
-    for (let pass = 1; pass <= basePasses; pass++) {
+    const branches = STAGE_SEARCH_BRANCHES[i] || [];
+    for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
-      const alreadyFound = foundOrganizationNames(combined);
-      statuses[i].detail = `поиск · проход ${pass} / ${basePasses}`;
+      const before = uniqueResearchCount(combined);
+      const alreadyFound = foundOrganizationNames(combined, 300);
+      statuses[i].detail =
+        `ветка ${branchIndex + 1} / ${branches.length} · ${before} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
-        percent: i * 9 + Math.floor(((pass - 1) / basePasses) * 8)
+        percent: i * 9 + Math.floor((branchIndex / Math.max(1, branches.length)) * 8)
       });
 
       const output = normalize(
@@ -822,30 +908,46 @@ ${JSON.stringify(compactCourtArchive)}
           prompts[i] +
             contract(false) +
             `\n\nРЕГИОН: ${region}
-${researchPassInstruction(pass, alreadyFound)}
+${researchBranchInstruction({
+  stageIndex: i,
+  branch: branches[branchIndex],
+  branchIndex,
+  totalBranches: branches.length,
+  alreadyFound
+})}
 ${compactCourtArchiveContext}
-${i === 6 && COURT_VECTOR_STORE_ID ? "Перед этим этапом уже выполнен file_search по пользовательскому судебному архиву. Используй найденные там организации как кандидатов и перепроверь конкретные дела/факты через web_search и официальные судебные источники." : ""}
-Web search обязателен. Возвращай все найденные в ЭТОМ проходе релевантные организации, а не только несколько лучших.`
+${i === 6 && COURT_VECTOR_STORE_ID
+  ? "До web-поиска по судам уже выполнен file_search по пользовательскому архиву. Перепроверяй найденные там организации и конкретные дела через официальные источники/web_search."
+  : ""}
+Web search обязателен.`
         )
       );
-      appendResearchResult(combined, output, pass);
+      appendResearchResult(combined, output, `branch-${branchIndex + 1}`);
 
+      const after = uniqueResearchCount(combined);
       statuses[i].detail =
-        `проход ${pass} / ${basePasses} · ${rowCount(output)} записей · ${uniqueResearchCount(combined)} уникальных`;
+        `ветка ${branchIndex + 1} / ${branches.length} · +${Math.max(0, after - before)} новых · ${after} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
-        percent: i * 9 + Math.floor((pass / basePasses) * 8)
+        percent: i * 9 + Math.floor(((branchIndex + 1) / Math.max(1, branches.length)) * 8)
       });
     }
 
-    const minimum = RESEARCH_MIN_UNIQUE[i] || 20;
-    if (uniqueResearchCount(combined) < minimum) {
+    let lowYieldStreak = 0;
+    for (
+      let recoveryIndex = 0;
+      recoveryIndex < RESEARCH_MAX_RECOVERY_BRANCHES &&
+      uniqueResearchCount(combined) < RESEARCH_SOFT_TARGET;
+      recoveryIndex++
+    ) {
       await assertNotCancelled();
-      const recoveryPass = basePasses + 1;
-      const alreadyFound = foundOrganizationNames(combined);
+      const before = uniqueResearchCount(combined);
+      const alreadyFound = foundOrganizationNames(combined, 350);
+      const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
+
       statuses[i].detail =
-        `добор · ${uniqueResearchCount(combined)} / цель ${minimum}`;
+        `добор ${recoveryIndex + 1} · ${before} / ориентир ${RESEARCH_SOFT_TARGET}`;
       await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
 
       const recovery = normalize(
@@ -854,19 +956,32 @@ Web search обязателен. Возвращай все найденные в
           prompts[i] +
             contract(false) +
             `\n\nРЕГИОН: ${region}
-${researchPassInstruction(recoveryPass, alreadyFound)}
-${i === 6 && courtArchive.length ? `\nЛОКАЛЬНЫЙ СУДЕБНЫЙ АРХИВ ПОЛЬЗОВАТЕЛЯ — кандидаты по региону:\n${JSON.stringify(courtArchive)}\nПроверяй конкретные дела через web_search; не считай одно упоминание доказательством эксплуатации.` : ""}
-Сейчас найдено только ${uniqueResearchCount(combined)} уникальных кандидатов при ориентире не менее ${minimum}. Это не квота и не повод выдумывать компании: выполни дополнительный широкий web_search и верни только реально подтверждённые НОВЫЕ организации.`
+${researchRecoveryInstruction({
+  theme,
+  alreadyFound,
+  uniqueCount: before,
+  target: RESEARCH_SOFT_TARGET
+})}
+Web search обязателен.`
         )
       );
-      appendResearchResult(combined, recovery, recoveryPass);
+      appendResearchResult(combined, recovery, `recovery-${recoveryIndex + 1}`);
+
+      const after = uniqueResearchCount(combined);
+      const added = Math.max(0, after - before);
+      lowYieldStreak = added <= RESEARCH_LOW_YIELD_THRESHOLD ? lowYieldStreak + 1 : 0;
+
+      if (lowYieldStreak >= 2) {
+        statuses[i].detail =
+          `поисковые ветки исчерпаны · ${after} уникальных`;
+        break;
+      }
     }
 
     parts.push(combined);
-
     finishStep(statuses[i]);
     statuses[i].detail =
-      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных`;
+      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} обязательных веток`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
