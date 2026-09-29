@@ -174,13 +174,27 @@ function contract(final = false) {
 Не добавляй видимое поле/колонку "Источник". Если значения нет — пустая строка; в "__comment" для неподтвержденных сведений явно укажи "не подтверждено" или "не найден".`;
   }
 
-  return `\n\nТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
+  return `\n\nDISCOVERY-ФОРМАТ — ЭТАПЫ 1–9. Верни ТОЛЬКО валидный JSON без markdown:
 {"direct_buyers":[],"intermediaries":[],"leasing":[]}.
-Каждый объект содержит видимые ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, а также служебный "__evidence".
-"__evidence" не является колонкой XLSX и имеет формат:
-{"source_urls":[],"official_site":"","email":"","holding_source":"","notes":[]}.
-Сохраняй в "__evidence" уже найденные при web_search URL первичных/наиболее сильных источников, официальный сайт, публичный e-mail и краткие подтверждающие заметки. Не выполняй отдельный поиск только ради заполнения "__evidence": сохраняй то, что уже встретилось в ходе текущего исследования.
-Не добавляй видимое поле "Источник". Если значения нет — пустая строка. Не выдумывай данные.`;
+
+ЦЕЛЬ ЭТОГО ВЫЗОВА — МАКСИМАЛЬНЫЙ RECALL КАНДИДАТОВ, А НЕ ОБОГАЩЕНИЕ.
+Каждый объект должен содержать ТОЛЬКО:
+{
+  "Организация":"",
+  "Город/район":"",
+  "Техника/сегмент":"",
+  "Основание":"",
+  "__evidence":{"source_urls":[],"notes":[]}
+}
+
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
+- Сначала находи как можно больше разных релевантных организаций по текущей теме и географии.
+- НЕ трать отдельные web_search на ИНН, телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
+- Если ИНН, телефон, сайт или иные реквизиты случайно встретились в основном источнике — можешь упомянуть их только в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
+- Не заполняй поля полной финальной таблицы на этом этапе. Они будут обогащены позже отдельным проходом.
+- Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
+- Возвращай ВСЕ подтверждённые релевантные организации текущей микро-задачи, а не выборку лучших.
+- Не выдумывай организации, URL и факты.`;
 }
 
 function finalBatchContract() {
@@ -324,14 +338,45 @@ function foundOrganizationNames(result, limit = 180) {
 }
 
 function normalizeSearchScope(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value).replace(/\s+/g, " ").trim();
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalizeSearchScope).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    const preferredKeys = [
+      "name",
+      "title",
+      "label",
+      "place",
+      "city",
+      "district",
+      "municipality",
+      "cluster",
+      "territory",
+      "area"
+    ];
+    for (const key of preferredKeys) {
+      const normalized = normalizeSearchScope(value?.[key]);
+      if (normalized) return normalized;
+    }
+    const pieces = Object.values(value)
+      .map(normalizeSearchScope)
+      .filter(Boolean);
+    return [...new Set(pieces)].join(" — ");
+  }
+  return "";
 }
 
 async function discoverRegionSearchScopes(client, region) {
   const result = await askJson(client, {
     input: `Верни ТОЛЬКО JSON без markdown:
-{"places":[],"clusters":[]}.
-Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров. Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
+{"places":["строка"],"clusters":["строка"]}.
+Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров.
+ВАЖНО: каждый элемент places и clusters должен быть ПРОСТОЙ СТРОКОЙ с названием, не объектом и не структурой JSON.
+Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
     model: MODEL,
     maxOutputTokens: 5000,
     webSearch: true,
@@ -373,6 +418,7 @@ function microSearchInstruction({ branch, scope, branchIndex, totalBranches }) {
 Ищи конкретные организации и юридические лица, а не статьи/каталоги сами по себе. Переходи от объявления, вакансии, тендера, проекта, сервиса или грузовладельца к фактической компании/перевозчику, если это предусмотрено инструкцией этапа.
 Не ограничивай ответ несколькими лучшими компаниями: верни ВСЕ подтверждённые релевантные организации, которые удалось выявить в этой микро-задаче.
 A/B/C присваивай после обнаружения. C разрешён при подтверждённом релевантном грузе/процессе, даже если техника ещё не подтверждена.
+НЕ делай отдельные поиски по найденным компаниям ради ИНН, телефона, директора, выручки, численности, email, сайта или холдинга. После идентификации релевантного кандидата продолжай DISCOVERY следующих кандидатов.
 Не выдумывай компании и не заполняй неизвестные поля предположениями.`;
 }
 
@@ -385,6 +431,7 @@ function researchRecoveryInstruction({ theme, alreadyFound, uniqueCount, target,
 НАПРАВЛЕНИЕ: ${theme}
 ГЕОГРАФИЧЕСКИЙ СРЕЗ: ${scope}
 Сделай отдельный web_search по этому направлению и географии. Ищи только реальные НОВЫЕ организации и новые подтверждающие факты. Не выдумывай записи ради достижения ориентира.
+Не делай отдельное обогащение найденных компаний: никаких дополнительных запросов ради ИНН, телефона, директора, выручки, численности, email, сайта или холдинга. Используй поисковый бюджет на следующие новые организации.
 ${known}`;
 }
 
@@ -655,6 +702,20 @@ function diagnosticRowCount(data) {
   );
 }
 
+function diagnosticEvidenceUrlCount(data) {
+  let count = 0;
+  for (const row of [
+    ...(data?.direct_buyers || []),
+    ...(data?.intermediaries || []),
+    ...(data?.leasing || [])
+  ]) {
+    count += Array.isArray(row?.__evidence?.source_urls)
+      ? row.__evidence.source_urls.length
+      : 0;
+  }
+  return count;
+}
+
 function diagnosticToolCounts(response) {
   const counts = {};
   for (const item of response?.output || []) {
@@ -755,6 +816,7 @@ async function askJson(client, {
       web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
       rows_returned: parsed ? diagnosticRowCount(parsed) : null,
+      evidence_urls: parsed ? diagnosticEvidenceUrlCount(parsed) : null,
       parse_error: parseError || null
     }));
 
@@ -1057,6 +1119,10 @@ export async function runResearchPipeline({ job, apiKey }) {
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
   const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
   const researchScopes = await discoverRegionSearchScopes(client, region);
+  console.log("[RESEARCH_SCOPES] " + JSON.stringify({
+    region,
+    scopes: researchScopes
+  }));
   for (let i = 0; i < researchStageLimit; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
