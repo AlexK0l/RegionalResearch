@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
+import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
   createResearchSession,
@@ -714,6 +715,8 @@ export async function runResearchPipeline({ job, apiKey }) {
   await progress({ phase: "starting", percent: 0 });
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
   const parts = [];
+  const courtArchive = courtArchiveCandidates(region, 180);
+  const courtArchiveMeta = courtArchiveStats();
 
   for (let i = 0; i < 9; i++) {
     await assertNotCancelled();
@@ -727,6 +730,12 @@ export async function runResearchPipeline({ job, apiKey }) {
     for (let pass = 1; pass <= basePasses; pass++) {
       await assertNotCancelled();
       const alreadyFound = foundOrganizationNames(combined);
+      const courtArchiveContext = i === 6 && courtArchive.length
+        ? `\n\nЛОКАЛЬНЫЙ СУДЕБНЫЙ АРХИВ ПОЛЬЗОВАТЕЛЯ:
+Архив содержит ${courtArchiveMeta.documents} судебных документов; по выбранному региону индекс дал следующие организации-кандидаты:
+${JSON.stringify(courtArchive)}
+Используй этот список как отдельный источник discovery. Для релевантных кандидатов найди и проверь конкретный судебный акт через web_search/официальный судебный источник: номер дела, событие, роль организации, транспорт/полуприцеп/тягач, госномер/VIN при наличии, статью КоАП, перегруз/осевую нагрузку/весогабаритный контроль, лизинг или спор по технике. Само присутствие названия в архивном индексе не является достаточным доказательством A/B.`
+        : "";
       statuses[i].detail = `поиск · проход ${pass} / ${basePasses}`;
       await progress({
         phase: "research",
@@ -741,6 +750,7 @@ export async function runResearchPipeline({ job, apiKey }) {
             contract(false) +
             `\n\nРЕГИОН: ${region}
 ${researchPassInstruction(pass, alreadyFound)}
+${courtArchiveContext}
 Web search обязателен. Возвращай все найденные в ЭТОМ проходе релевантные организации, а не только несколько лучших.`
         )
       );
@@ -771,6 +781,7 @@ Web search обязателен. Возвращай все найденные в
             contract(false) +
             `\n\nРЕГИОН: ${region}
 ${researchPassInstruction(recoveryPass, alreadyFound)}
+${i === 6 && courtArchive.length ? `\nЛОКАЛЬНЫЙ СУДЕБНЫЙ АРХИВ ПОЛЬЗОВАТЕЛЯ — кандидаты по региону:\n${JSON.stringify(courtArchive)}\nПроверяй конкретные дела через web_search; не считай одно упоминание доказательством эксплуатации.` : ""}
 Сейчас найдено только ${uniqueResearchCount(combined)} уникальных кандидатов при ориентире не менее ${minimum}. Это не квота и не повод выдумывать компании: выполни дополнительный широкий web_search и верни только реально подтверждённые НОВЫЕ организации.`
         )
       );
