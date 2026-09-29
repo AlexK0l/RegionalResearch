@@ -22,17 +22,28 @@ function significantRegionTokens(region) {
 
 function loadIndex() {
   if (cache) return cache;
-  const text = gunzipSync(Buffer.from(COURT_INDEX_GZIP_BASE64, "base64")).toString("utf8");
-  cache = text
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const [court, organizations = ""] = line.split("\t");
-      return {
-        court,
-        organizations: organizations.split("|").map((x) => x.trim()).filter(Boolean)
-      };
-    });
+
+  try {
+    const packed = Buffer.from(COURT_INDEX_GZIP_BASE64, "base64");
+    const text = gunzipSync(packed).toString("utf8");
+    cache = text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [court, organizations = ""] = line.split("\t");
+        return {
+          court,
+          organizations: organizations.split("|").map((x) => x.trim()).filter(Boolean)
+        };
+      });
+  } catch (error) {
+    console.error(
+      "Court archive compact index is unavailable; continuing without compact fallback:",
+      error?.message || error
+    );
+    cache = [];
+  }
+
   return cache;
 }
 
