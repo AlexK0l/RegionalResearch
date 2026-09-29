@@ -334,7 +334,8 @@ async function discoverRegionSearchScopes(client, region) {
 Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров. Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
     model: MODEL,
     maxOutputTokens: 5000,
-    webSearch: true
+    webSearch: true,
+    diagnosticLabel: `география региона | ${region}`
   });
 
   const values = [
@@ -402,7 +403,8 @@ ${microSearchInstruction({
 })}
 ${extraContext}
 Web search обязателен.`,
-      RESEARCH_MICRO_MAX_OUTPUT_TOKENS
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+      `этап ${stageIndex + 1} | ветка ${branchIndex + 1}/${branches.length} | ${branch} | ${scope}`
     )
   );
 
@@ -645,12 +647,39 @@ function applyFinalQa(records, qa) {
   return result;
 }
 
+function diagnosticRowCount(data) {
+  return (
+    (Array.isArray(data?.direct_buyers) ? data.direct_buyers.length : 0) +
+    (Array.isArray(data?.intermediaries) ? data.intermediaries.length : 0) +
+    (Array.isArray(data?.leasing) ? data.leasing.length : 0)
+  );
+}
+
+function diagnosticToolCounts(response) {
+  const counts = {};
+  for (const item of response?.output || []) {
+    const type = String(item?.type || "unknown");
+    if (!type.endsWith("_call")) continue;
+    counts[type] = (counts[type] || 0) + 1;
+  }
+  return counts;
+}
+
+function compactDiagnosticQuery(input, explicitLabel = "") {
+  if (explicitLabel) return explicitLabel;
+  return String(input || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 320);
+}
+
 async function askJson(client, {
   input,
   model = MODEL,
   maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS,
   webSearch = false,
-  fileSearchVectorStoreId = ""
+  fileSearchVectorStoreId = "",
+  diagnosticLabel = ""
 }) {
   const request = {
     model,
@@ -674,19 +703,71 @@ async function askJson(client, {
   const requestOptions = client.__jobSignal
     ? { signal: client.__jobSignal }
     : undefined;
-  const response = await client.responses.create(request, requestOptions);
-  if (response.status && response.status !== "completed") {
-    throw new Error(`OpenAI response status: ${response.status}`);
+  const startedAt = Date.now();
+  const query = compactDiagnosticQuery(input, diagnosticLabel);
+
+  try {
+    const response = await client.responses.create(request, requestOptions);
+    const usage = response?.usage || {};
+    const stopReason =
+      response?.incomplete_details?.reason ||
+      (response?.status === "completed" ? "completed" : response?.status || "unknown");
+
+    let parsed = null;
+    let parseError = "";
+    try {
+      parsed = parseJson(response.output_text || "");
+    } catch (error) {
+      parseError = error?.message || "parse error";
+    }
+
+    console.log("[OPENAI_DIAG] " + JSON.stringify({
+      query,
+      model,
+      web_search: webSearch,
+      file_search: Boolean(fileSearchVectorStoreId),
+      max_output_tokens: maxOutputTokens,
+      status: response?.status || "",
+      stop_reason: stopReason,
+      duration_ms: Date.now() - startedAt,
+      input_tokens: usage?.input_tokens ?? null,
+      output_tokens: usage?.output_tokens ?? null,
+      reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
+      cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
+      tool_calls: diagnosticToolCounts(response),
+      output_chars: String(response?.output_text || "").length,
+      rows_returned: parsed ? diagnosticRowCount(parsed) : null,
+      parse_error: parseError || null
+    }));
+
+    if (response.status && response.status !== "completed") {
+      throw new Error(`OpenAI response status: ${response.status}; reason: ${stopReason}`);
+    }
+    if (parseError) throw new Error(parseError);
+    return parsed;
+  } catch (error) {
+    console.error("[OPENAI_DIAG] " + JSON.stringify({
+      query,
+      model,
+      web_search: webSearch,
+      file_search: Boolean(fileSearchVectorStoreId),
+      max_output_tokens: maxOutputTokens,
+      status: "error",
+      stop_reason: client.__jobSignal?.aborted ? "cancelled" : "error",
+      duration_ms: Date.now() - startedAt,
+      error: error?.message || String(error)
+    }));
+    throw error;
   }
-  return parseJson(response.output_text || "");
 }
 
-function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS) {
+function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS, diagnosticLabel = "") {
   return askJson(client, {
     input,
     model: MODEL,
     maxOutputTokens,
-    webSearch: true
+    webSearch: true,
+    diagnosticLabel
   });
 }
 
@@ -919,6 +1000,8 @@ export async function runResearchPipeline({ job, apiKey }) {
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
+  const diagnosticMode = job.mode === "test12";
+  const researchStageLimit = diagnosticMode ? 2 : 9;
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -956,7 +1039,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
   const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
   const researchScopes = await discoverRegionSearchScopes(client, region);
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < researchStageLimit; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
 
@@ -1068,7 +1151,8 @@ ${researchRecoveryInstruction({
   scope
 })}
 Web search обязателен.`,
-          RESEARCH_MICRO_MAX_OUTPUT_TOKENS
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+          `этап ${i + 1} | recovery ${recoveryIndex + 1} | ${theme} | ${scope}`
         )
       );
 
@@ -1102,6 +1186,28 @@ Web search обязателен.`,
     statuses[i].detail =
       `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток × ${researchScopes.length} микро-поиска`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
+  }
+
+  if (diagnosticMode) {
+    const totalRows = parts.reduce((sum, part) => sum + rowCount(part), 0);
+    const combinedTest = emptyResearchResult();
+    for (const part of parts) appendResearchResult(combinedTest, part, "test-summary");
+    const unique = uniqueResearchCount(combinedTest);
+    await progress({ phase: "completed", step: 2, percent: 100 });
+    return {
+      mode: "test12",
+      result: combinedTest,
+      region,
+      counts: {
+        total_rows: totalRows,
+        unique,
+        stage1_rows: rowCount(parts[0] || emptyResearchResult()),
+        stage1_unique: uniqueResearchCount(parts[0] || emptyResearchResult()),
+        stage2_rows: rowCount(parts[1] || emptyResearchResult()),
+        stage2_unique: uniqueResearchCount(parts[1] || emptyResearchResult())
+      },
+      contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
+    };
   }
 
   await assertNotCancelled();
@@ -1466,6 +1572,7 @@ ${JSON.stringify(qaRecords)}`,
   });
 
   return {
+    mode: "full",
     result: finalResult,
     region,
     counts: {
