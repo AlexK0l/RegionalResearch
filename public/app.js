@@ -41,7 +41,11 @@ function apiUrl(url){
 async function api(url,options={}){
   const r=await fetch(apiUrl(url),{...options,headers:{...headers(Boolean(options.body)),...(options.headers||{})}});
   const data=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data.error||("HTTP "+r.status));
+  if(!r.ok){
+    const err=new Error(data.error||("HTTP "+r.status));
+    err.status=r.status;
+    throw err;
+  }
   return data;
 }
 
@@ -74,6 +78,23 @@ function renderSteps(statuses){
     if(item.status==="done") li.classList.add("done");
     li.innerHTML='<span class="dot">'+item.step+'</span><span>'+item.name+'</span><span class="state">'+stepStateText(item)+'</span>';
     e.steps.append(li);
+  }
+}
+
+function resetIdleState(){
+  currentJobId="";
+  localStorage.removeItem("sat_current_job");
+  lastProgress=null;
+  if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
+  e.error.hidden=true;
+  e.error.textContent="";
+  e.resultCard.hidden=true;
+  e.contactBox.hidden=true;
+  e.progressCard.hidden=true;
+  e.cancel.disabled=true;
+  if(backendReady)e.start.disabled=false;
+  if(config?.steps){
+    renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
   }
 }
 
@@ -138,6 +159,10 @@ async function poll(){
 
     e.start.disabled=true;e.cancel.disabled=false;
   }catch(err){
+    if(err?.status===404){
+      resetIdleState();
+      return;
+    }
     e.error.hidden=false;e.error.textContent=err.message;
   }
 }
@@ -231,9 +256,8 @@ timerTick=setInterval(()=>{
     config=await api("/api/config");
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
     if(currentJobId){
-      e.progressCard.hidden=false;
       await poll();
-      if(!pollTimer)pollTimer=setInterval(poll,2000);
+      if(currentJobId&&!pollTimer)pollTimer=setInterval(poll,2000);
     }
   }catch(err){
     e.error.hidden=false;e.error.textContent="Не удалось загрузить конфигурацию: "+err.message;
