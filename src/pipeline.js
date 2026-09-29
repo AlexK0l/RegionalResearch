@@ -671,7 +671,10 @@ async function askJson(client, {
     request.tool_choice = "required";
   }
 
-  const response = await client.responses.create(request);
+  const requestOptions = client.__jobSignal
+    ? { signal: client.__jobSignal }
+    : undefined;
+  const response = await client.responses.create(request, requestOptions);
   if (response.status && response.status !== "completed") {
     throw new Error(`OpenAI response status: ${response.status}`);
   }
@@ -913,6 +916,8 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
+  const jobSignal = job.abortController?.signal;
+  client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
   if (!region) throw new Error("Region is required");
 
@@ -926,8 +931,24 @@ export async function runResearchPipeline({ job, apiKey }) {
   };
 
   const assertNotCancelled = async () => {
-    if (job.cancelled) throw new Error("JOB_CANCELLED");
+    if (job.cancelled || jobSignal?.aborted) throw new Error("JOB_CANCELLED");
   };
+
+  const abortableSleep = (ms) =>
+    new Promise((resolve, reject) => {
+      if (jobSignal?.aborted) return reject(new Error("JOB_CANCELLED"));
+      const timer = setTimeout(resolve, ms);
+      if (jobSignal) {
+        jobSignal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(new Error("JOB_CANCELLED"));
+          },
+          { once: true }
+        );
+      }
+    });
 
   await progress({ phase: "starting", percent: 0 });
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
@@ -1264,6 +1285,13 @@ ${JSON.stringify(qaRecords)}`,
     if (googleCompanies.length) {
       browser = await launchResearchBrowser();
       session = await createResearchSession(browser);
+      if (jobSignal) {
+        jobSignal.addEventListener(
+          "abort",
+          () => browser?.close().catch(() => {}),
+          { once: true }
+        );
+      }
     }
 
     for (let i = 0; i < googleCompanies.length; i++) {
@@ -1284,7 +1312,7 @@ ${JSON.stringify(qaRecords)}`,
           contactCompany: "",
           contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
         });
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await abortableSleep(2000);
       }
 
       const row = googleCompanies[i];
@@ -1309,7 +1337,8 @@ ${JSON.stringify(qaRecords)}`,
           region,
           needPhone,
           needLeader,
-          isCancelled: () => Boolean(job.cancelled)
+          isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
+          signal: jobSignal
         });
       } catch (error) {
         contact = {
@@ -1344,7 +1373,8 @@ ${JSON.stringify(qaRecords)}`,
             needPhone,
             needLeader,
             forceFallback: true,
-            isCancelled: () => Boolean(job.cancelled)
+            isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
+          signal: jobSignal
           });
           if (contact.status === "ok") solRecovered++;
         } catch (error) {
@@ -1375,7 +1405,8 @@ ${JSON.stringify(qaRecords)}`,
               row,
               region,
               phone: normalized,
-              isCancelled: () => Boolean(job.cancelled)
+              isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
+          signal: jobSignal
             });
             if (!verification?.confirmed) continue;
           }
@@ -1415,7 +1446,7 @@ ${JSON.stringify(qaRecords)}`,
       });
 
       if (i < googleCompanies.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await abortableSleep(5000);
       }
     }
   } finally {
