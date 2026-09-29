@@ -923,6 +923,14 @@ function missingResearchFields(row) {
   if (isMissingText(holding) && (!manager || /не подтвержд/i.test(manager))) {
     gaps.push("холдинг/УК/группа");
   }
+
+  if (isMissingText(row?.["Выручка последнего подтвержденного года"])) {
+    gaps.push("выручка последнего подтвержденного года");
+  }
+  if (isMissingText(row?.["Численность"])) {
+    gaps.push("численность");
+  }
+
   return [...new Set(gaps)];
 }
 
