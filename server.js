@@ -208,7 +208,8 @@ app.get("/api/jobs/:id", (req, res) => {
           region: job.result?.region,
           counts: job.result?.counts,
           contacts: job.result?.contacts,
-          mode: job.result?.mode || job.mode || "full"
+          mode: job.result?.mode || job.mode || "full",
+          qualified_companies: job.result?.qualified_companies || []
         }
       : null,
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
