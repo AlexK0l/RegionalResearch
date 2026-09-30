@@ -144,6 +144,92 @@ function parseJson(text) {
   }
 }
 
+function responseStopReason(response) {
+  return (
+    response?.incomplete_details?.reason ||
+    (response?.status === "completed" ? "completed" : response?.status || "unknown")
+  );
+}
+
+function createGoogleAiDiagnostic({ operation, row, phone = "" }) {
+  return {
+    operation,
+    company: String(row?.["Организация"] || ""),
+    inn: String(row?.["ИНН"] || ""),
+    phone: String(phone || ""),
+    started_at: Date.now(),
+    responses: 0,
+    computer_calls: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    cached_input_tokens: 0,
+    models: [],
+    fallback_used: false,
+    challenge: false,
+    final_status: "",
+    final_reason: ""
+  };
+}
+
+function recordComputerResponse({ diagnostic, response, model, phase, turn, startedAt, promptChars = null }) {
+  const usage = response?.usage || {};
+  const computerCalls = (response?.output || []).filter(
+    (item) => item?.type === "computer_call"
+  ).length;
+
+  diagnostic.responses++;
+  diagnostic.computer_calls += computerCalls;
+  diagnostic.input_tokens += usage?.input_tokens || 0;
+  diagnostic.output_tokens += usage?.output_tokens || 0;
+  diagnostic.reasoning_tokens += usage?.output_tokens_details?.reasoning_tokens || 0;
+  diagnostic.cached_input_tokens += usage?.input_tokens_details?.cached_tokens || 0;
+  if (!diagnostic.models.includes(model)) diagnostic.models.push(model);
+  if (model === COMPUTER_FALLBACK_MODEL && COMPUTER_FALLBACK_MODEL !== COMPUTER_MODEL) {
+    diagnostic.fallback_used = true;
+  }
+
+  console.log("[GOOGLE_AI_DIAG] " + JSON.stringify({
+    operation: diagnostic.operation,
+    company: diagnostic.company,
+    inn: diagnostic.inn,
+    model,
+    phase,
+    turn,
+    prompt_chars: promptChars,
+    status: response?.status || "",
+    stop_reason: responseStopReason(response),
+    duration_ms: Date.now() - startedAt,
+    input_tokens: usage?.input_tokens ?? null,
+    output_tokens: usage?.output_tokens ?? null,
+    reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
+    cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
+    computer_calls: computerCalls,
+    output_chars: String(response?.output_text || "").length
+  }));
+}
+
+function logGoogleAiSummary(diagnostic) {
+  console.log("[GOOGLE_AI_SUMMARY] " + JSON.stringify({
+    operation: diagnostic.operation,
+    company: diagnostic.company,
+    inn: diagnostic.inn,
+    phone: diagnostic.phone || undefined,
+    status: diagnostic.final_status || "unknown",
+    reason: diagnostic.final_reason || "",
+    duration_ms: Date.now() - diagnostic.started_at,
+    responses: diagnostic.responses,
+    computer_calls: diagnostic.computer_calls,
+    input_tokens: diagnostic.input_tokens,
+    output_tokens: diagnostic.output_tokens,
+    reasoning_tokens: diagnostic.reasoning_tokens,
+    cached_input_tokens: diagnostic.cached_input_tokens,
+    models: diagnostic.models,
+    fallback_used: diagnostic.fallback_used,
+    challenge: diagnostic.challenge
+  }));
+}
+
 function agentPrompt(row, region, { needPhone, needLeader }) {
   const org = row["Организация"] || "";
   const inn = row["ИНН"] || "";
@@ -218,7 +304,16 @@ Return ONLY valid JSON:
 }`;
 }
 
-async function runComputerJsonOnce({ client, page, prompt, unavailableResult, model, signal }) {
+async function runComputerJsonOnce({
+  client,
+  page,
+  prompt,
+  unavailableResult,
+  model,
+  signal,
+  diagnostic
+}) {
+  let startedAt = Date.now();
   let response = await client.responses.create(
     {
       model,
@@ -228,6 +323,15 @@ async function runComputerJsonOnce({ client, page, prompt, unavailableResult, mo
     },
     signal ? { signal } : undefined
   );
+  recordComputerResponse({
+    diagnostic,
+    response,
+    model,
+    phase: "initial",
+    turn: 0,
+    startedAt,
+    promptChars: String(prompt || "").length
+  });
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const call = (response.output || []).find((item) => item.type === "computer_call");
@@ -240,9 +344,14 @@ async function runComputerJsonOnce({ client, page, prompt, unavailableResult, mo
       await page.goBack({ waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => {});
     }
 
-    if (await hasGoogleChallenge(page)) return unavailableResult;
+    if (await hasGoogleChallenge(page)) {
+      diagnostic.challenge = true;
+      diagnostic.final_reason = "google_challenge";
+      return unavailableResult;
+    }
 
     const screenshot = await page.screenshot({ type: "png" });
+    startedAt = Date.now();
     response = await client.responses.create(
       {
         model,
@@ -262,12 +371,22 @@ async function runComputerJsonOnce({ client, page, prompt, unavailableResult, mo
       },
       signal ? { signal } : undefined
     );
+    recordComputerResponse({
+      diagnostic,
+      response,
+      model,
+      phase: "computer_turn",
+      turn: turn + 1,
+      startedAt,
+      promptChars: null
+    });
   }
 
+  diagnostic.final_reason = "computer_turn_limit";
   return { ...unavailableResult, note: "Computer-use turn limit reached" };
 }
 
-async function runComputerJson({ client, page, prompt, unavailableResult, forceFallback = false, signal }) {
+async function runComputerJson({ client, page, prompt, unavailableResult, forceFallback = false, signal, diagnostic }) {
   if (forceFallback) {
     try {
       return await runComputerJsonOnce({
@@ -276,7 +395,8 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
         prompt,
         unavailableResult,
         model: COMPUTER_FALLBACK_MODEL,
-        signal
+        signal,
+        diagnostic
       });
     } catch (error) {
       if (signal?.aborted || error?.name === "AbortError") {
@@ -297,7 +417,8 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       prompt,
       unavailableResult,
       model: COMPUTER_MODEL,
-      signal
+      signal,
+      diagnostic
     });
   } catch (error) {
     if (signal?.aborted || error?.name === "AbortError") {
@@ -317,7 +438,8 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       prompt,
       unavailableResult,
       model: COMPUTER_FALLBACK_MODEL,
-      signal
+      signal,
+      diagnostic
     });
   } catch (error) {
     if (signal?.aborted || error?.name === "AbortError") {
@@ -334,52 +456,95 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
-  const page = session.page;
-  await resetGooglePage(page, `${phone} ${row["ИНН"] || ""}`);
-
-  if (await hasGoogleChallenge(page)) {
-    return { confirmed: false, phone, note: "Google challenge/CAPTCHA" };
-  }
-
-  return await runComputerJson({
-    client,
-    page,
-    prompt: phoneVerificationPrompt({ row, region, phone }),
-    unavailableResult: { confirmed: false, phone, note: "verification unavailable" },
-    signal
+  const diagnostic = createGoogleAiDiagnostic({
+    operation: "verify_phone",
+    row,
+    phone
   });
+
+  try {
+    const page = session.page;
+    await resetGooglePage(page, `${phone} ${row["ИНН"] || ""}`);
+
+    if (await hasGoogleChallenge(page)) {
+      diagnostic.challenge = true;
+      diagnostic.final_status = "not_confirmed";
+      diagnostic.final_reason = "google_challenge";
+      return { confirmed: false, phone, note: "Google challenge/CAPTCHA" };
+    }
+
+    const result = await runComputerJson({
+      client,
+      page,
+      prompt: phoneVerificationPrompt({ row, region, phone }),
+      unavailableResult: { confirmed: false, phone, note: "verification unavailable" },
+      signal,
+      diagnostic
+    });
+    diagnostic.final_status = result?.confirmed ? "confirmed" : "not_confirmed";
+    if (!diagnostic.final_reason) {
+      diagnostic.final_reason = result?.note || (result?.confirmed ? "confirmed" : "not_confirmed");
+    }
+    return result;
+  } catch (error) {
+    diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
+    diagnostic.final_reason = error?.message || String(error);
+    throw error;
+  } finally {
+    logGoogleAiSummary(diagnostic);
+  }
 }
 
 export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, forceFallback = false, isCancelled, signal }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
-  const queryParts = [
-    row["Организация"],
-    row["ИНН"] ? `ИНН ${row["ИНН"]}` : "",
-    needPhone ? "контакты телефон" : "",
-    needLeader ? "руководитель директор" : ""
-  ].filter(Boolean);
-
-  const page = session.page;
-  await resetGooglePage(page, queryParts.join(" "));
-
-  if (await hasGoogleChallenge(page)) {
-    return { status: "unavailable", phone: "", leader: "", official_site: "", note: "Google challenge/CAPTCHA" };
-  }
-
-  return await runComputerJson({
-    client,
-    page,
-    prompt: agentPrompt(row, region, { needPhone, needLeader }),
-    forceFallback,
-    signal,
-    unavailableResult: {
-      status: "unavailable",
-      phone: "",
-      leader: "",
-      official_site: "",
-      note: "Computer-use turn limit reached or unavailable"
-    }
+  const diagnostic = createGoogleAiDiagnostic({
+    operation: forceFallback ? "enrich_company_sol_retry" : "enrich_company",
+    row
   });
+
+  try {
+    const queryParts = [
+      row["Организация"],
+      row["ИНН"] ? `ИНН ${row["ИНН"]}` : "",
+      needPhone ? "контакты телефон" : "",
+      needLeader ? "руководитель директор" : ""
+    ].filter(Boolean);
+
+    const page = session.page;
+    await resetGooglePage(page, queryParts.join(" "));
+
+    if (await hasGoogleChallenge(page)) {
+      diagnostic.challenge = true;
+      diagnostic.final_status = "unavailable";
+      diagnostic.final_reason = "google_challenge";
+      return { status: "unavailable", phone: "", leader: "", official_site: "", note: "Google challenge/CAPTCHA" };
+    }
+
+    const result = await runComputerJson({
+      client,
+      page,
+      prompt: agentPrompt(row, region, { needPhone, needLeader }),
+      forceFallback,
+      signal,
+      diagnostic,
+      unavailableResult: {
+        status: "unavailable",
+        phone: "",
+        leader: "",
+        official_site: "",
+        note: "Computer-use turn limit reached or unavailable"
+      }
+    });
+    diagnostic.final_status = result?.status || "unknown";
+    if (!diagnostic.final_reason) diagnostic.final_reason = result?.note || result?.status || "";
+    return result;
+  } catch (error) {
+    diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
+    diagnostic.final_reason = error?.message || String(error);
+    throw error;
+  } finally {
+    logGoogleAiSummary(diagnostic);
+  }
 }
