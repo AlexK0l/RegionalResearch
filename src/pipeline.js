@@ -154,6 +154,86 @@ const IDENTITY_CONCURRENCY = Math.max(
 );
 const IDENTITY_MAX_OUTPUT_TOKENS = Math.min(6000, OPENAI_MAX_OUTPUT_TOKENS);
 
+const DISCOVERY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    direct_buyers: { type: "array", items: { "$ref": "#/$defs/company" } },
+    intermediaries: { type: "array", items: { "$ref": "#/$defs/company" } },
+    leasing: { type: "array", items: { "$ref": "#/$defs/company" } }
+  },
+  required: ["direct_buyers", "intermediaries", "leasing"],
+  "$defs": {
+    company: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        "Организация": { type: "string" },
+        "Город/район": { type: "string" },
+        "Техника/сегмент": { type: "string" },
+        "Основание": { type: "string" },
+        "__evidence": {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            source_urls: { type: "array", items: { type: "string" } },
+            notes: { type: "array", items: { type: "string" } }
+          },
+          required: ["source_urls", "notes"]
+        }
+      },
+      required: [
+        "Организация",
+        "Город/район",
+        "Техника/сегмент",
+        "Основание",
+        "__evidence"
+      ]
+    }
+  }
+};
+
+const IDENTITY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    entities: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidate_ids: { type: "array", items: { type: "string" } },
+          confirmed_inn: { type: "string" },
+          legal_name: { type: "string" },
+          city: { type: "string" },
+          source_urls: { type: "array", items: { type: "string" } },
+          note: { type: "string" }
+        },
+        required: [
+          "candidate_ids",
+          "confirmed_inn",
+          "legal_name",
+          "city",
+          "source_urls",
+          "note"
+        ]
+      }
+    }
+  },
+  required: ["entities"]
+};
+
+const GEO_SCOPE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    places: { type: "array", items: { type: "string" } },
+    clusters: { type: "array", items: { type: "string" } }
+  },
+  required: ["places", "clusters"]
+};
+
 function parseJson(text) {
   const cleaned = String(text || "")
     .trim()
@@ -416,6 +496,8 @@ async function discoverRegionSearchScopes(client, region) {
     model: MODEL,
     maxOutputTokens: 5000,
     webSearch: true,
+    responseSchema: GEO_SCOPE_SCHEMA,
+    schemaName: "region_search_scopes",
     diagnosticLabel: `география региона | ${region}`
   });
 
@@ -741,6 +823,8 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
           model: TARGETED_SEARCH_MODEL,
           maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
           webSearch: true,
+          responseSchema: IDENTITY_SCHEMA,
+          schemaName: "identity_resolution",
           diagnosticLabel:
             `identity | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`
         })
@@ -1009,13 +1093,26 @@ async function askJson(client, {
   maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS,
   webSearch = false,
   fileSearchVectorStoreId = "",
-  diagnosticLabel = ""
+  diagnosticLabel = "",
+  responseSchema = null,
+  schemaName = "structured_output",
+  allowJsonRepair = true
 }) {
   const request = {
     model,
     input,
     max_output_tokens: maxOutputTokens
   };
+  if (responseSchema) {
+    request.text = {
+      format: {
+        type: "json_schema",
+        name: schemaName,
+        strict: true,
+        schema: responseSchema
+      }
+    };
+  }
   const tools = [];
   if (webSearch) tools.push({ type: "web_search" });
   if (fileSearchVectorStoreId) {
@@ -1045,10 +1142,72 @@ async function askJson(client, {
 
     let parsed = null;
     let parseError = "";
+    let repaired = false;
+    let repairUsage = null;
     try {
       parsed = parseJson(response.output_text || "");
     } catch (error) {
       parseError = error?.message || "parse error";
+
+      if (
+        allowJsonRepair &&
+        response.status === "completed" &&
+        String(response.output_text || "").trim()
+      ) {
+        try {
+          const repairStartedAt = Date.now();
+          const repairRequest = {
+            model,
+            input:
+              "Исправь ТОЛЬКО синтаксис/структуру следующего ответа JSON. " +
+              "Не добавляй новые факты, компании, URL или выводы. " +
+              "Сохрани всю информацию исходного ответа, которую можно однозначно восстановить.\n\n" +
+              String(response.output_text || ""),
+            max_output_tokens: Math.min(maxOutputTokens, 12000)
+          };
+          if (responseSchema) {
+            repairRequest.text = {
+              format: {
+                type: "json_schema",
+                name: schemaName + "_repair",
+                strict: true,
+                schema: responseSchema
+              }
+            };
+          } else {
+            repairRequest.text = { format: { type: "json_object" } };
+          }
+
+          const repairedResponse = await client.responses.create(
+            repairRequest,
+            requestOptions
+          );
+          if (!repairedResponse.status || repairedResponse.status === "completed") {
+            parsed = parseJson(repairedResponse.output_text || "");
+            repaired = true;
+            parseError = "";
+            repairUsage = repairedResponse?.usage || null;
+            console.log("[OPENAI_JSON_REPAIR] " + JSON.stringify({
+              query,
+              model,
+              schema_name: responseSchema ? schemaName : null,
+              duration_ms: Date.now() - repairStartedAt,
+              input_tokens: repairUsage?.input_tokens ?? null,
+              output_tokens: repairUsage?.output_tokens ?? null,
+              reasoning_tokens: repairUsage?.output_tokens_details?.reasoning_tokens ?? null,
+              rows_recovered: diagnosticRowCount(parsed)
+            }));
+          }
+        } catch (repairError) {
+          console.error("[OPENAI_JSON_REPAIR] " + JSON.stringify({
+            query,
+            model,
+            schema_name: responseSchema ? schemaName : null,
+            status: "error",
+            error: repairError?.message || String(repairError)
+          }));
+        }
+      }
     }
 
     console.log("[OPENAI_DIAG] " + JSON.stringify({
@@ -1056,6 +1215,8 @@ async function askJson(client, {
       model,
       web_search: webSearch,
       file_search: Boolean(fileSearchVectorStoreId),
+      structured_output: Boolean(responseSchema),
+      schema_name: responseSchema ? schemaName : null,
       max_output_tokens: maxOutputTokens,
       status: response?.status || "",
       stop_reason: stopReason,
@@ -1069,6 +1230,9 @@ async function askJson(client, {
       output_chars: String(response?.output_text || "").length,
       rows_returned: parsed ? diagnosticRowCount(parsed) : null,
       evidence_urls: parsed ? diagnosticEvidenceUrlCount(parsed) : null,
+      json_repaired: repaired,
+      repair_input_tokens: repairUsage?.input_tokens ?? null,
+      repair_output_tokens: repairUsage?.output_tokens ?? null,
       parse_error: parseError || null
     }));
 
@@ -1083,6 +1247,8 @@ async function askJson(client, {
       model,
       web_search: webSearch,
       file_search: Boolean(fileSearchVectorStoreId),
+      structured_output: Boolean(responseSchema),
+      schema_name: responseSchema ? schemaName : null,
       max_output_tokens: maxOutputTokens,
       status: "error",
       stop_reason: client.__jobSignal?.aborted ? "cancelled" : "error",
@@ -1099,6 +1265,8 @@ function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS
     model: MODEL,
     maxOutputTokens,
     webSearch: true,
+    responseSchema: DISCOVERY_SCHEMA,
+    schemaName: "research_discovery",
     diagnosticLabel
   });
 }
