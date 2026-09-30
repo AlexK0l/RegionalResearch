@@ -18,6 +18,7 @@ const e={
   error:document.querySelector("#errorBox"),
   resultCard:document.querySelector("#resultCard"),
   resultSummary:document.querySelector("#resultSummary"),
+  testCompanies:document.querySelector("#testCompanies"),
   download:document.querySelector("#downloadBtn")
 };
 
@@ -91,6 +92,8 @@ function resetIdleState(){
   e.error.textContent="";
   e.resultCard.hidden=true;
   e.download.hidden=false;
+  e.testCompanies.hidden=true;
+  e.testCompanies.innerHTML="";
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
@@ -132,6 +135,43 @@ function setProgress(p){
   }
 }
 
+function escapeHtml(value){
+  return String(value??"")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+function renderQualifiedCompanies(companies){
+  const rows=Array.isArray(companies)?companies:[];
+  if(!rows.length){
+    e.testCompanies.hidden=false;
+    e.testCompanies.innerHTML='<p class="note">После проверки evidence ни одна компания не прошла строгий фильтр A/B.</p>';
+    return;
+  }
+
+  const body=rows.map(item=>{
+    const stages=(item.stages||[]).map(x=>"Этап "+x).join(", ");
+    return '<tr>'+
+      '<td><span class="grade grade-'+escapeHtml(item.grade)+'">'+escapeHtml(item.grade)+'</span></td>'+
+      '<td><strong>'+escapeHtml(item.organization)+'</strong></td>'+
+      '<td>'+escapeHtml(item.city||"—")+'</td>'+
+      '<td>'+escapeHtml(item.reason||"")+'</td>'+
+      '<td>'+escapeHtml(stages||"—")+'</td>'+
+    '</tr>';
+  }).join("");
+
+  e.testCompanies.hidden=false;
+  e.testCompanies.innerHTML=
+    '<div class="test-companies-head"><strong>Компании, прошедшие строгую проверку релевантности</strong><span>'+rows.length+'</span></div>'+
+    '<div class="table-wrap"><table class="qualified-table">'+
+      '<thead><tr><th>Класс</th><th>Компания</th><th>Город/район</th><th>Почему подходит</th><th>Найдена</th></tr></thead>'+
+      '<tbody>'+body+'</tbody>'+
+    '</table></div>';
+}
+
 async function poll(){
   if(!currentJobId)return;
   try{
@@ -146,11 +186,16 @@ async function poll(){
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
       if(r.mode==="test12"){
         e.resultSummary.textContent=
-          "Тест этапов 1–2 завершён. Записей: "+(c.total_rows||0)+
-          ", уникальных: "+(c.unique||0)+
-          ". Подробности каждого API-запроса записаны в Render Logs с префиксом [OPENAI_DIAG].";
+          "Тест этапов 1–2 завершён. Сырых находок: "+(c.total_rows||0)+
+          ", условно уникальных до identity resolution: "+(c.unique||0)+
+          ", A/B-кандидатов до проверки: "+(c.qualification_candidates||0)+
+          ", прошли строгую проверку: "+(c.qualified||0)+
+          ", исключено после проверки: "+(c.excluded_after_qualification||0)+".";
+        renderQualifiedCompanies(r.qualified_companies||[]);
         e.download.hidden=true;
       }else{
+        e.testCompanies.hidden=true;
+        e.testCompanies.innerHTML="";
         e.download.hidden=false;
         e.resultSummary.textContent=
           "Прямые покупатели: "+(c.direct_buyers||0)+
