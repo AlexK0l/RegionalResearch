@@ -1018,6 +1018,24 @@ function canonicalizeCandidates(candidates) {
   }));
 }
 
+function mergedEvidenceFromCanonical(canonical) {
+  const sourceUrls = [];
+  const notes = [];
+  for (const evidenceItem of canonical?.evidence || []) {
+    const ev = evidenceItem?.data?.__evidence || {};
+    for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
+      if (url) sourceUrls.push(String(url));
+    }
+    for (const note of Array.isArray(ev.notes) ? ev.notes : []) {
+      if (note) notes.push(String(note));
+    }
+  }
+  return {
+    source_urls: [...new Set(sourceUrls)],
+    notes: [...new Set(notes)]
+  };
+}
+
 function baselineRowFromCanonical(canonical) {
   const row = {};
   const evidenceRows = canonical?.evidence?.map((x) => x.data || {}) || [];
@@ -1034,21 +1052,7 @@ function baselineRowFromCanonical(canonical) {
     else row[col] = values[0] || "";
   }
 
-  const sourceUrls = [];
-  const notes = [];
-  for (const evidenceItem of canonical?.evidence || []) {
-    const ev = evidenceItem?.data?.__evidence || {};
-    for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
-      if (url) sourceUrls.push(String(url));
-    }
-    for (const note of Array.isArray(ev.notes) ? ev.notes : []) {
-      if (note) notes.push(String(note));
-    }
-  }
-  row.__evidence = {
-    source_urls: [...new Set(sourceUrls)],
-    notes: [...new Set(notes)]
-  };
+  row.__evidence = mergedEvidenceFromCanonical(canonical);
   row.__canonical_id = canonical.canonical_id;
   row.__decision = "review";
   row.__decision_reason = "Восстановлено из исходных свидетельств: пакетный ответ пропустил canonical-компанию.";
@@ -1076,7 +1080,11 @@ function ensureBatchCoverage(batch, batchResult) {
       const id = String(row?.__canonical_id || "");
       if (!id || !byCanonicalId.has(id) || seen.has(id)) continue;
       seen.add(id);
-      output[sheet].push(row);
+      const canonical = byCanonicalId.get(id);
+      output[sheet].push({
+        ...row,
+        __evidence: mergedEvidenceFromCanonical(canonical)
+      });
     }
   }
 
@@ -2106,40 +2114,155 @@ ${JSON.stringify(compactCourtArchive)}
     const totalRows = parts.reduce((sum, part) => sum + rowCount(part), 0);
     const combinedTest = emptyResearchResult();
     for (const part of parts) appendResearchResult(combinedTest, part, "test-summary");
-    const unique = uniqueResearchCount(combinedTest);
+    const discoveryUnique = uniqueResearchCount(combinedTest);
 
     await assertNotCancelled();
+    await progress({ phase: "qualification", step: 2, percent: 92 });
+
+    const candidatePool = flattenCandidates(parts);
+    const identityResolution = await resolveCandidateIdentities({
+      client,
+      candidates: candidatePool,
+      region,
+      prompt: prompts[9],
+      assertNotCancelled,
+      onProgress: async ({ completed, total, confirmedInnMentions, failedClusters }) => {
+        await progress({
+          phase: "qualification",
+          step: 2,
+          percent: 92 + Math.floor((completed / Math.max(1, total)) * 2),
+          qualificationDetail:
+            `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}` +
+            (failedClusters ? `; ошибок: ${failedClusters}` : "")
+        });
+      }
+    });
+
+    const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
+    const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
+    const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
+
+    for (const canonical of canonicalPool) {
+      const row = baselineRowFromCanonical(canonical);
+      const sheet = canonical.source_sheets.includes("Лизинг")
+        ? "leasing"
+        : canonical.source_sheets.includes("Прямые покупатели")
+          ? "direct_buyers"
+          : "intermediaries";
+      stagedTest[sheet].push(row);
+    }
+
+    let qaRecords = makeQaRecords(stagedTest);
     await progress({
       phase: "qualification",
       step: 2,
-      percent: 96
+      percent: 95,
+      qualificationDetail: `global dedupe: ${qaRecords.length} canonical-строк`
     });
 
-    const qualificationCandidates = buildTestQualificationCandidates(parts);
-    const qualification = await qualifyTestCandidates({
+    const qa = await askWithoutSearch(
       client,
-      candidates: qualificationCandidates,
-      region,
-      assertNotCancelled
+      prompts[9] +
+        finalQaContract() +
+        `\n\nРЕГИОН: ${region}
+Это ТЕСТ этапов 1–2. Переданы canonical-строки после identity resolution.
+Выполни только глобальную дедупликацию/QA. Не назначай A/B/C.
+Разные подтверждённые ИНН не объединяй.
+При удалении дубля объедини __evidence в сохраняемую строку.
+Никакого web_search.
+
+СТРОКИ:
+${JSON.stringify(qaRecords)}`,
+      FINAL_QA_MODEL,
+      FINAL_QA_MAX_OUTPUT_TOKENS
+    );
+
+    const dedupedTest = applyFinalQa(qaRecords, qa);
+    qaRecords = makeQaRecords(dedupedTest);
+
+    await progress({
+      phase: "qualification",
+      step: 2,
+      percent: 97,
+      qualificationDetail: `финальная A/B/C: ${qaRecords.length} уникальных строк`
     });
+
+    const decisions = await runFinalQualification({
+      client,
+      records: qaRecords,
+      region,
+      assertNotCancelled,
+      diagnosticPrefix: "test12 final qualification"
+    });
+    const qualified = applyFinalQualification(qaRecords, decisions);
+
+    const qualifiedCompanies = [];
+    for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+      for (const row of qualified.result[sheet]) {
+        const canonical = canonicalMap.get(row.__canonical_id);
+        qualifiedCompanies.push({
+          id: row.__canonical_id || "",
+          organization: row["Организация"] || "",
+          city: row["Город/район"] || "",
+          grade: row.__final_grade || "",
+          reason: row.__decision_reason || "",
+          stages: canonical?.source_steps || [],
+          segments: String(row["Техника/сегмент"] || "")
+            .split("|")
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .slice(0, 8),
+          source_urls: (row?.__evidence?.source_urls || []).slice(0, 3),
+          sheet
+        });
+      }
+    }
+
+    qualifiedCompanies.sort((a, b) => {
+      const rank = { A: 0, B: 1, C: 2 };
+      const gradeDiff = (rank[a.grade] ?? 9) - (rank[b.grade] ?? 9);
+      return gradeDiff || a.organization.localeCompare(b.organization, "ru");
+    });
+
+    for (const company of qualifiedCompanies) {
+      console.log("[TEST12_QUALIFIED_COMPANY] " + JSON.stringify(company));
+    }
+
+    console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
+      raw_mentions: candidatePool.length,
+      identity_clusters: identityResolution.clusters,
+      canonical_after_inn: canonicalPool.length,
+      after_global_dedupe: qaRecords.length,
+      A: qualified.counts.A,
+      B: qualified.counts.B,
+      C: qualified.counts.C,
+      excluded: qualified.counts.excluded,
+      qualified: qualifiedCompanies.length
+    }));
 
     await progress({ phase: "completed", step: 2, percent: 100 });
     return {
       mode: "test12",
-      result: combinedTest,
+      result: qualified.result,
       region,
       counts: {
         total_rows: totalRows,
-        unique,
+        unique: discoveryUnique,
         stage1_rows: rowCount(parts[0] || emptyResearchResult()),
         stage1_unique: uniqueResearchCount(parts[0] || emptyResearchResult()),
         stage2_rows: rowCount(parts[1] || emptyResearchResult()),
         stage2_unique: uniqueResearchCount(parts[1] || emptyResearchResult()),
-        qualification_candidates: qualificationCandidates.length,
-        qualified: qualification.qualified.length,
-        excluded_after_qualification: qualification.excluded
+        raw_mentions: candidatePool.length,
+        identity_clusters: identityResolution.clusters,
+        canonical_after_inn: canonicalPool.length,
+        after_global_dedupe: qaRecords.length,
+        A: qualified.counts.A,
+        B: qualified.counts.B,
+        C: qualified.counts.C,
+        qualified: qualifiedCompanies.length,
+        excluded_after_qualification: qualified.counts.excluded
       },
-      qualified_companies: qualification.qualified,
+      qualified_companies: qualifiedCompanies,
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
   }
