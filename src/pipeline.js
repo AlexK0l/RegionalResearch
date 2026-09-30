@@ -53,6 +53,67 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
+const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
+  20,
+  Math.min(200, Number(process.env.OPENAI_DISCOVERY_ALREADY_FOUND_LIMIT || 100))
+);
+const DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD = Math.max(
+  0,
+  Math.min(10, Number(process.env.OPENAI_DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD || 2))
+);
+const DISCOVERY_SCOPE_LOW_YIELD_STREAK = Math.max(
+  1,
+  Math.min(3, Number(process.env.OPENAI_DISCOVERY_SCOPE_LOW_YIELD_STREAK || 2))
+);
+
+// Ветки, чьи основные источники обычно индексируются по региону целиком.
+// Для них достаточно общего регионального поиска + одного локального контрольного scope.
+// Локальные отраслевые ветки по-прежнему проходят все доступные geo-scope.
+const REGION_WIDE_DISCOVERY_BRANCHES = {
+  1: new Set([0, 5, 6, 7]),
+  2: new Set([0, 1, 2, 3, 4, 5, 6]),
+  5: new Set([0, 1, 2, 3, 4, 5])
+};
+
+function discoveryScopesForBranch(stageIndex, branchIndex, scopes) {
+  const all = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+  if (all.length <= 2) return all;
+
+  const regional = REGION_WIDE_DISCOVERY_BRANCHES[stageIndex + 1];
+  if (regional?.has(branchIndex)) {
+    return all.slice(0, 2);
+  }
+  return all;
+}
+
+function discoveryKnownNames(result, limit = DISCOVERY_ALREADY_FOUND_LIMIT) {
+  return foundOrganizationNames(result, limit);
+}
+
+function mergeKnownOrganizationNames(target, result) {
+  const seen = new Set(target.map((name) => normalizeOrgKey(name)).filter(Boolean));
+  for (const row of allResearchRows(result)) {
+    const name = String(row?.["Организация"] || "").trim();
+    const key = normalizeOrgKey(name);
+    if (!name || !key || seen.has(key)) continue;
+    seen.add(key);
+    target.push(name);
+  }
+  if (target.length > DISCOVERY_ALREADY_FOUND_LIMIT) {
+    target.splice(0, target.length - DISCOVERY_ALREADY_FOUND_LIMIT);
+  }
+}
+
+function countNewOrganizationsAgainstKnown(result, knownNames) {
+  const known = new Set((knownNames || []).map((x) => normalizeOrgKey(x)).filter(Boolean));
+  const fresh = new Set();
+  for (const row of allResearchRows(result)) {
+    const key = normalizeOrgKey(row?.["Организация"]);
+    if (key && !known.has(key)) fresh.add(key);
+  }
+  return fresh.size;
+}
+
 const DISCOVERY_STAGE_HINTS = [
   "Объявления, б/у техника и вакансии. Источники: Avito, Drom, Auto.ru, Autoline, Truck1, Machineryline, Perevozka24, HH, SuperJob, сайты компаний. По объявлению/вакансии выходи на организацию и проверяй связь с тяжёлой логистикой/целевым грузом.",
   "Лизинг, залоги и цикл замены. Источники: Федресурс, лизинговые компании, банки, торги, реестры залогов, официальные документы. Различай лизингодателя и фактического эксплуатанта.",
@@ -661,40 +722,79 @@ async function discoverRegionSearchScopes(client, region) {
   ];
 }
 
-async function runResearchMicroBatch({ client, region, stageIndex, branch, branchIndex, branches, scopes, extraContext = "" }) {
-  const tasks = scopes.map((scope) =>
-    askResearch(
-      client,
-      compactDiscoveryPrompt({
-        region,
-        stageIndex,
-        branch,
-        branchIndex,
-        totalBranches: branches.length,
-        scope,
-        extraContext
-      }),
-      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
-      `этап ${stageIndex + 1} | ветка ${branchIndex + 1}/${branches.length} | ${branch} | ${scope}`
-    )
-  );
-
-  const settled = await Promise.allSettled(tasks);
+async function runResearchMicroBatch({
+  client,
+  region,
+  stageIndex,
+  branch,
+  branchIndex,
+  branches,
+  scopes,
+  extraContext = "",
+  alreadyFound = []
+}) {
+  const selectedScopes = discoveryScopesForBranch(stageIndex, branchIndex, scopes);
   const merged = emptyResearchResult();
+  const knownNames = [...alreadyFound];
   let successCount = 0;
   let firstError = null;
+  let lowYieldStreak = 0;
 
-  for (let index = 0; index < settled.length; index++) {
-    const item = settled[index];
-    if (item.status === "fulfilled") {
+  for (let scopeIndex = 0; scopeIndex < selectedScopes.length; scopeIndex++) {
+    const scope = selectedScopes[scopeIndex];
+    const beforeKnown = [...knownNames];
+    const knownContext = knownNames.length
+      ? `УЖЕ НАЙДЕННЫЕ В ЭТОМ РЕГИОНЕ — не трать web_search на повторное обнаружение этих организаций; ищи новые: ${knownNames.join("; ")}`
+      : "";
+
+    try {
+      const value = await askResearch(
+        client,
+        compactDiscoveryPrompt({
+          region,
+          stageIndex,
+          branch,
+          branchIndex,
+          totalBranches: branches.length,
+          scope,
+          extraContext: [extraContext, knownContext].filter(Boolean).join("\n")
+        }),
+        RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+        `этап ${stageIndex + 1} | ветка ${branchIndex + 1}/${branches.length} | ${branch} | ${scope}`
+      );
+
+      const normalized = normalize(value);
+      const added = countNewOrganizationsAgainstKnown(normalized, beforeKnown);
       appendResearchResult(
         merged,
-        normalize(item.value),
-        `branch-${branchIndex + 1}-scope-${index + 1}`
+        normalized,
+        `branch-${branchIndex + 1}-scope-${scopeIndex + 1}`
       );
+      mergeKnownOrganizationNames(knownNames, normalized);
       successCount++;
-    } else if (!firstError) {
-      firstError = item.reason;
+
+      // Первый scope всегда региональный. Низкий yield локальных scope подряд означает,
+      // что дальнейшее географическое дробление в этой ветке даёт в основном повторы.
+      if (scopeIndex > 0) {
+        lowYieldStreak =
+          added <= DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD ? lowYieldStreak + 1 : 0;
+        if (
+          lowYieldStreak >= DISCOVERY_SCOPE_LOW_YIELD_STREAK &&
+          scopeIndex + 1 < selectedScopes.length
+        ) {
+          console.log("[DISCOVERY_SCOPE_STOP] " + JSON.stringify({
+            stage: stageIndex + 1,
+            branch: branchIndex + 1,
+            processed_scopes: scopeIndex + 1,
+            total_scopes: selectedScopes.length,
+            last_added: added,
+            threshold: DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+          }));
+          break;
+        }
+      }
+    } catch (error) {
+      if (!firstError) firstError = error;
     }
   }
 
@@ -2009,7 +2109,7 @@ ${JSON.stringify(compactCourtArchive)}
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
       statuses[i].detail =
-        `ветка ${branchIndex + 1} / ${branches.length} · микро-поиски 0 / ${researchScopes.length} · ${before} уникальных`;
+        `ветка ${branchIndex + 1} / ${branches.length} · adaptive geo-scope · ${before} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
@@ -2023,6 +2123,8 @@ ${JSON.stringify(compactCourtArchive)}
           : ""
       ].filter(Boolean).join("\n");
 
+      const alreadyFound = discoveryKnownNames(combined);
+      const branchScopes = discoveryScopesForBranch(i, branchIndex, researchScopes);
       const branchResult = await runResearchMicroBatch({
         client,
         region,
@@ -2031,7 +2133,8 @@ ${JSON.stringify(compactCourtArchive)}
         branchIndex,
         branches,
         scopes: researchScopes,
-        extraContext
+        extraContext,
+        alreadyFound
       });
       appendResearchResult(combined, branchResult, `branch-${branchIndex + 1}`);
 
@@ -2350,36 +2453,7 @@ ${JSON.stringify(batch)}`,
     stagedResult.leasing.push(...batchResult.leasing);
   }
 
-  await assertNotCancelled();
-  const stagedCompanies = [
-    ...stagedResult.direct_buyers,
-    ...stagedResult.intermediaries,
-    ...stagedResult.leasing
-  ];
-  let targetedSearches = 0;
 
-  for (const row of stagedCompanies) {
-    const gaps = missingResearchFields(row);
-    if (!gaps.length) continue;
-
-    await assertNotCancelled();
-    targetedSearches++;
-    statuses[9].detail = `точечная проверка ${targetedSearches} · ${row["Организация"] || ""}`;
-    await progress({ phase: "dedupe", step: 10, percent: 87 });
-
-    const enriched = await askTargetedSearch(
-      client,
-      prompts[9] +
-        targetedSearchContract() +
-        `\n\nРЕГИОН: ${region}
-КОМПАНИЯ:
-${JSON.stringify(row)}
-НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
-${JSON.stringify(gaps)}
-Сделай один точечный web_search только по этой компании. Ищи недостающие сведения и верни аккуратный patch. Не перепроверяй заполненные поля без необходимости.`
-    );
-    applyTargetedPatch(row, enriched);
-  }
 
   await assertNotCancelled();
   let qaRecords = makeQaRecords(stagedResult);
@@ -2453,6 +2527,39 @@ ${JSON.stringify(qaRecords)}`,
     excluded: qualifiedFinal.counts.excluded,
     output_rows: rowCount(finalResult)
   }));
+
+  await assertNotCancelled();
+  const finalCompaniesForEnrichment = [
+    ...finalResult.direct_buyers,
+    ...finalResult.intermediaries,
+    ...finalResult.leasing
+  ];
+  let targetedSearches = 0;
+
+  for (const row of finalCompaniesForEnrichment) {
+    const gaps = missingResearchFields(row);
+    if (!gaps.length) continue;
+
+    await assertNotCancelled();
+    targetedSearches++;
+    statuses[9].detail =
+      `точечное enrichment после qualification ${targetedSearches} · ${row["Организация"] || ""}`;
+    await progress({ phase: "dedupe", step: 10, percent: 89 });
+
+    const enriched = await askTargetedSearch(
+      client,
+      prompts[9] +
+        targetedSearchContract() +
+        `\n\nРЕГИОН: ${region}
+КОМПАНИЯ:
+${JSON.stringify(row)}
+НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
+${JSON.stringify(gaps)}
+Компания уже прошла identity, global dedupe и финальную A/B/C qualification.
+Сделай один точечный web_search только по этой компании. Ищи только перечисленные недостающие сведения. Не перепроверяй заполненные поля без необходимости.`
+    );
+    applyTargetedPatch(row, enriched);
+  }
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
