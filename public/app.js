@@ -158,6 +158,7 @@ function renderQualifiedCompanies(companies){
       '<td><span class="grade grade-'+escapeHtml(item.grade)+'">'+escapeHtml(item.grade)+'</span></td>'+
       '<td><strong>'+escapeHtml(item.organization)+'</strong></td>'+
       '<td>'+escapeHtml(item.city||"—")+'</td>'+
+      '<td>'+escapeHtml((item.segments||[]).join(" · ")||"—")+'</td>'+
       '<td>'+escapeHtml(item.reason||"")+'</td>'+
       '<td>'+escapeHtml(stages||"—")+'</td>'+
     '</tr>';
@@ -167,7 +168,7 @@ function renderQualifiedCompanies(companies){
   e.testCompanies.innerHTML=
     '<div class="test-companies-head"><strong>Компании, прошедшие строгую проверку релевантности</strong><span>'+rows.length+'</span></div>'+
     '<div class="table-wrap"><table class="qualified-table">'+
-      '<thead><tr><th>Класс</th><th>Компания</th><th>Город/район</th><th>Почему подходит</th><th>Найдена</th></tr></thead>'+
+      '<thead><tr><th>Класс</th><th>Компания</th><th>Город/район</th><th>Сегмент</th><th>Почему подходит</th><th>Найдена</th></tr></thead>'+
       '<tbody>'+body+'</tbody>'+
     '</table></div>';
 }
