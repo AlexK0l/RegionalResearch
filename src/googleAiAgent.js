@@ -167,6 +167,7 @@ function createGoogleAiDiagnostic({ operation, row, phone = "" }) {
     models: [],
     fallback_used: false,
     challenge: false,
+    last_attempt_reason: "",
     final_status: "",
     final_reason: ""
   };
@@ -206,6 +207,34 @@ function recordComputerResponse({ diagnostic, response, model, phase, turn, star
     cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
     computer_calls: computerCalls,
     output_chars: String(response?.output_text || "").length
+  }));
+}
+
+function logComputerError({
+  diagnostic,
+  model,
+  phase,
+  turn,
+  startedAt,
+  error,
+  promptChars = null
+}) {
+  if (!diagnostic.models.includes(model)) diagnostic.models.push(model);
+  if (model === COMPUTER_FALLBACK_MODEL && COMPUTER_FALLBACK_MODEL !== COMPUTER_MODEL) {
+    diagnostic.fallback_used = true;
+  }
+  console.error("[GOOGLE_AI_DIAG] " + JSON.stringify({
+    operation: diagnostic.operation,
+    company: diagnostic.company,
+    inn: diagnostic.inn,
+    model,
+    phase,
+    turn,
+    prompt_chars: promptChars,
+    status: "error",
+    stop_reason: "error",
+    duration_ms: Date.now() - startedAt,
+    error: error?.message || String(error)
   }));
 }
 
@@ -314,15 +343,29 @@ async function runComputerJsonOnce({
   diagnostic
 }) {
   let startedAt = Date.now();
-  let response = await client.responses.create(
-    {
+  let response;
+  try {
+    response = await client.responses.create(
+      {
+        model,
+        tools: [{ type: "computer" }],
+        reasoning: { effort: "low" },
+        input: prompt
+      },
+      signal ? { signal } : undefined
+    );
+  } catch (error) {
+    logComputerError({
+      diagnostic,
       model,
-      tools: [{ type: "computer" }],
-      reasoning: { effort: "low" },
-      input: prompt
-    },
-    signal ? { signal } : undefined
-  );
+      phase: "initial",
+      turn: 0,
+      startedAt,
+      error,
+      promptChars: String(prompt || "").length
+    });
+    throw error;
+  }
   recordComputerResponse({
     diagnostic,
     response,
@@ -346,31 +389,44 @@ async function runComputerJsonOnce({
 
     if (await hasGoogleChallenge(page)) {
       diagnostic.challenge = true;
-      diagnostic.final_reason = "google_challenge";
+      diagnostic.last_attempt_reason = "google_challenge";
       return unavailableResult;
     }
 
     const screenshot = await page.screenshot({ type: "png" });
     startedAt = Date.now();
-    response = await client.responses.create(
-      {
-        model,
-        tools: [{ type: "computer" }],
-        previous_response_id: response.id,
-        input: [
-          {
-            type: "computer_call_output",
-            call_id: call.call_id,
-            output: {
-              type: "computer_screenshot",
-              image_url: `data:image/png;base64,${screenshot.toString("base64")}`,
-              detail: SCREENSHOT_DETAIL
+    try {
+      response = await client.responses.create(
+        {
+          model,
+          tools: [{ type: "computer" }],
+          previous_response_id: response.id,
+          input: [
+            {
+              type: "computer_call_output",
+              call_id: call.call_id,
+              output: {
+                type: "computer_screenshot",
+                image_url: `data:image/png;base64,${screenshot.toString("base64")}`,
+                detail: SCREENSHOT_DETAIL
+              }
             }
-          }
-        ]
-      },
-      signal ? { signal } : undefined
-    );
+          ]
+        },
+        signal ? { signal } : undefined
+      );
+    } catch (error) {
+      logComputerError({
+        diagnostic,
+        model,
+        phase: "computer_turn",
+        turn: turn + 1,
+        startedAt,
+        error,
+        promptChars: null
+      });
+      throw error;
+    }
     recordComputerResponse({
       diagnostic,
       response,
@@ -382,7 +438,7 @@ async function runComputerJsonOnce({
     });
   }
 
-  diagnostic.final_reason = "computer_turn_limit";
+  diagnostic.last_attempt_reason = "computer_turn_limit";
   return { ...unavailableResult, note: "Computer-use turn limit reached" };
 }
 
@@ -482,9 +538,9 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
       diagnostic
     });
     diagnostic.final_status = result?.confirmed ? "confirmed" : "not_confirmed";
-    if (!diagnostic.final_reason) {
-      diagnostic.final_reason = result?.note || (result?.confirmed ? "confirmed" : "not_confirmed");
-    }
+    diagnostic.final_reason =
+      result?.note ||
+      (result?.confirmed ? "confirmed" : diagnostic.last_attempt_reason || "not_confirmed");
     return result;
   } catch (error) {
     diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
@@ -538,7 +594,8 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
       }
     });
     diagnostic.final_status = result?.status || "unknown";
-    if (!diagnostic.final_reason) diagnostic.final_reason = result?.note || result?.status || "";
+    diagnostic.final_reason =
+      result?.note || result?.status || diagnostic.last_attempt_reason || "";
     return result;
   } catch (error) {
     diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
