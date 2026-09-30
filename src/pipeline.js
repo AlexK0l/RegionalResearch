@@ -2140,7 +2140,7 @@ ${JSON.stringify(compactCourtArchive)}
 
       const after = uniqueResearchCount(combined);
       statuses[i].detail =
-        `ветка ${branchIndex + 1} / ${branches.length} · ${researchScopes.length} микро-поисков · +${Math.max(0, after - before)} новых · ${after} уникальных`;
+        `ветка ${branchIndex + 1} / ${branches.length} · до ${branchScopes.length} geo-scope · +${Math.max(0, after - before)} новых · ${after} уникальных`;
       await progress({
         phase: "research",
         step: i + 1,
@@ -2164,34 +2164,71 @@ ${JSON.stringify(compactCourtArchive)}
         `добор ${recoveryIndex + 1} · ${before} / ориентир ${RESEARCH_SOFT_TARGET}`;
       await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
 
-      const tasks = researchScopes.map((scope) =>
-        askResearch(
-          client,
-          compactRecoveryPrompt({
-            region,
-            stageIndex: i,
-            theme,
-            scope,
-            alreadyFound,
-            uniqueCount: before,
-            target: RESEARCH_SOFT_TARGET
-          }),
-          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
-          `этап ${i + 1} | recovery ${recoveryIndex + 1} | ${theme} | ${scope}`
-        )
-      );
-
-      const settled = await Promise.allSettled(tasks);
       let successes = 0;
-      for (let scopeIndex = 0; scopeIndex < settled.length; scopeIndex++) {
-        const item = settled[scopeIndex];
-        if (item.status !== "fulfilled") continue;
-        appendResearchResult(
-          combined,
-          normalize(item.value),
-          `recovery-${recoveryIndex + 1}-scope-${scopeIndex + 1}`
-        );
-        successes++;
+      let recoveryScopeLowYield = 0;
+      const recoveryKnown = [...alreadyFound];
+
+      for (let scopeIndex = 0; scopeIndex < researchScopes.length; scopeIndex++) {
+        await assertNotCancelled();
+        const scope = researchScopes[scopeIndex];
+        const knownBeforeScope = [...recoveryKnown];
+
+        try {
+          const value = normalize(
+            await askResearch(
+              client,
+              compactRecoveryPrompt({
+                region,
+                stageIndex: i,
+                theme,
+                scope,
+                alreadyFound: recoveryKnown,
+                uniqueCount: before,
+                target: RESEARCH_SOFT_TARGET
+              }),
+              RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+              `этап ${i + 1} | recovery ${recoveryIndex + 1} | ${theme} | ${scope}`
+            )
+          );
+
+          const addedInScope = countNewOrganizationsAgainstKnown(value, knownBeforeScope);
+          appendResearchResult(
+            combined,
+            value,
+            `recovery-${recoveryIndex + 1}-scope-${scopeIndex + 1}`
+          );
+          mergeKnownOrganizationNames(recoveryKnown, value);
+          successes++;
+
+          if (scopeIndex > 0) {
+            recoveryScopeLowYield =
+              addedInScope <= DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+                ? recoveryScopeLowYield + 1
+                : 0;
+
+            if (
+              recoveryScopeLowYield >= DISCOVERY_SCOPE_LOW_YIELD_STREAK &&
+              scopeIndex + 1 < researchScopes.length
+            ) {
+              console.log("[DISCOVERY_SCOPE_STOP] " + JSON.stringify({
+                stage: i + 1,
+                recovery: recoveryIndex + 1,
+                processed_scopes: scopeIndex + 1,
+                total_scopes: researchScopes.length,
+                last_added: addedInScope,
+                threshold: DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+              }));
+              break;
+            }
+          }
+        } catch (error) {
+          console.error("[DISCOVERY_RECOVERY_SCOPE_ERROR] " + JSON.stringify({
+            stage: i + 1,
+            recovery: recoveryIndex + 1,
+            scope,
+            error: error?.message || String(error)
+          }));
+        }
       }
 
       if (!successes) throw new Error(`Все микро-поиски добора этапа ${i + 1} завершились ошибкой`);
@@ -2209,7 +2246,7 @@ ${JSON.stringify(compactCourtArchive)}
     parts.push(combined);
     finishStep(statuses[i]);
     statuses[i].detail =
-      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток × ${researchScopes.length} микро-поиска`;
+      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · adaptive geo-scope`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
