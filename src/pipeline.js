@@ -1628,6 +1628,19 @@ ${JSON.stringify(batch)}`,
     return a.organization.localeCompare(b.organization, "ru");
   });
 
+  for (const company of qualified) {
+    console.log("[TEST12_QUALIFIED_COMPANY] " + JSON.stringify({
+      id: company.id,
+      organization: company.organization,
+      city: company.city,
+      grade: company.grade,
+      reason: company.reason,
+      stages: company.stages,
+      segments: company.segments,
+      source_urls: company.source_urls
+    }));
+  }
+
   console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
     candidates: candidates.length,
     qualified: qualified.length,
