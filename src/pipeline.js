@@ -607,7 +607,7 @@ async function discoverRegionSearchScopes(client, region) {
   ];
 }
 
-async function runResearchMicroBatch({ client, prompt, region, stageIndex, branch, branchIndex, branches, scopes, extraContext = "" }) {
+async function runResearchMicroBatch({ client, region, stageIndex, branch, branchIndex, branches, scopes, extraContext = "" }) {
   const tasks = scopes.map((scope) =>
     askResearch(
       client,
@@ -1269,6 +1269,7 @@ async function askJson(client, {
       file_search: Boolean(fileSearchVectorStoreId),
       structured_output: Boolean(responseSchema),
       schema_name: responseSchema ? schemaName : null,
+      initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
       status: response?.status || "",
       stop_reason: stopReason,
@@ -1301,6 +1302,7 @@ async function askJson(client, {
       file_search: Boolean(fileSearchVectorStoreId),
       structured_output: Boolean(responseSchema),
       schema_name: responseSchema ? schemaName : null,
+      initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
       status: "error",
       stop_reason: client.__jobSignal?.aborted ? "cancelled" : "error",
@@ -1664,7 +1666,6 @@ ${JSON.stringify(compactCourtArchive)}
 
       const branchResult = await runResearchMicroBatch({
         client,
-        prompt: prompts[i],
         region,
         stageIndex: i,
         branch: branches[branchIndex],
