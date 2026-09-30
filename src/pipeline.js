@@ -337,6 +337,33 @@ const TEST_QUALIFICATION_SCHEMA = {
   required: ["decisions"]
 };
 
+const FINAL_QUALIFICATION_BATCH_SIZE = Math.max(
+  20,
+  Math.min(80, Number(process.env.OPENAI_FINAL_QUALIFICATION_BATCH_SIZE || 50))
+);
+
+const FINAL_QUALIFICATION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          decision: { type: "string", enum: ["include", "exclude"] },
+          grade: { type: "string", enum: ["A", "B", "C", ""] },
+          reason: { type: "string" }
+        },
+        required: ["id", "decision", "grade", "reason"]
+      }
+    }
+  },
+  required: ["decisions"]
+};
+
 function parseJson(text) {
   const cleaned = String(text || "")
     .trim()
@@ -420,26 +447,30 @@ function finalBatchContract() {
   return `\n\nПАКЕТНЫЙ ТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
 {"direct_buyers":[],"intermediaries":[],"leasing":[]}.
 На входе находятся CANONICAL-компании. Каждую входную canonical-компанию верни РОВНО ОДИН РАЗ и обязательно сохрани её "__canonical_id".
-Не удаляй компанию на этом этапе. Если она кажется нерелевантной, верни её как обычно и добавь "__decision":"exclude" и краткий "__decision_reason"; окончательное удаление выполняется только глобальным QA.
-Для каждой canonical-компании используй ВСЕ элементы массива evidence как единый набор доказательств. Не теряй сведения из отдельных шагов.
-Этот пакет обрабатывается БЕЗ web_search: не требуй нового поиска и не придумывай отсутствующие факты. Сначала используй сохранённый "__evidence" из шагов 1–9.
-Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, "__comment", "__canonical_id", "__decision", "__decision_reason".
+Не удаляй компанию и НЕ принимай здесь окончательное решение A/B/C. Финальная qualification выполняется только после глобальной дедупликации.
+Для каждой canonical-компании используй ВСЕ элементы массива evidence как единый набор доказательств и сохрани объединённый evidence в "__evidence".
+"__evidence" имеет вид {"source_urls":[],"notes":[]} и должен включать уникальные URL/notes из всех упоминаний canonical-компании.
+Если компания кажется нерелевантной, можешь поставить "__decision":"review" и объяснить сомнение в "__decision_reason", но не исключай её на этом шаге.
+Поле "Основание" на этом шаге является СВОДКОЙ evidence, а не окончательной A/B/C оценкой; не начинай его с A/B/C.
+Этот пакет обрабатывается БЕЗ web_search: не требуй нового поиска и не придумывай отсутствующие факты.
+Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, "__comment", "__canonical_id", "__decision", "__decision_reason", "__evidence".
 "__comment" обязателен и содержит ровно пять смысловых строк: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:".
 Не возвращай статистику. Не выдумывай данные.`;
 }
 
 function finalQaContract() {
-  return `\n\nФИНАЛЬНЫЙ QA — верни ТОЛЬКО валидный JSON без markdown:
+  return `\n\nГЛОБАЛЬНЫЙ DEDUPE/QA — верни ТОЛЬКО валидный JSON без markdown:
 {
   "remove_ids": [],
   "moves": [{"id":"","sheet":"direct_buyers|intermediaries|leasing"}],
   "patches": [{"id":"","fields":{}}]
 }
 Не возвращай полный список компаний и не выполняй web_search.
-remove_ids — только строки, которые действительно нужно удалить как дубли или нерелевантные.
+На этом шаге решай идентичность дублей, целевой лист и фактические противоречия. НЕ назначай окончательный A/B/C — это отдельный следующий проход.
+remove_ids — строки, которые действительно нужно удалить как дубли или явно ошибочные сущности.
 moves — только строки, которые нужно перенести на другой коммерческий лист.
-patches — только исправления полей сохранённой строки; fields может содержать только видимые коммерческие поля и "__comment".
-При схлопывании дублей перенеси полезные сведения из удаляемых строк в сохраняемую строку через patches.
+patches — исправления сохранённой строки; fields может содержать видимые коммерческие поля, "__comment" и "__evidence".
+КРИТИЧНО: при схлопывании дублей ОБЪЕДИНИ "__evidence.source_urls" и "__evidence.notes" всех удаляемых дублей в сохраняемую строку через patch. Не теряй ни одного сильного доказательства.
 Одна организация должна остаться только один раз во всей итоговой совокупности.`;
 }
 
@@ -1003,6 +1034,21 @@ function baselineRowFromCanonical(canonical) {
     else row[col] = values[0] || "";
   }
 
+  const sourceUrls = [];
+  const notes = [];
+  for (const evidenceItem of canonical?.evidence || []) {
+    const ev = evidenceItem?.data?.__evidence || {};
+    for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
+      if (url) sourceUrls.push(String(url));
+    }
+    for (const note of Array.isArray(ev.notes) ? ev.notes : []) {
+      if (note) notes.push(String(note));
+    }
+  }
+  row.__evidence = {
+    source_urls: [...new Set(sourceUrls)],
+    notes: [...new Set(notes)]
+  };
   row.__canonical_id = canonical.canonical_id;
   row.__decision = "review";
   row.__decision_reason = "Восстановлено из исходных свидетельств: пакетный ответ пропустил canonical-компанию.";
@@ -1067,7 +1113,7 @@ function makeQaRecords(result) {
 
 function applyFinalQa(records, qa) {
   const allowedSheets = new Set(["direct_buyers", "intermediaries", "leasing"]);
-  const allowedFields = new Set([...COLS, "__comment", "__decision", "__decision_reason"]);
+  const allowedFields = new Set([...COLS, "__comment", "__decision", "__decision_reason", "__evidence", "__final_grade"]);
   const removeIds = new Set(Array.isArray(qa?.remove_ids) ? qa.remove_ids.map(String) : []);
   const moves = new Map();
 
@@ -1103,6 +1149,124 @@ function applyFinalQa(records, qa) {
   }
 
   return result;
+}
+
+function finalQualificationInput(records) {
+  return records.map((record) => ({
+    id: record.id,
+    sheet: record.sheet,
+    canonical_id: record.canonical_id,
+    organization: record?.row?.["Организация"] || "",
+    city: record?.row?.["Город/район"] || "",
+    segment: record?.row?.["Техника/сегмент"] || "",
+    basis_summary: record?.row?.["Основание"] || "",
+    inn: record?.row?.["ИНН"] || "",
+    evidence: record?.row?.__evidence || { source_urls: [], notes: [] }
+  }));
+}
+
+async function runFinalQualification({
+  client,
+  records,
+  region,
+  assertNotCancelled,
+  diagnosticPrefix = "final qualification"
+}) {
+  const decisions = new Map();
+  let completed = 0;
+
+  for (let offset = 0; offset < records.length; offset += FINAL_QUALIFICATION_BATCH_SIZE) {
+    await assertNotCancelled();
+    const batchRecords = records.slice(offset, offset + FINAL_QUALIFICATION_BATCH_SIZE);
+    const batch = finalQualificationInput(batchRecords);
+    const batchNumber = Math.floor(offset / FINAL_QUALIFICATION_BATCH_SIZE) + 1;
+
+    const result = await askJson(client, {
+      input: `ФИНАЛЬНАЯ КВАЛИФИКАЦИЯ ПОСЛЕ IDENTITY, DEDUPE И MERGE EVIDENCE.
+РЕГИОН: ${region}
+
+Это ОКОНЧАТЕЛЬНОЕ решение A/B/C по каждой уже дедуплицированной организации.
+Используй ТОЛЬКО переданные данные и объединённый evidence. Новый web_search запрещён.
+Игнорируй предварительные A/B/C из discovery и оцени компанию заново.
+
+A — есть конкретное подтверждение релевантной ПРИЦЕПНОЙ техники/полуприцепа/прицепа, её лизинга, закупки, ремонта, VIN/госномера или явной эксплуатации тягач + релевантный полуприцеп.
+B — конкретная релевантная прицепная техника не подтверждена, но одновременно подтверждены (1) целевой груз/процесс и (2) тяжёлая автологистика/эксплуатационный сигнал: тягачи, тяжёлый парк, профильные перевозки, CE/Е-вакансии в релевантном контексте, транспортный контракт, лизинг/обновление тяжёлого парка.
+C — подтверждён релевантный груз/процесс/перевозка, но evidence недостаточно для A/B; компания остаётся потенциальной, но требует дополнительной проверки.
+EXCLUDE — нет достаточной связи с целевым грузом/процессом и тяжёлой логистикой, организация является ошибочной сущностью/каталогом/площадкой либо evidence не подтверждает коммерческую релевантность.
+
+ПРАВИЛА:
+- Для каждого входного id верни ровно одно решение.
+- include требует grade A, B или C.
+- exclude требует пустой grade.
+- reason — одно конкретное, проверяемое объяснение по объединённому evidence.
+- Не повышай класс из-за слов "возможен", "потенциально", "может использовать".
+- Самосвал без прицепа сам по себе НЕ A.
+- Тягач без целевого груза сам по себе НЕ B.
+- Целевой груз без тяжёлой автологистики сам по себе максимум C.
+- Не добавляй новых фактов.
+
+ОРГАНИЗАЦИИ:
+${JSON.stringify(batch)}`,
+      model: FINAL_QA_MODEL,
+      maxOutputTokens: FINAL_QA_MAX_OUTPUT_TOKENS,
+      webSearch: false,
+      responseSchema: FINAL_QUALIFICATION_SCHEMA,
+      schemaName: "final_company_qualification",
+      diagnosticLabel: `${diagnosticPrefix} | batch ${batchNumber}`
+    });
+
+    const allowed = new Set(batchRecords.map((x) => x.id));
+    for (const item of result?.decisions || []) {
+      const id = String(item?.id || "");
+      if (!allowed.has(id) || decisions.has(id)) continue;
+      const include = item?.decision === "include";
+      const grade = include && ["A", "B", "C"].includes(item?.grade) ? item.grade : "";
+      decisions.set(id, {
+        decision: grade ? "include" : "exclude",
+        grade,
+        reason: String(item?.reason || "").trim()
+      });
+    }
+
+    completed += batchRecords.length;
+    console.log("[FINAL_QUALIFICATION_PROGRESS] " + JSON.stringify({
+      prefix: diagnosticPrefix,
+      completed,
+      total: records.length,
+      batch: batchNumber
+    }));
+  }
+
+  return decisions;
+}
+
+function applyFinalQualification(records, decisions) {
+  const result = {
+    direct_buyers: [],
+    intermediaries: [],
+    leasing: [],
+    statistics: []
+  };
+  const counts = { A: 0, B: 0, C: 0, excluded: 0 };
+
+  for (const record of records) {
+    const decision = decisions.get(record.id);
+    if (!decision || decision.decision !== "include" || !decision.grade) {
+      counts.excluded++;
+      continue;
+    }
+
+    const row = { ...record.row };
+    row.__final_grade = decision.grade;
+    row.__decision = "include";
+    row.__decision_reason = decision.reason;
+    row["Основание"] = `${decision.grade} — ${decision.reason}`;
+    counts[decision.grade]++;
+
+    result[record.sheet].push(row);
+  }
+
+  return { result, counts };
 }
 
 function diagnosticRowCount(data) {
@@ -2128,10 +2292,11 @@ ${JSON.stringify(conflictGroups)}`,
       finalQaContract() +
       `\n\nРЕГИОН: ${region}
 Ниже уже обработанные canonical-компании с техническими id и canonical_id.
-Выполни глобальную дедупликацию, финальную переклассификацию и QA только по переданным данным.
-Строки с "__decision":"exclude" не удаляй механически: проверь основание.
+Выполни глобальную дедупликацию и QA только по переданным данным.
+НЕ выполняй A/B/C-квалификацию: она будет отдельным следующим проходом после дедупликации.
 Не переписывай весь массив компаний: верни только remove_ids, moves и patches.
 Разные подтверждённые ИНН никогда не объединяй.
+При удалении дубля обязательно перенеси его evidence в сохраняемую строку.
 Работай без web_search.
 
 КОММЕРЧЕСКИЕ СТРОКИ JSON:
@@ -2140,7 +2305,31 @@ ${JSON.stringify(qaRecords)}`,
     FINAL_QA_MAX_OUTPUT_TOKENS
   );
 
-  const finalResult = applyFinalQa(qaRecords, qa);
+  const dedupedResult = applyFinalQa(qaRecords, qa);
+  const dedupedRecords = makeQaRecords(dedupedResult);
+
+  statuses[9].detail = `финальная A/B/C qualification · ${dedupedRecords.length} уникальных строк`;
+  await progress({ phase: "dedupe", step: 10, percent: 89 });
+
+  const finalDecisions = await runFinalQualification({
+    client,
+    records: dedupedRecords,
+    region,
+    assertNotCancelled,
+    diagnosticPrefix: "full final qualification"
+  });
+  const qualifiedFinal = applyFinalQualification(dedupedRecords, finalDecisions);
+  const finalResult = qualifiedFinal.result;
+
+  console.log("[FINAL_QUALIFICATION_SUMMARY] " + JSON.stringify({
+    region,
+    input_rows: dedupedRecords.length,
+    A: qualifiedFinal.counts.A,
+    B: qualifiedFinal.counts.B,
+    C: qualifiedFinal.counts.C,
+    excluded: qualifiedFinal.counts.excluded,
+    output_rows: rowCount(finalResult)
+  }));
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
