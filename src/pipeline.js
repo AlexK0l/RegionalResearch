@@ -314,6 +314,29 @@ const GEO_SCOPE_SCHEMA = {
   required: ["places", "clusters"]
 };
 
+const TEST_QUALIFICATION_BATCH_SIZE = 50;
+const TEST_QUALIFICATION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          decision: { type: "string", enum: ["include", "exclude"] },
+          grade: { type: "string", enum: ["A", "B", ""] },
+          reason: { type: "string" }
+        },
+        required: ["id", "decision", "grade", "reason"]
+      }
+    }
+  },
+  required: ["decisions"]
+};
+
 function parseJson(text) {
   const cleaned = String(text || "")
     .trim()
@@ -1463,6 +1486,157 @@ function buildConflictGroups(records) {
 }
 
 
+function testCandidateGrade(row) {
+  const basis = String(row?.["Основание"] || "").trim().toUpperCase();
+  if (basis.startsWith("A")) return "A";
+  if (basis.startsWith("B")) return "B";
+  return "";
+}
+
+function buildTestQualificationCandidates(parts) {
+  const groups = new Map();
+  let sequence = 0;
+
+  for (let stageIndex = 0; stageIndex < parts.length; stageIndex++) {
+    for (const row of allResearchRows(parts[stageIndex])) {
+      const grade = testCandidateGrade(row);
+      if (!grade) continue;
+
+      const org = String(row?.["Организация"] || "").trim();
+      const orgKey = normalizeOrgKey(org);
+      if (!orgKey) continue;
+      const place = String(row?.["Город/район"] || "").trim();
+      const placeKey = normalizePlaceKey(place);
+      const key = `${orgKey}|${placeKey}`;
+
+      if (!groups.has(key)) {
+        sequence++;
+        groups.set(key, {
+          id: `tq${String(sequence).padStart(5, "0")}`,
+          organization: org,
+          city: place,
+          stages: new Set(),
+          grades: new Set(),
+          segments: new Set(),
+          bases: new Set(),
+          source_urls: new Set(),
+          notes: new Set()
+        });
+      }
+
+      const item = groups.get(key);
+      item.stages.add(stageIndex + 1);
+      item.grades.add(grade);
+      if (row?.["Техника/сегмент"]) item.segments.add(String(row["Техника/сегмент"]).trim());
+      if (row?.["Основание"]) item.bases.add(String(row["Основание"]).trim());
+      for (const url of row?.__evidence?.source_urls || []) {
+        if (url) item.source_urls.add(String(url));
+      }
+      for (const note of row?.__evidence?.notes || []) {
+        if (note) item.notes.add(String(note));
+      }
+    }
+  }
+
+  return [...groups.values()].map((item) => ({
+    id: item.id,
+    organization: item.organization,
+    city: item.city,
+    stages: [...item.stages].sort(),
+    discovery_grades: [...item.grades],
+    segments: [...item.segments].slice(0, 8),
+    bases: [...item.bases].slice(0, 12),
+    evidence: {
+      source_urls: [...item.source_urls].slice(0, 12),
+      notes: [...item.notes].slice(0, 16)
+    }
+  }));
+}
+
+async function qualifyTestCandidates({ client, candidates, region, assertNotCancelled }) {
+  const qualified = [];
+  let excluded = 0;
+
+  for (let offset = 0; offset < candidates.length; offset += TEST_QUALIFICATION_BATCH_SIZE) {
+    await assertNotCancelled();
+    const batch = candidates.slice(offset, offset + TEST_QUALIFICATION_BATCH_SIZE);
+
+    const result = await askJson(client, {
+      input: `ПРОВЕРКА КАЧЕСТВА КАНДИДАТОВ ТЕСТА ЭТАПОВ 1–2.
+РЕГИОН: ${region}
+
+Оцени ТОЛЬКО переданный evidence. Новый web_search запрещён.
+Нужно оставить только компании, которые действительно релевантны продаже прицепной техники САТ.
+
+INCLUDE:
+A — есть конкретное подтверждение релевантной прицепной техники, предмета лизинга, VIN/госномера, закупки/ремонта/эксплуатации такой техники.
+B — конкретной прицепной техники нет, но evidence подтверждает одновременно реальный целевой груз/процесс И тяжёлую автологистику/эксплуатационный сигнал (собственный или лизинговый тяжёлый парк, тягачи, профильные перевозки, CE-вакансии в релевантном контексте, транспортный контракт, обновление/ремонт парка).
+
+EXCLUDE:
+- только отрасль, ОКВЭД или общий профиль компании;
+- только целевой груз без подтверждения тяжёлой автологистики;
+- только вакансия без достаточной привязки к релевантному процессу;
+- посредник/каталог/площадка, ошибочно принятые за конечного пользователя, если нет собственной эксплуатации;
+- лизингодатель без релевантной роли для нашего списка;
+- evidence не подтверждает заявленный A/B;
+- связь основана на предположении.
+
+Для каждого входного id верни ровно одно решение. При сомнении EXCLUDE.
+reason — коротко и конкретно, какой факт делает компанию подходящей либо почему evidence недостаточно.
+Не добавляй никаких новых фактов.
+
+КАНДИДАТЫ:
+${JSON.stringify(batch)}`,
+      model: FINAL_QA_MODEL,
+      maxOutputTokens: 16000,
+      webSearch: false,
+      responseSchema: TEST_QUALIFICATION_SCHEMA,
+      schemaName: "test12_qualification",
+      diagnosticLabel: `test12 qualification | batch ${Math.floor(offset / TEST_QUALIFICATION_BATCH_SIZE) + 1}`
+    });
+
+    const byId = new Map(batch.map((x) => [x.id, x]));
+    const seen = new Set();
+    for (const decision of result?.decisions || []) {
+      const id = String(decision?.id || "");
+      if (!id || seen.has(id) || !byId.has(id)) continue;
+      seen.add(id);
+      const source = byId.get(id);
+
+      if (decision.decision === "include" && (decision.grade === "A" || decision.grade === "B")) {
+        qualified.push({
+          id,
+          organization: source.organization,
+          city: source.city,
+          grade: decision.grade,
+          reason: String(decision.reason || "").trim(),
+          stages: source.stages,
+          segments: source.segments,
+          source_urls: source.evidence.source_urls.slice(0, 3)
+        });
+      } else {
+        excluded++;
+      }
+    }
+
+    // Missing decision = conservative exclude.
+    excluded += batch.length - seen.size;
+  }
+
+  qualified.sort((a, b) => {
+    if (a.grade !== b.grade) return a.grade === "A" ? -1 : 1;
+    return a.organization.localeCompare(b.organization, "ru");
+  });
+
+  console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
+    candidates: candidates.length,
+    qualified: qualified.length,
+    excluded
+  }));
+
+  return { qualified, excluded };
+}
+
 function initialStatuses() {
   return STEPS.map((name, index) => ({
     step: index + 1,
@@ -1756,6 +1930,22 @@ ${JSON.stringify(compactCourtArchive)}
     const combinedTest = emptyResearchResult();
     for (const part of parts) appendResearchResult(combinedTest, part, "test-summary");
     const unique = uniqueResearchCount(combinedTest);
+
+    await assertNotCancelled();
+    await progress({
+      phase: "qualification",
+      step: 2,
+      percent: 96
+    });
+
+    const qualificationCandidates = buildTestQualificationCandidates(parts);
+    const qualification = await qualifyTestCandidates({
+      client,
+      candidates: qualificationCandidates,
+      region,
+      assertNotCancelled
+    });
+
     await progress({ phase: "completed", step: 2, percent: 100 });
     return {
       mode: "test12",
@@ -1767,8 +1957,12 @@ ${JSON.stringify(compactCourtArchive)}
         stage1_rows: rowCount(parts[0] || emptyResearchResult()),
         stage1_unique: uniqueResearchCount(parts[0] || emptyResearchResult()),
         stage2_rows: rowCount(parts[1] || emptyResearchResult()),
-        stage2_unique: uniqueResearchCount(parts[1] || emptyResearchResult())
+        stage2_unique: uniqueResearchCount(parts[1] || emptyResearchResult()),
+        qualification_candidates: qualificationCandidates.length,
+        qualified: qualification.qualified.length,
+        excluded_after_qualification: qualification.excluded
       },
+      qualified_companies: qualification.qualified,
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
   }
