@@ -115,6 +115,7 @@ function setProgress(p){
     research:"Исследование",
     dedupe:"Объединение и дедупликация",
     google_ai:"Поиск контактов",
+    qualification:"Identity, дедупликация и A/B/C",
     completed:"Готово",
     cancelled:"Остановлено"
   };
@@ -188,10 +189,14 @@ async function poll(){
       if(r.mode==="test12"){
         e.resultSummary.textContent=
           "Тест этапов 1–2 завершён. Сырых находок: "+(c.total_rows||0)+
-          ", условно уникальных до identity resolution: "+(c.unique||0)+
-          ", A/B-кандидатов до проверки: "+(c.qualification_candidates||0)+
-          ", прошли строгую проверку: "+(c.qualified||0)+
-          ", исключено после проверки: "+(c.excluded_after_qualification||0)+".";
+          ", условно уникальных discovery: "+(c.unique||0)+
+          ", identity-кластеров: "+(c.identity_clusters||0)+
+          ", canonical после подтверждённых ИНН: "+(c.canonical_after_inn||0)+
+          ", после global dedupe: "+(c.after_global_dedupe||0)+
+          ". Финально: A — "+(c.A||0)+
+          ", B — "+(c.B||0)+
+          ", C — "+(c.C||0)+
+          ", исключено — "+(c.excluded_after_qualification||0)+".";
         renderQualifiedCompanies(r.qualified_companies||[]);
         e.download.hidden=true;
       }else{
