@@ -405,7 +405,7 @@ async function waitForBackend(){
   while(!backendReady){
     try{
       const controller=new AbortController();
-      const timeout=setTimeout(()=>controller.abort(),15000);
+      const timeout=setTimeout(()=>controller.abort(),90000);
       const r=await fetch(apiUrl("/health"),{signal:controller.signal,cache:"no-store"});
       clearTimeout(timeout);
       if(r.ok){
@@ -422,7 +422,7 @@ async function waitForBackend(){
         return true;
       }
     }catch{}
-    setServiceStatus("Сервис запускается… это может занять до минуты.","starting");
+    setServiceStatus("Сервис запускается… холодный старт Render может занять до 90 секунд.","starting");
     await new Promise(resolve=>setTimeout(resolve,3000));
   }
 }
