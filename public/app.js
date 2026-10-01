@@ -344,8 +344,23 @@ timerTick=setInterval(()=>{
     config=await api("/api/config");
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
     if(currentJobId){
-      await poll(true);
-      if(currentJobId&&!pollTimer)pollTimer=setInterval(poll,2000);
+      try{
+        const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
+        if(d.state==="cancelled"||d.state==="failed"){
+          resetIdleState();
+        }else{
+          e.progressCard.hidden=false;
+          setProgress(d.progress||{});
+          if(d.state==="completed"){
+            await poll(true);
+          }else if(currentJobId&&!pollTimer){
+            pollTimer=setInterval(poll,2000);
+          }
+        }
+      }catch(err){
+        if(err?.status===404) resetIdleState();
+        else throw err;
+      }
     }
   }catch(err){
     e.error.hidden=false;e.error.textContent="Не удалось загрузить конфигурацию: "+err.message;
