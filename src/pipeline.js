@@ -927,6 +927,115 @@ function buildIdentityClusters(candidates) {
   }));
 }
 
+function extractInnFromEvidenceNotes(row) {
+  const notes = Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [];
+  const candidates = new Set();
+  for (const note of notes) {
+    const text = String(note || "");
+    for (const match of text.matchAll(/(?:ИНН\s*[:№-]?\s*)?(\d{10}|\d{12})/g)) {
+      const inn = normalizeInn(match[1]);
+      if (inn) candidates.add(inn);
+    }
+  }
+  return candidates.size === 1 ? [...candidates][0] : "";
+}
+
+function clusterEvidenceIdentity(cluster) {
+  const items = cluster?.items || [];
+  const inns = new Set();
+  const names = new Set();
+  const places = new Set();
+  const domains = new Set();
+
+  for (const item of items) {
+    const row = item?.data || {};
+    const directInn = normalizeInn(row["ИНН"]);
+    const evidenceInn = extractInnFromEvidenceNotes(row);
+    if (directInn) inns.add(directInn);
+    if (evidenceInn) inns.add(evidenceInn);
+
+    const name = normalizeOrgKey(row["Организация"]);
+    if (name) names.add(name);
+
+    const place = normalizePlaceKey(row["Город/район"]);
+    if (place) places.add(place);
+
+    for (const domain of evidenceDomains(row)) domains.add(domain);
+  }
+
+  return {
+    inns: [...inns],
+    names: [...names],
+    places: [...places],
+    domains: [...domains]
+  };
+}
+
+function looksAmbiguousOrganizationName(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const normalized = normalizeOrgKey(value);
+  if (!normalized) return true;
+
+  const genericTokens = new Set([
+    "тандем","транзит","ресурс","ресурсы","агро","карьер","сервис","логистика",
+    "транспорт","строй","групп","группа","центр","торг","торговый","компания",
+    "поставка","снабжение","экспресс","авто","спецтехника","техно","альянс"
+  ]);
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+
+  if (tokens.length === 1 && genericTokens.has(tokens[0])) return true;
+  if (/^(сервис|центр|площадка|направление|филиал)\b/.test(raw)) return true;
+  if (/основани[ея]\s+[abc]/i.test(raw)) return true;
+
+  return false;
+}
+
+function clusterNeedsIdentityWebSearch(cluster) {
+  const items = cluster?.items || [];
+  if (items.length > 1) return true;
+
+  const row = items[0]?.data || {};
+  const identity = clusterEvidenceIdentity(cluster);
+
+  // Конфликтующие ИНН требуют внешней проверки.
+  if (identity.inns.length > 1) return true;
+
+  // Один подтверждённый ИНН уже достаточен для singleton.
+  if (identity.inns.length === 1) return false;
+
+  const org = String(row["Организация"] || "").trim();
+  if (looksAmbiguousOrganizationName(org)) return true;
+
+  // Несколько разных доменов при singleton часто означают агрегаторы/посредников
+  // или неочевидную юридическую идентичность.
+  if (identity.domains.length > 2) return true;
+
+  return false;
+}
+
+function resolveClusterWithoutWeb(cluster) {
+  const identity = clusterEvidenceIdentity(cluster);
+  const inn = identity.inns.length === 1 ? identity.inns[0] : "";
+  return cluster.items.map((item) => {
+    const data = { ...(item?.data || {}) };
+    if (inn) {
+      data["ИНН"] = inn;
+      const existingEvidence = data.__evidence || {};
+      data.__evidence = {
+        ...existingEvidence,
+        source_urls: Array.isArray(existingEvidence.source_urls)
+          ? [...new Set(existingEvidence.source_urls.map(String).filter(Boolean))]
+          : [],
+        notes: [
+          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
+          `Identity без нового web-search: ИНН ${inn} извлечён из уже собранного evidence.`
+        ]
+      };
+    }
+    return { ...item, data };
+  });
+}
+
 function compactIdentityCluster(cluster) {
   return {
     cluster_id: cluster.cluster_id,
@@ -1013,10 +1122,42 @@ async function resolveCandidateIdentities({
   let completed = 0;
   let confirmedInnMentions = 0;
   let failedClusters = 0;
+  let skippedWebClusters = 0;
+  let searchedWebClusters = 0;
 
-  for (let offset = 0; offset < clusters.length; offset += IDENTITY_CONCURRENCY) {
+  const directClusters = [];
+  const webClusters = [];
+
+  for (const cluster of clusters) {
+    if (clusterNeedsIdentityWebSearch(cluster)) webClusters.push(cluster);
+    else directClusters.push(cluster);
+  }
+
+  // Сначала обрабатываем безопасные singleton без нового web-search.
+  for (const cluster of directClusters) {
     await assertNotCancelled();
-    const batch = clusters.slice(offset, offset + IDENTITY_CONCURRENCY);
+    const rows = resolveClusterWithoutWeb(cluster);
+    confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
+    resolved.push(...rows);
+    completed++;
+    skippedWebClusters++;
+
+    if (completed % 25 === 0 || completed === clusters.length) {
+      await onProgress({
+        completed,
+        total: clusters.length,
+        confirmedInnMentions,
+        failedClusters,
+        skippedWebClusters,
+        searchedWebClusters
+      });
+    }
+  }
+
+  // Web-search остаётся только для неоднозначных и multi-mention кластеров.
+  for (let offset = 0; offset < webClusters.length; offset += IDENTITY_CONCURRENCY) {
+    await assertNotCancelled();
+    const batch = webClusters.slice(offset, offset + IDENTITY_CONCURRENCY);
     const settled = await Promise.allSettled(
       batch.map((cluster) =>
         askJson(client, {
@@ -1040,6 +1181,8 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     for (let i = 0; i < settled.length; i++) {
       const cluster = batch[i];
       const item = settled[i];
+      searchedWebClusters++;
+
       if (item.status === "fulfilled") {
         const rows = applyIdentityResult(cluster, item.value);
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
@@ -1055,15 +1198,28 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
       completed,
       total: clusters.length,
       confirmedInnMentions,
-      failedClusters
+      failedClusters,
+      skippedWebClusters,
+      searchedWebClusters
     });
   }
+
+  console.log("[IDENTITY_WEB_SAVINGS] " + JSON.stringify({
+    total_clusters: clusters.length,
+    skipped_web_clusters: skippedWebClusters,
+    searched_web_clusters: searchedWebClusters,
+    skip_share: clusters.length
+      ? Number((skippedWebClusters / clusters.length).toFixed(4))
+      : 0
+  }));
 
   return {
     candidates: resolved,
     clusters: clusters.length,
     confirmedInnMentions,
-    failedClusters
+    failedClusters,
+    skippedWebClusters,
+    searchedWebClusters
   };
 }
 
@@ -2266,13 +2422,13 @@ ${JSON.stringify(compactCourtArchive)}
       region,
       prompt: prompts[9],
       assertNotCancelled,
-      onProgress: async ({ completed, total, confirmedInnMentions, failedClusters }) => {
+      onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
         await progress({
           phase: "qualification",
           step: 2,
           percent: 92 + Math.floor((completed / Math.max(1, total)) * 2),
           qualificationDetail:
-            `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}` +
+            `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}; без web: ${skippedWebClusters || 0}; с web: ${searchedWebClusters || 0}` +
             (failedClusters ? `; ошибок: ${failedClusters}` : "")
         });
       }
@@ -2371,6 +2527,8 @@ ${JSON.stringify(qaRecords)}`,
     console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
       raw_mentions: candidatePool.length,
       identity_clusters: identityResolution.clusters,
+      identity_skipped_web: identityResolution.skippedWebClusters,
+      identity_searched_web: identityResolution.searchedWebClusters,
       canonical_after_inn: canonicalPool.length,
       after_global_dedupe: qaRecords.length,
       A: qualified.counts.A,
@@ -2394,6 +2552,8 @@ ${JSON.stringify(qaRecords)}`,
         stage2_unique: uniqueResearchCount(parts[1] || emptyResearchResult()),
         raw_mentions: candidatePool.length,
         identity_clusters: identityResolution.clusters,
+        identity_skipped_web: identityResolution.skippedWebClusters,
+        identity_searched_web: identityResolution.searchedWebClusters,
         canonical_after_inn: canonicalPool.length,
         after_global_dedupe: qaRecords.length,
         A: qualified.counts.A,
@@ -2420,9 +2580,9 @@ ${JSON.stringify(qaRecords)}`,
     region,
     prompt: prompts[9],
     assertNotCancelled,
-    onProgress: async ({ completed, total, confirmedInnMentions, failedClusters }) => {
+    onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
       statuses[9].detail =
-        `identity resolution · ${completed} / ${total} кластеров · ИНН подтверждён для ${confirmedInnMentions} упоминаний` +
+        `identity resolution · ${completed} / ${total} кластеров · ИНН: ${confirmedInnMentions} · без web: ${skippedWebClusters || 0} · с web: ${searchedWebClusters || 0}` +
         (failedClusters ? ` · ошибок: ${failedClusters}` : "");
       await progress({
         phase: "dedupe",
@@ -2439,6 +2599,8 @@ ${JSON.stringify(qaRecords)}`,
     probable_clusters: identityResolution.clusters,
     confirmed_inn_mentions: identityResolution.confirmedInnMentions,
     failed_clusters: identityResolution.failedClusters,
+    skipped_web_clusters: identityResolution.skippedWebClusters,
+    searched_web_clusters: identityResolution.searchedWebClusters,
     canonical_after_inn: canonicalPool.length
   }));
 
