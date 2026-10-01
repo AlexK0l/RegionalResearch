@@ -1185,9 +1185,9 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     for (let i = 0; i < settled.length; i++) {
       const cluster = batch[i];
       const item = settled[i];
-      searchedWebClusters++;
 
       if (item.status === "fulfilled") {
+        searchedWebClusters++;
         const rows = applyIdentityResult(cluster, item.value);
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
         resolved.push(...rows);
@@ -1197,6 +1197,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
           resolved.push(...cluster.items);
           skippedWebClusters++;
         } else {
+          searchedWebClusters++;
           failedClusters++;
           resolved.push(...cluster.items);
         }
@@ -1624,13 +1625,13 @@ function assertWebBudgetBeforeCall(client, diagnosticLabel) {
   const scopeUsed = Number(budget.used[scope] || 0);
   const totalUsed = Number(budget.used.total || 0);
 
-  if ((scopeLimit && scopeUsed >= scopeLimit) || (totalLimit && totalUsed >= totalLimit)) {
-    const effectiveLimit = scopeLimit || totalLimit;
-    const effectiveUsed = scopeLimit ? scopeUsed : totalUsed;
+  const scopeExceeded = Boolean(scopeLimit && scopeUsed >= scopeLimit);
+  const totalExceeded = Boolean(totalLimit && totalUsed >= totalLimit);
+  if (scopeExceeded || totalExceeded) {
     throw new WebBudgetStopError(
-      scope,
-      effectiveUsed,
-      effectiveLimit,
+      totalExceeded && !scopeExceeded ? "total" : scope,
+      totalExceeded && !scopeExceeded ? totalUsed : scopeUsed,
+      totalExceeded && !scopeExceeded ? totalLimit : scopeLimit,
       totalUsed,
       totalLimit
     );
