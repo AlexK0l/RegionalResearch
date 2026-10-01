@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "8mb" }));
 
 const allowedOrigins = new Set(
   [
@@ -193,14 +193,21 @@ app.post("/api/jobs", async (req, res) => {
         .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))[0] || null;
     }
 
-    const snapshot = sourceJob?.result?.discovery_snapshot;
-    if (!sourceJob || sourceJob.state !== "completed" || !snapshot) {
+    const uploadedSnapshot =
+      req.body?.snapshot &&
+      req.body.snapshot.version === 1 &&
+      Array.isArray(req.body.snapshot.parts)
+        ? req.body.snapshot
+        : null;
+    const snapshot = sourceJob?.result?.discovery_snapshot || uploadedSnapshot;
+
+    if (!snapshot) {
       return res.status(409).json({
-        error: "Для Replay нужен завершённый тестовый job со snapshot в текущей сессии backend"
+        error: "Для Replay нужен завершённый тестовый job или сохранённый discovery snapshot"
       });
     }
-    region = String(snapshot.region || sourceJob.region || "").trim();
-    data = { region, snapshot, sourceJobId: sourceJob.id };
+    region = String(snapshot.region || sourceJob?.region || "").trim();
+    data = { region, snapshot, sourceJobId: sourceJob?.id || sourceJobId || "" };
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
@@ -248,6 +255,17 @@ app.get("/api/jobs/:id", (req, res) => {
       : null,
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
+});
+
+app.get("/api/jobs/:id/snapshot", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed" || !job.result?.discovery_snapshot) {
+    return res.status(409).json({ error: "Discovery snapshot для этого задания недоступен" });
+  }
+
+  res.setHeader("Cache-Control", "no-store");
+  res.json(job.result.discovery_snapshot);
 });
 
 app.post("/api/jobs/:id/cancel", (req, res) => {
