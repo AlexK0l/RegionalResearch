@@ -214,6 +214,12 @@ async function poll(restoring=false){
           ", identity без web: "+(c.identity_skipped_web||0)+
           ", identity с web: "+(c.identity_searched_web||0)+
           ", после global dedupe: "+(c.after_global_dedupe||0)+
+          (c.web_budget?.used
+            ? ", web budget: этап 1 "+(c.web_budget.used.stage1||0)+"/"+(c.web_budget.limits.stage1||"—")+
+              ", этап 2 "+(c.web_budget.used.stage2||0)+"/"+(c.web_budget.limits.stage2||"—")+
+              ", identity "+(c.web_budget.used.identity||0)+"/"+(c.web_budget.limits.identity||"—")+
+              ", всего "+(c.web_budget.used.total||0)+"/"+(c.web_budget.limits.total||"—")
+            : "")+
           ". Финально: A — "+(c.A||0)+
           ", B — "+(c.B||0)+
           ", C — "+(c.C||0)+
