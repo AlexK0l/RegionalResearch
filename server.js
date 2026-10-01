@@ -142,34 +142,9 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
   }
 });
 
-app.post("/api/jobs", async (req, res) => {
-  const region = String(req.body?.region || "").trim();
-  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
-  const mode = req.body?.mode === "test12" ? "test12" : "full";
+const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "replay"]);
 
-  if (!region) return res.status(400).json({ error: "Регион обязателен" });
-  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
-
-  const id = crypto.randomUUID();
-  const job = {
-    id,
-    region,
-    mode,
-    state: "waiting",
-    progress: {},
-    result: null,
-    error: null,
-    cancelled: false,
-    abortController: new AbortController(),
-    createdAt: Date.now(),
-    async updateProgress(progress) {
-      this.progress = progress;
-    }
-  };
-  jobs.set(id, job);
-
-  res.status(202).json({ id, region, mode });
-
+function queueJob(job, apiKey) {
   queueMicrotask(async () => {
     job.state = "active";
     try {
@@ -193,6 +168,53 @@ app.post("/api/jobs", async (req, res) => {
       }
     }
   });
+}
+
+app.post("/api/jobs", async (req, res) => {
+  const requestedMode = String(req.body?.mode || "full");
+  const mode = JOB_MODES.has(requestedMode) ? requestedMode : "full";
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  let region = String(req.body?.region || "").trim();
+  let data = { region };
+
+  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
+
+  if (mode === "replay") {
+    const sourceJobId = String(req.body?.sourceJobId || "").trim();
+    const sourceJob = jobs.get(sourceJobId);
+    const snapshot = sourceJob?.result?.discovery_snapshot;
+    if (!sourceJob || sourceJob.state !== "completed" || !snapshot) {
+      return res.status(409).json({
+        error: "Для Replay нужен завершённый тестовый job со snapshot в текущей сессии backend"
+      });
+    }
+    region = String(snapshot.region || sourceJob.region || "").trim();
+    data = { region, snapshot, sourceJobId };
+  }
+
+  if (!region) return res.status(400).json({ error: "Регион обязателен" });
+
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    region,
+    mode,
+    data,
+    state: "waiting",
+    progress: {},
+    result: null,
+    error: null,
+    cancelled: false,
+    abortController: new AbortController(),
+    createdAt: Date.now(),
+    async updateProgress(progress) {
+      this.progress = progress;
+    }
+  };
+  jobs.set(id, job);
+
+  res.status(202).json({ id, region, mode });
+  queueJob(job, apiKey);
 });
 
 app.get("/api/jobs/:id", (req, res) => {
@@ -209,7 +231,8 @@ app.get("/api/jobs/:id", (req, res) => {
           counts: job.result?.counts,
           contacts: job.result?.contacts,
           mode: job.result?.mode || job.mode || "full",
-          qualified_companies: job.result?.qualified_companies || []
+          qualified_companies: job.result?.qualified_companies || [],
+          replay_available: Boolean(job.result?.discovery_snapshot)
         }
       : null,
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
