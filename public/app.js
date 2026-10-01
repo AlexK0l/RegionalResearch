@@ -32,6 +32,38 @@ let currentJobId=localStorage.getItem("sat_current_job")||"";
 let pollTimer=null;
 let timerTick=null;
 let lastProgress=null;
+const SNAPSHOT_STORAGE_KEY="sat_discovery_snapshot_v1";
+
+function loadSavedSnapshot(){
+  try{
+    const raw=localStorage.getItem(SNAPSHOT_STORAGE_KEY);
+    if(!raw)return null;
+    const snapshot=JSON.parse(raw);
+    return snapshot?.version===1&&Array.isArray(snapshot.parts)?snapshot:null;
+  }catch{return null;}
+}
+
+function saveSnapshot(snapshot){
+  try{
+    if(snapshot?.version!==1||!Array.isArray(snapshot.parts))return false;
+    localStorage.setItem(SNAPSHOT_STORAGE_KEY,JSON.stringify(snapshot));
+    return true;
+  }catch(err){
+    console.warn("Не удалось сохранить discovery snapshot в браузере:",err);
+    return false;
+  }
+}
+
+async function cacheSnapshot(jobId){
+  try{
+    const snapshot=await api("/api/jobs/"+encodeURIComponent(jobId)+"/snapshot");
+    return saveSnapshot(snapshot);
+  }catch(err){
+    console.warn("Discovery snapshot не сохранён:",err);
+    return false;
+  }
+}
+
 
 function headers(json=false){
   const h={};
@@ -100,7 +132,8 @@ function resetIdleState(){
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
-  e.replay.hidden=true;
+  e.replay.hidden=!loadSavedSnapshot();
+  e.replay.disabled=!loadSavedSnapshot();
   if(backendReady){
     e.start.disabled=false;
     e.smoke.disabled=false;
@@ -226,7 +259,8 @@ async function poll(restoring=false){
           ", исключено — "+(c.excluded_after_qualification||0)+".";
         renderQualifiedCompanies(r.qualified_companies||[]);
         e.download.hidden=true;
-        e.replay.hidden=!r.replay_available;
+        if(r.replay_available) await cacheSnapshot(currentJobId);
+        e.replay.hidden=!(r.replay_available||loadSavedSnapshot());
         e.replay.disabled=false;
       }else{
         e.testCompanies.hidden=true;
@@ -311,7 +345,10 @@ async function startReplay(){
   e.progressCard.hidden=false;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
-    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({mode:"replay",sourceJobId})});
+    const snapshot=loadSavedSnapshot();
+    const payload={mode:"replay",sourceJobId};
+    if(snapshot)payload.snapshot=snapshot;
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
@@ -379,6 +416,8 @@ async function waitForBackend(){
           e.smoke.disabled=false;
           e.quality.disabled=false;
           e.test.disabled=false;
+          e.replay.hidden=!loadSavedSnapshot();
+          e.replay.disabled=!loadSavedSnapshot();
         }
         return true;
       }
