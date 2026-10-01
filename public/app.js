@@ -174,7 +174,7 @@ function renderQualifiedCompanies(companies){
     '</table></div>';
 }
 
-async function poll(){
+async function poll(restoring=false){
   if(!currentJobId)return;
   try{
     const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
@@ -221,6 +221,12 @@ async function poll(){
 
     if(d.state==="cancelled"){
       clearInterval(pollTimer);pollTimer=null;
+      localStorage.removeItem("sat_current_job");
+      if(restoring){
+        resetIdleState();
+        return;
+      }
+      currentJobId="";
       e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
       e.statusTitle.textContent="Остановлено";
       e.statusText.textContent=d.error||"Исследование остановлено пользователем.";
@@ -338,7 +344,7 @@ timerTick=setInterval(()=>{
     config=await api("/api/config");
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
     if(currentJobId){
-      await poll();
+      await poll(true);
       if(currentJobId&&!pollTimer)pollTimer=setInterval(poll,2000);
     }
   }catch(err){
