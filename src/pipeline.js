@@ -794,6 +794,7 @@ async function runResearchMicroBatch({
         }
       }
     } catch (error) {
+      if (isWebBudgetStop(error)) throw error;
       if (!firstError) firstError = error;
     }
   }
@@ -1156,9 +1157,11 @@ async function resolveCandidateIdentities({
   }
 
   // Web-search остаётся только для неоднозначных и multi-mention кластеров.
-  for (let offset = 0; offset < webClusters.length; offset += IDENTITY_CONCURRENCY) {
+  const identityConcurrency = client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
+  let identityBudgetStopped = false;
+  for (let offset = 0; offset < webClusters.length; offset += identityConcurrency) {
     await assertNotCancelled();
-    const batch = webClusters.slice(offset, offset + IDENTITY_CONCURRENCY);
+    const batch = webClusters.slice(offset, offset + identityConcurrency);
     const settled = await Promise.allSettled(
       batch.map((cluster) =>
         askJson(client, {
@@ -1189,10 +1192,31 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
         resolved.push(...rows);
       } else {
-        failedClusters++;
-        resolved.push(...cluster.items);
+        if (isWebBudgetStop(item.reason)) {
+          identityBudgetStopped = true;
+          resolved.push(...cluster.items);
+          skippedWebClusters++;
+        } else {
+          failedClusters++;
+          resolved.push(...cluster.items);
+        }
       }
       completed++;
+    }
+
+    if (identityBudgetStopped) {
+      const remainingStart = offset + batch.length;
+      const remaining = webClusters.slice(remainingStart);
+      for (const cluster of remaining) {
+        resolved.push(...cluster.items);
+        skippedWebClusters++;
+        completed++;
+      }
+      console.log("[QUALITY_IDENTITY_BUDGET_STOP] " + JSON.stringify({
+        searched_web_clusters: searchedWebClusters,
+        skipped_after_budget: remaining.length + 1,
+        budget: publicWebBudgetState(client.__webBudget)
+      }));
     }
 
     await onProgress({
@@ -1203,6 +1227,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
       skippedWebClusters,
       searchedWebClusters
     });
+    if (identityBudgetStopped) break;
   }
 
   console.log("[IDENTITY_WEB_SAVINGS] " + JSON.stringify({
@@ -1534,6 +1559,128 @@ function applyFinalQualification(records, decisions) {
   return { result, counts };
 }
 
+class WebBudgetStopError extends Error {
+  constructor(scope, used, limit, totalUsed, totalLimit) {
+    super(`WEB_BUDGET_STOP:${scope}:${used}/${limit}:total=${totalUsed}/${totalLimit}`);
+    this.name = "WebBudgetStopError";
+    this.code = "WEB_BUDGET_STOP";
+    this.scope = scope;
+    this.used = used;
+    this.limit = limit;
+    this.totalUsed = totalUsed;
+    this.totalLimit = totalLimit;
+  }
+}
+
+function webBudgetScope(label = "") {
+  const value = String(label || "").toLowerCase();
+  if (value.startsWith("этап 1 |")) return "stage1";
+  if (value.startsWith("этап 2 |")) return "stage2";
+  if (value.startsWith("identity |")) return "identity";
+  if (value.startsWith("география региона |")) return "geography";
+  return "other";
+}
+
+function createQualityWebBudget() {
+  return {
+    limits: {
+      stage1: 50,
+      stage2: 40,
+      identity: 30,
+      total: 120
+    },
+    used: {
+      stage1: 0,
+      stage2: 0,
+      identity: 0,
+      geography: 0,
+      other: 0,
+      total: 0
+    },
+    warned: new Set(),
+    stopped: new Set()
+  };
+}
+
+function publicWebBudgetState(budget) {
+  if (!budget) return null;
+  return {
+    limits: { ...budget.limits },
+    used: { ...budget.used }
+  };
+}
+
+function budgetLimitForScope(budget, scope) {
+  return Number(budget?.limits?.[scope] || 0);
+}
+
+function assertWebBudgetBeforeCall(client, diagnosticLabel) {
+  const budget = client?.__webBudget;
+  if (!budget) return;
+
+  const scope = webBudgetScope(diagnosticLabel);
+  const scopeLimit = budgetLimitForScope(budget, scope);
+  const totalLimit = Number(budget.limits.total || 0);
+  const scopeUsed = Number(budget.used[scope] || 0);
+  const totalUsed = Number(budget.used.total || 0);
+
+  if ((scopeLimit && scopeUsed >= scopeLimit) || (totalLimit && totalUsed >= totalLimit)) {
+    const effectiveLimit = scopeLimit || totalLimit;
+    const effectiveUsed = scopeLimit ? scopeUsed : totalUsed;
+    throw new WebBudgetStopError(
+      scope,
+      effectiveUsed,
+      effectiveLimit,
+      totalUsed,
+      totalLimit
+    );
+  }
+}
+
+function recordWebBudgetUsage(client, diagnosticLabel, calls) {
+  const budget = client?.__webBudget;
+  const amount = Math.max(0, Number(calls || 0));
+  if (!budget || !amount) return;
+
+  const scope = webBudgetScope(diagnosticLabel);
+  budget.used[scope] = Number(budget.used[scope] || 0) + amount;
+  budget.used.total = Number(budget.used.total || 0) + amount;
+
+  const checks = [
+    { key: scope, used: budget.used[scope], limit: budgetLimitForScope(budget, scope) },
+    { key: "total", used: budget.used.total, limit: Number(budget.limits.total || 0) }
+  ];
+
+  for (const check of checks) {
+    if (!check.limit) continue;
+    const ratio = check.used / check.limit;
+    if (ratio >= 0.8 && !budget.warned.has(check.key)) {
+      budget.warned.add(check.key);
+      console.log("[WEB_BUDGET_WARNING] " + JSON.stringify({
+        scope: check.key,
+        used: check.used,
+        limit: check.limit,
+        total_used: budget.used.total,
+        total_limit: budget.limits.total
+      }));
+    }
+    if (check.used >= check.limit && !budget.stopped.has(check.key)) {
+      budget.stopped.add(check.key);
+      console.log("[WEB_BUDGET_STOP] " + JSON.stringify({
+        scope: check.key,
+        used: check.used,
+        limit: check.limit,
+        total_used: budget.used.total,
+        total_limit: budget.limits.total
+      }));
+    }
+  }
+}
+
+function isWebBudgetStop(error) {
+  return error?.code === "WEB_BUDGET_STOP" || error?.name === "WebBudgetStopError";
+}
+
 function diagnosticRowCount(data) {
   return (
     (Array.isArray(data?.direct_buyers) ? data.direct_buyers.length : 0) +
@@ -1637,12 +1784,22 @@ async function askJson(client, {
   const startedAt = Date.now();
   const query = compactDiagnosticQuery(input, diagnosticLabel);
 
+  if (webSearch) assertWebBudgetBeforeCall(client, diagnosticLabel);
+
   try {
     const response = await client.responses.create(request, requestOptions);
     const usage = response?.usage || {};
     const stopReason =
       response?.incomplete_details?.reason ||
       (response?.status === "completed" ? "completed" : response?.status || "unknown");
+    const toolCounts = diagnosticToolCounts(response);
+    if (webSearch) {
+      recordWebBudgetUsage(
+        client,
+        diagnosticLabel,
+        Number(toolCounts.web_search_call || 0)
+      );
+    }
 
     let parsed = null;
     let parseError = "";
@@ -1730,7 +1887,7 @@ async function askJson(client, {
       output_tokens: usage?.output_tokens ?? null,
       reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
       cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
-      tool_calls: diagnosticToolCounts(response),
+      tool_calls: toolCounts,
       web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
       rows_returned: parsed ? diagnosticRowCount(parsed) : null,
@@ -2231,6 +2388,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const diagnosticMode = Boolean(testProfile);
   const replayMode = mode === "replay";
   const researchStageLimit = diagnosticMode ? testProfile.stageLimit : 9;
+  if (mode === "quality") client.__webBudget = createQualityWebBudget();
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -2346,6 +2504,7 @@ ${JSON.stringify(compactCourtArchive)}
     const branches = Array.isArray(selectedIndexes)
       ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
       : allBranches;
+    let stageBudgetStopped = false;
     for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
@@ -2366,17 +2525,34 @@ ${JSON.stringify(compactCourtArchive)}
 
       const alreadyFound = discoveryKnownNames(combined);
       const branchScopes = discoveryScopesForBranch(i, branchIndex, researchScopes);
-      const branchResult = await runResearchMicroBatch({
-        client,
-        region,
-        stageIndex: i,
-        branch: branches[branchIndex],
-        branchIndex,
-        branches,
-        scopes: researchScopes,
-        extraContext,
-        alreadyFound
-      });
+      let branchResult;
+      try {
+        branchResult = await runResearchMicroBatch({
+          client,
+          region,
+          stageIndex: i,
+          branch: branches[branchIndex],
+          branchIndex,
+          branches,
+          scopes: researchScopes,
+          extraContext,
+          alreadyFound
+        });
+      } catch (error) {
+        if (!isWebBudgetStop(error)) throw error;
+        stageBudgetStopped = true;
+        statuses[i].detail =
+          `web budget достигнут · ${uniqueResearchCount(combined)} уникальных · переходим дальше`;
+        console.log("[QUALITY_STAGE_BUDGET_STOP] " + JSON.stringify({
+          stage: i + 1,
+          scope: error.scope,
+          used: error.used,
+          limit: error.limit,
+          total_used: error.totalUsed,
+          total_limit: error.totalLimit
+        }));
+        break;
+      }
       appendResearchResult(combined, branchResult, `branch-${branchIndex + 1}`);
 
       const after = uniqueResearchCount(combined);
@@ -2392,6 +2568,7 @@ ${JSON.stringify(compactCourtArchive)}
     let lowYieldStreak = 0;
     for (
       let recoveryIndex = 0;
+      !stageBudgetStopped &&
       (!testProfile || testProfile.recovery) &&
       recoveryIndex < RESEARCH_MAX_RECOVERY_BRANCHES &&
       uniqueResearchCount(combined) < RESEARCH_SOFT_TARGET;
@@ -2464,6 +2641,7 @@ ${JSON.stringify(compactCourtArchive)}
             }
           }
         } catch (error) {
+          if (isWebBudgetStop(error)) throw error;
           console.error("[DISCOVERY_RECOVERY_SCOPE_ERROR] " + JSON.stringify({
             stage: i + 1,
             recovery: recoveryIndex + 1,
@@ -2617,6 +2795,7 @@ ${JSON.stringify(qaRecords)}`,
       identity_clusters: identityResolution.clusters,
       identity_skipped_web: identityResolution.skippedWebClusters,
       identity_searched_web: identityResolution.searchedWebClusters,
+      web_budget: publicWebBudgetState(client.__webBudget),
       canonical_after_inn: canonicalPool.length,
       after_global_dedupe: qaRecords.length,
       A: qualified.counts.A,
@@ -2642,6 +2821,7 @@ ${JSON.stringify(qaRecords)}`,
         identity_clusters: identityResolution.clusters,
         identity_skipped_web: identityResolution.skippedWebClusters,
         identity_searched_web: identityResolution.searchedWebClusters,
+        web_budget: publicWebBudgetState(client.__webBudget),
         canonical_after_inn: canonicalPool.length,
         after_global_dedupe: qaRecords.length,
         A: qualified.counts.A,
