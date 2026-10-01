@@ -2369,13 +2369,14 @@ function testProfileForMode(mode) {
   return TEST_PROFILES[mode] || null;
 }
 
-function discoverySnapshot(region, parts, sourceMode) {
+function discoverySnapshot(region, parts, sourceMode, identityCheckpoint = null) {
   return {
-    version: 1,
+    version: 2,
     region,
     source_mode: sourceMode,
     created_at: new Date().toISOString(),
-    parts
+    parts,
+    identity_checkpoint: identityCheckpoint
   };
 }
 
@@ -2431,13 +2432,15 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   if (replayMode) {
     const snapshot = job.data?.snapshot;
-    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.parts)) {
+    if (!snapshot || ![1, 2].includes(snapshot.version) || !Array.isArray(snapshot.parts)) {
       throw new Error("Replay snapshot отсутствует или имеет неподдерживаемый формат");
     }
     parts = snapshot.parts;
     console.log("[REPLAY_SNAPSHOT] " + JSON.stringify({
       region,
       source_mode: snapshot.source_mode || "",
+      snapshot_version: snapshot.version,
+      has_identity_checkpoint: Array.isArray(snapshot.identity_checkpoint?.candidates),
       parts: parts.length,
       rows: parts.reduce((sum, part) => sum + rowCount(part), 0)
     }));
@@ -2683,24 +2686,52 @@ ${JSON.stringify(compactCourtArchive)}
     await progress({ phase: "qualification", step: 2, percent: 92 });
 
     const candidatePool = flattenCandidates(parts);
-    const identityResolution = await resolveCandidateIdentities({
-      client,
-      candidates: candidatePool,
-      region,
-      prompt: prompts[9],
-      assertNotCancelled,
-      onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
-        await progress({
-          phase: "qualification",
-          step: 2,
-          percent: 92 + Math.floor((completed / Math.max(1, total)) * 2),
-          qualificationDetail:
-            `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}; без web: ${skippedWebClusters || 0}; с web: ${searchedWebClusters || 0}` +
-            (failedClusters ? `; ошибок: ${failedClusters}` : "")
-        });
-      },
-      allowWebSearch: testProfile?.identityWebSearch !== false
-    });
+    const replayCheckpoint = replayMode && Array.isArray(job.data?.snapshot?.identity_checkpoint?.candidates)
+      ? job.data.snapshot.identity_checkpoint
+      : null;
+
+    let identityResolution;
+    if (replayCheckpoint) {
+      identityResolution = {
+        candidates: replayCheckpoint.candidates,
+        clusters: Number(replayCheckpoint.clusters || 0),
+        confirmedInnMentions: Number(replayCheckpoint.confirmedInnMentions || 0),
+        failedClusters: Number(replayCheckpoint.failedClusters || 0),
+        skippedWebClusters: Number(replayCheckpoint.skippedWebClusters || replayCheckpoint.clusters || 0),
+        searchedWebClusters: 0
+      };
+      console.log("[REPLAY_IDENTITY_CHECKPOINT] " + JSON.stringify({
+        candidates: identityResolution.candidates.length,
+        clusters: identityResolution.clusters,
+        source_searched_web_clusters: Number(replayCheckpoint.searchedWebClusters || 0)
+      }));
+      await progress({
+        phase: "qualification",
+        step: 2,
+        percent: 94,
+        qualificationDetail:
+          `identity checkpoint · ${identityResolution.candidates.length} resolved mentions · без повторного identity`
+      });
+    } else {
+      identityResolution = await resolveCandidateIdentities({
+        client,
+        candidates: candidatePool,
+        region,
+        prompt: prompts[9],
+        assertNotCancelled,
+        onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
+          await progress({
+            phase: "qualification",
+            step: 2,
+            percent: 92 + Math.floor((completed / Math.max(1, total)) * 2),
+            qualificationDetail:
+              `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}; без web: ${skippedWebClusters || 0}; с web: ${searchedWebClusters || 0}` +
+              (failedClusters ? `; ошибок: ${failedClusters}` : "")
+          });
+        },
+        allowWebSearch: testProfile?.identityWebSearch !== false
+      });
+    }
 
     const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
     const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
@@ -2834,7 +2865,19 @@ ${JSON.stringify(qaRecords)}`,
         excluded_after_qualification: qualified.counts.excluded
       },
       qualified_companies: qualifiedCompanies,
-      discovery_snapshot: discoverySnapshot(region, parts, mode),
+      discovery_snapshot: discoverySnapshot(
+        region,
+        parts,
+        mode,
+        {
+          candidates: identityResolution.candidates,
+          clusters: identityResolution.clusters,
+          confirmedInnMentions: identityResolution.confirmedInnMentions,
+          failedClusters: identityResolution.failedClusters,
+          skippedWebClusters: identityResolution.skippedWebClusters,
+          searchedWebClusters: identityResolution.searchedWebClusters
+        }
+      ),
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
   }
