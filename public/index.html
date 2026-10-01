@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261001-2">
+<link rel="stylesheet" href="/styles.css?v=20261001-3">
 </head>
 <body>
 <main class="shell">
@@ -25,7 +25,10 @@
     </label>
     <div class="actions">
       <button id="startBtn" disabled>Запустить исследование</button>
+      <button id="smokeBtn" class="secondary" disabled>Smoke test</button>
+      <button id="qualityBtn" class="secondary" disabled>Quality sample</button>
       <button id="testBtn" class="secondary" disabled>Тест этапов 1–2</button>
+      <button id="replayBtn" class="secondary" hidden disabled>Replay без web</button>
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
@@ -55,6 +58,6 @@
     <button id="downloadBtn">Скачать XLSX</button>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261001-2"></script>
+<script type="module" src="/app.js?v=20261001-3"></script>
 </body>
 </html>
