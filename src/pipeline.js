@@ -1115,7 +1115,8 @@ async function resolveCandidateIdentities({
   region,
   prompt,
   onProgress,
-  assertNotCancelled
+  assertNotCancelled,
+  allowWebSearch = true
 }) {
   const clusters = buildIdentityClusters(candidates);
   const resolved = [];
@@ -1129,7 +1130,7 @@ async function resolveCandidateIdentities({
   const webClusters = [];
 
   for (const cluster of clusters) {
-    if (clusterNeedsIdentityWebSearch(cluster)) webClusters.push(cluster);
+    if (allowWebSearch && clusterNeedsIdentityWebSearch(cluster)) webClusters.push(cluster);
     else directClusters.push(cluster);
   }
 
@@ -2170,6 +2171,54 @@ function isPriorityAB(row) {
   return basis.startsWith("A") || basis.startsWith("B");
 }
 
+const TEST_PROFILES = {
+  smoke: {
+    stageLimit: 1,
+    branchIndexes: { 0: [0, 1] },
+    scopeLimit: 1,
+    recovery: false,
+    identityWebSearch: false
+  },
+  quality: {
+    stageLimit: 2,
+    branchIndexes: {
+      0: [0, 1, 2, 5],
+      1: [0, 2, 5]
+    },
+    scopeLimit: 2,
+    recovery: false,
+    identityWebSearch: true
+  },
+  test12: {
+    stageLimit: 2,
+    branchIndexes: null,
+    scopeLimit: null,
+    recovery: true,
+    identityWebSearch: true
+  },
+  replay: {
+    stageLimit: 0,
+    branchIndexes: null,
+    scopeLimit: 0,
+    recovery: false,
+    identityWebSearch: false
+  }
+};
+
+function testProfileForMode(mode) {
+  return TEST_PROFILES[mode] || null;
+}
+
+function discoverySnapshot(region, parts, sourceMode) {
+  return {
+    version: 1,
+    region,
+    source_mode: sourceMode,
+    created_at: new Date().toISOString(),
+    parts
+  };
+}
+
 export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
@@ -2177,8 +2226,11 @@ export async function runResearchPipeline({ job, apiKey }) {
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
-  const diagnosticMode = job.mode === "test12";
-  const researchStageLimit = diagnosticMode ? 2 : 9;
+  const mode = String(job.mode || "full");
+  const testProfile = testProfileForMode(mode);
+  const diagnosticMode = Boolean(testProfile);
+  const replayMode = mode === "replay";
+  const researchStageLimit = diagnosticMode ? testProfile.stageLimit : 9;
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -2212,15 +2264,44 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   await progress({ phase: "starting", percent: 0 });
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
-  const parts = [];
+  let parts = [];
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
   const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
-  const researchScopes = await discoverRegionSearchScopes(client, region);
-  console.log("[RESEARCH_SCOPES] " + JSON.stringify({
-    region,
-    scopes: researchScopes
-  }));
-  for (let i = 0; i < researchStageLimit; i++) {
+
+  if (replayMode) {
+    const snapshot = job.data?.snapshot;
+    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.parts)) {
+      throw new Error("Replay snapshot отсутствует или имеет неподдерживаемый формат");
+    }
+    parts = snapshot.parts;
+    console.log("[REPLAY_SNAPSHOT] " + JSON.stringify({
+      region,
+      source_mode: snapshot.source_mode || "",
+      parts: parts.length,
+      rows: parts.reduce((sum, part) => sum + rowCount(part), 0)
+    }));
+    await progress({ phase: "qualification", step: Math.min(2, parts.length || 1), percent: 90 });
+  }
+
+  let researchScopes = [];
+  if (!replayMode) {
+    researchScopes =
+      mode === "smoke"
+        ? [`весь регион: ${region}`]
+        : await discoverRegionSearchScopes(client, region);
+
+    if (testProfile?.scopeLimit) {
+      researchScopes = researchScopes.slice(0, testProfile.scopeLimit);
+    }
+
+    console.log("[RESEARCH_SCOPES] " + JSON.stringify({
+      region,
+      mode,
+      scopes: researchScopes
+    }));
+  }
+
+  for (let i = 0; !replayMode && i < researchStageLimit; i++) {
     await assertNotCancelled();
     startStep(statuses[i]);
 
@@ -2260,7 +2341,11 @@ ${JSON.stringify(compactCourtArchive)}
       }
     }
 
-    const branches = STAGE_SEARCH_BRANCHES[i] || [];
+    const allBranches = STAGE_SEARCH_BRANCHES[i] || [];
+    const selectedIndexes = testProfile?.branchIndexes?.[i];
+    const branches = Array.isArray(selectedIndexes)
+      ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
+      : allBranches;
     for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
@@ -2307,6 +2392,7 @@ ${JSON.stringify(compactCourtArchive)}
     let lowYieldStreak = 0;
     for (
       let recoveryIndex = 0;
+      (!testProfile || testProfile.recovery) &&
       recoveryIndex < RESEARCH_MAX_RECOVERY_BRANCHES &&
       uniqueResearchCount(combined) < RESEARCH_SOFT_TARGET;
       recoveryIndex++
@@ -2431,7 +2517,8 @@ ${JSON.stringify(compactCourtArchive)}
             `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}; без web: ${skippedWebClusters || 0}; с web: ${searchedWebClusters || 0}` +
             (failedClusters ? `; ошибок: ${failedClusters}` : "")
         });
-      }
+      },
+      allowWebSearch: testProfile?.identityWebSearch !== false
     });
 
     const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
@@ -2525,6 +2612,7 @@ ${JSON.stringify(qaRecords)}`,
     }
 
     console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
+      mode,
       raw_mentions: candidatePool.length,
       identity_clusters: identityResolution.clusters,
       identity_skipped_web: identityResolution.skippedWebClusters,
@@ -2540,7 +2628,7 @@ ${JSON.stringify(qaRecords)}`,
 
     await progress({ phase: "completed", step: 2, percent: 100 });
     return {
-      mode: "test12",
+      mode,
       result: qualified.result,
       region,
       counts: {
@@ -2563,6 +2651,7 @@ ${JSON.stringify(qaRecords)}`,
         excluded_after_qualification: qualified.counts.excluded
       },
       qualified_companies: qualifiedCompanies,
+      discovery_snapshot: discoverySnapshot(region, parts, mode),
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
   }
