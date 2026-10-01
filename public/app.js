@@ -5,7 +5,10 @@ const e={
   region:document.querySelector("#region"),
   regions:document.querySelector("#regions"),
   start:document.querySelector("#startBtn"),
+  smoke:document.querySelector("#smokeBtn"),
+  quality:document.querySelector("#qualityBtn"),
   test:document.querySelector("#testBtn"),
+  replay:document.querySelector("#replayBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
   progressCard:document.querySelector("#progressCard"),
@@ -97,7 +100,13 @@ function resetIdleState(){
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
-  if(backendReady){e.start.disabled=false;e.test.disabled=false;}
+  e.replay.hidden=true;
+  if(backendReady){
+    e.start.disabled=false;
+    e.smoke.disabled=false;
+    e.quality.disabled=false;
+    e.test.disabled=false;
+  }
   if(config?.steps){
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
   }
@@ -149,7 +158,7 @@ function renderQualifiedCompanies(companies){
   const rows=Array.isArray(companies)?companies:[];
   if(!rows.length){
     e.testCompanies.hidden=false;
-    e.testCompanies.innerHTML='<p class="note">После проверки evidence ни одна компания не прошла строгий фильтр A/B.</p>';
+    e.testCompanies.innerHTML='<p class="note">После проверки evidence ни одна компания не прошла финальный фильтр A/B/C.</p>';
     return;
   }
 
@@ -183,15 +192,27 @@ async function poll(restoring=false){
 
     if(d.state==="completed"){
       clearInterval(pollTimer);pollTimer=null;
-      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;
+      e.smoke.disabled=false;
+      e.quality.disabled=false;
+      e.test.disabled=false;
+      e.cancel.disabled=true;
       e.resultCard.hidden=false;
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
-      if(r.mode==="test12"){
+      const isTestMode=["test12","smoke","quality","replay"].includes(r.mode);
+      if(isTestMode){
+        const modeLabel={
+          smoke:"Smoke test",
+          quality:"Quality sample",
+          test12:"Тест этапов 1–2",
+          replay:"Replay без web"
+        }[r.mode]||"Тест";
         e.resultSummary.textContent=
-          "Тест этапов 1–2 завершён. Сырых находок: "+(c.total_rows||0)+
+          modeLabel+" завершён. Сырых находок: "+(c.total_rows||0)+
           ", условно уникальных discovery: "+(c.unique||0)+
           ", identity-кластеров: "+(c.identity_clusters||0)+
-          ", canonical после подтверждённых ИНН: "+(c.canonical_after_inn||0)+
+          ", identity без web: "+(c.identity_skipped_web||0)+
+          ", identity с web: "+(c.identity_searched_web||0)+
           ", после global dedupe: "+(c.after_global_dedupe||0)+
           ". Финально: A — "+(c.A||0)+
           ", B — "+(c.B||0)+
@@ -199,6 +220,8 @@ async function poll(restoring=false){
           ", исключено — "+(c.excluded_after_qualification||0)+".";
         renderQualifiedCompanies(r.qualified_companies||[]);
         e.download.hidden=true;
+        e.replay.hidden=!r.replay_available;
+        e.replay.disabled=false;
       }else{
         e.testCompanies.hidden=true;
         e.testCompanies.innerHTML="";
@@ -214,7 +237,7 @@ async function poll(restoring=false){
 
     if(d.state==="failed"){
       clearInterval(pollTimer);pollTimer=null;
-      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
       e.error.hidden=false;e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой");
       return;
     }
@@ -227,7 +250,7 @@ async function poll(restoring=false){
         return;
       }
       currentJobId="";
-      e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
       e.statusTitle.textContent="Остановлено";
       e.statusText.textContent=d.error||"Исследование остановлено пользователем.";
       return;
@@ -240,7 +263,7 @@ async function poll(restoring=false){
       return;
     }
 
-    e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=false;
+    e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
       resetIdleState();
@@ -264,13 +287,34 @@ async function startJob(mode="full"){
     await poll();
     pollTimer=setInterval(poll,2000);
   }catch(err){
-    e.start.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
     e.error.hidden=false;e.error.textContent=err.message;
   }
 }
 
 async function start(){return startJob("full");}
+async function startSmoke(){return startJob("smoke");}
+async function startQuality(){return startJob("quality");}
 async function startTest(){return startJob("test12");}
+
+async function startReplay(){
+  if(!currentJobId)return;
+  const sourceJobId=currentJobId;
+  e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
+  e.progressCard.hidden=false;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+  try{
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({mode:"replay",sourceJobId})});
+    currentJobId=d.id;
+    localStorage.setItem("sat_current_job",currentJobId);
+    if(pollTimer)clearInterval(pollTimer);
+    await poll();
+    pollTimer=setInterval(poll,2000);
+  }catch(err){
+    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.replay.disabled=false;e.cancel.disabled=true;
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
 
 async function cancel(){
   if(!currentJobId)return;
@@ -309,7 +353,10 @@ function setServiceStatus(text,state=""){
 
 async function waitForBackend(){
   e.start.disabled=true;
+  e.smoke.disabled=true;
+  e.quality.disabled=true;
   e.test.disabled=true;
+  e.replay.disabled=true;
   setServiceStatus("Сервис запускается…","starting");
   while(!backendReady){
     try{
@@ -320,7 +367,12 @@ async function waitForBackend(){
       if(r.ok){
         backendReady=true;
         setServiceStatus("Сервис готов к работе.","ready");
-        if(!currentJobId){e.start.disabled=false;e.test.disabled=false;}
+        if(!currentJobId){
+          e.start.disabled=false;
+          e.smoke.disabled=false;
+          e.quality.disabled=false;
+          e.test.disabled=false;
+        }
         return true;
       }
     }catch{}
@@ -330,7 +382,10 @@ async function waitForBackend(){
 }
 
 e.start.onclick=start;
+e.smoke.onclick=startSmoke;
+e.quality.onclick=startQuality;
 e.test.onclick=startTest;
+e.replay.onclick=startReplay;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
 
