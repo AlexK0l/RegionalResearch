@@ -257,7 +257,7 @@ async function poll(restoring=false){
     }
 
     if(d.state==="cancelling"){
-      e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=true;
+      e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=true;
       e.statusTitle.textContent="Останавливаем";
       e.statusText.textContent="Прерываем активные запросы…";
       return;
@@ -278,7 +278,8 @@ async function startJob(mode="full"){
   if(!region){alert("Выберите или введите регион.");return;}
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
-  e.start.disabled=true;e.test.disabled=true;e.cancel.disabled=false;
+  e.replay.hidden=true;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode})});
     currentJobId=d.id;
