@@ -2548,7 +2548,7 @@ ${JSON.stringify(compactCourtArchive)}
       prompts[9] +
         finalQaContract() +
         `\n\nРЕГИОН: ${region}
-Это ТЕСТ этапов 1–2. Переданы canonical-строки после identity resolution.
+Это тестовый режим ${mode}. Переданы canonical-строки после identity resolution.
 Выполни только глобальную дедупликацию/QA. Не назначай A/B/C.
 Разные подтверждённые ИНН не объединяй.
 При удалении дубля объедини __evidence в сохраняемую строку.
