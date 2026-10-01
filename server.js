@@ -181,7 +181,18 @@ app.post("/api/jobs", async (req, res) => {
 
   if (mode === "replay") {
     const sourceJobId = String(req.body?.sourceJobId || "").trim();
-    const sourceJob = jobs.get(sourceJobId);
+    let sourceJob = sourceJobId ? jobs.get(sourceJobId) : null;
+
+    if (!sourceJob) {
+      sourceJob = [...jobs.values()]
+        .filter((item) =>
+          item?.state === "completed" &&
+          item?.result?.discovery_snapshot &&
+          ["quality", "test12", "smoke", "replay"].includes(item?.mode)
+        )
+        .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))[0] || null;
+    }
+
     const snapshot = sourceJob?.result?.discovery_snapshot;
     if (!sourceJob || sourceJob.state !== "completed" || !snapshot) {
       return res.status(409).json({
@@ -189,7 +200,7 @@ app.post("/api/jobs", async (req, res) => {
       });
     }
     region = String(snapshot.region || sourceJob.region || "").trim();
-    data = { region, snapshot, sourceJobId };
+    data = { region, snapshot, sourceJobId: sourceJob.id };
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
