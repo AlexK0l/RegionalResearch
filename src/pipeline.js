@@ -1636,19 +1636,39 @@ function deterministicQualificationDecision(record) {
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
   const speculative = /потенциал|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для/;
+  const explicitTrailerModel =
+    /(тонар\s*\d{3,5}|grunwald\s*[a-zа-я0-9-]+|kogel\s*[a-zа-я0-9-]+|schmitz\s*[a-zа-я0-9-]+|wielton\s*[a-zа-я0-9-]+|krone\s*[a-zа-я0-9-]+|пс[- ]?\d{1,3}[а-яa-z-]*|пст[- ]?\d{1,3}[а-яa-z-]*|ts\s*\d{2,3})/i;
+  const ceTrailerJob =
+    /(водител|ваканси).{0,50}(категори.{0,8}(е|ce|cе)).{0,120}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,120}(водител|категори.{0,8}(е|ce|cе)))/;
+  const trailerFleet =
+    /(парк|автопарк|на балансе|в собственности|имеет|эксплуатирует|эксплуатаци).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(парк|автопарк|на балансе|в собственности|эксплуатирует|эксплуатаци))/;
+  const trailerCommerce =
+    /(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда|ремонтирует|ремонт|обслужив).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда|ремонтирует|ремонт|обслужив))/;
+
   let aEvidence = "";
 
   for (const note of notes) {
     if (speculative.test(note)) continue;
+
     const trailer = hasAnyPattern(note, QUAL_TRAILER_PATTERNS);
     const trailerAction = hasAnyPattern(note, QUAL_TRAILER_ACTION_PATTERNS);
     const explicitVinOrPlate =
       /(vin|госномер|гос номер).{0,60}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,60}(vin|госномер|гос номер)/.test(note);
     const tractorTrailerOperation =
-      /(тягач|седельн).{0,100}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,100}(тягач|седельн)/.test(note) &&
-      /(эксплуат|работа|рейс|перевоз|парк|водител)/.test(note);
+      /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
+      /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
+    const strongLinkedSignal =
+      explicitTrailerModel.test(note) ||
+      ceTrailerJob.test(note) ||
+      trailerFleet.test(note) ||
+      trailerCommerce.test(note);
 
-    if ((trailer && trailerAction) || explicitVinOrPlate || tractorTrailerOperation) {
+    if (
+      explicitVinOrPlate ||
+      tractorTrailerOperation ||
+      strongLinkedSignal ||
+      (trailer && trailerAction && /(конкретн|фактич|в собственности|на балансе|эксплуат|продаж|лизинг|ремонт|аренд)/.test(note))
+    ) {
       aEvidence = note;
       break;
     }
