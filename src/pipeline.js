@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 4;
+const DEDUPE_CHECKPOINT_VERSION = 5;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1565,8 +1565,10 @@ function safeAliasIdentityCompatible(a, b) {
   const aInn = normalizeInn(a?.row?.["ИНН"]);
   const bInn = normalizeInn(b?.row?.["ИНН"]);
 
-  // Two different confirmed INNs are never aliases.
-  if (aInn && bInn && aInn !== bInn) return false;
+  // Alias pass must never override the stricter INN pass.
+  // If both records already have confirmed INNs, they were either merged safely
+  // in splitInnGroupByCompatibleIdentity or intentionally kept apart.
+  if (aInn && bInn) return false;
 
   const aName = String(a?.row?.["Организация"] || "").trim();
   const bName = String(b?.row?.["Организация"] || "").trim();
@@ -1601,50 +1603,45 @@ function safeAliasIdentityCompatible(a, b) {
 }
 
 function conservativeAliasDedupe(records) {
-  const parent = records.map((_, index) => index);
-
-  const find = (index) => {
-    while (parent[index] !== index) {
-      parent[index] = parent[parent[index]];
-      index = parent[index];
-    }
-    return index;
-  };
-  const union = (a, b) => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent[rb] = ra;
-  };
-
-  for (let i = 0; i < records.length; i++) {
-    for (let j = i + 1; j < records.length; j++) {
-      if (safeAliasIdentityCompatible(records[i], records[j])) union(i, j);
-    }
-  }
-
-  const groups = new Map();
-  for (let i = 0; i < records.length; i++) {
-    const root = find(i);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(records[i]);
-  }
-
+  const consumed = new Set();
   const merged = [];
   let aliasMerged = 0;
-  for (const group of groups.values()) {
+
+  // Greedy representative matching avoids transitive bridge merges:
+  // A~B and B~C no longer implies A~C.
+  for (let i = 0; i < records.length; i++) {
+    if (consumed.has(i)) continue;
+
+    const group = [records[i]];
+    consumed.add(i);
+
+    for (let j = i + 1; j < records.length; j++) {
+      if (consumed.has(j)) continue;
+
+      // Every candidate must be directly compatible with the representative.
+      if (!safeAliasIdentityCompatible(records[i], records[j])) continue;
+
+      // If the candidate has an INN and the representative does not, do not let
+      // that candidate turn the group into a bridge for other legal entities.
+      group.push(records[j]);
+      consumed.add(j);
+    }
+
     if (group.length === 1) {
       merged.push(group[0]);
       continue;
     }
 
-    // Transitive union must still not hide a conflicting confirmed INN.
     const inns = [...new Set(
       group.map((record) => normalizeInn(record?.row?.["ИНН"])).filter(Boolean)
     )];
+
     if (inns.length > 1) {
       console.log("[DEDUPE_ALIAS_CONFLICT] " + JSON.stringify({
         inns,
-        organizations: group.map((record) => String(record?.row?.["Организация"] || "").trim())
+        organizations: group.map((record) =>
+          String(record?.row?.["Организация"] || "").trim()
+        )
       }));
       merged.push(...group);
       continue;
@@ -1653,7 +1650,9 @@ function conservativeAliasDedupe(records) {
     aliasMerged += group.length - 1;
     console.log("[DEDUPE_ALIAS_MERGE] " + JSON.stringify({
       inn: inns[0] || "",
-      organizations: group.map((record) => String(record?.row?.["Организация"] || "").trim())
+      organizations: group.map((record) =>
+        String(record?.row?.["Организация"] || "").trim()
+      )
     }));
     merged.push(mergeQaRecordRows(group));
   }
