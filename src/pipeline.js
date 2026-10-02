@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 3;
+const DEDUPE_CHECKPOINT_VERSION = 4;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1529,6 +1529,138 @@ function organizationNamesCompatible(a, b) {
   return false;
 }
 
+function organizationAcronymCandidates(value) {
+  const normalized = normalizeOrgKey(value);
+  const geoStop = new Set([
+    "смоленск", "смоленский", "смоленская", "смоленской",
+    "область", "области", "район", "района", "город"
+  ]);
+  const tokens = normalized
+    .split(/\s+/)
+    .filter((token) => token.length >= 2 && !geoStop.has(token));
+
+  const acronyms = new Set();
+  for (const token of tokens) {
+    if (/^[a-zа-яё]{2,5}$/i.test(token)) acronyms.add(token);
+  }
+
+  if (tokens.length >= 2 && tokens.length <= 5) {
+    const initials = tokens.map((token) => token[0]).join("");
+    if (initials.length >= 2 && initials.length <= 5) acronyms.add(initials);
+  }
+
+  return acronyms;
+}
+
+function recordsShareEvidenceDomain(a, b) {
+  const left = evidenceDomains(a?.row || {});
+  const right = evidenceDomains(b?.row || {});
+  for (const domain of left) {
+    if (right.has(domain)) return true;
+  }
+  return false;
+}
+
+function safeAliasIdentityCompatible(a, b) {
+  const aInn = normalizeInn(a?.row?.["ИНН"]);
+  const bInn = normalizeInn(b?.row?.["ИНН"]);
+
+  // Two different confirmed INNs are never aliases.
+  if (aInn && bInn && aInn !== bInn) return false;
+
+  const aName = String(a?.row?.["Организация"] || "").trim();
+  const bName = String(b?.row?.["Организация"] || "").trim();
+  if (!aName || !bName) return false;
+
+  if (organizationNamesCompatible(aName, bName)) return true;
+
+  // Long official name vs stable acronym, e.g. Regional Leasing Center / RLC.
+  const aTokens = new Set(normalizeOrgKey(aName).split(/\s+/).filter(Boolean));
+  const bTokens = new Set(normalizeOrgKey(bName).split(/\s+/).filter(Boolean));
+  const aAcronyms = organizationAcronymCandidates(aName);
+  const bAcronyms = organizationAcronymCandidates(bName);
+  for (const acronym of aAcronyms) {
+    if (bTokens.has(acronym) && acronym.length >= 3) return true;
+  }
+  for (const acronym of bAcronyms) {
+    if (aTokens.has(acronym) && acronym.length >= 3) return true;
+  }
+
+  // Same evidence domain may support a weaker name match, but never by itself.
+  if (recordsShareEvidenceDomain(a, b)) {
+    const at = organizationIdentityTokens(aName);
+    const bt = organizationIdentityTokens(bName);
+    const bs = new Set(bt);
+    const sharedDistinctive = at.filter(
+      (token) => token.length >= 6 && bs.has(token)
+    );
+    if (sharedDistinctive.length >= 1) return true;
+  }
+
+  return false;
+}
+
+function conservativeAliasDedupe(records) {
+  const parent = records.map((_, index) => index);
+
+  const find = (index) => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
+    }
+    return index;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+
+  for (let i = 0; i < records.length; i++) {
+    for (let j = i + 1; j < records.length; j++) {
+      if (safeAliasIdentityCompatible(records[i], records[j])) union(i, j);
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < records.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(records[i]);
+  }
+
+  const merged = [];
+  let aliasMerged = 0;
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+
+    // Transitive union must still not hide a conflicting confirmed INN.
+    const inns = [...new Set(
+      group.map((record) => normalizeInn(record?.row?.["ИНН"])).filter(Boolean)
+    )];
+    if (inns.length > 1) {
+      console.log("[DEDUPE_ALIAS_CONFLICT] " + JSON.stringify({
+        inns,
+        organizations: group.map((record) => String(record?.row?.["Организация"] || "").trim())
+      }));
+      merged.push(...group);
+      continue;
+    }
+
+    aliasMerged += group.length - 1;
+    console.log("[DEDUPE_ALIAS_MERGE] " + JSON.stringify({
+      inn: inns[0] || "",
+      organizations: group.map((record) => String(record?.row?.["Организация"] || "").trim())
+    }));
+    merged.push(mergeQaRecordRows(group));
+  }
+
+  return { records: merged, aliasMerged };
+}
+
 function splitInnGroupByCompatibleIdentity(records, inn) {
   const groups = [];
 
@@ -1611,6 +1743,16 @@ function deterministicGlobalDedupe(records) {
   output.push(...singles);
   for (const group of grouped.values()) {
     output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
+  }
+
+  const aliasPass = conservativeAliasDedupe(output);
+  output.length = 0;
+  output.push(...aliasPass.records);
+  if (aliasPass.aliasMerged) {
+    console.log("[DEDUPE_ALIAS_SUMMARY] " + JSON.stringify({
+      merged: aliasPass.aliasMerged,
+      after: output.length
+    }));
   }
 
   // Stable ordering makes repeated qualification byte-for-byte reproducible.
