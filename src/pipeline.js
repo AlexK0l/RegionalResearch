@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 2;
+const DEDUPE_CHECKPOINT_VERSION = 3;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1485,6 +1485,81 @@ function mergeQaRecordRows(records) {
   };
 }
 
+function organizationIdentityTokens(value) {
+  const stop = new Set([
+    "группа", "групп", "компания", "компаний", "филиал", "проект",
+    "смоленск", "смоленский", "смоленская", "смоленской", "область",
+    "области", "район", "региональный"
+  ]);
+  return normalizeOrgKey(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 2 && !stop.has(token));
+}
+
+function organizationNamesCompatible(a, b) {
+  const left = normalizeOrgKey(a);
+  const right = normalizeOrgKey(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  // Safe long-name containment, e.g. full legal name vs shortened trading form.
+  if (
+    Math.min(left.length, right.length) >= 8 &&
+    (left.includes(right) || right.includes(left))
+  ) return true;
+
+  const lt = organizationIdentityTokens(a);
+  const rt = organizationIdentityTokens(b);
+  if (!lt.length || !rt.length) return false;
+
+  const ls = new Set(lt);
+  const rs = new Set(rt);
+  const shared = [...ls].filter((token) => rs.has(token));
+  const minSize = Math.min(ls.size, rs.size);
+
+  // Require at least two meaningful shared tokens, or one distinctive long
+  // token when the shorter identity contains only that token.
+  if (shared.length >= 2 && shared.length / minSize >= 0.67) return true;
+  if (
+    minSize === 1 &&
+    shared.length === 1 &&
+    shared[0].length >= 7
+  ) return true;
+
+  return false;
+}
+
+function splitInnGroupByCompatibleIdentity(records, inn) {
+  const groups = [];
+
+  for (const record of records) {
+    const name = String(record?.row?.["Организация"] || "").trim();
+    let target = null;
+
+    for (const group of groups) {
+      const representative = String(group[0]?.row?.["Организация"] || "").trim();
+      if (organizationNamesCompatible(name, representative)) {
+        target = group;
+        break;
+      }
+    }
+
+    if (target) target.push(record);
+    else groups.push([record]);
+  }
+
+  if (groups.length > 1) {
+    console.log("[DEDUPE_INN_CONFLICT] " + JSON.stringify({
+      inn,
+      organizations: groups.map((group) =>
+        [...new Set(group.map((record) => String(record?.row?.["Организация"] || "").trim()).filter(Boolean))]
+      )
+    }));
+  }
+
+  return groups;
+}
+
 function deterministicGlobalDedupe(records) {
   const output = [];
   const unresolved = [];
@@ -1502,8 +1577,15 @@ function deterministicGlobalDedupe(records) {
     byInn.get(inn).push(record);
   }
 
-  for (const innGroup of byInn.values()) {
-    output.push(mergeQaRecordRows(innGroup));
+  for (const [inn, innGroup] of byInn.entries()) {
+    const compatibleGroups = splitInnGroupByCompatibleIdentity(innGroup, inn);
+    for (const compatibleGroup of compatibleGroups) {
+      output.push(
+        compatibleGroup.length === 1
+          ? compatibleGroup[0]
+          : mergeQaRecordRows(compatibleGroup)
+      );
+    }
   }
 
   // Rows without confirmed INN are deduplicated conservatively by normalized
