@@ -39,13 +39,13 @@ function loadSavedSnapshot(){
     const raw=localStorage.getItem(SNAPSHOT_STORAGE_KEY);
     if(!raw)return null;
     const snapshot=JSON.parse(raw);
-    return [1,2].includes(snapshot?.version)&&Array.isArray(snapshot.parts)?snapshot:null;
+    return [1,2,3].includes(snapshot?.version)&&Array.isArray(snapshot.parts)?snapshot:null;
   }catch{return null;}
 }
 
 function saveSnapshot(snapshot){
   try{
-    if(![1,2].includes(snapshot?.version)||!Array.isArray(snapshot.parts))return false;
+    if(![1,2,3].includes(snapshot?.version)||!Array.isArray(snapshot.parts))return false;
     localStorage.setItem(SNAPSHOT_STORAGE_KEY,JSON.stringify(snapshot));
     return true;
   }catch(err){
