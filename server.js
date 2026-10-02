@@ -195,7 +195,7 @@ app.post("/api/jobs", async (req, res) => {
 
     const uploadedSnapshot =
       req.body?.snapshot &&
-      [1, 2].includes(req.body.snapshot.version) &&
+      [1, 2, 3].includes(req.body.snapshot.version) &&
       Array.isArray(req.body.snapshot.parts)
         ? req.body.snapshot
         : null;
