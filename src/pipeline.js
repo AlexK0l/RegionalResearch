@@ -1442,6 +1442,116 @@ function applyFinalQa(records, qa) {
   return result;
 }
 
+function mergeQaRecordRows(records) {
+  const first = records[0];
+  const mergedRow = { ...(first?.row || {}) };
+  const urls = [];
+  const notes = [];
+
+  for (const record of records) {
+    const row = record?.row || {};
+    for (const col of COLS) {
+      const current = String(mergedRow[col] || "").trim();
+      const incoming = String(row[col] || "").trim();
+      if (!current && incoming) mergedRow[col] = incoming;
+    }
+
+    const segments = [mergedRow["Техника/сегмент"], row["Техника/сегмент"]]
+      .flatMap((value) => String(value || "").split("|"))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (segments.length) mergedRow["Техника/сегмент"] = [...new Set(segments)].join(" | ");
+
+    const evidence = row.__evidence || {};
+    for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
+      if (url) urls.push(String(url));
+    }
+    for (const note of Array.isArray(evidence.notes) ? evidence.notes : []) {
+      if (note) notes.push(String(note));
+    }
+  }
+
+  mergedRow.__evidence = {
+    source_urls: [...new Set(urls)],
+    notes: [...new Set(notes)]
+  };
+
+  return {
+    ...first,
+    row: mergedRow
+  };
+}
+
+function deterministicGlobalDedupe(records) {
+  const grouped = new Map();
+  const singles = [];
+
+  for (const record of records) {
+    const row = record?.row || {};
+    const org = normalizeOrgKey(row["Организация"]);
+    if (!org) {
+      singles.push(record);
+      continue;
+    }
+
+    const ambiguous = looksAmbiguousOrganizationName(row["Организация"]);
+    const place = ambiguous ? normalizePlaceKey(row["Город/район"]) : "";
+    const key = ambiguous ? `org:${org}|place:${place}` : `org:${org}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(record);
+  }
+
+  const output = [...singles];
+
+  for (const group of grouped.values()) {
+    if (group.length === 1) {
+      output.push(group[0]);
+      continue;
+    }
+
+    const confirmedInns = [...new Set(
+      group.map((record) => normalizeInn(record?.row?.["ИНН"])).filter(Boolean)
+    )];
+
+    // Conflicting confirmed INNs are distinct legal entities. Do not merge them.
+    if (confirmedInns.length > 1) {
+      const byInn = new Map();
+      const unresolved = [];
+      for (const record of group) {
+        const inn = normalizeInn(record?.row?.["ИНН"]);
+        if (!inn) {
+          unresolved.push(record);
+          continue;
+        }
+        if (!byInn.has(inn)) byInn.set(inn, []);
+        byInn.get(inn).push(record);
+      }
+      for (const innGroup of byInn.values()) output.push(mergeQaRecordRows(innGroup));
+      output.push(...unresolved);
+      continue;
+    }
+
+    output.push(mergeQaRecordRows(group));
+  }
+
+  // Stable ordering makes repeated qualification batches byte-for-byte reproducible.
+  output.sort((a, b) => {
+    const ao = normalizeOrgKey(a?.row?.["Организация"]);
+    const bo = normalizeOrgKey(b?.row?.["Организация"]);
+    return ao.localeCompare(bo, "ru") ||
+      normalizePlaceKey(a?.row?.["Город/район"]).localeCompare(
+        normalizePlaceKey(b?.row?.["Город/район"]),
+        "ru"
+      ) ||
+      String(a?.canonical_id || "").localeCompare(String(b?.canonical_id || ""));
+  });
+
+  return output.map((record, index) => ({
+    ...record,
+    id: `q${String(index + 1).padStart(6, "0")}`
+  }));
+}
+
 function finalQualificationInput(records) {
   return records.map((record) => ({
     id: record.id,
@@ -2369,14 +2479,21 @@ function testProfileForMode(mode) {
   return TEST_PROFILES[mode] || null;
 }
 
-function discoverySnapshot(region, parts, sourceMode, identityCheckpoint = null) {
+function discoverySnapshot(
+  region,
+  parts,
+  sourceMode,
+  identityCheckpoint = null,
+  dedupeCheckpoint = null
+) {
   return {
-    version: 2,
+    version: 3,
     region,
     source_mode: sourceMode,
     created_at: new Date().toISOString(),
     parts,
-    identity_checkpoint: identityCheckpoint
+    identity_checkpoint: identityCheckpoint,
+    dedupe_checkpoint: dedupeCheckpoint
   };
 }
 
@@ -2432,7 +2549,7 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   if (replayMode) {
     const snapshot = job.data?.snapshot;
-    if (!snapshot || ![1, 2].includes(snapshot.version) || !Array.isArray(snapshot.parts)) {
+    if (!snapshot || ![1, 2, 3].includes(snapshot.version) || !Array.isArray(snapshot.parts)) {
       throw new Error("Replay snapshot отсутствует или имеет неподдерживаемый формат");
     }
     parts = snapshot.parts;
@@ -2747,33 +2864,34 @@ ${JSON.stringify(compactCourtArchive)}
       stagedTest[sheet].push(row);
     }
 
-    let qaRecords = makeQaRecords(stagedTest);
+    let qaRecords;
+    const replayDedupeCheckpoint =
+      replayMode && Array.isArray(job.data?.snapshot?.dedupe_checkpoint?.records)
+        ? job.data.snapshot.dedupe_checkpoint
+        : null;
+
+    if (replayDedupeCheckpoint) {
+      qaRecords = replayDedupeCheckpoint.records;
+      console.log("[REPLAY_DEDUPE_CHECKPOINT] " + JSON.stringify({
+        records: qaRecords.length,
+        source_mode: job.data?.snapshot?.source_mode || ""
+      }));
+    } else {
+      const beforeDedupe = makeQaRecords(stagedTest);
+      qaRecords = deterministicGlobalDedupe(beforeDedupe);
+      console.log("[DETERMINISTIC_GLOBAL_DEDUPE] " + JSON.stringify({
+        before: beforeDedupe.length,
+        after: qaRecords.length,
+        removed: beforeDedupe.length - qaRecords.length
+      }));
+    }
+
     await progress({
       phase: "qualification",
       step: 2,
       percent: 95,
-      qualificationDetail: `global dedupe: ${qaRecords.length} canonical-строк`
+      qualificationDetail: `global dedupe: ${qaRecords.length} canonical-строк · deterministic`
     });
-
-    const qa = await askWithoutSearch(
-      client,
-      prompts[9] +
-        finalQaContract() +
-        `\n\nРЕГИОН: ${region}
-Это тестовый режим ${mode}. Переданы canonical-строки после identity resolution.
-Выполни только глобальную дедупликацию/QA. Не назначай A/B/C.
-Разные подтверждённые ИНН не объединяй.
-При удалении дубля объедини __evidence в сохраняемую строку.
-Никакого web_search.
-
-СТРОКИ:
-${JSON.stringify(qaRecords)}`,
-      FINAL_QA_MODEL,
-      FINAL_QA_MAX_OUTPUT_TOKENS
-    );
-
-    const dedupedTest = applyFinalQa(qaRecords, qa);
-    qaRecords = makeQaRecords(dedupedTest);
 
     await progress({
       phase: "qualification",
@@ -2876,6 +2994,9 @@ ${JSON.stringify(qaRecords)}`,
           failedClusters: identityResolution.failedClusters,
           skippedWebClusters: identityResolution.skippedWebClusters,
           searchedWebClusters: identityResolution.searchedWebClusters
+        },
+        {
+          records: qaRecords
         }
       ),
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
