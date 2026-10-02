@@ -339,14 +339,19 @@ async function startQuality(){return startJob("quality");}
 async function startTest(){return startJob("test12");}
 
 async function startReplay(){
-  if(!currentJobId)return;
-  const sourceJobId=currentJobId;
+  const snapshot=loadSavedSnapshot();
+  const sourceJobId=currentJobId||"";
+  if(!sourceJobId&&!snapshot){
+    e.error.hidden=false;
+    e.error.textContent="Нет сохранённого snapshot для Replay.";
+    return;
+  }
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
-    const snapshot=loadSavedSnapshot();
-    const payload={mode:"replay",sourceJobId};
+    const payload={mode:"replay"};
+    if(sourceJobId)payload.sourceJobId=sourceJobId;
     if(snapshot)payload.snapshot=snapshot;
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
     currentJobId=d.id;
