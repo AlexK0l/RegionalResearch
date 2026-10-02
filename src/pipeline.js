@@ -53,6 +53,8 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
+const DEDUPE_CHECKPOINT_VERSION = 2;
+
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
   Math.min(200, Number(process.env.OPENAI_DISCOVERY_ALREADY_FOUND_LIMIT || 100))
@@ -835,6 +837,7 @@ function normalizeInn(value) {
 function normalizeOrgKey(value) {
   return String(value || "")
     .toLowerCase()
+    .replace(/\b(общество с ограниченной ответственностью|публичное акционерное общество|открытое акционерное общество|закрытое акционерное общество|акционерное общество|индивидуальный предприниматель)\b/g, " ")
     .replace(/[«»"'.,()]/g, " ")
     .replace(/\b(ооо|ао|пао|зао|оао|ип)\b/g, " ")
     .replace(/[^a-zа-яё0-9]+/gi, " ")
@@ -933,7 +936,7 @@ function extractInnFromEvidenceNotes(row) {
   const candidates = new Set();
   for (const note of notes) {
     const text = String(note || "");
-    for (const match of text.matchAll(/(?:ИНН\s*[:№-]?\s*)?(\d{10}|\d{12})/g)) {
+    for (const match of text.matchAll(/ИНН\s*[:№-]?\s*(\d{10}|\d{12})/gi)) {
       const inn = normalizeInn(match[1]);
       if (inn) candidates.add(inn);
     }
@@ -1483,10 +1486,32 @@ function mergeQaRecordRows(records) {
 }
 
 function deterministicGlobalDedupe(records) {
+  const output = [];
+  const unresolved = [];
+  const byInn = new Map();
+
+  // Confirmed INN is the strongest deterministic identity key and must work
+  // across legal-name variants and source sheets.
+  for (const record of records) {
+    const inn = normalizeInn(record?.row?.["ИНН"]);
+    if (!inn) {
+      unresolved.push(record);
+      continue;
+    }
+    if (!byInn.has(inn)) byInn.set(inn, []);
+    byInn.get(inn).push(record);
+  }
+
+  for (const innGroup of byInn.values()) {
+    output.push(mergeQaRecordRows(innGroup));
+  }
+
+  // Rows without confirmed INN are deduplicated conservatively by normalized
+  // organization name. Ambiguous generic names also require matching place.
   const grouped = new Map();
   const singles = [];
 
-  for (const record of records) {
+  for (const record of unresolved) {
     const row = record?.row || {};
     const org = normalizeOrgKey(row["Организация"]);
     if (!org) {
@@ -1501,40 +1526,12 @@ function deterministicGlobalDedupe(records) {
     grouped.get(key).push(record);
   }
 
-  const output = [...singles];
-
+  output.push(...singles);
   for (const group of grouped.values()) {
-    if (group.length === 1) {
-      output.push(group[0]);
-      continue;
-    }
-
-    const confirmedInns = [...new Set(
-      group.map((record) => normalizeInn(record?.row?.["ИНН"])).filter(Boolean)
-    )];
-
-    // Conflicting confirmed INNs are distinct legal entities. Do not merge them.
-    if (confirmedInns.length > 1) {
-      const byInn = new Map();
-      const unresolved = [];
-      for (const record of group) {
-        const inn = normalizeInn(record?.row?.["ИНН"]);
-        if (!inn) {
-          unresolved.push(record);
-          continue;
-        }
-        if (!byInn.has(inn)) byInn.set(inn, []);
-        byInn.get(inn).push(record);
-      }
-      for (const innGroup of byInn.values()) output.push(mergeQaRecordRows(innGroup));
-      output.push(...unresolved);
-      continue;
-    }
-
-    output.push(mergeQaRecordRows(group));
+    output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
   }
 
-  // Stable ordering makes repeated qualification batches byte-for-byte reproducible.
+  // Stable ordering makes repeated qualification byte-for-byte reproducible.
   output.sort((a, b) => {
     const ao = normalizeOrgKey(a?.row?.["Организация"]);
     const bo = normalizeOrgKey(b?.row?.["Организация"]);
@@ -2971,7 +2968,9 @@ ${JSON.stringify(compactCourtArchive)}
 
     let qaRecords;
     const replayDedupeCheckpoint =
-      replayMode && Array.isArray(job.data?.snapshot?.dedupe_checkpoint?.records)
+      replayMode &&
+      Number(job.data?.snapshot?.dedupe_checkpoint?.version || 0) === DEDUPE_CHECKPOINT_VERSION &&
+      Array.isArray(job.data?.snapshot?.dedupe_checkpoint?.records)
         ? job.data.snapshot.dedupe_checkpoint
         : null;
 
@@ -3102,6 +3101,7 @@ ${JSON.stringify(compactCourtArchive)}
           searchedWebClusters: identityResolution.searchedWebClusters
         },
         {
+          version: DEDUPE_CHECKPOINT_VERSION,
           records: qaRecords
         }
       ),
