@@ -1696,6 +1696,7 @@ function deterministicQualificationDecision(record) {
     decision: grade ? "include" : "exclude",
     grade,
     reason,
+    aEvidence,
     signals: { target, heavy, transport, aEvidence: Boolean(aEvidence) }
   };
 }
@@ -1717,7 +1718,8 @@ async function runFinalQualification({
     decisions.set(record.id, {
       decision: decision.decision,
       grade: decision.grade,
-      reason: decision.reason
+      reason: decision.reason,
+      aEvidence: decision.aEvidence || ""
     });
 
     if (decision.grade) counts[decision.grade]++;
@@ -1757,6 +1759,7 @@ function applyFinalQualification(records, decisions) {
     row.__final_grade = decision.grade;
     row.__decision = "include";
     row.__decision_reason = decision.reason;
+    row.__a_evidence = decision.grade === "A" ? String(decision.aEvidence || "") : "";
     row["Основание"] = `${decision.grade} — ${decision.reason}`;
     counts[decision.grade]++;
 
@@ -3013,6 +3016,7 @@ ${JSON.stringify(compactCourtArchive)}
           city: row["Город/район"] || "",
           grade: row.__final_grade || "",
           reason: row.__decision_reason || "",
+          a_evidence: row.__a_evidence || "",
           stages: canonical?.source_steps || [],
           segments: String(row["Техника/сегмент"] || "")
             .split("|")
