@@ -1566,6 +1566,95 @@ function finalQualificationInput(records) {
   }));
 }
 
+function qualificationText(record) {
+  const row = record?.row || {};
+  const evidence = row.__evidence || {};
+  return [
+    row["Организация"],
+    row["Город/район"],
+    row["Техника/сегмент"],
+    row["Основание"],
+    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join("\n")
+    .replace(/ё/g, "е");
+}
+
+function hasAnyPattern(text, patterns) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+const QUAL_TARGET_PATTERNS = [
+  /зерн/, /рапс/, /пшениц/, /ячмен/, /кукуруз/, /масличн/, /комбикорм/, /корм/,
+  /щебен/, /щебн/, /песок/, /пгс/, /пгм/, /грави/, /карьер/, /неруд/,
+  /торф/, /древес/, /лесоматериал/, /пиломатериал/, /щеп/, /опил/, /пеллет/,
+  /лом/, /металлолом/, /вторсыр/, /отход/, /тко/, /контейнер/,
+  /цемент/, /бетон/, /жби/, /асфальт/, /стройматериал/
+];
+
+const QUAL_TRAILER_PATTERNS = [
+  /полуприцеп/, /прицеп[- ]?зерновоз/, /прицеп[- ]?самосвал/, /самосвальн.{0,20}прицеп/,
+  /зерновоз.{0,30}прицеп/, /щеповоз.{0,30}прицеп/, /ломовоз.{0,30}прицеп/,
+  /тонар/, /grunwald/, /kogel/, /schmitz/, /wielton/, /krone/,
+  /vin.{0,40}(полуприцеп|прицеп)/, /(полуприцеп|прицеп).{0,40}vin/
+];
+
+const QUAL_TRAILER_ACTION_PATTERNS = [
+  /купил/, /куплен/, /приобрел/, /приобретен/, /закуп/, /лизинг/,
+  /аренд/, /эксплуат/, /использ/, /парк/, /продаж/, /продает/, /продаем/,
+  /ремонт/, /восстанов/, /владельц/, /собственник/, /госномер/, /гос номер/
+];
+
+const QUAL_HEAVY_PATTERNS = [
+  /седельн.{0,20}тягач/, /тягач/, /категори.{0,8}(е|ce|cе)/, /водител.{0,30}(е|ce|cе)/,
+  /самосвал/, /грузов.{0,20}автомоб/, /грузовик/, /автопарк/, /парк.{0,20}(камаз|маз|shacman|howo|sitrak|тягач|самосвал)/,
+  /автотранспорт/, /атп\b/, /гараж/, /механик.{0,30}(груз|тягач|прицеп)/,
+  /транспортн.{0,20}контракт/, /автомобильн.{0,20}перевоз/, /грузоперевоз/,
+  /перевозчик/, /экспедитор/
+];
+
+const QUAL_TRANSPORT_PATTERNS = [
+  ...QUAL_HEAVY_PATTERNS,
+  /собственн.{0,20}достав/, /собственн.{0,20}вывоз/, /вывоз.{0,25}(отход|лом|щеб|пес|зерн|груз)/,
+  /доставк.{0,25}(автотранспорт|самосвал|грузов|машин)/,
+  /перевозк.{0,35}(зерн|щеб|пес|пгс|торф|щеп|лес|лом|отход|стройматериал)/
+];
+
+function deterministicQualificationDecision(record) {
+  const text = qualificationText(record);
+  const target = hasAnyPattern(text, QUAL_TARGET_PATTERNS);
+  const trailer = hasAnyPattern(text, QUAL_TRAILER_PATTERNS);
+  const trailerAction = hasAnyPattern(text, QUAL_TRAILER_ACTION_PATTERNS);
+  const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
+  const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
+
+  let grade = "";
+  let reason = "";
+
+  if (trailer && trailerAction) {
+    grade = "A";
+    reason = "В evidence есть конкретный сигнал прицепной/полуприцепной техники и ее фактической эксплуатации, сделки, лизинга, ремонта или владения.";
+  } else if (target && heavy) {
+    grade = "B";
+    reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
+  } else if (target && transport) {
+    grade = "C";
+    reason = "В evidence подтверждены целевой груз/процесс и конкретный транспортно-логистический сигнал, но недостаточно данных для A/B.";
+  } else {
+    reason = target
+      ? "Подтвержден целевой груз/процесс, но нет достаточного конкретного транспортного сигнала."
+      : "Evidence не подтверждает достаточную коммерческую релевантность для A/B/C.";
+  }
+
+  return {
+    decision: grade ? "include" : "exclude",
+    grade,
+    reason,
+    signals: { target, trailer, trailerAction, heavy, transport }
+  };
+}
+
 async function runFinalQualification({
   client,
   records,
@@ -1574,71 +1663,31 @@ async function runFinalQualification({
   diagnosticPrefix = "final qualification"
 }) {
   const decisions = new Map();
-  let completed = 0;
+  const counts = { A: 0, B: 0, C: 0, excluded: 0 };
 
-  for (let offset = 0; offset < records.length; offset += FINAL_QUALIFICATION_BATCH_SIZE) {
-    await assertNotCancelled();
-    const batchRecords = records.slice(offset, offset + FINAL_QUALIFICATION_BATCH_SIZE);
-    const batch = finalQualificationInput(batchRecords);
-    const batchNumber = Math.floor(offset / FINAL_QUALIFICATION_BATCH_SIZE) + 1;
-
-    const result = await askJson(client, {
-      input: `ФИНАЛЬНАЯ КВАЛИФИКАЦИЯ ПОСЛЕ IDENTITY, DEDUPE И MERGE EVIDENCE.
-РЕГИОН: ${region}
-
-Это ОКОНЧАТЕЛЬНОЕ решение A/B/C по каждой уже дедуплицированной организации.
-Используй ТОЛЬКО переданные данные и объединённый evidence. Новый web_search запрещён.
-Игнорируй предварительные A/B/C из discovery и оцени компанию заново.
-
-A — есть конкретное подтверждение релевантной ПРИЦЕПНОЙ техники/полуприцепа/прицепа, её лизинга, закупки, ремонта, VIN/госномера или явной эксплуатации тягач + релевантный полуприцеп.
-B — конкретная релевантная прицепная техника не подтверждена, но одновременно подтверждены (1) целевой груз/процесс и (2) тяжёлая автологистика/эксплуатационный сигнал: тягачи, тяжёлый парк, профильные перевозки, CE/Е-вакансии в релевантном контексте, транспортный контракт, лизинг/обновление тяжёлого парка.
-C — подтверждён целевой груз/процесс И ЕСТЬ хотя бы один конкретный транспортно-логистический сигнал, но evidence недостаточно для A/B. Допустимые сигналы для C: собственная/лизинговая грузовая техника; тягачи/самосвалы/грузовые автомобили; водитель CE/Е, механик, АТП/гараж; собственная доставка/вывоз; регулярные автомобильные перевозки; транспортный контракт; фактическая эксплуатация грузового автотранспорта; явная работа как перевозчика/экспедитора/сервиса тяжёлого транспорта.
-EXCLUDE — только производство/добыча/переработка/хранение целевого груза БЕЗ конкретного транспортного сигнала; либо нет достаточной связи с целевым грузом/процессом и тяжёлой логистикой; либо организация является ошибочной сущностью/каталогом/площадкой.
-
-ПРАВИЛА:
-- Для каждого входного id верни ровно одно решение.
-- include требует grade A, B или C.
-- exclude требует пустой grade.
-- reason — одно конкретное, проверяемое объяснение по объединённому evidence.
-- Не повышай класс из-за слов "возможен", "потенциально", "может использовать".
-- Самосвал без прицепа сам по себе НЕ A.
-- Тягач без целевого груза сам по себе НЕ B.
-- Целевой груз/производство/карьер/лес/зерно БЕЗ конкретного транспортного сигнала = EXCLUDE, а не C.
-- Наличие только слов "логистика", "доставка", "отгрузка" без факта автоперевозки/автопарка/водителей/транспортного контракта не считается достаточным транспортным сигналом.
-- Для C в reason обязательно назови КОНКРЕТНЫЙ транспортный сигнал из evidence. Если его нельзя назвать — EXCLUDE.
-- Не добавляй новых фактов.
-
-ОРГАНИЗАЦИИ:
-${JSON.stringify(batch)}`,
-      model: FINAL_QA_MODEL,
-      maxOutputTokens: FINAL_QA_MAX_OUTPUT_TOKENS,
-      webSearch: false,
-      responseSchema: FINAL_QUALIFICATION_SCHEMA,
-      schemaName: "final_company_qualification",
-      diagnosticLabel: `${diagnosticPrefix} | batch ${batchNumber}`
+  for (let index = 0; index < records.length; index++) {
+    if (index % 50 === 0) await assertNotCancelled();
+    const record = records[index];
+    const decision = deterministicQualificationDecision(record);
+    decisions.set(record.id, {
+      decision: decision.decision,
+      grade: decision.grade,
+      reason: decision.reason
     });
 
-    const allowed = new Set(batchRecords.map((x) => x.id));
-    for (const item of result?.decisions || []) {
-      const id = String(item?.id || "");
-      if (!allowed.has(id) || decisions.has(id)) continue;
-      const include = item?.decision === "include";
-      const grade = include && ["A", "B", "C"].includes(item?.grade) ? item.grade : "";
-      decisions.set(id, {
-        decision: grade ? "include" : "exclude",
-        grade,
-        reason: String(item?.reason || "").trim()
-      });
-    }
-
-    completed += batchRecords.length;
-    console.log("[FINAL_QUALIFICATION_PROGRESS] " + JSON.stringify({
-      prefix: diagnosticPrefix,
-      completed,
-      total: records.length,
-      batch: batchNumber
-    }));
+    if (decision.grade) counts[decision.grade]++;
+    else counts.excluded++;
   }
+
+  console.log("[DETERMINISTIC_FINAL_QUALIFICATION] " + JSON.stringify({
+    prefix: diagnosticPrefix,
+    region,
+    total: records.length,
+    A: counts.A,
+    B: counts.B,
+    C: counts.C,
+    excluded: counts.excluded
+  }));
 
   return decisions;
 }
