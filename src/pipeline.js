@@ -1635,7 +1635,11 @@ function deterministicQualificationDecision(record) {
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
-  const speculative = /потенциал|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для/;
+  const speculative = /потенциал|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для/;
+  const negativeAEvidence =
+    /не подтвержден|не подтвержд[её]н|нет подтвержден|нет достаточн|не найден|не указа[нн]|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
+  const farmImplementOnly =
+    /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
   const explicitTrailerModel =
     /(тонар\s*\d{3,5}|grunwald\s*[a-zа-я0-9-]+|kogel\s*[a-zа-я0-9-]+|schmitz\s*[a-zа-я0-9-]+|wielton\s*[a-zа-я0-9-]+|krone\s*[a-zа-я0-9-]+|пс[- ]?\d{1,3}[а-яa-z-]*|пст[- ]?\d{1,3}[а-яa-z-]*|ts\s*\d{2,3})/i;
   const ceTrailerJob =
@@ -1648,7 +1652,11 @@ function deterministicQualificationDecision(record) {
   let aEvidence = "";
 
   for (const note of notes) {
-    if (speculative.test(note)) continue;
+    if (speculative.test(note) || negativeAEvidence.test(note)) continue;
+
+    const cargoTrailerMention =
+      /(полуприцеп|прицеп[- ]?(зерновоз|самосвал)|самосвальн.{0,20}прицеп|тонар|kogel|krone|schmitz|wielton|grunwald|пс[- ]?\d|пст[- ]?\d|пптс[- ]?\d)/i.test(note);
+    if (farmImplementOnly.test(note) && !cargoTrailerMention) continue;
 
     const trailer = hasAnyPattern(note, QUAL_TRAILER_PATTERNS);
     const trailerAction = hasAnyPattern(note, QUAL_TRAILER_ACTION_PATTERNS);
