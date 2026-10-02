@@ -1581,6 +1581,13 @@ function qualificationText(record) {
     .replace(/ё/g, "е");
 }
 
+function qualificationEvidenceNotes(record) {
+  const notes = record?.row?.__evidence?.notes;
+  return (Array.isArray(notes) ? notes : [])
+    .map((value) => String(value || "").toLowerCase().replace(/ё/g, "е").trim())
+    .filter(Boolean);
+}
+
 function hasAnyPattern(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -1623,18 +1630,36 @@ const QUAL_TRANSPORT_PATTERNS = [
 
 function deterministicQualificationDecision(record) {
   const text = qualificationText(record);
+  const notes = qualificationEvidenceNotes(record);
   const target = hasAnyPattern(text, QUAL_TARGET_PATTERNS);
-  const trailer = hasAnyPattern(text, QUAL_TRAILER_PATTERNS);
-  const trailerAction = hasAnyPattern(text, QUAL_TRAILER_ACTION_PATTERNS);
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
+
+  const speculative = /потенциал|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для/;
+  let aEvidence = "";
+
+  for (const note of notes) {
+    if (speculative.test(note)) continue;
+    const trailer = hasAnyPattern(note, QUAL_TRAILER_PATTERNS);
+    const trailerAction = hasAnyPattern(note, QUAL_TRAILER_ACTION_PATTERNS);
+    const explicitVinOrPlate =
+      /(vin|госномер|гос номер).{0,60}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,60}(vin|госномер|гос номер)/.test(note);
+    const tractorTrailerOperation =
+      /(тягач|седельн).{0,100}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,100}(тягач|седельн)/.test(note) &&
+      /(эксплуат|работа|рейс|перевоз|парк|водител)/.test(note);
+
+    if ((trailer && trailerAction) || explicitVinOrPlate || tractorTrailerOperation) {
+      aEvidence = note;
+      break;
+    }
+  }
 
   let grade = "";
   let reason = "";
 
-  if (trailer && trailerAction) {
+  if (aEvidence) {
     grade = "A";
-    reason = "В evidence есть конкретный сигнал прицепной/полуприцепной техники и ее фактической эксплуатации, сделки, лизинга, ремонта или владения.";
+    reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
   } else if (target && heavy) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
@@ -1651,7 +1676,7 @@ function deterministicQualificationDecision(record) {
     decision: grade ? "include" : "exclude",
     grade,
     reason,
-    signals: { target, trailer, trailerAction, heavy, transport }
+    signals: { target, heavy, transport, aEvidence: Boolean(aEvidence) }
   };
 }
 
