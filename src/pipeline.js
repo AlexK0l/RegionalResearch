@@ -3281,10 +3281,11 @@ ${JSON.stringify(compactCourtArchive)}
     }
 
     let qaRecords;
+    // Replay must preserve the exact post-dedupe input captured by the source run.
+    // The checkpoint version describes the algorithm that produced the snapshot;
+    // it must not force a re-dedupe when we are measuring qualification stability.
     const replayDedupeCheckpoint =
-      replayMode &&
-      Number(job.data?.snapshot?.dedupe_checkpoint?.version || 0) === DEDUPE_CHECKPOINT_VERSION &&
-      Array.isArray(job.data?.snapshot?.dedupe_checkpoint?.records)
+      replayMode && Array.isArray(job.data?.snapshot?.dedupe_checkpoint?.records)
         ? job.data.snapshot.dedupe_checkpoint
         : null;
 
@@ -3292,11 +3293,22 @@ ${JSON.stringify(compactCourtArchive)}
       qaRecords = replayDedupeCheckpoint.records;
       console.log("[REPLAY_DEDUPE_CHECKPOINT] " + JSON.stringify({
         records: qaRecords.length,
+        checkpoint_version: Number(replayDedupeCheckpoint.version || 0),
+        current_dedupe_version: DEDUPE_CHECKPOINT_VERSION,
+        version_mismatch:
+          Number(replayDedupeCheckpoint.version || 0) !== DEDUPE_CHECKPOINT_VERSION,
         source_mode: job.data?.snapshot?.source_mode || ""
       }));
     } else {
       const beforeDedupe = makeQaRecords(stagedTest);
       qaRecords = deterministicGlobalDedupe(beforeDedupe);
+      if (replayMode) {
+        console.log("[REPLAY_DEDUPE_CHECKPOINT_MISSING] " + JSON.stringify({
+          before: beforeDedupe.length,
+          after: qaRecords.length,
+          current_dedupe_version: DEDUPE_CHECKPOINT_VERSION
+        }));
+      }
       console.log("[DETERMINISTIC_GLOBAL_DEDUPE] " + JSON.stringify({
         before: beforeDedupe.length,
         after: qaRecords.length,
@@ -3308,7 +3320,9 @@ ${JSON.stringify(compactCourtArchive)}
       phase: "qualification",
       step: 2,
       percent: 95,
-      qualificationDetail: `global dedupe: ${qaRecords.length} canonical-строк · deterministic`
+      qualificationDetail: replayDedupeCheckpoint
+        ? `global dedupe checkpoint: ${qaRecords.length} canonical-строк · frozen replay input`
+        : `global dedupe: ${qaRecords.length} canonical-строк · deterministic`
     });
 
     await progress({
