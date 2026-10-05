@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 5;
+const DEDUPE_CHECKPOINT_VERSION = 6;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1540,10 +1540,10 @@ function organizationAcronymCandidates(value) {
     .filter((token) => token.length >= 2 && !geoStop.has(token));
 
   const acronyms = new Set();
-  for (const token of tokens) {
-    if (/^[a-zа-яё]{2,5}$/i.test(token)) acronyms.add(token);
-  }
 
+  // Only derive a real initials-based acronym from a multi-word name.
+  // Treating every short token ("агро", "транс", "центр", "строй", etc.)
+  // as an acronym caused unrelated companies to collapse into one group.
   if (tokens.length >= 2 && tokens.length <= 5) {
     const initials = tokens.map((token) => token[0]).join("");
     if (initials.length >= 2 && initials.length <= 5) acronyms.add(initials);
@@ -1588,16 +1588,9 @@ function safeAliasIdentityCompatible(a, b) {
     if (aTokens.has(acronym) && acronym.length >= 3) return true;
   }
 
-  // Same evidence domain may support a weaker name match, but never by itself.
-  if (recordsShareEvidenceDomain(a, b)) {
-    const at = organizationIdentityTokens(aName);
-    const bt = organizationIdentityTokens(bName);
-    const bs = new Set(bt);
-    const sharedDistinctive = at.filter(
-      (token) => token.length >= 6 && bs.has(token)
-    );
-    if (sharedDistinctive.length >= 1) return true;
-  }
+  // Evidence-domain overlap is intentionally NOT enough to merge legal entities.
+  // Many unrelated companies share marketplace, registry or industry domains.
+  // If names are not compatible above, keep the records separate.
 
   return false;
 }
