@@ -1997,6 +1997,93 @@ function applyFinalQualification(records, decisions) {
   return { result, counts };
 }
 
+function buildQualificationCheckpoint(records, decisions) {
+  return {
+    version: 1,
+    records: records.map((record) => {
+      const decision = decisions.get(record.id) || {};
+      return {
+        id: String(record.id || ""),
+        canonical_id: String(record.canonical_id || ""),
+        organization: String(record?.row?.["Организация"] || ""),
+        grade: String(decision.grade || ""),
+        decision: String(decision.decision || "exclude"),
+        reason: String(decision.reason || ""),
+        a_evidence: String(decision.aEvidence || "")
+      };
+    })
+  };
+}
+
+function compareQualificationCheckpoints(previousCheckpoint, currentCheckpoint) {
+  const previous = Array.isArray(previousCheckpoint?.records)
+    ? previousCheckpoint.records
+    : [];
+  const current = Array.isArray(currentCheckpoint?.records)
+    ? currentCheckpoint.records
+    : [];
+
+  const keyFor = (item) =>
+    String(item?.id || "").trim() ||
+    String(item?.canonical_id || "").trim() ||
+    normalizeOrgKey(item?.organization || "");
+
+  const previousByKey = new Map(
+    previous.map((item) => [keyFor(item), item]).filter(([key]) => key)
+  );
+  const currentByKey = new Map(
+    current.map((item) => [keyFor(item), item]).filter(([key]) => key)
+  );
+  const transitions = {};
+  const changed = [];
+  let unchanged = 0;
+  let added = 0;
+  let removed = 0;
+
+  for (const [key, now] of currentByKey.entries()) {
+    const before = previousByKey.get(key);
+    if (!before) {
+      added++;
+      continue;
+    }
+
+    const from = String(before.grade || "EXCLUDE").toUpperCase() || "EXCLUDE";
+    const to = String(now.grade || "EXCLUDE").toUpperCase() || "EXCLUDE";
+
+    if (from === to) {
+      unchanged++;
+      continue;
+    }
+
+    const transition = `${from}->${to}`;
+    transitions[transition] = (transitions[transition] || 0) + 1;
+    changed.push({
+      id: String(now.id || before.id || ""),
+      canonical_id: String(now.canonical_id || before.canonical_id || ""),
+      organization: String(now.organization || before.organization || ""),
+      from,
+      to,
+      previous_reason: String(before.reason || ""),
+      current_reason: String(now.reason || "")
+    });
+  }
+
+  for (const key of previousByKey.keys()) {
+    if (!currentByKey.has(key)) removed++;
+  }
+
+  return {
+    previous_total: previousByKey.size,
+    current_total: currentByKey.size,
+    unchanged,
+    changed_count: changed.length,
+    added,
+    removed,
+    transitions,
+    changed
+  };
+}
+
 class WebBudgetStopError extends Error {
   constructor(scope, used, limit, totalUsed, totalLimit) {
     super(`WEB_BUDGET_STOP:${scope}:${used}/${limit}:total=${totalUsed}/${totalLimit}`);
@@ -2809,16 +2896,18 @@ function discoverySnapshot(
   parts,
   sourceMode,
   identityCheckpoint = null,
-  dedupeCheckpoint = null
+  dedupeCheckpoint = null,
+  qualificationCheckpoint = null
 ) {
   return {
-    version: 3,
+    version: 4,
     region,
     source_mode: sourceMode,
     created_at: new Date().toISOString(),
     parts,
     identity_checkpoint: identityCheckpoint,
-    dedupe_checkpoint: dedupeCheckpoint
+    dedupe_checkpoint: dedupeCheckpoint,
+    qualification_checkpoint: qualificationCheckpoint
   };
 }
 
@@ -2874,7 +2963,7 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   if (replayMode) {
     const snapshot = job.data?.snapshot;
-    if (!snapshot || ![1, 2, 3].includes(snapshot.version) || !Array.isArray(snapshot.parts)) {
+    if (!snapshot || ![1, 2, 3, 4].includes(snapshot.version) || !Array.isArray(snapshot.parts)) {
       throw new Error("Replay snapshot отсутствует или имеет неподдерживаемый формат");
     }
     parts = snapshot.parts;
@@ -2883,6 +2972,8 @@ export async function runResearchPipeline({ job, apiKey }) {
       source_mode: snapshot.source_mode || "",
       snapshot_version: snapshot.version,
       has_identity_checkpoint: Array.isArray(snapshot.identity_checkpoint?.candidates),
+      has_dedupe_checkpoint: Array.isArray(snapshot.dedupe_checkpoint?.records),
+      has_qualification_checkpoint: Array.isArray(snapshot.qualification_checkpoint?.records),
       parts: parts.length,
       rows: parts.reduce((sum, part) => sum + rowCount(part), 0)
     }));
@@ -3235,6 +3326,18 @@ ${JSON.stringify(compactCourtArchive)}
       diagnosticPrefix: "test12 final qualification"
     });
     const qualified = applyFinalQualification(qaRecords, decisions);
+    const currentQualificationCheckpoint = buildQualificationCheckpoint(qaRecords, decisions);
+    const replayQualificationComparison =
+      replayMode && Array.isArray(job.data?.snapshot?.qualification_checkpoint?.records)
+        ? compareQualificationCheckpoints(
+            job.data.snapshot.qualification_checkpoint,
+            currentQualificationCheckpoint
+          )
+        : null;
+
+    if (replayQualificationComparison) {
+      console.log("[REPLAY_QUALIFICATION_DIFF] " + JSON.stringify(replayQualificationComparison));
+    }
 
     const qualifiedCompanies = [];
     for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
@@ -3308,9 +3411,11 @@ ${JSON.stringify(compactCourtArchive)}
         B: qualified.counts.B,
         C: qualified.counts.C,
         qualified: qualifiedCompanies.length,
-        excluded_after_qualification: qualified.counts.excluded
+        excluded_after_qualification: qualified.counts.excluded,
+        qualification_changes: replayQualificationComparison?.changed_count ?? null
       },
       qualified_companies: qualifiedCompanies,
+      replay_comparison: replayQualificationComparison,
       discovery_snapshot: discoverySnapshot(
         region,
         parts,
@@ -3326,7 +3431,8 @@ ${JSON.stringify(compactCourtArchive)}
         {
           version: DEDUPE_CHECKPOINT_VERSION,
           records: qaRecords
-        }
+        },
+        currentQualificationCheckpoint
       ),
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
