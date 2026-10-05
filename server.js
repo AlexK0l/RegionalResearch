@@ -195,7 +195,7 @@ app.post("/api/jobs", async (req, res) => {
 
     const uploadedSnapshot =
       req.body?.snapshot &&
-      [1, 2, 3].includes(req.body.snapshot.version) &&
+      [1, 2, 3, 4].includes(req.body.snapshot.version) &&
       Array.isArray(req.body.snapshot.parts)
         ? req.body.snapshot
         : null;
@@ -250,6 +250,7 @@ app.get("/api/jobs/:id", (req, res) => {
           contacts: job.result?.contacts,
           mode: job.result?.mode || job.mode || "full",
           qualified_companies: job.result?.qualified_companies || [],
+          replay_comparison: job.result?.replay_comparison || null,
           replay_available: Boolean(job.result?.discovery_snapshot)
         }
       : null,
