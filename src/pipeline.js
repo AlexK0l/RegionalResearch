@@ -49,14 +49,24 @@ const DEDUPE_CHECKPOINT_VERSION = 12;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
-  Math.min(200, Number(process.env.OPENAI_DISCOVERY_ALREADY_FOUND_LIMIT || 100))
+  Math.min(240, Number(process.env.OPENAI_DISCOVERY_ALREADY_FOUND_LIMIT || 180))
 );
 
 function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
-  // Do not assume that a branch is "region-wide" based on one region's behavior.
-  // Every branch may inspect all generated scopes; adaptive yield stopping below
-  // decides when additional geographic splitting has stopped producing new firms.
-  return Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+  const source = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+  if (source.length <= 2) return source;
+
+  const regionScope = source[0];
+  const localParts = source.slice(1).map((scope) =>
+    String(scope || "")
+      .replace(/^география:\s*/i, "")
+      .trim()
+  ).filter(Boolean);
+
+  return [
+    regionScope,
+    `географические пробелы: ${localParts.join("; ")}. Пройди ВСЕ перечисленные территории пакетно; группируй близкие территории в общие web_search-запросы и не повторяй региональный поиск.`
+  ];
 }
 
 function adaptiveDiscoveryLowYieldThreshold(knownCount) {
@@ -88,14 +98,55 @@ function mergeKnownOrganizationNames(target, result) {
   }
 }
 
-function countNewOrganizationsAgainstKnown(result, knownNames) {
+function preliminaryDiscoveryGrade(row) {
+  const values = [
+    String(row?.["Основание"] || "").trim(),
+    String(row?.["Техника/сегмент"] || "").trim()
+  ];
+  for (const value of values) {
+    const match = value.match(/^\s*([ABC])(?:\s|[-—:])/i);
+    if (match) return match[1].toUpperCase();
+  }
+  return "";
+}
+
+function discoveryYieldStats(result, knownNames = []) {
   const known = new Set((knownNames || []).map((x) => normalizeOrgKey(x)).filter(Boolean));
-  const fresh = new Set();
+  const byOrg = new Map();
+
   for (const row of allResearchRows(result)) {
     const key = normalizeOrgKey(row?.["Организация"]);
-    if (key && !known.has(key)) fresh.add(key);
+    if (!key || known.has(key)) continue;
+    const grade = preliminaryDiscoveryGrade(row);
+    const weight = grade === "A" ? 4 : grade === "B" ? 2 : grade === "C" ? 0.35 : 1;
+    const previous = byOrg.get(key);
+    if (!previous || weight > previous.weight) byOrg.set(key, { grade, weight });
   }
-  return fresh.size;
+
+  let a = 0, b = 0, c = 0, ungraded = 0, qualityScore = 0;
+  for (const item of byOrg.values()) {
+    qualityScore += item.weight;
+    if (item.grade === "A") a++;
+    else if (item.grade === "B") b++;
+    else if (item.grade === "C") c++;
+    else ungraded++;
+  }
+
+  return {
+    newOrganizations: byOrg.size,
+    a, b, c, ungraded,
+    strongNew: a + b,
+    qualityScore: Number(qualityScore.toFixed(2))
+  };
+}
+
+function discoveryQualityIsLow(stats) {
+  if (Number(stats?.strongNew || 0) > 0) return false;
+  return Number(stats?.qualityScore || 0) < 2;
+}
+
+function countNewOrganizationsAgainstKnown(result, knownNames) {
+  return discoveryYieldStats(result, knownNames).newOrganizations;
 }
 
 const DISCOVERY_STAGE_HINTS = [
