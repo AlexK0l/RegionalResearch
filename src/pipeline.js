@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 6;
+const DEDUPE_CHECKPOINT_VERSION = 7;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1496,17 +1496,16 @@ function organizationIdentityTokens(value) {
     .filter((token) => token.length >= 2 && !stop.has(token));
 }
 
+const GENERIC_SINGLE_ORG_TOKENS = new Set([
+  "агро", "авто", "бетон", "карьер", "лизинг", "логистика", "неруд",
+  "ресурс", "сервис", "спецтехника", "строй", "техника", "транс", "центр"
+]);
+
 function organizationNamesCompatible(a, b) {
   const left = normalizeOrgKey(a);
   const right = normalizeOrgKey(b);
   if (!left || !right) return false;
   if (left === right) return true;
-
-  // Safe long-name containment, e.g. full legal name vs shortened trading form.
-  if (
-    Math.min(left.length, right.length) >= 8 &&
-    (left.includes(right) || right.includes(left))
-  ) return true;
 
   const lt = organizationIdentityTokens(a);
   const rt = organizationIdentityTokens(b);
@@ -1517,13 +1516,18 @@ function organizationNamesCompatible(a, b) {
   const shared = [...ls].filter((token) => rs.has(token));
   const minSize = Math.min(ls.size, rs.size);
 
-  // Require at least two meaningful shared tokens, or one distinctive long
-  // token when the shorter identity contains only that token.
+  // Require token-level overlap, never substring containment inside a token.
+  // This keeps "Смолагро" distinct from "СмолАгроСнаб".
   if (shared.length >= 2 && shared.length / minSize >= 0.67) return true;
+
+  // A single-token short form may match a longer legal/trading form only when
+  // the token is distinctive. Generic names such as "Бетон", "Агро", "Транс"
+  // must not absorb companies that merely contain the same common word.
   if (
     minSize === 1 &&
     shared.length === 1 &&
-    shared[0].length >= 7
+    shared[0].length >= 7 &&
+    !GENERIC_SINGLE_ORG_TOKENS.has(shared[0])
   ) return true;
 
   return false;
