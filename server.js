@@ -142,7 +142,7 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
   }
 });
 
-const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "replay"]);
+const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "replay", "dedupe_replay"]);
 
 function queueJob(job, apiKey) {
   queueMicrotask(async () => {
@@ -179,7 +179,7 @@ app.post("/api/jobs", async (req, res) => {
 
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
 
-  if (mode === "replay") {
+  if (mode === "replay" || mode === "dedupe_replay") {
     const sourceJobId = String(req.body?.sourceJobId || "").trim();
     let sourceJob = sourceJobId ? jobs.get(sourceJobId) : null;
 
@@ -188,7 +188,7 @@ app.post("/api/jobs", async (req, res) => {
         .filter((item) =>
           item?.state === "completed" &&
           item?.result?.discovery_snapshot &&
-          ["quality", "test12", "smoke", "replay"].includes(item?.mode)
+          ["quality", "test12", "smoke", "replay", "dedupe_replay"].includes(item?.mode)
         )
         .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))[0] || null;
     }
@@ -203,7 +203,14 @@ app.post("/api/jobs", async (req, res) => {
 
     if (!snapshot) {
       return res.status(409).json({
-        error: "Для Replay нужен завершённый тестовый job или сохранённый discovery snapshot"
+        error: mode === "dedupe_replay"
+          ? "Для Dedupe replay нужен завершённый тестовый job или сохранённый snapshot"
+          : "Для Replay нужен завершённый тестовый job или сохранённый discovery snapshot"
+      });
+    }
+    if (mode === "dedupe_replay" && !Array.isArray(snapshot.identity_checkpoint?.candidates)) {
+      return res.status(409).json({
+        error: "Для Dedupe replay нужен snapshot с identity checkpoint"
       });
     }
     region = String(snapshot.region || sourceJob?.region || "").trim();
@@ -251,6 +258,7 @@ app.get("/api/jobs/:id", (req, res) => {
           mode: job.result?.mode || job.mode || "full",
           qualified_companies: job.result?.qualified_companies || [],
           replay_comparison: job.result?.replay_comparison || null,
+          dedupe_comparison: job.result?.dedupe_comparison || null,
           replay_available: Boolean(job.result?.discovery_snapshot)
         }
       : null,
