@@ -819,7 +819,8 @@ async function runResearchMicroBatch({
       );
 
       const normalized = normalize(value);
-      const added = countNewOrganizationsAgainstKnown(normalized, beforeKnown);
+      const yieldStats = discoveryYieldStats(normalized, beforeKnown);
+      const added = yieldStats.newOrganizations;
       console.log("[DISCOVERY_SCOPE_RESULT] " + JSON.stringify({
         stage: stageIndex + 1,
         branch: branchIndex + 1,
@@ -828,6 +829,7 @@ async function runResearchMicroBatch({
         scope,
         rows: diagnosticRowCount(normalized),
         new_organizations: added,
+        quality_yield: yieldStats,
         token_usage_cumulative: tokenUsageSnapshot(client),
         companies: diagnosticDiscoveryRows(normalized)
       }));
@@ -844,7 +846,10 @@ async function runResearchMicroBatch({
       if (scopeIndex > 0) {
         const threshold = adaptiveDiscoveryLowYieldThreshold(knownNames.length);
         const streakLimit = adaptiveDiscoveryLowYieldStreak(selectedScopes.length);
-        lowYieldStreak = added <= threshold ? lowYieldStreak + 1 : 0;
+        lowYieldStreak =
+          added <= threshold || discoveryQualityIsLow(yieldStats)
+            ? lowYieldStreak + 1
+            : 0;
         if (
           lowYieldStreak >= streakLimit &&
           scopeIndex + 1 < selectedScopes.length
@@ -3550,12 +3555,18 @@ ${JSON.stringify(compactCourtArchive)}
       }));
 
       const after = uniqueResearchCount(combined);
+      const branchYield = discoveryYieldStats(branchResult, alreadyFound);
       branchDiagnostics.push({
         branchIndex,
         branch: branches[branchIndex],
         rows: diagnosticRowCount(branchResult),
         uniqueInBranch: uniqueResearchCount(branchResult),
-        marginalNew: Math.max(0, after - before)
+        marginalNew: Math.max(0, after - before),
+        qualityScore: branchYield.qualityScore,
+        strongNew: branchYield.strongNew,
+        preliminaryA: branchYield.a,
+        preliminaryB: branchYield.b,
+        preliminaryC: branchYield.c
       });
       statuses[i].detail =
         `ветка ${branchIndex + 1} / ${branches.length} · до ${branchScopes.length} geo-scope · +${Math.max(0, after - before)} новых · ${after} уникальных`;
@@ -3568,8 +3579,9 @@ ${JSON.stringify(compactCourtArchive)}
 
     const recoveryBranchOrder = [...branchDiagnostics]
       .sort((a, b) =>
+        a.strongNew - b.strongNew ||
+        a.qualityScore - b.qualityScore ||
         a.marginalNew - b.marginalNew ||
-        a.uniqueInBranch - b.uniqueInBranch ||
         a.branchIndex - b.branchIndex
       );
 
