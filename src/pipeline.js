@@ -1599,7 +1599,7 @@ function safeAliasIdentityCompatible(a, b) {
   return false;
 }
 
-function conservativeAliasDedupe(records) {
+function conservativeAliasDedupe(records, diagnostics = null) {
   const consumed = new Set();
   const merged = [];
   let aliasMerged = 0;
@@ -1645,6 +1645,7 @@ function conservativeAliasDedupe(records) {
     }
 
     aliasMerged += group.length - 1;
+    recordDedupeMerge(diagnostics, "alias", group, inns[0] || "");
     console.log("[DEDUPE_ALIAS_MERGE] " + JSON.stringify({
       inn: inns[0] || "",
       organizations: group.map((record) =>
@@ -1688,7 +1689,22 @@ function splitInnGroupByCompatibleIdentity(records, inn) {
   return groups;
 }
 
-function deterministicGlobalDedupe(records) {
+function recordDedupeMerge(diagnostics, type, records, key = "") {
+  if (!diagnostics || !Array.isArray(records) || records.length < 2) return;
+  if (!Array.isArray(diagnostics.merges)) diagnostics.merges = [];
+  diagnostics.merges.push({
+    type,
+    key,
+    organizations: records.map((record) =>
+      String(record?.row?.["Организация"] || "").trim()
+    ).filter(Boolean),
+    inns: [...new Set(
+      records.map((record) => normalizeInn(record?.row?.["ИНН"])).filter(Boolean)
+    )]
+  });
+}
+
+function deterministicGlobalDedupe(records, diagnostics = null) {
   const output = [];
   const unresolved = [];
   const byInn = new Map();
@@ -1708,6 +1724,9 @@ function deterministicGlobalDedupe(records) {
   for (const [inn, innGroup] of byInn.entries()) {
     const compatibleGroups = splitInnGroupByCompatibleIdentity(innGroup, inn);
     for (const compatibleGroup of compatibleGroups) {
+      if (compatibleGroup.length > 1) {
+        recordDedupeMerge(diagnostics, "confirmed_inn", compatibleGroup, inn);
+      }
       output.push(
         compatibleGroup.length === 1
           ? compatibleGroup[0]
@@ -1737,11 +1756,12 @@ function deterministicGlobalDedupe(records) {
   }
 
   output.push(...singles);
-  for (const group of grouped.values()) {
+  for (const [key, group] of grouped.entries()) {
+    if (group.length > 1) recordDedupeMerge(diagnostics, "normalized_name", group, key);
     output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
   }
 
-  const aliasPass = conservativeAliasDedupe(output);
+  const aliasPass = conservativeAliasDedupe(output, diagnostics);
   output.length = 0;
   output.push(...aliasPass.records);
   if (aliasPass.aliasMerged) {
@@ -2881,6 +2901,13 @@ const TEST_PROFILES = {
     scopeLimit: 0,
     recovery: false,
     identityWebSearch: false
+  },
+  dedupe_replay: {
+    stageLimit: 0,
+    branchIndexes: null,
+    scopeLimit: 0,
+    recovery: false,
+    identityWebSearch: false
   }
 };
 
@@ -2919,6 +2946,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const testProfile = testProfileForMode(mode);
   const diagnosticMode = Boolean(testProfile);
   const replayMode = mode === "replay";
+  const dedupeReplayMode = mode === "dedupe_replay";
   const researchStageLimit = diagnosticMode ? testProfile.stageLimit : 9;
   if (mode === "quality") client.__webBudget = createQualityWebBudget();
   if (!region) throw new Error("Region is required");
@@ -2953,6 +2981,95 @@ export async function runResearchPipeline({ job, apiKey }) {
     });
 
   await progress({ phase: "starting", percent: 0 });
+
+  if (dedupeReplayMode) {
+    const snapshot = job.data?.snapshot;
+    const identityCheckpoint = snapshot?.identity_checkpoint;
+    if (
+      !snapshot ||
+      ![2, 3, 4].includes(snapshot.version) ||
+      !Array.isArray(identityCheckpoint?.candidates)
+    ) {
+      throw new Error("Dedupe replay требует snapshot с identity checkpoint");
+    }
+
+    await progress({
+      phase: "dedupe",
+      step: 2,
+      percent: 40,
+      qualificationDetail: "dedupe replay · frozen identity checkpoint"
+    });
+
+    const canonicalPool = canonicalizeCandidates(identityCheckpoint.candidates);
+    const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
+    for (const canonical of canonicalPool) {
+      const row = baselineRowFromCanonical(canonical);
+      const sheet = canonical.source_sheets.includes("Лизинг")
+        ? "leasing"
+        : canonical.source_sheets.includes("Прямые покупатели")
+          ? "direct_buyers"
+          : "intermediaries";
+      stagedTest[sheet].push(row);
+    }
+
+    const beforeDedupe = makeQaRecords(stagedTest);
+    const diagnostics = { merges: [] };
+    const qaRecords = deterministicGlobalDedupe(beforeDedupe, diagnostics);
+    const previousRecords = Array.isArray(snapshot?.dedupe_checkpoint?.records)
+      ? snapshot.dedupe_checkpoint.records
+      : [];
+
+    const comparison = {
+      identity_candidates: identityCheckpoint.candidates.length,
+      canonical_before_dedupe: beforeDedupe.length,
+      previous_after_dedupe: previousRecords.length || null,
+      current_after_dedupe: qaRecords.length,
+      previous_removed: previousRecords.length
+        ? beforeDedupe.length - previousRecords.length
+        : null,
+      current_removed: beforeDedupe.length - qaRecords.length,
+      delta_after: previousRecords.length
+        ? qaRecords.length - previousRecords.length
+        : null,
+      merge_groups: diagnostics.merges.length,
+      merges: diagnostics.merges
+    };
+
+    console.log("[DEDUPE_REPLAY_SUMMARY] " + JSON.stringify(comparison));
+    await progress({
+      phase: "completed",
+      step: 2,
+      percent: 100,
+      qualificationDetail:
+        `dedupe replay · ${beforeDedupe.length} → ${qaRecords.length} · merge-групп: ${diagnostics.merges.length}`
+    });
+
+    return {
+      mode,
+      region,
+      result: { direct_buyers: [], intermediaries: [], leasing: [], statistics: [] },
+      counts: {
+        raw_mentions: identityCheckpoint.candidates.length,
+        canonical_after_inn: beforeDedupe.length,
+        after_global_dedupe: qaRecords.length,
+        dedupe_removed: beforeDedupe.length - qaRecords.length,
+        dedupe_merge_groups: diagnostics.merges.length
+      },
+      dedupe_comparison: comparison,
+      qualified_companies: [],
+      replay_comparison: null,
+      discovery_snapshot: discoverySnapshot(
+        region,
+        Array.isArray(snapshot.parts) ? snapshot.parts : [],
+        snapshot.source_mode || "dedupe_replay",
+        identityCheckpoint,
+        { version: DEDUPE_CHECKPOINT_VERSION, records: qaRecords },
+        snapshot.qualification_checkpoint || null
+      ),
+      contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
+    };
+  }
+
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
   let parts = [];
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
