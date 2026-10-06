@@ -296,7 +296,7 @@ async function poll(restoring=false){
           renderQualifiedCompanies(r.qualified_companies||[]);
         }
         e.download.hidden=true;
-        if(r.replay_available) await cacheSnapshot(currentJobId);
+        if(r.replay_available&&r.mode!=="stage_test") await cacheSnapshot(currentJobId);
         const savedSnapshot=loadSavedSnapshot();
         e.replay.hidden=!(r.replay_available||savedSnapshot);
         e.replay.disabled=false;
@@ -412,8 +412,8 @@ async function startDedupeReplay(){
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.dedupeReplay.disabled=true;e.cancel.disabled=false;
   try{
     const payload={mode:"dedupe_replay"};
-    if(sourceJobId)payload.sourceJobId=sourceJobId;
     if(snapshot)payload.snapshot=snapshot;
+    else if(sourceJobId)payload.sourceJobId=sourceJobId;
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
@@ -439,8 +439,8 @@ async function startReplay(){
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
     const payload={mode:"replay"};
-    if(sourceJobId)payload.sourceJobId=sourceJobId;
     if(snapshot)payload.snapshot=snapshot;
+    else if(sourceJobId)payload.sourceJobId=sourceJobId;
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
