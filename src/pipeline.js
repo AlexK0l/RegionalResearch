@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 7;
+const DEDUPE_CHECKPOINT_VERSION = 8;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1487,9 +1487,16 @@ function mergeQaRecordRows(records) {
 
 function organizationIdentityTokens(value) {
   const stop = new Set([
+    // Legal forms must never count as identity evidence.
+    "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
+    "фгуп", "муп", "гуп", "нко",
+    // Generic organizational / geographic descriptors.
     "группа", "групп", "компания", "компаний", "филиал", "проект",
     "смоленск", "смоленский", "смоленская", "смоленской", "область",
-    "области", "район", "региональный"
+    "области", "район", "региональный",
+    // Industry descriptors alone are not a company identity.
+    "завод", "бетонный", "бетон", "сельскохозяйственное", "предприятие",
+    "птицефабрика", "лизинговая", "лизинг", "центр"
   ]);
   return normalizeOrgKey(value)
     .split(/\s+/)
@@ -1536,6 +1543,7 @@ function organizationNamesCompatible(a, b) {
 function organizationAcronymCandidates(value) {
   const normalized = normalizeOrgKey(value);
   const geoStop = new Set([
+    "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
     "смоленск", "смоленский", "смоленская", "смоленской",
     "область", "области", "район", "района", "город"
   ]);
@@ -1565,6 +1573,15 @@ function recordsShareEvidenceDomain(a, b) {
   return false;
 }
 
+function hasManagementOrProjectQualifier(value) {
+  const normalized = normalizeOrgKey(value);
+  return (
+    /(^|\s)ук(\s|$)/.test(normalized) ||
+    normalized.includes("управляющая компания") ||
+    /(^|\s)проект(\s|$)/.test(normalized)
+  );
+}
+
 function safeAliasIdentityCompatible(a, b) {
   const aInn = normalizeInn(a?.row?.["ИНН"]);
   const bInn = normalizeInn(b?.row?.["ИНН"]);
@@ -1577,6 +1594,17 @@ function safeAliasIdentityCompatible(a, b) {
   const aName = String(a?.row?.["Организация"] || "").trim();
   const bName = String(b?.row?.["Организация"] || "").trim();
   if (!aName || !bName) return false;
+
+  // Without a confirmed shared INN, do not collapse a management company /
+  // project label into a standalone legal entity just because the brand token
+  // is the same (e.g. "УК Росторф / проект Росторф" vs "ООО Росторф").
+  if (
+    !aInn &&
+    !bInn &&
+    hasManagementOrProjectQualifier(aName) !== hasManagementOrProjectQualifier(bName)
+  ) {
+    return false;
+  }
 
   if (organizationNamesCompatible(aName, bName)) return true;
 
