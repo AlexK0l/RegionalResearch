@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 10;
+const DEDUPE_CHECKPOINT_VERSION = 11;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1573,6 +1573,15 @@ function hasManagementOrProjectQualifier(value) {
   );
 }
 
+function hasCompoundOrganizationSeparator(value) {
+  const text = String(value || "");
+  // A slash, pipe or semicolon commonly means that the discovery row contains
+  // multiple legal entities / brands / alternatives in one organization field.
+  // Such rows must be normalized upstream; alias dedupe must not guess which
+  // component is the legal entity when no confirmed shared INN is available.
+  return /\s[\/|;]\s|[\/|;]/.test(text);
+}
+
 function safeAliasIdentityCompatible(a, b) {
   const aInn = normalizeInn(a?.row?.["ИНН"]);
   const bInn = normalizeInn(b?.row?.["ИНН"]);
@@ -1585,6 +1594,16 @@ function safeAliasIdentityCompatible(a, b) {
   const aName = String(a?.row?.["Организация"] || "").trim();
   const bName = String(b?.row?.["Организация"] || "").trim();
   if (!aName || !bName) return false;
+
+  // Compound organization fields are ambiguous by construction. Keep them
+  // separate in the alias pass until identity normalization or a confirmed INN
+  // resolves which legal entity the row actually represents.
+  if (
+    (!aInn || !bInn) &&
+    (hasCompoundOrganizationSeparator(aName) || hasCompoundOrganizationSeparator(bName))
+  ) {
+    return false;
+  }
 
   // Without a confirmed shared INN, do not collapse a management company /
   // project label into a standalone legal entity just because the brand token
