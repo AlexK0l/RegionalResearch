@@ -3680,9 +3680,26 @@ ${JSON.stringify(compactCourtArchive)}
         strongNew: 0,
         qualityScore: 0
       };
+      let recoveryFirstLocalYield = null;
 
       for (let scopeIndex = 0; scopeIndex < recoveryScopes.length; scopeIndex++) {
         await assertNotCancelled();
+        if (
+          scopeIndex >= 2 &&
+          recoveryFirstLocalYield &&
+          !discoveryGeoExpansionWorthwhile(recoveryFirstLocalYield)
+        ) {
+          console.log("[DISCOVERY_GEO_EXPANSION_SKIP] " + JSON.stringify({
+            stage: i + 1,
+            recovery: recoveryIndex + 1,
+            anchor_branch: recoveryBranch.branchIndex + 1,
+            reason: "first_local_scope_not_productive_enough",
+            first_local_quality_yield: recoveryFirstLocalYield,
+            skipped_scopes: recoveryScopes.length - scopeIndex
+          }));
+          break;
+        }
+
         const scope = recoveryScopes[scopeIndex];
         const knownBeforeScope = [...recoveryKnown];
 
@@ -3706,6 +3723,7 @@ ${JSON.stringify(compactCourtArchive)}
 
           const scopeYield = discoveryYieldStats(value, knownBeforeScope);
           const addedInScope = scopeYield.newOrganizations;
+          if (scopeIndex === 1) recoveryFirstLocalYield = scopeYield;
           recoveryYieldAggregate.newOrganizations += scopeYield.newOrganizations;
           recoveryYieldAggregate.a += scopeYield.a;
           recoveryYieldAggregate.b += scopeYield.b;
