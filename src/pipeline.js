@@ -3030,7 +3030,20 @@ const TEST_PROFILES = {
   }
 };
 
-function testProfileForMode(mode) {
+function testProfileForMode(mode, stageNumber = null) {
+  if (mode === "stage_test") {
+    const stage = Number(stageNumber);
+    if (!Number.isInteger(stage) || stage < 1 || stage > 9) return null;
+    return {
+      stageLimit: 9,
+      stageIndexes: [stage - 1],
+      branchIndexes: null,
+      scopeLimit: null,
+      recovery: true,
+      identityWebSearch: true,
+      stageNumber: stage
+    };
+  }
   return TEST_PROFILES[mode] || null;
 }
 
@@ -3062,11 +3075,16 @@ export async function runResearchPipeline({ job, apiKey }) {
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
   const mode = String(job.mode || "full");
-  const testProfile = testProfileForMode(mode);
+  const requestedStage = Number(job.data?.stage || 0);
+  const testProfile = testProfileForMode(mode, requestedStage);
   const diagnosticMode = Boolean(testProfile);
   const replayMode = mode === "replay";
   const dedupeReplayMode = mode === "dedupe_replay";
   const researchStageLimit = diagnosticMode ? testProfile.stageLimit : 9;
+  const researchStageIndexes = Array.isArray(testProfile?.stageIndexes)
+    ? testProfile.stageIndexes
+    : Array.from({ length: researchStageLimit }, (_, index) => index);
+  const diagnosticStep = mode === "stage_test" ? requestedStage : 2;
   if (mode === "quality") client.__webBudget = createQualityWebBudget();
   if (!region) throw new Error("Region is required");
 
@@ -3231,7 +3249,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     }));
   }
 
-  for (let i = 0; !replayMode && i < researchStageLimit; i++) {
+  for (const i of !replayMode ? researchStageIndexes : []) {
     await assertNotCancelled();
     startStep(statuses[i]);
 
@@ -3438,7 +3456,7 @@ ${JSON.stringify(compactCourtArchive)}
       }
     }
 
-    parts.push(combined);
+    parts[i] = combined;
     finishStep(statuses[i]);
     statuses[i].detail =
       `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · adaptive geo-scope`;
@@ -3452,7 +3470,7 @@ ${JSON.stringify(compactCourtArchive)}
     const discoveryUnique = uniqueResearchCount(combinedTest);
 
     await assertNotCancelled();
-    await progress({ phase: "qualification", step: 2, percent: 92 });
+    await progress({ phase: "qualification", step: diagnosticStep, percent: 92 });
 
     const candidatePool = flattenCandidates(parts);
     const replayCheckpoint = replayMode && Array.isArray(job.data?.snapshot?.identity_checkpoint?.candidates)
@@ -3476,7 +3494,7 @@ ${JSON.stringify(compactCourtArchive)}
       }));
       await progress({
         phase: "qualification",
-        step: 2,
+        step: diagnosticStep,
         percent: 94,
         qualificationDetail:
           `identity checkpoint · ${identityResolution.candidates.length} resolved mentions · без повторного identity`
@@ -3491,7 +3509,7 @@ ${JSON.stringify(compactCourtArchive)}
         onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
           await progress({
             phase: "qualification",
-            step: 2,
+            step: diagnosticStep,
             percent: 92 + Math.floor((completed / Math.max(1, total)) * 2),
             qualificationDetail:
               `identity ${completed}/${total}; ИНН: ${confirmedInnMentions}; без web: ${skippedWebClusters || 0}; с web: ${searchedWebClusters || 0}` +
@@ -3554,7 +3572,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     await progress({
       phase: "qualification",
-      step: 2,
+      step: diagnosticStep,
       percent: 95,
       qualificationDetail: replayDedupeCheckpoint
         ? `global dedupe checkpoint: ${qaRecords.length} canonical-строк · frozen replay input`
@@ -3563,7 +3581,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     await progress({
       phase: "qualification",
-      step: 2,
+      step: diagnosticStep,
       percent: 97,
       qualificationDetail: `финальная A/B/C: ${qaRecords.length} уникальных строк`
     });
@@ -3624,6 +3642,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     console.log("[TEST12_QUALIFICATION] " + JSON.stringify({
       mode,
+      stage: mode === "stage_test" ? requestedStage : null,
       raw_mentions: candidatePool.length,
       identity_clusters: identityResolution.clusters,
       identity_skipped_web: identityResolution.skippedWebClusters,
@@ -3638,14 +3657,22 @@ ${JSON.stringify(compactCourtArchive)}
       qualified: qualifiedCompanies.length
     }));
 
-    await progress({ phase: "completed", step: 2, percent: 100 });
+    await progress({ phase: "completed", step: diagnosticStep, percent: 100 });
     return {
       mode,
       result: qualified.result,
       region,
+      stage: mode === "stage_test" ? requestedStage : null,
       counts: {
         total_rows: totalRows,
         unique: discoveryUnique,
+        stage: mode === "stage_test" ? requestedStage : null,
+        stage_rows: mode === "stage_test"
+          ? rowCount(parts[requestedStage - 1] || emptyResearchResult())
+          : null,
+        stage_unique: mode === "stage_test"
+          ? uniqueResearchCount(parts[requestedStage - 1] || emptyResearchResult())
+          : null,
         stage1_rows: rowCount(parts[0] || emptyResearchResult()),
         stage1_unique: uniqueResearchCount(parts[0] || emptyResearchResult()),
         stage2_rows: rowCount(parts[1] || emptyResearchResult()),
