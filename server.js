@@ -142,7 +142,7 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
   }
 });
 
-const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "replay", "dedupe_replay"]);
+const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay"]);
 
 function queueJob(job, apiKey) {
   queueMicrotask(async () => {
@@ -176,6 +176,14 @@ app.post("/api/jobs", async (req, res) => {
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
   let region = String(req.body?.region || "").trim();
   let data = { region };
+
+  if (mode === "stage_test") {
+    const stage = Number(req.body?.stage || 0);
+    if (!Number.isInteger(stage) || stage < 1 || stage > 9) {
+      return res.status(400).json({ error: "Для stage_test укажите этап от 1 до 9" });
+    }
+    data = { region, stage };
+  }
 
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
 
@@ -256,6 +264,7 @@ app.get("/api/jobs/:id", (req, res) => {
           counts: job.result?.counts,
           contacts: job.result?.contacts,
           mode: job.result?.mode || job.mode || "full",
+          stage: job.result?.stage || job.data?.stage || null,
           qualified_companies: job.result?.qualified_companies || [],
           replay_comparison: job.result?.replay_comparison || null,
           dedupe_comparison: job.result?.dedupe_comparison || null,
