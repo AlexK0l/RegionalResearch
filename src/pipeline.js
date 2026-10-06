@@ -32,17 +32,9 @@ const COURT_FILE_SEARCH_MAX_RESULTS = Math.max(
 );
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
   String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
-const RESEARCH_SOFT_TARGET = Math.max(
-  40,
-  Math.min(200, Number(process.env.OPENAI_RESEARCH_SOFT_TARGET || 100))
-);
 const RESEARCH_MAX_RECOVERY_BRANCHES = Math.max(
   0,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 3))
-);
-const RESEARCH_LOW_YIELD_THRESHOLD = Math.max(
-  0,
-  Math.min(10, Number(process.env.OPENAI_RESEARCH_LOW_YIELD_THRESHOLD || 3))
 );
 const RESEARCH_MICRO_MAX_OUTPUT_TOKENS = Math.min(
   16000,
@@ -58,14 +50,6 @@ const DEDUPE_CHECKPOINT_VERSION = 12;
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
   Math.min(200, Number(process.env.OPENAI_DISCOVERY_ALREADY_FOUND_LIMIT || 100))
-);
-const DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD = Math.max(
-  0,
-  Math.min(10, Number(process.env.OPENAI_DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD || 2))
-);
-const DISCOVERY_SCOPE_LOW_YIELD_STREAK = Math.max(
-  1,
-  Math.min(3, Number(process.env.OPENAI_DISCOVERY_SCOPE_LOW_YIELD_STREAK || 2))
 );
 
 function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
