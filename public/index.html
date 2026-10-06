@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261006-1">
+<link rel="stylesheet" href="/styles.css?v=20261006-2">
 </head>
 <body>
 <main class="shell">
@@ -14,7 +14,6 @@
       <h1>Региональный поиск потенциальных покупателей САТ</h1>
       <p class="lead">Система последовательно исследует выбранный регион, объединяет найденные компании, проверяет контакты и формирует итоговый XLSX.</p>
     </div>
-    <span class="badge">11 этапов</span>
   </section>
 
   <section class="card">
@@ -28,12 +27,22 @@
       <button id="smokeBtn" class="secondary" disabled>Smoke test</button>
       <button id="qualityBtn" class="secondary" disabled>Quality sample</button>
       <button id="testBtn" class="secondary" disabled>Тест этапов 1–2</button>
+      <select id="stageSelect" aria-label="Отдельный этап" disabled>
+        <option value="3">Этап 3</option>
+        <option value="4">Этап 4</option>
+        <option value="5">Этап 5</option>
+        <option value="6">Этап 6</option>
+        <option value="7">Этап 7</option>
+        <option value="8">Этап 8</option>
+        <option value="9">Этап 9</option>
+      </select>
+      <button id="stageBtn" class="secondary" disabled>Запустить выбранный этап</button>
       <button id="replayBtn" class="secondary" hidden disabled>Replay без web</button>
       <button id="dedupeReplayBtn" class="secondary" hidden disabled>Dedupe replay</button>
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261006-1</p>
+    <p class="note">UI build: 20261006-2</p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -60,6 +69,6 @@
     <button id="downloadBtn">Скачать XLSX</button>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261006-1"></script>
+<script type="module" src="/app.js?v=20261006-2"></script>
 </body>
 </html>
