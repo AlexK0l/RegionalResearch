@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 11;
+const DEDUPE_CHECKPOINT_VERSION = 12;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -68,24 +68,22 @@ const DISCOVERY_SCOPE_LOW_YIELD_STREAK = Math.max(
   Math.min(3, Number(process.env.OPENAI_DISCOVERY_SCOPE_LOW_YIELD_STREAK || 2))
 );
 
-// Ветки, чьи основные источники обычно индексируются по региону целиком.
-// Для них достаточно общего регионального поиска + одного локального контрольного scope.
-// Локальные отраслевые ветки по-прежнему проходят все доступные geo-scope.
-const REGION_WIDE_DISCOVERY_BRANCHES = {
-  1: new Set([0, 5, 6, 7]),
-  2: new Set([0, 1, 2, 3, 4, 5, 6]),
-  5: new Set([0, 1, 2, 3, 4, 5])
-};
+function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
+  // Do not assume that a branch is "region-wide" based on one region's behavior.
+  // Every branch may inspect all generated scopes; adaptive yield stopping below
+  // decides when additional geographic splitting has stopped producing new firms.
+  return Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+}
 
-function discoveryScopesForBranch(stageIndex, branchIndex, scopes) {
-  const all = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
-  if (all.length <= 2) return all;
+function adaptiveDiscoveryLowYieldThreshold(knownCount) {
+  // Scale the saturation threshold with the amount already discovered.
+  // Around 100 known organizations this is ~2, preserving current behavior,
+  // while larger markets need a larger marginal gain to justify more scopes.
+  return Math.max(1, Math.min(6, Math.ceil(Math.max(1, Number(knownCount || 0)) * 0.015)));
+}
 
-  const regional = REGION_WIDE_DISCOVERY_BRANCHES[stageIndex + 1];
-  if (regional?.has(branchIndex)) {
-    return all.slice(0, 2);
-  }
-  return all;
+function adaptiveDiscoveryLowYieldStreak(scopeCount) {
+  return Math.max(2, Math.min(3, Math.ceil(Math.max(1, Number(scopeCount || 0)) / 3)));
 }
 
 function discoveryKnownNames(result, limit = DISCOVERY_ALREADY_FOUND_LIMIT) {
@@ -130,11 +128,16 @@ const DISCOVERY_STAGE_HINTS = [
 
 const DISCOVERY_CORE_PROMPT = `ЦЕЛЬ: найти максимум реальных организаций региона, которым потенциально нужна прицепная техника САТ из-за регулярной тяжёлой автологистики или целевого грузопотока.
 
-ЦЕЛЕВЫЕ ГРУЗЫ: зерно/масличные/корма; щебень/песок/ПГС/грунт/торф; строительные и промышленные сыпучие; щепа/опилки/кора/биомасса/пеллетное сырьё; отходы/вторсырьё/лом; другие регулярные сыпучие или объёмные грузы.
+ПРИОРИТЕТНЫЕ ЦЕЛЕВЫЕ ГРУЗЫ И ПРОЦЕССЫ:
+зерно/масличные/корма; щебень/песок/ПГС/грунт/торф; строительные и промышленные сыпучие; щепа/опилки/кора/биомасса/пеллетное сырьё; отходы/вторсырьё/лом.
+Это ПРИОРИТЕТНЫЙ, но НЕ ЗАКРЫТЫЙ список. Также ищи другие сыпучие, навалочные, гранулированные, порошкообразные, лёгкие объёмные и иные грузы, если для них подтверждена регулярная тяжёлая автомобильная перевозка и прицепная техника экономически рациональна. Оценивай физический процесс и логистику, а не только совпадение со словарём.
+
+ПРИОРИТЕТНЫЕ ПРИЗНАКИ ТЕХНИКИ:
+ТОНАР, KOGEL, KRONE, SCHMITZ, GRUNWALD, WIELTON и уже встречавшиеся типы/модели проверяй в первую очередь, потому что они дают высокий yield на текущих данных. Но любая другая марка, модель или тип прицепа/полуприцепа равноправно подтверждает релевантность, если конкретная техника надёжно привязана к организации.
 
 КЛАССИФИКАЦИЯ:
-A — конкретно подтверждена релевантная прицепная техника/лизинг/закупка/ремонт/VIN/госномер.
-B — техники нет, но есть минимум 2 независимых сильных сигнала: целевой груз + тяжёлая логистика/тягачи/парк/лизинг/контракт/CE-вакансии/обновление.
+A — конкретно подтверждена релевантная прицепная техника, независимо от бренда: модель/тип, VIN/госномер, владение/эксплуатация, лизинг, закупка, ремонт, аренда, продажа собственного парка или иная однозначная связь.
+B — конкретной прицепной техники нет, но есть минимум 2 независимых сильных сигнала: целевой или аналогичный физически релевантный груз/процесс + тяжёлая логистика/тягачи/парк/лизинг/контракт/CE-вакансии/обновление.
 C — подтверждён релевантный груз/процесс/перевозка, но доказательств для A/B недостаточно.
 Уровень укажи в начале "Основания".
 
@@ -146,6 +149,8 @@ leasing — лизинговые/финансовые организации.
 
 DISCOVERY-ПРАВИЛА:
 - web_search обязателен; используй несколько формулировок и синонимов.
+- Приоритетно используй проверенные высокоурожайные источники и формулировки текущей методики, но НЕ считай их обязательным закрытым чеклистом.
+- Если приоритетные площадки/запросы дают мало новых организаций, переходи к региональным площадкам, официальным сайтам, отраслевым каталогам, торгам, закупкам, вакансиям, дилерам, сервисам, профессиональным публикациям и другим первичным/надёжным источникам.
 - Возвращай ВСЕ подтверждённые релевантные организации, а не топ-N.
 - Ищи конкретные организации; от объявления, вакансии, тендера, проекта или сервиса переходи к фактической компании.
 - Не делай отдельные поиски ради ИНН, телефона, директора, email, сайта, холдинга, выручки или численности.
@@ -178,8 +183,7 @@ function compactRecoveryPrompt({
   theme,
   scope,
   alreadyFound,
-  uniqueCount,
-  target
+  uniqueCount
 }) {
   const known = alreadyFound.length
     ? `УЖЕ НАЙДЕННЫЕ — не трать поиск на повторное обнаружение: ${alreadyFound.join("; ")}`
@@ -190,15 +194,15 @@ function compactRecoveryPrompt({
 РЕГИОН: ${region}
 ДОБОР ДЛЯ ПОЛНОТЫ: ${theme}
 ГЕОГРАФИЯ: ${scope}
-Сейчас найдено ${uniqueCount} уникальных организаций; мягкий ориентир ${target}+ при наличии реального рынка.
+Сейчас найдено ${uniqueCount} уникальных организаций. Это наблюдение, а не квота: продолжай, пока новые формулировки/география дают содержательный прирост.
 ${known}
 
-Ищи прежде всего НОВЫЕ организации и long tail. Не выполняй enrichment найденных компаний. Не выдумывай записи ради ориентира.`;
+Ищи прежде всего НОВЫЕ организации и long tail. Не выполняй enrichment найденных компаний. Не выдумывай записи ради количества.`;
 }
 
 const STAGE_SEARCH_BRANCHES = [
   [
-    "Объявления о продаже/покупке прицепной техники. Системно пройди Drom, Avito, Auto.ru, Autoline, Truck1 и Machineryline по региону и моделям/брендам полуприцепов. Ищи формулировки: от собственника, продаём парк, несколько единиц, б/у, с НДС, обновление парка. КРИТИЧНО: извлекай именно продавца/владельца из карточки объявления, группируй его другие объявления и возвращай организацию, а не площадку. Не останавливайся на первых крупных дилерах; ищи локальные ООО/ИП и лизинговые компании, продающие технику из собственного/возвратного парка.",
+    "Объявления о продаже/покупке прицепной техники. ПРИОРИТЕТНО начни с Drom, Avito, Auto.ru, Autoline, Truck1 и Machineryline, потому что они уже дают хороший yield, и используй формулировки: от собственника, продаём парк, несколько единиц, б/у, с НДС, обновление парка. Но это НЕ обязательный закрытый список: если выдача повторяется или бедна, переходи к другим региональным доскам, дилерам, торгам, лизинговым распродажам, официальным сайтам, каталогам и индексируемым объявлениям. КРИТИЧНО: извлекай именно продавца/владельца из карточки, группируй его другие объявления и возвращай организацию, а не площадку. Не останавливайся на крупных дилерах; ищи локальные ООО/ИП и лизинговые компании, продающие технику из собственного/возвратного парка.",
     "Зерно, зерновозы, агроперевозки и объявления/вакансии компаний, работающих с зерновыми и масличными",
     "Щебень, песок, ПГС, карьеры, самосвальные перевозки и владельцы/эксплуатанты соответствующего парка",
     "Щепа, опилки, кора, биомасса, пеллетное сырьё: перевозки, объявления и вакансии",
@@ -210,7 +214,7 @@ const STAGE_SEARCH_BRANCHES = [
   [
     "Лизинг прицепной техники и полуприцепов: ищи не только лизинговые компании, но прежде всего конкретных лизингополучателей региона, включая ООО и ИП. Используй формулировки «полуприцеп в лизинге», «финансовая аренда полуприцепа», «лизингополучатель», «предмет лизинга», бренд/модель + регион. Для каждого найденного договора/кейса разделяй лизингодателя и фактического пользователя и возвращай обе релевантные стороны на правильные листы.",
     "Лизинговые сообщения одновременно по тягачам и прицепному парку; идентификация лизингополучателей",
-    "Конкретные модели, VIN, госномера и предметы финансовой аренды. Ищи сочетания регион + ТОНАР/KOGEL/KRONE/SCHMITZ/GRUNWALD/WIELTON + «лизинг»/«финансовая аренда»/«VIN»/«госномер»/«договор». Проверяй судебные документы, торги, карточки продаж и публичные документы. По каждому найденному объекту обязательно устанавливай владельца/лизингодателя и лизингополучателя/эксплуатанта; не ограничивайся юрлицами — ИП являются полноценными кандидатами.",
+    "Конкретные модели, VIN, госномера и предметы финансовой аренды. В ПЕРВУЮ ОЧЕРЕДЬ проверь сочетания регион + ТОНАР/KOGEL/KRONE/SCHMITZ/GRUNWALD/WIELTON + «лизинг»/«финансовая аренда»/«VIN»/«госномер»/«договор», потому что эти бренды уже показали высокий yield. Затем ОБЯЗАТЕЛЬНО расширь поиск на любые другие бренды/модели прицепов и полуприцепов, которые встречаются в регионе, документах, торгах, объявлениях и лизинговых кейсах. Бренд из приоритетного списка не является условием включения. Проверяй судебные документы, торги, карточки продаж и публичные документы. По каждому найденному объекту устанавливай владельца/лизингодателя и лизингополучателя/эксплуатанта; ИП являются полноценными кандидатами.",
     "Сроки окончания финансовой аренды, завершение договоров и цикл замены техники",
     "Возврат, изъятие, реализация и торги по лизинговой грузовой/прицепной технике",
     "Повторные сделки, расширение и обновление грузового парка",
@@ -778,10 +782,11 @@ async function runResearchMicroBatch({
       // Первый scope всегда региональный. Низкий yield локальных scope подряд означает,
       // что дальнейшее географическое дробление в этой ветке даёт в основном повторы.
       if (scopeIndex > 0) {
-        lowYieldStreak =
-          added <= DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD ? lowYieldStreak + 1 : 0;
+        const threshold = adaptiveDiscoveryLowYieldThreshold(knownNames.length);
+        const streakLimit = adaptiveDiscoveryLowYieldStreak(selectedScopes.length);
+        lowYieldStreak = added <= threshold ? lowYieldStreak + 1 : 0;
         if (
-          lowYieldStreak >= DISCOVERY_SCOPE_LOW_YIELD_STREAK &&
+          lowYieldStreak >= streakLimit &&
           scopeIndex + 1 < selectedScopes.length
         ) {
           console.log("[DISCOVERY_SCOPE_STOP] " + JSON.stringify({
@@ -790,7 +795,8 @@ async function runResearchMicroBatch({
             processed_scopes: scopeIndex + 1,
             total_scopes: selectedScopes.length,
             last_added: added,
-            threshold: DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+            threshold,
+            streak_limit: streakLimit
           }));
           break;
         }
@@ -1253,7 +1259,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
   };
 }
 
-function canonicalizeCandidates(candidates) {
+function canonicalizeCandidates(candidates, region = "") {
   const parent = candidates.map((_, i) => i);
   const rank = candidates.map(() => 0);
 
@@ -1280,12 +1286,37 @@ function canonicalizeCandidates(candidates) {
     const row = candidates[i]?.data || {};
     const inn = normalizeInn(row["ИНН"]);
     if (inn) {
-      if (innOwners.has(inn)) union(i, innOwners.get(inn));
-      else innOwners.set(inn, i);
+      const owners = innOwners.get(inn) || [];
+      const name = String(row["Организация"] || "").trim();
+      let compatibleOwner = null;
+
+      for (const ownerIndex of owners) {
+        const ownerName = String(candidates[ownerIndex]?.data?.["Организация"] || "").trim();
+        if (organizationNamesCompatible(name, ownerName, region)) {
+          compatibleOwner = ownerIndex;
+          break;
+        }
+      }
+
+      if (compatibleOwner !== null) {
+        union(i, compatibleOwner);
+      } else {
+        if (owners.length) {
+          console.log("[CANONICAL_INN_CONFLICT] " + JSON.stringify({
+            inn,
+            organization: name,
+            existing_organizations: owners.map((ownerIndex) =>
+              String(candidates[ownerIndex]?.data?.["Организация"] || "").trim()
+            )
+          }));
+        }
+        owners.push(i);
+        innOwners.set(inn, owners);
+      }
     }
 
     // Без подтвержденного ИНН строки не объединяем программно только по названию/городу.
-    // Такие возможные дубли разбираются позже глобальным QA по совокупности признаков.
+    // Одинаковый ИНН тоже не схлопывает явно несовместимые названия на этом раннем слое.
   }
 
   const groups = new Map();
@@ -1489,28 +1520,48 @@ const ORG_IDENTITY_STOP_TOKENS = new Set([
   // Universal legal forms.
   "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
   "фгуп", "муп", "гуп", "нко",
-  // Universal structural descriptors.
+  // Universal structural / geographic descriptors.
   "группа", "групп", "компания", "компаний", "филиал", "проект",
-  // Geographic descriptors used only to prevent regional wording from
-  // masquerading as identity evidence.
-  "смоленск", "смоленский", "смоленская", "смоленской", "область",
-  "области", "район", "региональный"
+  "область", "области", "край", "республика", "район", "округ",
+  "автономная", "автономный", "региональный", "город"
 ]);
 
-function organizationIdentityTokens(value) {
-  return normalizeOrgKey(value)
+function regionIdentityTokens(region) {
+  return normalizePlaceKey(region)
     .split(/\s+/)
-    .filter((token) => token.length >= 2 && !ORG_IDENTITY_STOP_TOKENS.has(token));
+    .filter((token) => token.length >= 3 && !ORG_IDENTITY_STOP_TOKENS.has(token));
 }
 
-function organizationNamesCompatible(a, b) {
+function isRegionIdentityToken(token, region) {
+  const value = String(token || "").toLowerCase();
+  for (const regional of regionIdentityTokens(region)) {
+    if (value === regional) return true;
+    if (regional.length >= 6) {
+      const prefix = regional.slice(0, Math.min(7, regional.length));
+      if (value.length >= prefix.length && value.startsWith(prefix)) return true;
+    }
+  }
+  return false;
+}
+
+function organizationIdentityTokens(value, region = "") {
+  return normalizeOrgKey(value)
+    .split(/\s+/)
+    .filter((token) =>
+      token.length >= 2 &&
+      !ORG_IDENTITY_STOP_TOKENS.has(token) &&
+      !isRegionIdentityToken(token, region)
+    );
+}
+
+function organizationNamesCompatible(a, b, region = "") {
   const left = normalizeOrgKey(a);
   const right = normalizeOrgKey(b);
   if (!left || !right) return false;
   if (left === right) return true;
 
-  const lt = organizationIdentityTokens(a);
-  const rt = organizationIdentityTokens(b);
+  const lt = organizationIdentityTokens(a, region);
+  const rt = organizationIdentityTokens(b, region);
   if (!lt.length || !rt.length) return false;
 
   const ls = new Set(lt);
@@ -1531,16 +1582,19 @@ function organizationNamesCompatible(a, b) {
   return false;
 }
 
-function organizationAcronymCandidates(value) {
+function organizationAcronymCandidates(value, region = "") {
   const normalized = normalizeOrgKey(value);
   const geoStop = new Set([
     "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
-    "смоленск", "смоленский", "смоленская", "смоленской",
-    "область", "области", "район", "района", "город"
+    "область", "области", "край", "республика", "район", "района", "округ", "город"
   ]);
   const tokens = normalized
     .split(/\s+/)
-    .filter((token) => token.length >= 2 && !geoStop.has(token));
+    .filter((token) =>
+      token.length >= 2 &&
+      !geoStop.has(token) &&
+      !isRegionIdentityToken(token, region)
+    );
 
   const acronyms = new Set();
 
@@ -1564,25 +1618,40 @@ function recordsShareEvidenceDomain(a, b) {
   return false;
 }
 
-function hasManagementOrProjectQualifier(value) {
+function organizationRoleSignature(value) {
   const normalized = normalizeOrgKey(value);
-  return (
-    /(^|\s)ук(\s|$)/.test(normalized) ||
-    normalized.includes("управляющая компания") ||
-    /(^|\s)проект(\s|$)/.test(normalized)
-  );
+  return {
+    management:
+      /(^|\s)ук(\s|$)/.test(normalized) ||
+      normalized.includes("управляющая компания"),
+    project: /(^|\s)проект(\s|$)/.test(normalized),
+    group:
+      /(^|\s)гк(\s|$)/.test(normalized) ||
+      /(^|\s)группа(\s|$)/.test(normalized) ||
+      /(^|\s)холдинг(\s|$)/.test(normalized),
+    branch:
+      /(^|\s)филиал(\s|$)/.test(normalized) ||
+      /(^|\s)подразделени/.test(normalized),
+    brand:
+      /(^|\s)бренд(\s|$)/.test(normalized) ||
+      normalized.includes("торговая марка")
+  };
 }
 
-function hasCompoundOrganizationSeparator(value) {
-  const text = String(value || "");
-  // A slash, pipe or semicolon commonly means that the discovery row contains
-  // multiple legal entities / brands / alternatives in one organization field.
-  // Such rows must be normalized upstream; alias dedupe must not guess which
-  // component is the legal entity when no confirmed shared INN is available.
-  return /\s[\/|;]\s|[\/|;]/.test(text);
+function materiallyDifferentRoleSignatures(a, b) {
+  const left = organizationRoleSignature(a);
+  const right = organizationRoleSignature(b);
+  return Object.keys(left).some((key) => Boolean(left[key]) !== Boolean(right[key]));
 }
 
-function safeAliasIdentityCompatible(a, b) {
+function compoundOrganizationSegments(value) {
+  return String(value || "")
+    .split(/[\/|;]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function safeAliasIdentityCompatible(a, b, region = "") {
   const aInn = normalizeInn(a?.row?.["ИНН"]);
   const bInn = normalizeInn(b?.row?.["ИНН"]);
 
@@ -1595,34 +1664,35 @@ function safeAliasIdentityCompatible(a, b) {
   const bName = String(b?.row?.["Организация"] || "").trim();
   if (!aName || !bName) return false;
 
-  // Compound organization fields are ambiguous by construction. Keep them
-  // separate in the alias pass until identity normalization or a confirmed INN
-  // resolves which legal entity the row actually represents.
-  if (
-    (!aInn || !bInn) &&
-    (hasCompoundOrganizationSeparator(aName) || hasCompoundOrganizationSeparator(bName))
-  ) {
+  // Compound fields are handled structurally rather than by a blanket slash rule.
+  // If a row names several materially different variants, every non-trivial
+  // segment must independently agree with the other organization's name.
+  if (!aInn || !bInn) {
+    for (const [compound, other] of [[aName, bName], [bName, aName]]) {
+      const segments = compoundOrganizationSegments(compound);
+      if (segments.length > 1) {
+        const allCompatible = segments.every((segment) =>
+          organizationNamesCompatible(segment, other, region) ||
+          normalizeOrgKey(segment) === normalizeOrgKey(other)
+        );
+        if (!allCompatible) return false;
+      }
+    }
+  }
+
+  // Structural role changes (management company, project, group, branch, brand)
+  // are evidence of a relationship, not proof of one legal entity.
+  if (!aInn && !bInn && materiallyDifferentRoleSignatures(aName, bName)) {
     return false;
   }
 
-  // Without a confirmed shared INN, do not collapse a management company /
-  // project label into a standalone legal entity just because the brand token
-  // is the same (e.g. "УК Росторф / проект Росторф" vs "ООО Росторф").
-  if (
-    !aInn &&
-    !bInn &&
-    hasManagementOrProjectQualifier(aName) !== hasManagementOrProjectQualifier(bName)
-  ) {
-    return false;
-  }
-
-  if (organizationNamesCompatible(aName, bName)) return true;
+  if (organizationNamesCompatible(aName, bName, region)) return true;
 
   // Long official name vs stable acronym, e.g. Regional Leasing Center / RLC.
   const aTokens = new Set(normalizeOrgKey(aName).split(/\s+/).filter(Boolean));
   const bTokens = new Set(normalizeOrgKey(bName).split(/\s+/).filter(Boolean));
-  const aAcronyms = organizationAcronymCandidates(aName);
-  const bAcronyms = organizationAcronymCandidates(bName);
+  const aAcronyms = organizationAcronymCandidates(aName, region);
+  const bAcronyms = organizationAcronymCandidates(bName, region);
   for (const acronym of aAcronyms) {
     if (bTokens.has(acronym) && acronym.length >= 3) return true;
   }
@@ -1637,7 +1707,7 @@ function safeAliasIdentityCompatible(a, b) {
   return false;
 }
 
-function conservativeAliasDedupe(records, diagnostics = null) {
+function conservativeAliasDedupe(records, diagnostics = null, region = "") {
   const consumed = new Set();
   const merged = [];
   let aliasMerged = 0;
@@ -1654,7 +1724,7 @@ function conservativeAliasDedupe(records, diagnostics = null) {
       if (consumed.has(j)) continue;
 
       // Every candidate must be directly compatible with the representative.
-      if (!safeAliasIdentityCompatible(records[i], records[j])) continue;
+      if (!safeAliasIdentityCompatible(records[i], records[j], region)) continue;
 
       // If the candidate has an INN and the representative does not, do not let
       // that candidate turn the group into a bridge for other legal entities.
@@ -1696,7 +1766,7 @@ function conservativeAliasDedupe(records, diagnostics = null) {
   return { records: merged, aliasMerged };
 }
 
-function splitInnGroupByCompatibleIdentity(records, inn) {
+function splitInnGroupByCompatibleIdentity(records, inn, region = "") {
   const groups = [];
 
   for (const record of records) {
@@ -1705,7 +1775,7 @@ function splitInnGroupByCompatibleIdentity(records, inn) {
 
     for (const group of groups) {
       const representative = String(group[0]?.row?.["Организация"] || "").trim();
-      if (organizationNamesCompatible(name, representative)) {
+      if (organizationNamesCompatible(name, representative, region)) {
         target = group;
         break;
       }
@@ -1742,7 +1812,7 @@ function recordDedupeMerge(diagnostics, type, records, key = "") {
   });
 }
 
-function deterministicGlobalDedupe(records, diagnostics = null) {
+function deterministicGlobalDedupe(records, diagnostics = null, region = "") {
   const output = [];
   const unresolved = [];
   const byInn = new Map();
@@ -1760,7 +1830,7 @@ function deterministicGlobalDedupe(records, diagnostics = null) {
   }
 
   for (const [inn, innGroup] of byInn.entries()) {
-    const compatibleGroups = splitInnGroupByCompatibleIdentity(innGroup, inn);
+    const compatibleGroups = splitInnGroupByCompatibleIdentity(innGroup, inn, region);
     for (const compatibleGroup of compatibleGroups) {
       if (compatibleGroup.length > 1) {
         recordDedupeMerge(diagnostics, "confirmed_inn", compatibleGroup, inn);
@@ -1799,7 +1869,7 @@ function deterministicGlobalDedupe(records, diagnostics = null) {
     output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
   }
 
-  const aliasPass = conservativeAliasDedupe(output, diagnostics);
+  const aliasPass = conservativeAliasDedupe(output, diagnostics, region);
   output.length = 0;
   output.push(...aliasPass.records);
   if (aliasPass.aliasMerged) {
@@ -1867,12 +1937,25 @@ function hasAnyPattern(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-const QUAL_TARGET_PATTERNS = [
+const QUAL_PRIORITY_TARGET_PATTERNS = [
   /зерн/, /рапс/, /пшениц/, /ячмен/, /кукуруз/, /масличн/, /комбикорм/, /корм/,
   /щебен/, /щебн/, /песок/, /пгс/, /пгм/, /грави/, /карьер/, /неруд/,
   /торф/, /древес/, /лесоматериал/, /пиломатериал/, /щеп/, /опил/, /пеллет/,
   /лом/, /металлолом/, /вторсыр/, /отход/, /тко/, /контейнер/,
   /цемент/, /бетон/, /жби/, /асфальт/, /стройматериал/
+];
+
+const QUAL_GENERAL_TARGET_PATTERNS = [
+  /сыпуч/, /навалоч/, /насыпн/, /объемн.{0,20}груз/, /объёмн.{0,20}груз/,
+  /гранулирован/, /порошкообразн/, /инертн.{0,20}материал/, /минеральн.{0,20}сыр/,
+  /руда/, /угол/, /кокс/, /соль/, /удобрен/, /сырь[ея]/, /bulk/
+];
+
+const QUAL_GENERAL_FLOW_PATTERNS = [
+  /регулярн.{0,30}(перевоз|достав|вывоз|отгруз)/,
+  /грузопоток/, /массов.{0,20}перевоз/, /автомобильн.{0,25}отгруз/,
+  /добыч/, /переработ/, /производств/, /погруз/, /разгруз/,
+  /перевозк/, /доставк/, /вывоз/
 ];
 
 const QUAL_TRAILER_PATTERNS = [
@@ -1906,7 +1989,11 @@ const QUAL_TRANSPORT_PATTERNS = [
 function deterministicQualificationDecision(record) {
   const text = qualificationText(record);
   const notes = qualificationEvidenceNotes(record);
-  const target = hasAnyPattern(text, QUAL_TARGET_PATTERNS);
+  const priorityTarget = hasAnyPattern(text, QUAL_PRIORITY_TARGET_PATTERNS);
+  const generalTarget =
+    hasAnyPattern(text, QUAL_GENERAL_TARGET_PATTERNS) &&
+    hasAnyPattern(text, QUAL_GENERAL_FLOW_PATTERNS);
+  const target = priorityTarget || generalTarget;
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
@@ -1915,8 +2002,10 @@ function deterministicQualificationDecision(record) {
     /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
   const farmImplementOnly =
     /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
-  const explicitTrailerModel =
+  const priorityTrailerModel =
     /(тонар\s*\d{3,5}|grunwald\s*[a-zа-я0-9-]+|kogel\s*[a-zа-я0-9-]+|schmitz\s*[a-zа-я0-9-]+|wielton\s*[a-zа-я0-9-]+|krone\s*[a-zа-я0-9-]+|пс[- ]?\d{1,3}[а-яa-z-]*|пст[- ]?\d{1,3}[а-яa-z-]*|ts\s*\d{2,3})/i;
+  const genericTrailerIdentification =
+    /((полуприцеп|прицеп).{0,50}(марка|модель|тип|серия|идентификатор).{0,50}[a-zа-я0-9-]{2,})|((марка|модель|тип|серия).{0,50}[a-zа-я0-9-]{2,}.{0,50}(полуприцеп|прицеп))/i;
   const ceTrailerJob =
     /(водител|ваканси).{0,50}(категори.{0,8}(е|ce|cе)).{0,120}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,120}(водител|категори.{0,8}(е|ce|cе)))/;
   const trailerFleet =
@@ -1941,7 +2030,8 @@ function deterministicQualificationDecision(record) {
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
     const strongLinkedSignal =
-      explicitTrailerModel.test(note) ||
+      priorityTrailerModel.test(note) ||
+      genericTrailerIdentification.test(note) ||
       ceTrailerJob.test(note) ||
       trailerFleet.test(note) ||
       trailerCommerce.test(note);
@@ -1980,7 +2070,14 @@ function deterministicQualificationDecision(record) {
     grade,
     reason,
     aEvidence,
-    signals: { target, heavy, transport, aEvidence: Boolean(aEvidence) }
+    signals: {
+      target,
+      priorityTarget,
+      generalTarget,
+      heavy,
+      transport,
+      aEvidence: Boolean(aEvidence)
+    }
   };
 }
 
@@ -3038,7 +3135,7 @@ export async function runResearchPipeline({ job, apiKey }) {
       qualificationDetail: "dedupe replay · frozen identity checkpoint"
     });
 
-    const canonicalPool = canonicalizeCandidates(identityCheckpoint.candidates);
+    const canonicalPool = canonicalizeCandidates(identityCheckpoint.candidates, region);
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
@@ -3052,7 +3149,7 @@ export async function runResearchPipeline({ job, apiKey }) {
 
     const beforeDedupe = makeQaRecords(stagedTest);
     const diagnostics = { merges: [] };
-    const qaRecords = deterministicGlobalDedupe(beforeDedupe, diagnostics);
+    const qaRecords = deterministicGlobalDedupe(beforeDedupe, diagnostics, region);
     const previousRecords = Array.isArray(snapshot?.dedupe_checkpoint?.records)
       ? snapshot.dedupe_checkpoint.records
       : [];
@@ -3262,7 +3359,7 @@ ${JSON.stringify(compactCourtArchive)}
       !stageBudgetStopped &&
       (!testProfile || testProfile.recovery) &&
       recoveryIndex < RESEARCH_MAX_RECOVERY_BRANCHES &&
-      uniqueResearchCount(combined) < RESEARCH_SOFT_TARGET;
+      lowYieldStreak < 2;
       recoveryIndex++
     ) {
       await assertNotCancelled();
@@ -3271,7 +3368,7 @@ ${JSON.stringify(compactCourtArchive)}
       const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
 
       statuses[i].detail =
-        `добор ${recoveryIndex + 1} · ${before} / ориентир ${RESEARCH_SOFT_TARGET}`;
+        `добор ${recoveryIndex + 1} · ${before} уникальных · проверяем насыщение`;
       await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
 
       let successes = 0;
@@ -3293,8 +3390,7 @@ ${JSON.stringify(compactCourtArchive)}
                 theme,
                 scope,
                 alreadyFound: recoveryKnown,
-                uniqueCount: before,
-                target: RESEARCH_SOFT_TARGET
+                uniqueCount: before
               }),
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
               `этап ${i + 1} | recovery ${recoveryIndex + 1} | ${theme} | ${scope}`
@@ -3311,13 +3407,15 @@ ${JSON.stringify(compactCourtArchive)}
           successes++;
 
           if (scopeIndex > 0) {
+            const threshold = adaptiveDiscoveryLowYieldThreshold(recoveryKnown.length);
+            const streakLimit = adaptiveDiscoveryLowYieldStreak(researchScopes.length);
             recoveryScopeLowYield =
-              addedInScope <= DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+              addedInScope <= threshold
                 ? recoveryScopeLowYield + 1
                 : 0;
 
             if (
-              recoveryScopeLowYield >= DISCOVERY_SCOPE_LOW_YIELD_STREAK &&
+              recoveryScopeLowYield >= streakLimit &&
               scopeIndex + 1 < researchScopes.length
             ) {
               console.log("[DISCOVERY_SCOPE_STOP] " + JSON.stringify({
@@ -3326,7 +3424,8 @@ ${JSON.stringify(compactCourtArchive)}
                 processed_scopes: scopeIndex + 1,
                 total_scopes: researchScopes.length,
                 last_added: addedInScope,
-                threshold: DISCOVERY_SCOPE_LOW_YIELD_THRESHOLD
+                threshold,
+                streak_limit: streakLimit
               }));
               break;
             }
@@ -3346,7 +3445,8 @@ ${JSON.stringify(compactCourtArchive)}
 
       const after = uniqueResearchCount(combined);
       const added = Math.max(0, after - before);
-      lowYieldStreak = added <= RESEARCH_LOW_YIELD_THRESHOLD ? lowYieldStreak + 1 : 0;
+      const recoveryThreshold = adaptiveDiscoveryLowYieldThreshold(before);
+      lowYieldStreak = added <= recoveryThreshold ? lowYieldStreak + 1 : 0;
 
       if (lowYieldStreak >= 2) {
         statuses[i].detail = `разумные поисковые направления исчерпаны · ${after} уникальных`;
@@ -3418,7 +3518,7 @@ ${JSON.stringify(compactCourtArchive)}
       });
     }
 
-    const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
+    const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
     const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
 
@@ -3453,7 +3553,7 @@ ${JSON.stringify(compactCourtArchive)}
       }));
     } else {
       const beforeDedupe = makeQaRecords(stagedTest);
-      qaRecords = deterministicGlobalDedupe(beforeDedupe);
+      qaRecords = deterministicGlobalDedupe(beforeDedupe, null, region);
       if (replayMode) {
         console.log("[REPLAY_DEDUPE_CHECKPOINT_MISSING] " + JSON.stringify({
           before: beforeDedupe.length,
@@ -3629,7 +3729,7 @@ ${JSON.stringify(compactCourtArchive)}
     }
   });
 
-  const canonicalPool = canonicalizeCandidates(identityResolution.candidates);
+  const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
   console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
     region,
     mentions: candidatePool.length,
