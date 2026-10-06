@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 8;
+const DEDUPE_CHECKPOINT_VERSION = 9;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1503,11 +1503,6 @@ function organizationIdentityTokens(value) {
     .filter((token) => token.length >= 2 && !stop.has(token));
 }
 
-const GENERIC_SINGLE_ORG_TOKENS = new Set([
-  "агро", "авто", "бетон", "карьер", "лизинг", "логистика", "неруд",
-  "ресурс", "сервис", "спецтехника", "строй", "техника", "транс", "центр"
-]);
-
 function organizationNamesCompatible(a, b) {
   const left = normalizeOrgKey(a);
   const right = normalizeOrgKey(b);
@@ -1523,18 +1518,15 @@ function organizationNamesCompatible(a, b) {
   const shared = [...ls].filter((token) => rs.has(token));
   const minSize = Math.min(ls.size, rs.size);
 
-  // Require token-level overlap, never substring containment inside a token.
-  // This keeps "Смолагро" distinct from "СмолАгроСнаб".
-  if (shared.length >= 2 && shared.length / minSize >= 0.67) return true;
-
-  // A single-token short form may match a longer legal/trading form only when
-  // the token is distinctive. Generic names such as "Бетон", "Агро", "Транс"
-  // must not absorb companies that merely contain the same common word.
+  // Alias matching must never be decided by one shared token.
+  // Exact normalized names were handled above; all fuzzy name matches now
+  // require at least two meaningful shared identity tokens with strong overlap.
+  // This removes the need for an ever-growing dictionary of generic words
+  // such as "бетон", "экология", "транс", etc.
   if (
-    minSize === 1 &&
-    shared.length === 1 &&
-    shared[0].length >= 7 &&
-    !GENERIC_SINGLE_ORG_TOKENS.has(shared[0])
+    shared.length >= 2 &&
+    minSize >= 2 &&
+    shared.length / minSize >= 0.67
   ) return true;
 
   return false;
