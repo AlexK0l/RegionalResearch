@@ -755,6 +755,17 @@ async function runResearchMicroBatch({
 
       const normalized = normalize(value);
       const added = countNewOrganizationsAgainstKnown(normalized, beforeKnown);
+      console.log("[DISCOVERY_SCOPE_RESULT] " + JSON.stringify({
+        stage: stageIndex + 1,
+        branch: branchIndex + 1,
+        branch_name: branch,
+        scope_index: scopeIndex + 1,
+        scope,
+        rows: diagnosticRowCount(normalized),
+        new_organizations: added,
+        token_usage_cumulative: tokenUsageSnapshot(client),
+        companies: diagnosticDiscoveryRows(normalized)
+      }));
       appendResearchResult(
         merged,
         normalized,
@@ -2364,6 +2375,73 @@ function diagnosticEvidenceUrlCount(data) {
   return count;
 }
 
+function diagnosticDiscoveryRows(data) {
+  const rows = [];
+  for (const [sheet, values] of [
+    ["direct_buyers", data?.direct_buyers || []],
+    ["intermediaries", data?.intermediaries || []],
+    ["leasing", data?.leasing || []]
+  ]) {
+    for (const row of values) {
+      rows.push({
+        sheet,
+        organization: String(row?.["Организация"] || "").trim(),
+        city: String(row?.["Город/район"] || "").trim(),
+        segment: String(row?.["Техника/сегмент"] || "").trim(),
+        basis: String(row?.["Основание"] || "").trim(),
+        evidence: {
+          source_urls: Array.isArray(row?.__evidence?.source_urls)
+            ? row.__evidence.source_urls.map(String)
+            : [],
+          notes: Array.isArray(row?.__evidence?.notes)
+            ? row.__evidence.notes.map(String)
+            : []
+        }
+      });
+    }
+  }
+  return rows;
+}
+
+function emptyTokenUsage() {
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    cached_input_tokens: 0,
+    total_tokens: 0
+  };
+}
+
+function tokenUsageSnapshot(client) {
+  return { ...emptyTokenUsage(), ...(client?.__tokenUsage || {}) };
+}
+
+function recordTokenUsage(client, usage) {
+  if (!client || !usage) return;
+  if (!client.__tokenUsage) client.__tokenUsage = emptyTokenUsage();
+  const input = Number(usage?.input_tokens || 0);
+  const output = Number(usage?.output_tokens || 0);
+  const total = Number(usage?.total_tokens || input + output);
+  client.__tokenUsage.input_tokens += input;
+  client.__tokenUsage.output_tokens += output;
+  client.__tokenUsage.reasoning_tokens += Number(
+    usage?.output_tokens_details?.reasoning_tokens || 0
+  );
+  client.__tokenUsage.cached_input_tokens += Number(
+    usage?.input_tokens_details?.cached_tokens || 0
+  );
+  client.__tokenUsage.total_tokens += total;
+}
+
+function tokenUsageDelta(after, before) {
+  const result = {};
+  for (const key of Object.keys(emptyTokenUsage())) {
+    result[key] = Math.max(0, Number(after?.[key] || 0) - Number(before?.[key] || 0));
+  }
+  return result;
+}
+
 function diagnosticToolCounts(response) {
   const counts = {};
   for (const item of response?.output || []) {
@@ -2450,6 +2528,7 @@ async function askJson(client, {
   try {
     const response = await client.responses.create(request, requestOptions);
     const usage = response?.usage || {};
+    recordTokenUsage(client, usage);
     const stopReason =
       response?.incomplete_details?.reason ||
       (response?.status === "completed" ? "completed" : response?.status || "unknown");
@@ -2509,6 +2588,7 @@ async function askJson(client, {
             repaired = true;
             parseError = "";
             repairUsage = repairedResponse?.usage || null;
+            recordTokenUsage(client, repairUsage);
             console.log("[OPENAI_JSON_REPAIR] " + JSON.stringify({
               query,
               model,
@@ -2546,8 +2626,17 @@ async function askJson(client, {
       duration_ms: Date.now() - startedAt,
       input_tokens: usage?.input_tokens ?? null,
       output_tokens: usage?.output_tokens ?? null,
+      total_tokens: usage?.total_tokens ?? (
+        Number(usage?.input_tokens || 0) + Number(usage?.output_tokens || 0)
+      ),
       reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
       cached_input_tokens: usage?.input_tokens_details?.cached_tokens ?? null,
+      repair_total_tokens: repairUsage
+        ? Number(repairUsage?.total_tokens || (
+            Number(repairUsage?.input_tokens || 0) + Number(repairUsage?.output_tokens || 0)
+          ))
+        : 0,
+      cumulative_tokens: tokenUsageSnapshot(client),
       tool_calls: toolCounts,
       web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
@@ -3071,6 +3160,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
+  client.__tokenUsage = emptyTokenUsage();
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
@@ -3252,6 +3342,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   for (const i of !replayMode ? researchStageIndexes : []) {
     await assertNotCancelled();
     startStep(statuses[i]);
+    const stageTokenStart = tokenUsageSnapshot(client);
 
     const combined = emptyResearchResult();
 
@@ -3285,6 +3376,14 @@ ${JSON.stringify(compactCourtArchive)}
               courtArchiveInstruction(archiveThemes[archivePass], region, alreadyFound)
           )
         );
+        console.log("[DISCOVERY_ARCHIVE_RESULT] " + JSON.stringify({
+          stage: i + 1,
+          archive_pass: archivePass + 1,
+          theme: archiveThemes[archivePass],
+          rows: diagnosticRowCount(archiveOutput),
+          token_usage_cumulative: tokenUsageSnapshot(client),
+          companies: diagnosticDiscoveryRows(archiveOutput)
+        }));
         appendResearchResult(combined, archiveOutput, `archive-${archivePass + 1}`);
       }
     }
@@ -3344,6 +3443,15 @@ ${JSON.stringify(compactCourtArchive)}
         break;
       }
       appendResearchResult(combined, branchResult, `branch-${branchIndex + 1}`);
+      console.log("[DISCOVERY_BRANCH_RESULT] " + JSON.stringify({
+        stage: i + 1,
+        branch: branchIndex + 1,
+        branch_name: branches[branchIndex],
+        rows: diagnosticRowCount(branchResult),
+        unique_in_branch: uniqueResearchCount(branchResult),
+        token_usage_cumulative: tokenUsageSnapshot(client),
+        companies: diagnosticDiscoveryRows(branchResult)
+      }));
 
       const after = uniqueResearchCount(combined);
       statuses[i].detail =
@@ -3400,6 +3508,17 @@ ${JSON.stringify(compactCourtArchive)}
           );
 
           const addedInScope = countNewOrganizationsAgainstKnown(value, knownBeforeScope);
+          console.log("[DISCOVERY_RECOVERY_RESULT] " + JSON.stringify({
+            stage: i + 1,
+            recovery: recoveryIndex + 1,
+            theme,
+            scope_index: scopeIndex + 1,
+            scope,
+            rows: diagnosticRowCount(value),
+            new_organizations: addedInScope,
+            token_usage_cumulative: tokenUsageSnapshot(client),
+            companies: diagnosticDiscoveryRows(value)
+          }));
           appendResearchResult(
             combined,
             value,
@@ -3458,8 +3577,20 @@ ${JSON.stringify(compactCourtArchive)}
 
     parts[i] = combined;
     finishStep(statuses[i]);
+    const stageTokenEnd = tokenUsageSnapshot(client);
+    const stageTokenUsage = tokenUsageDelta(stageTokenEnd, stageTokenStart);
+    console.log("[DISCOVERY_STAGE_SUMMARY] " + JSON.stringify({
+      stage: i + 1,
+      region,
+      rows: rowCount(combined),
+      unique: uniqueResearchCount(combined),
+      branches: branches.length,
+      token_usage: stageTokenUsage,
+      token_usage_cumulative: stageTokenEnd,
+      companies: diagnosticDiscoveryRows(combined)
+    }));
     statuses[i].detail =
-      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · adaptive geo-scope`;
+      `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · tokens: ${stageTokenUsage.total_tokens} · adaptive geo-scope`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
   }
 
@@ -3689,7 +3820,8 @@ ${JSON.stringify(compactCourtArchive)}
         C: qualified.counts.C,
         qualified: qualifiedCompanies.length,
         excluded_after_qualification: qualified.counts.excluded,
-        qualification_changes: replayQualificationComparison?.changed_count ?? null
+        qualification_changes: replayQualificationComparison?.changed_count ?? null,
+        token_usage: tokenUsageSnapshot(client)
       },
       qualified_companies: qualifiedCompanies,
       replay_comparison: replayQualificationComparison,
