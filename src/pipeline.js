@@ -57,16 +57,31 @@ function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
   if (source.length <= 2) return source;
 
   const regionScope = source[0];
-  const localParts = source.slice(1).map((scope) =>
-    String(scope || "")
-      .replace(/^география:\s*/i, "")
-      .trim()
-  ).filter(Boolean);
+  const firstLocal = source[1];
+  const remainingLocal = source.slice(2)
+    .map((scope) =>
+      String(scope || "")
+        .replace(/^география:\s*/i, "")
+        .trim()
+    )
+    .filter(Boolean);
 
-  return [
-    regionScope,
-    `географические пробелы: ${localParts.join("; ")}. Пройди ВСЕ перечисленные территории пакетно; группируй близкие территории в общие web_search-запросы и не повторяй региональный поиск.`
-  ];
+  const result = [regionScope, firstLocal];
+  if (remainingLocal.length) {
+    result.push(
+      `углублённые географические пробелы: ${remainingLocal.join("; ")}. Выполняй этот проход только как продолжение продуктивного локального поиска: пройди ВСЕ перечисленные территории пакетно, не повторяй уже найденные организации и не заменяй предмет ветки общим поиском.`
+    );
+  }
+  return result;
+}
+
+function discoveryGeoExpansionWorthwhile(stats) {
+  const value = stats || {};
+  return (
+    Number(value.a || 0) >= 1 ||
+    Number(value.strongNew || 0) >= 2 ||
+    Number(value.qualityScore || 0) >= 5
+  );
 }
 
 function adaptiveDiscoveryLowYieldThreshold(knownCount) {
@@ -799,8 +814,24 @@ async function runResearchMicroBatch({
   let successCount = 0;
   let firstError = null;
   let lowYieldStreak = 0;
+  let firstLocalYield = null;
 
   for (let scopeIndex = 0; scopeIndex < selectedScopes.length; scopeIndex++) {
+    if (
+      scopeIndex >= 2 &&
+      firstLocalYield &&
+      !discoveryGeoExpansionWorthwhile(firstLocalYield)
+    ) {
+      console.log("[DISCOVERY_GEO_EXPANSION_SKIP] " + JSON.stringify({
+        stage: stageIndex + 1,
+        branch: branchIndex + 1,
+        reason: "first_local_scope_not_productive_enough",
+        first_local_quality_yield: firstLocalYield,
+        skipped_scopes: selectedScopes.length - scopeIndex
+      }));
+      break;
+    }
+
     const scope = selectedScopes[scopeIndex];
     const beforeKnown = [...knownNames];
     const knownContext = knownNames.length
@@ -826,6 +857,7 @@ async function runResearchMicroBatch({
       const normalized = normalize(value);
       const yieldStats = discoveryYieldStats(normalized, beforeKnown);
       const added = yieldStats.newOrganizations;
+      if (scopeIndex === 1) firstLocalYield = yieldStats;
       console.log("[DISCOVERY_SCOPE_RESULT] " + JSON.stringify({
         stage: stageIndex + 1,
         branch: branchIndex + 1,
