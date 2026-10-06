@@ -1008,19 +1008,49 @@ function looksAmbiguousOrganizationName(value) {
 
 function clusterNeedsIdentityWebSearch(cluster) {
   const items = cluster?.items || [];
-  if (items.length > 1) return true;
+  if (!items.length) return false;
 
   const row = items[0]?.data || {};
   const identity = clusterEvidenceIdentity(cluster);
 
-  // Конфликтующие ИНН требуют внешней проверки.
+  // Конфликтующие ИНН требуют внешней проверки при любом размере кластера.
   if (identity.inns.length > 1) return true;
 
-  // Один подтверждённый ИНН уже достаточен для singleton.
+  // Один подтверждённый ИНН уже достаточен и для singleton, и для повторных
+  // упоминаний: повторно искать тот же ИНН через web не нужно.
   if (identity.inns.length === 1) return false;
 
   const org = String(row["Организация"] || "").trim();
   if (looksAmbiguousOrganizationName(org)) return true;
+
+  if (items.length > 1) {
+    const normalizedNames = new Set(
+      items.map((item) => normalizeOrgKey(item?.data?.["Организация"])).filter(Boolean)
+    );
+    const places = items
+      .map((item) => normalizePlaceKey(item?.data?.["Город/район"]))
+      .filter(Boolean);
+    const sameNonEmptyPlace =
+      places.length === items.length && new Set(places).size === 1;
+
+    const domainSets = items.map((item) => evidenceDomains(item?.data || {}));
+    let sharedDomain = false;
+    if (domainSets.length && domainSets.every((set) => set.size)) {
+      sharedDomain = [...domainSets[0]].some((domain) =>
+        domainSets.slice(1).every((set) => set.has(domain))
+      );
+    }
+
+    // Повторные упоминания одного и того же недвусмысленного названия уже
+    // достаточно связаны, если совпадает география либо есть общий evidence-domain.
+    // Dedupe ниже объединит их детерминированно; web-search здесь не добавляет
+    // достаточной ценности, чтобы оправдать отдельный identity-вызов.
+    if (normalizedNames.size === 1 && (sameNonEmptyPlace || sharedDomain)) {
+      return false;
+    }
+
+    return true;
+  }
 
   // Несколько разных доменов при singleton часто означают агрегаторы/посредников
   // или неочевидную юридическую идентичность.
