@@ -3629,10 +3629,24 @@ ${JSON.stringify(compactCourtArchive)}
       let successes = 0;
       let recoveryScopeLowYield = 0;
       const recoveryKnown = [...alreadyFound];
+      const recoveryScopes = discoveryScopesForBranch(
+        i,
+        recoveryBranch.branchIndex,
+        researchScopes
+      );
+      const recoveryYieldAggregate = {
+        newOrganizations: 0,
+        a: 0,
+        b: 0,
+        c: 0,
+        ungraded: 0,
+        strongNew: 0,
+        qualityScore: 0
+      };
 
-      for (let scopeIndex = 0; scopeIndex < researchScopes.length; scopeIndex++) {
+      for (let scopeIndex = 0; scopeIndex < recoveryScopes.length; scopeIndex++) {
         await assertNotCancelled();
-        const scope = researchScopes[scopeIndex];
+        const scope = recoveryScopes[scopeIndex];
         const knownBeforeScope = [...recoveryKnown];
 
         try {
@@ -3653,7 +3667,17 @@ ${JSON.stringify(compactCourtArchive)}
             )
           );
 
-          const addedInScope = countNewOrganizationsAgainstKnown(value, knownBeforeScope);
+          const scopeYield = discoveryYieldStats(value, knownBeforeScope);
+          const addedInScope = scopeYield.newOrganizations;
+          recoveryYieldAggregate.newOrganizations += scopeYield.newOrganizations;
+          recoveryYieldAggregate.a += scopeYield.a;
+          recoveryYieldAggregate.b += scopeYield.b;
+          recoveryYieldAggregate.c += scopeYield.c;
+          recoveryYieldAggregate.ungraded += scopeYield.ungraded;
+          recoveryYieldAggregate.strongNew += scopeYield.strongNew;
+          recoveryYieldAggregate.qualityScore = Number(
+            (recoveryYieldAggregate.qualityScore + scopeYield.qualityScore).toFixed(2)
+          );
           console.log("[DISCOVERY_RECOVERY_RESULT] " + JSON.stringify({
             stage: i + 1,
             recovery: recoveryIndex + 1,
@@ -3664,6 +3688,7 @@ ${JSON.stringify(compactCourtArchive)}
             scope,
             rows: diagnosticRowCount(value),
             new_organizations: addedInScope,
+            quality_yield: scopeYield,
             token_usage_cumulative: tokenUsageSnapshot(client),
             companies: diagnosticDiscoveryRows(value)
           }));
@@ -3677,21 +3702,21 @@ ${JSON.stringify(compactCourtArchive)}
 
           if (scopeIndex > 0) {
             const threshold = adaptiveDiscoveryLowYieldThreshold(recoveryKnown.length);
-            const streakLimit = adaptiveDiscoveryLowYieldStreak(researchScopes.length);
+            const streakLimit = adaptiveDiscoveryLowYieldStreak(recoveryScopes.length);
             recoveryScopeLowYield =
-              addedInScope <= threshold
+              addedInScope <= threshold || discoveryQualityIsLow(scopeYield)
                 ? recoveryScopeLowYield + 1
                 : 0;
 
             if (
               recoveryScopeLowYield >= streakLimit &&
-              scopeIndex + 1 < researchScopes.length
+              scopeIndex + 1 < recoveryScopes.length
             ) {
               console.log("[DISCOVERY_SCOPE_STOP] " + JSON.stringify({
                 stage: i + 1,
                 recovery: recoveryIndex + 1,
                 processed_scopes: scopeIndex + 1,
-                total_scopes: researchScopes.length,
+                total_scopes: recoveryScopes.length,
                 last_added: addedInScope,
                 threshold,
                 streak_limit: streakLimit
@@ -3715,7 +3740,18 @@ ${JSON.stringify(compactCourtArchive)}
       const after = uniqueResearchCount(combined);
       const added = Math.max(0, after - before);
       const recoveryThreshold = adaptiveDiscoveryLowYieldThreshold(before);
-      lowYieldStreak = added <= recoveryThreshold ? lowYieldStreak + 1 : 0;
+      const recoveryLowQuality =
+        added <= recoveryThreshold || discoveryQualityIsLow(recoveryYieldAggregate);
+      lowYieldStreak = recoveryLowQuality ? lowYieldStreak + 1 : 0;
+      console.log("[DISCOVERY_RECOVERY_SUMMARY] " + JSON.stringify({
+        stage: i + 1,
+        recovery: recoveryIndex + 1,
+        anchor_branch: recoveryBranch.branchIndex + 1,
+        rows_added: added,
+        quality_yield: recoveryYieldAggregate,
+        low_yield: recoveryLowQuality,
+        threshold: recoveryThreshold
+      }));
 
       if (lowYieldStreak >= 2) {
         statuses[i].detail = `разумные поисковые направления исчерпаны · ${after} уникальных`;
