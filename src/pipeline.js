@@ -814,18 +814,21 @@ async function runResearchMicroBatch({
   let successCount = 0;
   let firstError = null;
   let lowYieldStreak = 0;
+  let regionalYield = null;
   let firstLocalYield = null;
 
   for (let scopeIndex = 0; scopeIndex < selectedScopes.length; scopeIndex++) {
     if (
       scopeIndex >= 2 &&
       firstLocalYield &&
-      !discoveryGeoExpansionWorthwhile(firstLocalYield)
+      !discoveryGeoExpansionWorthwhile(firstLocalYield) &&
+      !discoveryGeoExpansionWorthwhile(regionalYield)
     ) {
       console.log("[DISCOVERY_GEO_EXPANSION_SKIP] " + JSON.stringify({
         stage: stageIndex + 1,
         branch: branchIndex + 1,
-        reason: "first_local_scope_not_productive_enough",
+        reason: "regional_and_first_local_scope_not_productive_enough",
+        regional_quality_yield: regionalYield,
         first_local_quality_yield: firstLocalYield,
         skipped_scopes: selectedScopes.length - scopeIndex
       }));
@@ -857,6 +860,7 @@ async function runResearchMicroBatch({
       const normalized = normalize(value);
       const yieldStats = discoveryYieldStats(normalized, beforeKnown);
       const added = yieldStats.newOrganizations;
+      if (scopeIndex === 0) regionalYield = yieldStats;
       if (scopeIndex === 1) firstLocalYield = yieldStats;
       console.log("[DISCOVERY_SCOPE_RESULT] " + JSON.stringify({
         stage: stageIndex + 1,
@@ -3680,6 +3684,7 @@ ${JSON.stringify(compactCourtArchive)}
         strongNew: 0,
         qualityScore: 0
       };
+      let recoveryRegionalYield = null;
       let recoveryFirstLocalYield = null;
 
       for (let scopeIndex = 0; scopeIndex < recoveryScopes.length; scopeIndex++) {
@@ -3687,13 +3692,15 @@ ${JSON.stringify(compactCourtArchive)}
         if (
           scopeIndex >= 2 &&
           recoveryFirstLocalYield &&
-          !discoveryGeoExpansionWorthwhile(recoveryFirstLocalYield)
+          !discoveryGeoExpansionWorthwhile(recoveryFirstLocalYield) &&
+          !discoveryGeoExpansionWorthwhile(recoveryRegionalYield)
         ) {
           console.log("[DISCOVERY_GEO_EXPANSION_SKIP] " + JSON.stringify({
             stage: i + 1,
             recovery: recoveryIndex + 1,
             anchor_branch: recoveryBranch.branchIndex + 1,
-            reason: "first_local_scope_not_productive_enough",
+            reason: "regional_and_first_local_scope_not_productive_enough",
+            regional_quality_yield: recoveryRegionalYield,
             first_local_quality_yield: recoveryFirstLocalYield,
             skipped_scopes: recoveryScopes.length - scopeIndex
           }));
@@ -3723,6 +3730,7 @@ ${JSON.stringify(compactCourtArchive)}
 
           const scopeYield = discoveryYieldStats(value, knownBeforeScope);
           const addedInScope = scopeYield.newOrganizations;
+          if (scopeIndex === 0) recoveryRegionalYield = scopeYield;
           if (scopeIndex === 1) recoveryFirstLocalYield = scopeYield;
           recoveryYieldAggregate.newOrganizations += scopeYield.newOrganizations;
           recoveryYieldAggregate.a += scopeYield.a;
