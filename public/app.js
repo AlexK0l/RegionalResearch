@@ -9,6 +9,7 @@ const e={
   quality:document.querySelector("#qualityBtn"),
   test:document.querySelector("#testBtn"),
   replay:document.querySelector("#replayBtn"),
+  dedupeReplay:document.querySelector("#dedupeReplayBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
   progressCard:document.querySelector("#progressCard"),
@@ -39,13 +40,13 @@ function loadSavedSnapshot(){
     const raw=localStorage.getItem(SNAPSHOT_STORAGE_KEY);
     if(!raw)return null;
     const snapshot=JSON.parse(raw);
-    return [1,2,3].includes(snapshot?.version)&&Array.isArray(snapshot.parts)?snapshot:null;
+    return [1,2,3,4].includes(snapshot?.version)&&Array.isArray(snapshot.parts)?snapshot:null;
   }catch{return null;}
 }
 
 function saveSnapshot(snapshot){
   try{
-    if(![1,2,3].includes(snapshot?.version)||!Array.isArray(snapshot.parts))return false;
+    if(![1,2,3,4].includes(snapshot?.version)||!Array.isArray(snapshot.parts))return false;
     localStorage.setItem(SNAPSHOT_STORAGE_KEY,JSON.stringify(snapshot));
     return true;
   }catch(err){
@@ -132,8 +133,11 @@ function resetIdleState(){
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
-  e.replay.hidden=!loadSavedSnapshot();
-  e.replay.disabled=!loadSavedSnapshot();
+  const savedSnapshot=loadSavedSnapshot();
+  e.replay.hidden=!savedSnapshot;
+  e.replay.disabled=!savedSnapshot;
+  e.dedupeReplay.hidden=!Array.isArray(savedSnapshot?.identity_checkpoint?.candidates);
+  e.dedupeReplay.disabled=e.dedupeReplay.hidden;
   if(backendReady){
     e.start.disabled=false;
     e.smoke.disabled=false;
@@ -232,16 +236,25 @@ async function poll(restoring=false){
       e.cancel.disabled=true;
       e.resultCard.hidden=false;
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
-      const isTestMode=["test12","smoke","quality","replay"].includes(r.mode);
+      const isTestMode=["test12","smoke","quality","replay","dedupe_replay"].includes(r.mode);
       if(isTestMode){
         const modeLabel={
           smoke:"Smoke test",
           quality:"Quality sample",
           test12:"Тест этапов 1–2",
-          replay:"Replay без web"
+          replay:"Replay без web",
+          dedupe_replay:"Dedupe replay"
         }[r.mode]||"Тест";
-        e.resultSummary.textContent=
-          modeLabel+" завершён. Сырых находок: "+(c.total_rows||0)+
+        e.resultSummary.textContent=r.mode==="dedupe_replay"
+          ? modeLabel+" завершён. Identity/canonical вход: "+(c.canonical_after_inn||0)+
+            ", после текущего dedupe: "+(c.after_global_dedupe||0)+
+            ", удалено: "+(c.dedupe_removed||0)+
+            ", merge-групп: "+(c.dedupe_merge_groups||0)+
+            (r.dedupe_comparison?.previous_after_dedupe
+              ? ", предыдущий checkpoint: "+r.dedupe_comparison.previous_after_dedupe+
+                ", delta: "+(r.dedupe_comparison.delta_after>=0?"+":"")+r.dedupe_comparison.delta_after
+              : "")+"."
+          : modeLabel+" завершён. Сырых находок: "+(c.total_rows||0)+
           ", условно уникальных discovery: "+(c.unique||0)+
           ", identity-кластеров: "+(c.identity_clusters||0)+
           ", identity без web: "+(c.identity_skipped_web||0)+
@@ -257,11 +270,23 @@ async function poll(restoring=false){
           ", B — "+(c.B||0)+
           ", C — "+(c.C||0)+
           ", исключено — "+(c.excluded_after_qualification||0)+".";
-        renderQualifiedCompanies(r.qualified_companies||[]);
+        if(r.mode==="dedupe_replay"){
+          e.testCompanies.hidden=false;
+          const merges=Array.isArray(r.dedupe_comparison?.merges)?r.dedupe_comparison.merges:[];
+          e.testCompanies.innerHTML='<div class="test-companies-head"><strong>Merge-группы dedupe</strong><span>'+merges.length+'</span></div>'+
+            '<div class="table-wrap"><table class="qualified-table"><thead><tr><th>Тип</th><th>Ключ</th><th>Организации</th></tr></thead><tbody>'+
+            merges.map(m=>'<tr><td>'+escapeHtml(m.type||"")+'</td><td>'+escapeHtml(m.key||"—")+'</td><td>'+escapeHtml((m.organizations||[]).join(" · "))+'</td></tr>').join("")+
+            '</tbody></table></div>';
+        }else{
+          renderQualifiedCompanies(r.qualified_companies||[]);
+        }
         e.download.hidden=true;
         if(r.replay_available) await cacheSnapshot(currentJobId);
-        e.replay.hidden=!(r.replay_available||loadSavedSnapshot());
+        const savedSnapshot=loadSavedSnapshot();
+        e.replay.hidden=!(r.replay_available||savedSnapshot);
         e.replay.disabled=false;
+        e.dedupeReplay.hidden=!Array.isArray(savedSnapshot?.identity_checkpoint?.candidates);
+        e.dedupeReplay.disabled=e.dedupeReplay.hidden;
       }else{
         e.testCompanies.hidden=true;
         e.testCompanies.innerHTML="";
@@ -338,6 +363,33 @@ async function startSmoke(){return startJob("smoke");}
 async function startQuality(){return startJob("quality");}
 async function startTest(){return startJob("test12");}
 
+async function startDedupeReplay(){
+  const snapshot=loadSavedSnapshot();
+  const sourceJobId=currentJobId||"";
+  if(!sourceJobId&&!snapshot){
+    e.error.hidden=false;
+    e.error.textContent="Нет сохранённого snapshot для Dedupe replay.";
+    return;
+  }
+  e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
+  e.progressCard.hidden=false;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.dedupeReplay.disabled=true;e.cancel.disabled=false;
+  try{
+    const payload={mode:"dedupe_replay"};
+    if(sourceJobId)payload.sourceJobId=sourceJobId;
+    if(snapshot)payload.snapshot=snapshot;
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
+    currentJobId=d.id;
+    localStorage.setItem("sat_current_job",currentJobId);
+    if(pollTimer)clearInterval(pollTimer);
+    await poll();
+    pollTimer=setInterval(poll,2000);
+  }catch(err){
+    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.replay.disabled=false;e.dedupeReplay.disabled=false;e.cancel.disabled=true;
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
+
 async function startReplay(){
   const snapshot=loadSavedSnapshot();
   const sourceJobId=currentJobId||"";
@@ -406,6 +458,7 @@ async function waitForBackend(){
   e.quality.disabled=true;
   e.test.disabled=true;
   e.replay.disabled=true;
+  e.dedupeReplay.disabled=true;
   setServiceStatus("Сервис запускается…","starting");
   while(!backendReady){
     try{
@@ -421,8 +474,11 @@ async function waitForBackend(){
           e.smoke.disabled=false;
           e.quality.disabled=false;
           e.test.disabled=false;
-          e.replay.hidden=!loadSavedSnapshot();
-          e.replay.disabled=!loadSavedSnapshot();
+          const savedSnapshot=loadSavedSnapshot();
+          e.replay.hidden=!savedSnapshot;
+          e.replay.disabled=!savedSnapshot;
+          e.dedupeReplay.hidden=!Array.isArray(savedSnapshot?.identity_checkpoint?.candidates);
+          e.dedupeReplay.disabled=e.dedupeReplay.hidden;
         }
         return true;
       }
@@ -437,6 +493,7 @@ e.smoke.onclick=startSmoke;
 e.quality.onclick=startQuality;
 e.test.onclick=startTest;
 e.replay.onclick=startReplay;
+e.dedupeReplay.onclick=startDedupeReplay;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
 
