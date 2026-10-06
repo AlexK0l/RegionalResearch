@@ -53,7 +53,7 @@ const RESEARCH_GEO_GROUPS = Math.max(
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
 
-const DEDUPE_CHECKPOINT_VERSION = 9;
+const DEDUPE_CHECKPOINT_VERSION = 10;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -1485,22 +1485,22 @@ function mergeQaRecordRows(records) {
   };
 }
 
+const ORG_IDENTITY_STOP_TOKENS = new Set([
+  // Universal legal forms.
+  "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
+  "фгуп", "муп", "гуп", "нко",
+  // Universal structural descriptors.
+  "группа", "групп", "компания", "компаний", "филиал", "проект",
+  // Geographic descriptors used only to prevent regional wording from
+  // masquerading as identity evidence.
+  "смоленск", "смоленский", "смоленская", "смоленской", "область",
+  "области", "район", "региональный"
+]);
+
 function organizationIdentityTokens(value) {
-  const stop = new Set([
-    // Legal forms must never count as identity evidence.
-    "ооо", "ао", "пао", "оао", "зао", "ип", "спк", "схпк", "согбу",
-    "фгуп", "муп", "гуп", "нко",
-    // Generic organizational / geographic descriptors.
-    "группа", "групп", "компания", "компаний", "филиал", "проект",
-    "смоленск", "смоленский", "смоленская", "смоленской", "область",
-    "области", "район", "региональный",
-    // Industry descriptors alone are not a company identity.
-    "завод", "бетонный", "бетон", "сельскохозяйственное", "предприятие",
-    "птицефабрика", "лизинговая", "лизинг", "центр"
-  ]);
   return normalizeOrgKey(value)
     .split(/\s+/)
-    .filter((token) => token.length >= 2 && !stop.has(token));
+    .filter((token) => token.length >= 2 && !ORG_IDENTITY_STOP_TOKENS.has(token));
 }
 
 function organizationNamesCompatible(a, b) {
@@ -1520,9 +1520,8 @@ function organizationNamesCompatible(a, b) {
 
   // Alias matching must never be decided by one shared token.
   // Exact normalized names were handled above; all fuzzy name matches now
-  // require at least two meaningful shared identity tokens with strong overlap.
-  // This removes the need for an ever-growing dictionary of generic words
-  // such as "бетон", "экология", "транс", etc.
+  // require at least two shared non-structural tokens with strong overlap.
+  // Industry vocabulary is intentionally not hard-coded here.
   if (
     shared.length >= 2 &&
     minSize >= 2 &&
