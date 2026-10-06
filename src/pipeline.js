@@ -142,6 +142,9 @@ DISCOVERY-ПРАВИЛА:
 - Ищи конкретные организации; от объявления, вакансии, тендера, проекта или сервиса переходи к фактической компании.
 - Не делай отдельные поиски ради ИНН, телефона, директора, email, сайта, холдинга, выручки или численности.
 - Для каждой организации сохрани 1–3 уже найденных сильных URL и короткие evidence notes.
+- ЭФФЕКТИВНОСТЬ WEB_SEARCH: сначала объединяй несколько близких формулировок/сущностей в широкие поисковые запросы и используй найденную выдачу пакетно. Не запускай отдельный web_search для каждой компании, если её идентичность и связь с веткой уже подтверждаются текущей выдачей.
+- Для одного branch×scope обычно достаточно 2–4 содержательных web-search проходов. Выходи за этот ориентир только когда предыдущий проход реально открыл новые релевантные организации или новый сильный источник; не делай перефразированные повторы ради полноты.
+- После получения 1–3 сильных URL на кандидата не трать дополнительные web_search на его enrichment: следующий поиск должен быть направлен на НОВЫЕ организации.
 - Не выдумывай компании и факты.`;
 
 function compactDiscoveryPrompt({
@@ -3518,9 +3521,24 @@ ${JSON.stringify(compactCourtArchive)}
         a.uniqueInBranch - b.uniqueInBranch ||
         a.branchIndex - b.branchIndex
       );
+
+    // Recovery is a safety net for under-covered branches, not a second full
+    // traversal of every branch. Scale the number of recovery themes with
+    // stage breadth: roughly one recovery branch per four primary branches,
+    // while respecting the configured global ceiling.
+    const adaptiveRecoveryLimit = Math.max(
+      1,
+      Math.min(
+        RESEARCH_MAX_RECOVERY_BRANCHES,
+        Math.ceil(Math.max(1, branches.length) / 4)
+      )
+    );
+
     console.log("[DISCOVERY_BRANCH_COVERAGE] " + JSON.stringify({
       stage: i + 1,
-      branches: branchDiagnostics
+      branches: branchDiagnostics,
+      recovery_limit: adaptiveRecoveryLimit,
+      configured_recovery_limit: RESEARCH_MAX_RECOVERY_BRANCHES
     }));
 
     let lowYieldStreak = 0;
@@ -3528,7 +3546,7 @@ ${JSON.stringify(compactCourtArchive)}
       let recoveryIndex = 0;
       !stageBudgetStopped &&
       (!testProfile || testProfile.recovery) &&
-      recoveryIndex < RESEARCH_MAX_RECOVERY_BRANCHES &&
+      recoveryIndex < adaptiveRecoveryLimit &&
       lowYieldStreak < 2;
       recoveryIndex++
     ) {
