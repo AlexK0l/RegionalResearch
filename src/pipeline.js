@@ -265,6 +265,8 @@ ${known}
 
 Ищи прежде всего НОВЫЕ организации и long tail ВНУТРИ ЯКОРНОЙ ВЕТКИ.
 Recovery не является разрешением на общий поиск по этапу: меняй географию, источники, синонимы и цепочки второго порядка, но сохраняй прямую доказуемую связь каждого кандидата с якорной веткой.
+ОБЯЗАТЕЛЬНО СМЕНИ СЕМЕЙСТВО ИСТОЧНИКОВ относительно основного прохода: если основной поиск опирался на каталоги/карты — переходи к официальным сайтам, тендерам, вакансиям, судебным/регуляторным документам, кейсам производителей/сервисов; если основной проход был по официальным сайтам — проверь локальные каталоги, отраслевые списки, закупки, вакансии, отзывы/кейсы. Выбирай только источники, естественно подходящие теме ветки.
+Не повторяй уже использованный источник только другой формулировкой запроса. Цель recovery — открыть НОВОЕ семейство evidence и новых организаций, а не углублять уже найденных.
 Если новых кандидатов внутри якорной ветки мало — верни мало результатов; НЕ компенсируй низкий yield компаниями из соседних веток.
 Не выполняй enrichment найденных компаний. Не выдумывай записи ради количества.`;
 }
@@ -3618,13 +3620,34 @@ ${JSON.stringify(compactCourtArchive)}
       });
     }
 
-    const recoveryBranchOrder = [...branchDiagnostics]
-      .sort((a, b) =>
-        a.strongNew - b.strongNew ||
-        a.qualityScore - b.qualityScore ||
-        a.marginalNew - b.marginalNew ||
-        a.branchIndex - b.branchIndex
-      );
+    // Recovery should deepen branches that have already proven they can yield
+    // strong A/B evidence, not spend the safety-net budget on branches producing
+    // almost exclusively weak C rows. If at least two branches have >=2 strong
+    // discoveries, prioritize those; otherwise fall back to all branches.
+    const recoverableBranches = branchDiagnostics.filter(
+      (item) => Number(item.strongNew || 0) >= 2
+    );
+    const recoveryPool =
+      recoverableBranches.length >= 2 ? recoverableBranches : branchDiagnostics;
+    const recoveryBranchOrder = [...recoveryPool]
+      .sort((a, b) => {
+        const aStrong = Number(a.strongNew || 0);
+        const bStrong = Number(b.strongNew || 0);
+        const aRows = Math.max(1, Number(a.uniqueInBranch || a.rows || 1));
+        const bRows = Math.max(1, Number(b.uniqueInBranch || b.rows || 1));
+        const aShare = aStrong / aRows;
+        const bShare = bStrong / bRows;
+
+        // Prefer proven but still under-covered branches: fewer absolute strong
+        // finds first, then better strong-evidence density. This avoids wasting
+        // recovery on nearly all-C branches while still seeking missing long tail.
+        return (
+          aStrong - bStrong ||
+          bShare - aShare ||
+          Number(a.qualityScore || 0) - Number(b.qualityScore || 0) ||
+          Number(a.branchIndex || 0) - Number(b.branchIndex || 0)
+        );
+      });
 
     // Recovery is a safety net for under-covered branches, not a second full
     // traversal of every branch. Scale the number of recovery themes with
@@ -3642,7 +3665,13 @@ ${JSON.stringify(compactCourtArchive)}
       stage: i + 1,
       branches: branchDiagnostics,
       recovery_limit: adaptiveRecoveryLimit,
-      configured_recovery_limit: RESEARCH_MAX_RECOVERY_BRANCHES
+      configured_recovery_limit: RESEARCH_MAX_RECOVERY_BRANCHES,
+      recovery_pool: recoveryBranchOrder.map((item) => ({
+        branchIndex: item.branchIndex,
+        strongNew: item.strongNew,
+        qualityScore: item.qualityScore,
+        uniqueInBranch: item.uniqueInBranch
+      }))
     }));
 
     let lowYieldStreak = 0;
