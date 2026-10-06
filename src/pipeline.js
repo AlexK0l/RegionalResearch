@@ -135,7 +135,10 @@ DISCOVERY-ПРАВИЛА:
 - web_search обязателен; используй несколько формулировок и синонимов.
 - Приоритетно используй проверенные высокоурожайные источники и формулировки текущей методики, но НЕ считай их обязательным закрытым чеклистом.
 - Если приоритетные площадки/запросы дают мало новых организаций, переходи к региональным площадкам, официальным сайтам, отраслевым каталогам, торгам, закупкам, вакансиям, дилерам, сервисам, профессиональным публикациям и другим первичным/надёжным источникам.
-- Возвращай ВСЕ подтверждённые релевантные организации, а не топ-N.
+- ГРАНИЦА ВЕТКИ ОБЯЗАТЕЛЬНА: расширяй источники, формулировки, синонимы и географию, но НЕ расширяй предмет текущей ветки до общего поиска по этапу или региону.
+- Организацию возвращай из конкретной ветки только если есть явная причинная цепочка от темы ветки к этой организации. Если компания в целом релевантна САТ, но найдена лишь через общий поиск и не связана с текущей веткой, НЕ возвращай её в этом вызове — её должен найти профильный branch/этап.
+- Не подменяй слабую выдачу ветки поиском карьеров, зерна, лизинга, перевозчиков, вакансий или иных общих категорий, если они не следуют непосредственно из темы ветки.
+- Возвращай ВСЕ подтверждённые релевантные организации, а не top-N, но только внутри предметной границы текущего вызова.
 - Ищи конкретные организации; от объявления, вакансии, тендера, проекта или сервиса переходи к фактической компании.
 - Не делай отдельные поиски ради ИНН, телефона, директора, email, сайта, холдинга, выручки или численности.
 - Для каждой организации сохрани 1–3 уже найденных сильных URL и короткие evidence notes.
@@ -158,7 +161,10 @@ function compactDiscoveryPrompt({
 ГЕОГРАФИЯ: ${scope}
 ${extraContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ: ${extraContext}` : ""}
 
-Проведи самостоятельный discovery-поиск именно по этой ветке и географии. Если первые формулировки дают мало результатов — меняй запросы, площадки и синонимы. После нахождения кандидата продолжай искать следующие организации, а не обогащай уже найденную.`;
+Проведи самостоятельный discovery-поиск именно по этой ветке и географии.
+ТЕМА ВЕТКИ — ЖЁСТКАЯ ПРЕДМЕТНАЯ ГРАНИЦА. Можно свободно менять запросы, площадки, синонимы и локальную географию, но нельзя переходить к общему поиску релевантных компаний региона.
+Каждый возвращённый кандидат должен иметь в evidence notes явную связь именно с темой этой ветки: источник/событие/услуга/документ → организация. Общая релевантность САТ без этой связи недостаточна.
+Если первые формулировки дают мало результатов — расширяй МЕТОД поиска, а не ПРЕДМЕТ поиска. После нахождения кандидата продолжай искать следующие организации, а не обогащай уже найденную.`;
 }
 
 function compactRecoveryPrompt({
@@ -167,7 +173,8 @@ function compactRecoveryPrompt({
   theme,
   scope,
   alreadyFound,
-  uniqueCount
+  uniqueCount,
+  anchorBranch
 }) {
   const known = alreadyFound.length
     ? `УЖЕ НАЙДЕННЫЕ — не трать поиск на повторное обнаружение: ${alreadyFound.join("; ")}`
@@ -175,13 +182,17 @@ function compactRecoveryPrompt({
   return `${DISCOVERY_CORE_PROMPT}
 
 ЭТАП ${stageIndex + 1}: ${DISCOVERY_STAGE_HINTS[stageIndex] || ""}
+ЯКОРНАЯ ВЕТКА ДОБОРА: ${anchorBranch || "тема этапа"}
 РЕГИОН: ${region}
 ДОБОР ДЛЯ ПОЛНОТЫ: ${theme}
 ГЕОГРАФИЯ: ${scope}
 Сейчас найдено ${uniqueCount} уникальных организаций. Это наблюдение, а не квота: продолжай, пока новые формулировки/география дают содержательный прирост.
 ${known}
 
-Ищи прежде всего НОВЫЕ организации и long tail. Не выполняй enrichment найденных компаний. Не выдумывай записи ради количества.`;
+Ищи прежде всего НОВЫЕ организации и long tail ВНУТРИ ЯКОРНОЙ ВЕТКИ.
+Recovery не является разрешением на общий поиск по этапу: меняй географию, источники, синонимы и цепочки второго порядка, но сохраняй прямую доказуемую связь каждого кандидата с якорной веткой.
+Если новых кандидатов внутри якорной ветки мало — верни мало результатов; НЕ компенсируй низкий yield компаниями из соседних веток.
+Не выполняй enrichment найденных компаний. Не выдумывай записи ради количества.`;
 }
 
 const STAGE_SEARCH_BRANCHES = [
@@ -3394,6 +3405,7 @@ ${JSON.stringify(compactCourtArchive)}
       ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
       : allBranches;
     let stageBudgetStopped = false;
+    const branchDiagnostics = [];
     for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
@@ -3454,6 +3466,13 @@ ${JSON.stringify(compactCourtArchive)}
       }));
 
       const after = uniqueResearchCount(combined);
+      branchDiagnostics.push({
+        branchIndex,
+        branch: branches[branchIndex],
+        rows: diagnosticRowCount(branchResult),
+        uniqueInBranch: uniqueResearchCount(branchResult),
+        marginalNew: Math.max(0, after - before)
+      });
       statuses[i].detail =
         `ветка ${branchIndex + 1} / ${branches.length} · до ${branchScopes.length} geo-scope · +${Math.max(0, after - before)} новых · ${after} уникальных`;
       await progress({
@@ -3462,6 +3481,17 @@ ${JSON.stringify(compactCourtArchive)}
         percent: i * 9 + Math.floor(((branchIndex + 1) / Math.max(1, branches.length)) * 8)
       });
     }
+
+    const recoveryBranchOrder = [...branchDiagnostics]
+      .sort((a, b) =>
+        a.marginalNew - b.marginalNew ||
+        a.uniqueInBranch - b.uniqueInBranch ||
+        a.branchIndex - b.branchIndex
+      );
+    console.log("[DISCOVERY_BRANCH_COVERAGE] " + JSON.stringify({
+      stage: i + 1,
+      branches: branchDiagnostics
+    }));
 
     let lowYieldStreak = 0;
     for (
@@ -3476,9 +3506,13 @@ ${JSON.stringify(compactCourtArchive)}
       const before = uniqueResearchCount(combined);
       const alreadyFound = foundOrganizationNames(combined, 80);
       const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
+      const recoveryBranch =
+        recoveryBranchOrder[recoveryIndex % Math.max(1, recoveryBranchOrder.length)] ||
+        { branchIndex: 0, branch: branches[0] || DISCOVERY_STAGE_HINTS[i] || "" };
+      const anchorBranch = recoveryBranch.branch || DISCOVERY_STAGE_HINTS[i] || "";
 
       statuses[i].detail =
-        `добор ${recoveryIndex + 1} · ${before} уникальных · проверяем насыщение`;
+        `добор ${recoveryIndex + 1} · ветка ${recoveryBranch.branchIndex + 1} · ${before} уникальных · проверяем насыщение`;
       await progress({ phase: "research", step: i + 1, percent: i * 9 + 8 });
 
       let successes = 0;
@@ -3500,10 +3534,11 @@ ${JSON.stringify(compactCourtArchive)}
                 theme,
                 scope,
                 alreadyFound: recoveryKnown,
-                uniqueCount: before
+                uniqueCount: before,
+                anchorBranch
               }),
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
-              `этап ${i + 1} | recovery ${recoveryIndex + 1} | ${theme} | ${scope}`
+              `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`
             )
           );
 
@@ -3511,6 +3546,8 @@ ${JSON.stringify(compactCourtArchive)}
           console.log("[DISCOVERY_RECOVERY_RESULT] " + JSON.stringify({
             stage: i + 1,
             recovery: recoveryIndex + 1,
+            anchor_branch: recoveryBranch.branchIndex + 1,
+            anchor_branch_name: anchorBranch,
             theme,
             scope_index: scopeIndex + 1,
             scope,
@@ -3585,6 +3622,7 @@ ${JSON.stringify(compactCourtArchive)}
       rows: rowCount(combined),
       unique: uniqueResearchCount(combined),
       branches: branches.length,
+      branch_coverage: branchDiagnostics,
       token_usage: stageTokenUsage,
       token_usage_cumulative: stageTokenEnd,
       companies: diagnosticDiscoveryRows(combined)
