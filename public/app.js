@@ -8,6 +8,8 @@ const e={
   smoke:document.querySelector("#smokeBtn"),
   quality:document.querySelector("#qualityBtn"),
   test:document.querySelector("#testBtn"),
+  stageSelect:document.querySelector("#stageSelect"),
+  stage:document.querySelector("#stageBtn"),
   replay:document.querySelector("#replayBtn"),
   dedupeReplay:document.querySelector("#dedupeReplayBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
@@ -143,6 +145,8 @@ function resetIdleState(){
     e.smoke.disabled=false;
     e.quality.disabled=false;
     e.test.disabled=false;
+    e.stage.disabled=false;
+    e.stageSelect.disabled=false;
   }
   if(config?.steps){
     renderSteps((config.steps||[]).map((name,i)=>({step:i+1,name,status:"waiting",detail:"ожидает"})));
@@ -169,7 +173,7 @@ function setProgress(p){
 
   if(p.phase==="google_ai"){
     const cur=Number(p.contactCurrent||0),total=Number(p.contactTotal||0);
-    e.statusText.textContent="Шаг 11 из 11 · поиск и проверка контактов";
+    e.statusText.textContent="Поиск и проверка контактов";
     e.contactBox.hidden=false;
     const s=p.contactStats||{};
     e.contactBox.textContent=
@@ -178,7 +182,7 @@ function setProgress(p){
       (s.ok!==undefined?" · найдено: "+(s.ok||0)+", недоступно: "+(s.unavailable||0)+", не найдено: "+(s.notFound||0):"");
   }else{
     e.contactBox.hidden=true;
-    e.statusText.textContent=p.step?("Шаг "+p.step+" из 11"):"";
+    e.statusText.textContent=p.step?("Этап "+p.step):"";
   }
 }
 
@@ -233,15 +237,18 @@ async function poll(restoring=false){
       e.smoke.disabled=false;
       e.quality.disabled=false;
       e.test.disabled=false;
+    e.stage.disabled=false;
+    e.stageSelect.disabled=false;
       e.cancel.disabled=true;
       e.resultCard.hidden=false;
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
-      const isTestMode=["test12","smoke","quality","replay","dedupe_replay"].includes(r.mode);
+      const isTestMode=["test12","smoke","quality","stage_test","replay","dedupe_replay"].includes(r.mode);
       if(isTestMode){
         const modeLabel={
           smoke:"Smoke test",
           quality:"Quality sample",
           test12:"Тест этапов 1–2",
+          stage_test:"Этап "+(r.stage||c.stage||"")+" отдельно",
           replay:"Replay без web",
           dedupe_replay:"Dedupe replay"
         }[r.mode]||"Тест";
@@ -254,7 +261,15 @@ async function poll(restoring=false){
               ? ", предыдущий checkpoint: "+r.dedupe_comparison.previous_after_dedupe+
                 ", delta: "+(r.dedupe_comparison.delta_after>=0?"+":"")+r.dedupe_comparison.delta_after
               : "")+"."
-          : modeLabel+" завершён. Сырых находок: "+(c.total_rows||0)+
+          : r.mode==="stage_test"
+            ? modeLabel+" завершён. На этапе найдено записей: "+(c.stage_rows||0)+
+              ", условно уникальных: "+(c.stage_unique||0)+
+              ", после identity/dedupe: "+(c.after_global_dedupe||0)+
+              ". Финально: A — "+(c.A||0)+
+              ", B — "+(c.B||0)+
+              ", C — "+(c.C||0)+
+              ", исключено — "+(c.excluded_after_qualification||0)+"."
+            : modeLabel+" завершён. Сырых находок: "+(c.total_rows||0)+
           ", условно уникальных discovery: "+(c.unique||0)+
           ", identity-кластеров: "+(c.identity_clusters||0)+
           ", identity без web: "+(c.identity_skipped_web||0)+
@@ -302,7 +317,7 @@ async function poll(restoring=false){
 
     if(d.state==="failed"){
       clearInterval(pollTimer);pollTimer=null;
-      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.stage.disabled=false;e.stageSelect.disabled=false;e.cancel.disabled=true;
       e.error.hidden=false;e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой");
       return;
     }
@@ -315,20 +330,20 @@ async function poll(restoring=false){
         return;
       }
       currentJobId="";
-      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+      e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.stage.disabled=false;e.stageSelect.disabled=false;e.cancel.disabled=true;
       e.statusTitle.textContent="Остановлено";
       e.statusText.textContent=d.error||"Исследование остановлено пользователем.";
       return;
     }
 
     if(d.state==="cancelling"){
-      e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=true;
+      e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=true;
       e.statusTitle.textContent="Останавливаем";
       e.statusText.textContent="Прерываем активные запросы…";
       return;
     }
 
-    e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+    e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
       resetIdleState();
@@ -344,7 +359,7 @@ async function startJob(mode="full"){
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
   e.replay.hidden=true;
-  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode})});
     currentJobId=d.id;
@@ -353,7 +368,7 @@ async function startJob(mode="full"){
     await poll();
     pollTimer=setInterval(poll,2000);
   }catch(err){
-    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.cancel.disabled=true;
+    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.stage.disabled=false;e.stageSelect.disabled=false;e.cancel.disabled=true;
     e.error.hidden=false;e.error.textContent=err.message;
   }
 }
@@ -362,6 +377,27 @@ async function start(){return startJob("full");}
 async function startSmoke(){return startJob("smoke");}
 async function startQuality(){return startJob("quality");}
 async function startTest(){return startJob("test12");}
+async function startStageTest(){
+  const stage=Number(e.stageSelect.value||0);
+  const region=e.region.value.trim();
+  if(!region){alert("Выберите или введите регион.");return;}
+  if(!Number.isInteger(stage)||stage<3||stage>9){alert("Выберите этап от 3 до 9.");return;}
+  e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
+  e.progressCard.hidden=false;
+  e.replay.hidden=true;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+  try{
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode:"stage_test",stage})});
+    currentJobId=d.id;
+    localStorage.setItem("sat_current_job",currentJobId);
+    if(pollTimer)clearInterval(pollTimer);
+    await poll();
+    pollTimer=setInterval(poll,2000);
+  }catch(err){
+    e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.stage.disabled=false;e.stageSelect.disabled=false;e.cancel.disabled=true;
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
 
 async function startDedupeReplay(){
   const snapshot=loadSavedSnapshot();
@@ -373,7 +409,7 @@ async function startDedupeReplay(){
   }
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
-  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.dedupeReplay.disabled=true;e.cancel.disabled=false;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.dedupeReplay.disabled=true;e.cancel.disabled=false;
   try{
     const payload={mode:"dedupe_replay"};
     if(sourceJobId)payload.sourceJobId=sourceJobId;
@@ -400,7 +436,7 @@ async function startReplay(){
   }
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
-  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
     const payload={mode:"replay"};
     if(sourceJobId)payload.sourceJobId=sourceJobId;
@@ -457,6 +493,8 @@ async function waitForBackend(){
   e.smoke.disabled=true;
   e.quality.disabled=true;
   e.test.disabled=true;
+  e.stage.disabled=true;
+  e.stageSelect.disabled=true;
   e.replay.disabled=true;
   e.dedupeReplay.disabled=true;
   setServiceStatus("Сервис запускается…","starting");
@@ -474,6 +512,8 @@ async function waitForBackend(){
           e.smoke.disabled=false;
           e.quality.disabled=false;
           e.test.disabled=false;
+    e.stage.disabled=false;
+    e.stageSelect.disabled=false;
           const savedSnapshot=loadSavedSnapshot();
           e.replay.hidden=!savedSnapshot;
           e.replay.disabled=!savedSnapshot;
@@ -492,6 +532,7 @@ e.start.onclick=start;
 e.smoke.onclick=startSmoke;
 e.quality.onclick=startQuality;
 e.test.onclick=startTest;
+e.stage.onclick=startStageTest;
 e.replay.onclick=startReplay;
 e.dedupeReplay.onclick=startDedupeReplay;
 e.cancel.onclick=cancel;
