@@ -3675,6 +3675,7 @@ ${JSON.stringify(compactCourtArchive)}
     }));
 
     let lowYieldStreak = 0;
+    let previousRecovery = null;
     for (
       let recoveryIndex = 0;
       !stageBudgetStopped &&
@@ -3687,9 +3688,39 @@ ${JSON.stringify(compactCourtArchive)}
       const before = uniqueResearchCount(combined);
       const alreadyFound = foundOrganizationNames(combined, 80);
       const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
-      const recoveryBranch =
+      const orderedBranch =
         recoveryBranchOrder[recoveryIndex % Math.max(1, recoveryBranchOrder.length)] ||
         { branchIndex: 0, branch: branches[0] || DISCOVERY_STAGE_HINTS[i] || "" };
+      let recoveryBranch = orderedBranch;
+      let recoveryStrategy = "next_proven_branch";
+
+      if (recoveryIndex > 0 && previousRecovery) {
+        const prevNew = Math.max(1, Number(previousRecovery.qualityYield.newOrganizations || 1));
+        const prevStrong = Number(previousRecovery.qualityYield.strongNew || 0);
+        const prevStrongShare = prevStrong / prevNew;
+        if (prevStrong >= 3 && prevStrongShare >= 0.3) {
+          recoveryBranch = previousRecovery.branch;
+          recoveryStrategy = "deepen_previous_strong_recovery";
+        } else {
+          const nextStrong = Number(orderedBranch.strongNew || 0);
+          const nextRows = Math.max(1, Number(orderedBranch.uniqueInBranch || orderedBranch.rows || 1));
+          const nextStrongShare = nextStrong / nextRows;
+          if (nextStrong < 4 || nextStrongShare < 0.35) {
+            console.log("[DISCOVERY_RECOVERY_SKIP] " + JSON.stringify({
+              stage: i + 1,
+              recovery: recoveryIndex + 1,
+              reason: "no_strong_followup",
+              previous_strong: prevStrong,
+              previous_new: prevNew,
+              next_branch: orderedBranch.branchIndex + 1,
+              next_strong: nextStrong,
+              next_rows: nextRows
+            }));
+            break;
+          }
+        }
+      }
+
       const anchorBranch = recoveryBranch.branch || DISCOVERY_STAGE_HINTS[i] || "";
 
       statuses[i].detail =
@@ -3839,11 +3870,17 @@ ${JSON.stringify(compactCourtArchive)}
         stage: i + 1,
         recovery: recoveryIndex + 1,
         anchor_branch: recoveryBranch.branchIndex + 1,
+        strategy: recoveryStrategy,
         rows_added: added,
         quality_yield: recoveryYieldAggregate,
         low_yield: recoveryLowQuality,
         threshold: recoveryThreshold
       }));
+
+      previousRecovery = {
+        branch: recoveryBranch,
+        qualityYield: { ...recoveryYieldAggregate }
+      };
 
       if (lowYieldStreak >= 2) {
         statuses[i].detail = `разумные поисковые направления исчерпаны · ${after} уникальных`;
