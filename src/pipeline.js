@@ -248,7 +248,8 @@ function compactRecoveryPrompt({
   scope,
   alreadyFound,
   uniqueCount,
-  anchorBranch
+  anchorBranch,
+  sourceFamilyGaps = []
 }) {
   const known = alreadyFound.length
     ? `УЖЕ НАЙДЕННЫЕ — не трать поиск на повторное обнаружение: ${alreadyFound.join("; ")}`
@@ -260,6 +261,7 @@ function compactRecoveryPrompt({
 РЕГИОН: ${region}
 ДОБОР ДЛЯ ПОЛНОТЫ: ${theme}
 ГЕОГРАФИЯ: ${scope}
+НЕДОПОКРЫТЫЕ СЕМЕЙСТВА ИСТОЧНИКОВ: ${sourceFamilyGaps.length ? sourceFamilyGaps.join(", ") : "не выявлены; выбери новое релевантное семейство источников сам"}.
 Сейчас найдено ${uniqueCount} уникальных организаций. Это наблюдение, а не квота: продолжай, пока новые формулировки/география дают содержательный прирост.
 ${known}
 
@@ -690,6 +692,54 @@ function allResearchRows(result) {
     ...(result?.intermediaries || []),
     ...(result?.leasing || [])
   ];
+}
+
+const DISCOVERY_SOURCE_FAMILIES = [
+  "official",
+  "procurement",
+  "vacancy",
+  "court_regulatory",
+  "catalog_map",
+  "marketplace_listing",
+  "industry_media"
+];
+
+function discoverySourceFamily(url) {
+  const value = String(url || "").trim().toLowerCase();
+  if (!value) return "unknown";
+  let host = "";
+  try {
+    host = new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    host = value;
+  }
+
+  if (/(zakup|tender|b2b|bidzaar|synapsenet|komtender|rostender|poisktender|tenderguru|etp|goszakup)/.test(host + value)) return "procurement";
+  if (/(hh\.ru|superjob|dreamjob|rabota|vacan|job|zarplata)/.test(host + value)) return "vacancy";
+  if (/(sudact|kad\.arbitr|actofact|garant\.ru|consultant|rostransnadzor|fedresurs|reestr|registry|nalog)/.test(host + value)) return "court_regulatory";
+  if (/(2gis|yandex\.|sprav|jsprav|cataloxy|orgpage|ds67|mestas|yaspravka|nashaspravka)/.test(host + value)) return "catalog_map";
+  if (/(avito|drom|auto\.ru|autoline|truck1|machineryline|gruzovik\.com|heveya|auction|torg)/.test(host + value)) return "marketplace_listing";
+  if (/(news|press|journal|media|vesti|rg\.ru|kommersant|rbc|invest|promportal|industry)/.test(host + value)) return "industry_media";
+  return "official";
+}
+
+function discoverySourceFamilyStats(result) {
+  const counts = Object.fromEntries(DISCOVERY_SOURCE_FAMILIES.map((family) => [family, 0]));
+  for (const row of allResearchRows(result)) {
+    for (const url of row?.__evidence?.source_urls || []) {
+      const family = discoverySourceFamily(url);
+      if (family in counts) counts[family]++;
+    }
+  }
+  return counts;
+}
+
+function discoverySourceFamilyGaps(stats, limit = 3) {
+  const counts = stats || {};
+  return [...DISCOVERY_SOURCE_FAMILIES]
+    .sort((a, b) => Number(counts[a] || 0) - Number(counts[b] || 0))
+    .filter((family) => Number(counts[family] || 0) <= 1)
+    .slice(0, limit);
 }
 
 function researchRowKey(row) {
@@ -3609,7 +3659,8 @@ ${JSON.stringify(compactCourtArchive)}
         strongNew: branchYield.strongNew,
         preliminaryA: branchYield.a,
         preliminaryB: branchYield.b,
-        preliminaryC: branchYield.c
+        preliminaryC: branchYield.c,
+        sourceFamilies: discoverySourceFamilyStats(branchResult)
       });
       statuses[i].detail =
         `ветка ${branchIndex + 1} / ${branches.length} · до ${branchScopes.length} geo-scope · +${Math.max(0, after - before)} новых · ${after} уникальных`;
@@ -3722,6 +3773,7 @@ ${JSON.stringify(compactCourtArchive)}
       }
 
       const anchorBranch = recoveryBranch.branch || DISCOVERY_STAGE_HINTS[i] || "";
+      const sourceFamilyGaps = discoverySourceFamilyGaps(recoveryBranch.sourceFamilies, 3);
 
       statuses[i].detail =
         `добор ${recoveryIndex + 1} · ветка ${recoveryBranch.branchIndex + 1} · ${before} уникальных · проверяем насыщение`;
@@ -3781,7 +3833,8 @@ ${JSON.stringify(compactCourtArchive)}
                 scope,
                 alreadyFound: recoveryKnown,
                 uniqueCount: before,
-                anchorBranch
+                anchorBranch,
+                sourceFamilyGaps
               }),
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
               `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`
@@ -3807,6 +3860,7 @@ ${JSON.stringify(compactCourtArchive)}
             anchor_branch: recoveryBranch.branchIndex + 1,
             anchor_branch_name: anchorBranch,
             theme,
+            source_family_gaps: sourceFamilyGaps,
             scope_index: scopeIndex + 1,
             scope,
             rows: diagnosticRowCount(value),
