@@ -571,6 +571,13 @@ function identityResolutionContract() {
 Твоя задача — установить юридическую идентичность каждого упоминания.
 Используй web_search только для идентификации юридического лица и подтверждения ИНН.
 
+ЖЁСТКИЙ ПОИСК ИНН:
+- Для КАЖДОЙ сущности без уже подтверждённого 10- или 12-значного ИНН обязательно выполни поиск ИНН.
+- Сначала ищи точное название + регион/город + "ИНН". Если надёжного совпадения нет, сделай минимум одну альтернативную формулировку: точное название + адрес/вид деятельности/домен/контрагент + "ИНН".
+- Приоритет доказательств: официальный сайт/документ организации, ФНС/госреестр/госзакупки/судебный или регуляторный документ, затем устойчивые бизнес-реестры. Один слабый каталог без совпадения названия/географии недостаточен.
+- Если встречаются разные ИНН, не угадывай: раздели сущности или оставь confirmed_inn пустым и объясни конфликт в note.
+- confirmed_inn оставляй пустым только после реальной попытки найти и проверить ИНН. В note кратко укажи, что именно проверено и почему ИНН не подтверждён.
+
 ПРАВИЛА:
 - Каждый входной candidate_id должен встретиться ровно в одном объекте entities.
 - Если несколько candidate_id относятся к одному и тому же юрлицу и подтверждён один и тот же ИНН — помести их вместе.
@@ -1326,13 +1333,31 @@ async function resolveCandidateIdentities({
 
   const directClusters = [];
   const webClusters = [];
+  let hardInnLookupClusters = 0;
 
   for (const cluster of clusters) {
-    if (allowWebSearch && clusterNeedsIdentityWebSearch(cluster)) webClusters.push(cluster);
-    else directClusters.push(cluster);
+    const identity = clusterEvidenceIdentity(cluster);
+    const needsHardInnLookup = identity.inns.length !== 1;
+    const needsIdentityLookup = clusterNeedsIdentityWebSearch(cluster);
+
+    if (allowWebSearch && (needsHardInnLookup || needsIdentityLookup)) {
+      webClusters.push(cluster);
+      if (needsHardInnLookup) hardInnLookupClusters++;
+    } else {
+      directClusters.push(cluster);
+    }
   }
 
-  // Сначала обрабатываем безопасные singleton без нового web-search.
+  console.log("[HARD_INN_SEARCH_PLAN] " + JSON.stringify({
+    total_clusters: clusters.length,
+    hard_inn_lookup_clusters: hardInnLookupClusters,
+    identity_or_inn_web_clusters: webClusters.length,
+    direct_clusters_with_confirmed_inn: directClusters.length,
+    allow_web_search: allowWebSearch
+  }));
+
+  // Без web-search оставляем только кластеры, где уже есть ровно один подтверждённый ИНН
+  // и нет дополнительной неоднозначности идентичности.
   for (const cluster of directClusters) {
     await assertNotCancelled();
     const rows = resolveClusterWithoutWeb(cluster);
@@ -1430,6 +1455,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
 
   console.log("[IDENTITY_WEB_SAVINGS] " + JSON.stringify({
     total_clusters: clusters.length,
+    hard_inn_lookup_clusters: hardInnLookupClusters,
     skipped_web_clusters: skippedWebClusters,
     searched_web_clusters: searchedWebClusters,
     skip_share: clusters.length
