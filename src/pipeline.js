@@ -1477,6 +1477,26 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
       innConflictedMentions += cluster.items.length;
     }
   }
+  const missingInnRows = resolved
+    .filter((item) => !normalizeInn(item?.data?.["ИНН"]))
+    .map((item) => ({
+      candidate_id: String(item.candidate_id || ""),
+      organization: String(item?.data?.["Организация"] || "").slice(0, 140),
+      city: String(item?.data?.["Город/район"] || "").slice(0, 100),
+      source_step: item.source_step,
+      evidence_urls: (Array.isArray(item?.data?.__evidence?.source_urls)
+        ? item.data.__evidence.source_urls : []).slice(0, 3),
+      identity_notes: (Array.isArray(item?.data?.__evidence?.notes)
+        ? item.data.__evidence.notes : [])
+        .filter((note) => /инн|identity|юрлиц|не удалось|не найден|конфликт/i.test(String(note)))
+        .slice(-2).map((note) => String(note).slice(0, 300))
+    }));
+  console.log("[INN_MISSING_DIAGNOSTIC] " + JSON.stringify({
+    region,
+    missing: missingInnRows.length,
+    companies: missingInnRows
+  }));
+
   console.log("[INN_COVERAGE_SUMMARY] " + JSON.stringify({
     region,
     mentions: resolved.length,
