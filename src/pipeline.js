@@ -822,7 +822,7 @@ async function discoverRegionSearchScopes(client, region) {
 Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров.
 ВАЖНО: каждый элемент places и clusters должен быть ПРОСТОЙ СТРОКОЙ с названием, не объектом и не структурой JSON.
 Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
-    model: MODEL,
+    model: client.__discoveryModel || MODEL,
     maxOutputTokens: 5000,
     webSearch: true,
     responseSchema: GEO_SCOPE_SCHEMA,
@@ -1393,7 +1393,7 @@ async function resolveCandidateIdentities({
             `\n\nРЕГИОН: ${region}
 ВЕРОЯТНЫЙ КЛАСТЕР:
 ${JSON.stringify(compactIdentityCluster(cluster))}`,
-          model: TARGETED_SEARCH_MODEL,
+          model: client.__identityModel || TARGETED_SEARCH_MODEL,
           maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
           webSearch: true,
           responseSchema: IDENTITY_SCHEMA,
@@ -2965,9 +2965,12 @@ async function askJson(client, {
 }
 
 function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS, diagnosticLabel = "") {
+  const modelGuide = client.__discoveryModel === "gpt-6-luna"
+    ? "\n\nПРАВИЛО ПОЛНОТЫ ДЛЯ ЭТОГО ПРОХОДА: не ограничивайся несколькими очевидными компаниями. Пройди разные типы источников, включая первичные документы, местные каталоги, вакансии, закупки и реальные кейсы, насколько они соответствуют теме ветки. Последовательно извлекай все разные юридические лица, подтверждённые evidence; не выдумывай кандидатов и не ослабляй критерии A/B/C. Если источник дал только сервис, ищи его реального клиента, а не заполняй результат похожими сервисами."
+    : "";
   return askJson(client, {
-    input,
-    model: MODEL,
+    input: input + modelGuide,
+    model: client.__discoveryModel || MODEL,
     maxOutputTokens,
     webSearch: true,
     responseSchema: DISCOVERY_SCHEMA,
@@ -3452,6 +3455,15 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
+  const selectedModels = job.data?.models || {};
+  const allowedModels = new Set(["gpt-5.6-luna", "gpt-6-luna"]);
+  client.__discoveryModel = allowedModels.has(selectedModels.discovery) ? selectedModels.discovery : MODEL;
+  client.__identityModel = allowedModels.has(selectedModels.identity) ? selectedModels.identity : TARGETED_SEARCH_MODEL;
+  console.log("[JOB_MODELS] " + JSON.stringify({
+    discovery: client.__discoveryModel,
+    identity: client.__identityModel,
+    other_models: "Render defaults"
+  }));
   client.__tokenUsage = emptyTokenUsage();
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
