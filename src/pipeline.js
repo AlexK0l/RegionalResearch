@@ -1453,6 +1453,42 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     if (identityBudgetStopped) break;
   }
 
+  // Diagnostic only: no extra API calls, and no comparison with any benchmark.
+  const resolvedById = new Map(resolved.map((item) => [String(item.candidate_id), item]));
+  let innConfirmed = 0;
+  let innMissing = 0;
+  let innConflictClusters = 0;
+  let innConflictedMentions = 0;
+  for (const cluster of clusters) {
+    const inns = new Set();
+    let confirmed = 0;
+    for (const original of cluster.items) {
+      const item = resolvedById.get(String(original.candidate_id)) || original;
+      const inn = normalizeInn(item?.data?.["ИНН"]);
+      if (inn) {
+        confirmed++;
+        inns.add(inn);
+      }
+    }
+    innConfirmed += confirmed;
+    innMissing += cluster.items.length - confirmed;
+    if (inns.size > 1) {
+      innConflictClusters++;
+      innConflictedMentions += cluster.items.length;
+    }
+  }
+  console.log("[INN_COVERAGE_SUMMARY] " + JSON.stringify({
+    region,
+    mentions: resolved.length,
+    inn_present: innConfirmed,
+    inn_missing: innMissing,
+    inn_conflict_clusters: innConflictClusters,
+    inn_conflict_mentions: innConflictedMentions,
+    web_searched_clusters: searchedWebClusters,
+    web_failed_clusters: failedClusters,
+    definition: "ИНН присутствует и имеет корректную длину; наличие ИНН само по себе не гарантирует независимое подтверждение"
+  }));
+
   console.log("[IDENTITY_WEB_SAVINGS] " + JSON.stringify({
     total_clusters: clusters.length,
     hard_inn_lookup_clusters: hardInnLookupClusters,
