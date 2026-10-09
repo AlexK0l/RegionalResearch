@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261008-models">
+<link rel="stylesheet" href="/styles.css?v=20261009-fixed">
 </head>
 <body>
 <main class="shell">
@@ -22,8 +22,6 @@
       <input id="region" list="regions" placeholder="Например: Воронежская область" autocomplete="off">
       <datalist id="regions"></datalist>
     </label>
-    <label>Модель поиска <select id="discoveryModel"><option value="gpt-5.6-luna">GPT-5.6 Luna</option><option value="gpt-6-luna">GPT-6 Luna</option></select></label>
-    <label>Модель ИНН <select id="identityModel"><option value="gpt-5.6-luna">GPT-5.6 Luna</option><option value="gpt-6-luna">GPT-6 Luna</option></select></label>
     <div class="actions">
       <button id="startBtn" disabled>Запустить исследование</button>
       <button id="smokeBtn" class="secondary" disabled>Smoke test</button>
@@ -44,7 +42,7 @@
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261008-models</p>
+    <p class="note">UI build: 20261009-fixed</p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -71,6 +69,6 @@
     <button id="downloadBtn">Скачать XLSX</button>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261008-models"></script>
+<script type="module" src="/app.js?v=20261009-fixed"></script>
 </body>
 </html>
