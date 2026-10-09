@@ -1019,9 +1019,19 @@ function flattenCandidates(parts) {
   return rows;
 }
 
+function innChecksumValid(digits) {
+  const sum = (weights) => weights.reduce((total, weight, index) => total + weight * Number(digits[index]), 0) % 11 % 10;
+  if (digits.length === 10) return sum([2, 4, 10, 3, 5, 9, 4, 6, 8]) === Number(digits[9]);
+  if (digits.length === 12) {
+    return sum([7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === Number(digits[10]) &&
+      sum([3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === Number(digits[11]);
+  }
+  return false;
+}
+
 function normalizeInn(value) {
   const digits = String(value || "").replace(/\D/g, "");
-  return digits.length === 10 || digits.length === 12 ? digits : "";
+  return (digits.length === 10 || digits.length === 12) && innChecksumValid(digits) ? digits : "";
 }
 
 function normalizeOrgKey(value) {
@@ -1753,49 +1763,125 @@ function prefilterCandidatesForIdentity(candidates, region = "") {
   const deduped = deterministicGlobalDedupe(makeQaRecords(staged), null, region);
   const keepNames = new Set();
   const keepInns = new Set();
+  const reviewNames = new Set();
+  const reviewInns = new Set();
+  const decisions = [];
   let included = 0;
   let excluded = 0;
+  let reviewing = 0;
 
   for (const record of deduped) {
     const decision = deterministicQualificationDecision(record);
-    if (!decision.grade) {
-      excluded++;
-      continue;
-    }
-    included++;
     const row = record.row || {};
     const name = normalizeOrgKey(row["Организация"]);
     const inn = normalizeInn(row["ИНН"]);
-    if (name) keepNames.add(name);
-    if (inn) keepInns.add(inn);
+    const notes = Array.isArray(row.__evidence?.notes) ? row.__evidence.notes : [];
+    const allText = [row["Техника/сегмент"], row["Основание"], ...notes].join(" ").toLowerCase().replace(/ё/g, "е");
+    const commercialSignal = /(полуприцеп|прицеп|тонар|schmitz|kogel|krone|wielton|grunwald|седельн.{0,20}тягач|автопоезд|зерновоз|ломовоз|щеповоз|лесовоз|самосвал|пгс|щебен|песок|перевозк.{0,40}(зерн|лес|лом|отход)|ремонт.{0,60}(грузов|прицеп)|грузов.{0,40}перевоз)/i.test(allText);
+    const discoveryStrong = /^\\s*[ab]\\s*[—–-]/i.test(String(row["Основание"] || "")) ||
+      /^\\s*[ab]\\s*[—–-]/i.test(String(row["Техника/сегмент"] || ""));
+    const concreteReviewEvent =
+      /(закупк|тендер|контракт|договор|приобрет|купил|куплен|лизинг|на балансе|в собственности|собственн.{0,30}парк|автопарк|эксплуат|водител.{0,40}(прицеп|полуприцеп)|заказчик.{0,80}(прицеп|полуприцеп)|клиент.{0,80}(прицеп|полуприцеп)|выполн.{0,40}ремонт|акт выполненн|заказ.наряд)/i.test(allText);
+    const negativeOnly = /(ликвидирован|прекратил деятельность|не относится к региону)/.test(allText) &&
+      !concreteReviewEvent;
+    // REVIEW is deliberately narrower than a generic trailer/service mention:
+    // retain discovery A/B or a concrete commercial/operational event, but do
+    // not send every directory/service listing through the expensive final batch.
+    const reviewSignal = commercialSignal && (discoveryStrong || concreteReviewEvent);
+    const status = decision.grade ? "KEEP" : reviewSignal && !negativeOnly ? "REVIEW" : "EXCLUDE";
+    if (status === "KEEP") {
+      included++;
+      if (name) keepNames.add(name);
+      if (inn) keepInns.add(inn);
+    } else if (status === "REVIEW") {
+      reviewing++;
+      if (name) reviewNames.add(name);
+      if (inn) reviewInns.add(inn);
+    } else excluded++;
+
+    decisions.push({
+      canonical_id: record.canonical_id || "",
+      organization: String(row["Организация"] || ""),
+      city: String(row["Город/район"] || ""),
+      status,
+      reason: decision.reason,
+      signals: decision.signals,
+      source_urls: (row.__evidence?.source_urls || []).slice(0, 8),
+      evidence_notes: notes.slice(0, 8),
+      initial_inn: String(row["ИНН"] || "")
+    });
   }
 
-  const filtered = candidates.filter((candidate) => {
+  const matches = (candidate, names, inns) => {
     const row = candidate?.data || {};
     const name = normalizeOrgKey(row["Организация"]);
     const inn = normalizeInn(row["ИНН"]);
-    return (name && keepNames.has(name)) || (inn && keepInns.has(inn));
-  });
+    return (name && names.has(name)) || (inn && inns.has(inn));
+  };
+  const filtered = candidates.filter((candidate) => matches(candidate, keepNames, keepInns));
+  const reviewCandidates = candidates.filter((candidate) =>
+    !matches(candidate, keepNames, keepInns) && matches(candidate, reviewNames, reviewInns)
+  );
+  const excludedCandidates = candidates.filter((candidate) =>
+    !matches(candidate, keepNames, keepInns) && !matches(candidate, reviewNames, reviewInns)
+  );
 
-  console.log("[PRE_IDENTITY_FILTER] " + JSON.stringify({
+  const summary = {
     input_mentions: candidates.length,
     local_canonical: canonicalPool.length,
     local_after_dedupe: deduped.length,
     qualified_before_identity: included,
+    review_before_identity: reviewing,
     excluded_before_identity: excluded,
     identity_mentions: filtered.length,
+    review_mentions: reviewCandidates.length,
+    excluded_mentions: excludedCandidates.length,
     saved_mentions: candidates.length - filtered.length
+  };
+  console.log("[PRE_IDENTITY_FILTER] " + JSON.stringify(summary));
+  console.log("[PRE_IDENTITY_AUDIT] " + JSON.stringify({
+    region, summary, decisions,
+    review_candidates: reviewCandidates.map((c) => ({
+      candidate_id: c.candidate_id, source_step: c.source_step,
+      source_sheet: c.source_sheet, data: c.data
+    }))
   }));
 
   return {
     candidates: filtered,
+    reviewCandidates,
+    excludedCandidates,
+    decisions,
     inputMentions: candidates.length,
     localCanonical: canonicalPool.length,
     localAfterDedupe: deduped.length,
     qualified: included,
+    review: reviewing,
     excluded,
     savedMentions: candidates.length - filtered.length
   };
+}
+
+// REVIEW remains in the evidence stream and is evaluated by the same final QA.
+// Its provisional status never counts as a confirmed A/B/C grade.
+function appendReviewCandidates(resolved, reviewCandidates, region, label) {
+  if (!reviewCandidates?.length) return resolved;
+  const existing = new Set(resolved.map((c) => c.candidate_id));
+  const added = reviewCandidates.filter((c) => !existing.has(c.candidate_id));
+  for (const item of added) {
+    const evidence = item.data?.__evidence || {};
+    item.data.__evidence = {
+      ...evidence,
+      source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
+      notes: Array.isArray(evidence.notes) ? evidence.notes : []
+    };
+    item.data.__pre_identity_status = "REVIEW";
+  }
+  console.log("[PRE_IDENTITY_REVIEW_RETAINED] " + JSON.stringify({
+    label, region, added_mentions: added.length,
+    no_extra_identity_web_search: true
+  }));
+  return [...resolved, ...added];
 }
 
 function makeQaRecords(result) {
@@ -4206,6 +4292,7 @@ ${JSON.stringify(compactCourtArchive)}
       : null;
 
     let identityResolution;
+    let reviewCandidates = [];
     if (replayCheckpoint) {
       identityResolution = {
         candidates: replayCheckpoint.candidates,
@@ -4229,6 +4316,7 @@ ${JSON.stringify(compactCourtArchive)}
       });
     } else {
       const preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
+      reviewCandidates = preIdentity.reviewCandidates;
       identityResolution = await resolveCandidateIdentities({
         client,
         candidates: preIdentity.candidates,
@@ -4249,6 +4337,9 @@ ${JSON.stringify(compactCourtArchive)}
       });
     }
 
+    identityResolution.candidates = appendReviewCandidates(
+      identityResolution.candidates, reviewCandidates, region, "diagnostic"
+    );
     const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
     const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
@@ -4498,6 +4589,9 @@ ${JSON.stringify(compactCourtArchive)}
     }
   });
 
+  identityResolution.candidates = appendReviewCandidates(
+    identityResolution.candidates, preIdentity.reviewCandidates, region, "full"
+  );
   const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
   console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
     region,
@@ -4920,3 +5014,5 @@ ${JSON.stringify(gaps)}
     }
   };
 }
+
+export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates };
