@@ -14,6 +14,13 @@ test("preidentity triage preserves REVIEW without adding identity web work", () 
   const result = prefilterCandidatesForIdentity(fixture.candidates, fixture.region);
   const retained = appendReviewCandidates(result.candidates, result.reviewCandidates, fixture.region, "offline-replay");
 
+  console.log("[OFFLINE_REVIEW_CANDIDATES] " + JSON.stringify(
+    result.decisions.filter((x) => x.status === "REVIEW").map((x) => ({
+      organization: x.organization,
+      city: x.city,
+      reason: x.reason
+    }))
+  ));
   console.log("[OFFLINE_PREIDENTITY_REPLAY] " + JSON.stringify({
     input_mentions: result.inputMentions,
     local_canonical: result.localCanonical,
