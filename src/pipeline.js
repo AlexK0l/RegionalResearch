@@ -389,6 +389,7 @@ const DISCOVERY_SCHEMA = {
       additionalProperties: false,
       properties: {
         "Организация": { type: "string" },
+        "ИНН": { type: "string" },
         "Город/район": { type: "string" },
         "Техника/сегмент": { type: "string" },
         "Основание": { type: "string" },
@@ -404,6 +405,7 @@ const DISCOVERY_SCHEMA = {
       },
       required: [
         "Организация",
+        "ИНН",
         "Город/район",
         "Техника/сегмент",
         "Основание",
@@ -536,6 +538,7 @@ function contract(final = false) {
 Каждый объект должен содержать ТОЛЬКО:
 {
   "Организация":"",
+  "ИНН":"",
   "Город/район":"",
   "Техника/сегмент":"",
   "Основание":"",
@@ -545,7 +548,8 @@ function contract(final = false) {
 ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
 - Сначала находи как можно больше разных релевантных организаций по текущей теме и географии.
 - НЕ трать отдельные web_search на ИНН, телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
-- Если ИНН, телефон, сайт или иные реквизиты случайно встретились в основном источнике — можешь упомянуть их только в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
+- Если ИНН случайно встретился в уже открытом основном источнике и однозначно относится к этой организации — заполни поле "ИНН" (10 или 12 цифр) и также можешь упомянуть его в "__evidence.notes". НЕ запускай отдельный поиск ради ИНН.
+- Телефон, сайт и иные реквизиты, случайно встретившиеся в основном источнике, можешь упомянуть в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
 - Не заполняй поля полной финальной таблицы на этом этапе. Они будут обогащены позже отдельным проходом.
 - Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
 - Возвращай ВСЕ подтверждённые релевантные организации текущей микро-задачи, а не выборку лучших.
@@ -1688,6 +1692,68 @@ function ensureBatchCoverage(batch, batchResult) {
   }
 
   return output;
+}
+
+function prefilterCandidatesForIdentity(candidates, region = "") {
+  const canonicalPool = canonicalizeCandidates(candidates, region);
+  const staged = { direct_buyers: [], intermediaries: [], leasing: [] };
+
+  for (const canonical of canonicalPool) {
+    const row = baselineRowFromCanonical(canonical);
+    const sheet = canonical.source_sheets.includes("Лизинг")
+      ? "leasing"
+      : canonical.source_sheets.includes("Прямые покупатели")
+        ? "direct_buyers"
+        : "intermediaries";
+    staged[sheet].push(row);
+  }
+
+  const deduped = deterministicGlobalDedupe(makeQaRecords(staged), null, region);
+  const keepNames = new Set();
+  const keepInns = new Set();
+  let included = 0;
+  let excluded = 0;
+
+  for (const record of deduped) {
+    const decision = deterministicQualificationDecision(record);
+    if (!decision.grade) {
+      excluded++;
+      continue;
+    }
+    included++;
+    const row = record.row || {};
+    const name = normalizeOrgKey(row["Организация"]);
+    const inn = normalizeInn(row["ИНН"]);
+    if (name) keepNames.add(name);
+    if (inn) keepInns.add(inn);
+  }
+
+  const filtered = candidates.filter((candidate) => {
+    const row = candidate?.data || {};
+    const name = normalizeOrgKey(row["Организация"]);
+    const inn = normalizeInn(row["ИНН"]);
+    return (name && keepNames.has(name)) || (inn && keepInns.has(inn));
+  });
+
+  console.log("[PRE_IDENTITY_FILTER] " + JSON.stringify({
+    input_mentions: candidates.length,
+    local_canonical: canonicalPool.length,
+    local_after_dedupe: deduped.length,
+    qualified_before_identity: included,
+    excluded_before_identity: excluded,
+    identity_mentions: filtered.length,
+    saved_mentions: candidates.length - filtered.length
+  }));
+
+  return {
+    candidates: filtered,
+    inputMentions: candidates.length,
+    localCanonical: canonicalPool.length,
+    localAfterDedupe: deduped.length,
+    qualified: included,
+    excluded,
+    savedMentions: candidates.length - filtered.length
+  };
 }
 
 function makeQaRecords(result) {
@@ -4114,9 +4180,10 @@ ${JSON.stringify(compactCourtArchive)}
           `identity checkpoint · ${identityResolution.candidates.length} resolved mentions · без повторного identity`
       });
     } else {
+      const preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
       identityResolution = await resolveCandidateIdentities({
         client,
-        candidates: candidatePool,
+        candidates: preIdentity.candidates,
         region,
         prompt: prompts[9],
         assertNotCancelled,
@@ -4360,9 +4427,14 @@ ${JSON.stringify(compactCourtArchive)}
   statuses[9].detail = `identity resolution · подготовка ${candidatePool.length} упоминаний`;
   await progress({ phase: "dedupe", step: 10, percent: 81 });
 
+  const preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
+  statuses[9].detail =
+    `pre-identity filter · ${candidatePool.length} → ${preIdentity.candidates.length} упоминаний`;
+  await progress({ phase: "dedupe", step: 10, percent: 82 });
+
   const identityResolution = await resolveCandidateIdentities({
     client,
-    candidates: candidatePool,
+    candidates: preIdentity.candidates,
     region,
     prompt: prompts[9],
     assertNotCancelled,
