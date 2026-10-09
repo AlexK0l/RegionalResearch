@@ -2307,6 +2307,20 @@ function deterministicQualificationDecision(record) {
     const tractorTrailerOperation =
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
+    const freightTrailerContext =
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
+    const explicitTrailerProcurement =
+      freightTrailerContext &&
+      (
+        /(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор).{0,140}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,140}(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор)/i.test(note)
+      );
+    const explicitTrailerOwnership =
+      freightTrailerContext &&
+      (
+        /(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци)/i.test(note)
+      );
     // Если запись сообщает лишь об услуге/возможности ремонта, нельзя
     // выдавать её за конкретный заказ, эксплуатацию или выполненную работу.
     const genericServiceOnly =
@@ -2326,6 +2340,8 @@ function deterministicQualificationDecision(record) {
     if (
       explicitVinOrPlate ||
       tractorTrailerOperation ||
+      explicitTrailerProcurement ||
+      explicitTrailerOwnership ||
       strongLinkedSignal ||
       (trailer && trailerAction && /(конкретн|фактич|в собственности|на балансе|эксплуат|продаж|лизинг|ремонт|аренд)/.test(note))
     ) {
