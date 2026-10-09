@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        run: npm install --ignore-scripts
       - name: Syntax
         run: node --check src/pipeline.js
       - name: Offline regression
