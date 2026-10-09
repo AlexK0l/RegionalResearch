@@ -33,6 +33,12 @@ const e={
 REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions.append(o)});
 
 let config=null;
+// Reset prior GPT-6 experiment selection once; user can explicitly choose it again.
+if(localStorage.getItem("sat_model_baseline_v2")!=="gpt-5.6-luna"){
+  localStorage.setItem("sat_model_discovery","gpt-5.6-luna");
+  localStorage.setItem("sat_model_identity","gpt-5.6-luna");
+  localStorage.setItem("sat_model_baseline_v2","gpt-5.6-luna");
+}
 for(const [role,control] of [["discovery",e.discoveryModel],["identity",e.identityModel]]){
   const stored=localStorage.getItem("sat_model_"+role);
   if(["gpt-5.6-luna","gpt-6-luna"].includes(stored))control.value=stored;
