@@ -1,0 +1,24 @@
+name: Pre-identity regression checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/pipeline.js'
+      - 'test/preidentity-review.test.js'
+      - '.github/workflows/preidentity-regression.yml'
+  push:
+    branches:
+      - 'audit/preidentity-review-20261009'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax
+        run: node --check src/pipeline.js
+      - name: Offline regression
+        run: node --test test/preidentity-review.test.js
