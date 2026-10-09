@@ -5005,3 +5005,5 @@ ${JSON.stringify(gaps)}
     }
   };
 }
+
+export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates };
