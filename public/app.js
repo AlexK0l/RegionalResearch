@@ -3,8 +3,6 @@ const REGIONS=["Республика Адыгея","Республика Алт�
 
 const e={
   region:document.querySelector("#region"),
-  discoveryModel:document.querySelector("#discoveryModel"),
-  identityModel:document.querySelector("#identityModel"),
   regions:document.querySelector("#regions"),
   start:document.querySelector("#startBtn"),
   smoke:document.querySelector("#smokeBtn"),
@@ -33,18 +31,6 @@ const e={
 REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions.append(o)});
 
 let config=null;
-// Reset prior GPT-6 experiment selection once; user can explicitly choose it again.
-if(localStorage.getItem("sat_model_baseline_v2")!=="gpt-5.6-luna"){
-  localStorage.setItem("sat_model_discovery","gpt-5.6-luna");
-  localStorage.setItem("sat_model_identity","gpt-5.6-luna");
-  localStorage.setItem("sat_model_baseline_v2","gpt-5.6-luna");
-}
-for(const [role,control] of [["discovery",e.discoveryModel],["identity",e.identityModel]]){
-  const stored=localStorage.getItem("sat_model_"+role);
-  if(["gpt-5.6-luna","gpt-6-luna"].includes(stored))control.value=stored;
-  control.addEventListener("change",()=>localStorage.setItem("sat_model_"+role,control.value));
-}
-function selectedModels(){return {discovery:e.discoveryModel.value,identity:e.identityModel.value};}
 let currentJobId=localStorage.getItem("sat_current_job")||"";
 let pollTimer=null;
 let timerTick=null;
@@ -375,7 +361,7 @@ async function startJob(mode="full"){
   e.replay.hidden=true;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
-    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode,models:selectedModels()})});
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode})});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
@@ -401,7 +387,7 @@ async function startStageTest(){
   e.replay.hidden=true;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
-    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode:"stage_test",stage,models:selectedModels()})});
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode:"stage_test",stage})});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
