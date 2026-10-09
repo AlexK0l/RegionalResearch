@@ -185,11 +185,6 @@ app.post("/api/jobs", async (req, res) => {
     data = { region, stage };
   }
 
-  data.models = {
-    discovery: process.env.OPENAI_MODEL || "gpt-5.6-luna",
-    identity: process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna"
-  };
-
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
 
   if (mode === "replay" || mode === "dedupe_replay") {
