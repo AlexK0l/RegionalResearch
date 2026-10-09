@@ -1778,8 +1778,17 @@ function prefilterCandidatesForIdentity(candidates, region = "") {
     const notes = Array.isArray(row.__evidence?.notes) ? row.__evidence.notes : [];
     const allText = [row["Техника/сегмент"], row["Основание"], ...notes].join(" ").toLowerCase().replace(/ё/g, "е");
     const commercialSignal = /(полуприцеп|прицеп|тонар|schmitz|kogel|krone|wielton|grunwald|седельн.{0,20}тягач|автопоезд|зерновоз|ломовоз|щеповоз|лесовоз|самосвал|пгс|щебен|песок|перевозк.{0,40}(зерн|лес|лом|отход)|ремонт.{0,60}(грузов|прицеп)|грузов.{0,40}перевоз)/i.test(allText);
-    const negativeOnly = /(ликвидирован|прекратил деятельность|не относится к региону)/.test(allText) && !commercialSignal;
-    const status = decision.grade ? "KEEP" : commercialSignal && !negativeOnly ? "REVIEW" : "EXCLUDE";
+    const discoveryStrong = /^\\s*[ab]\\s*[—–-]/i.test(String(row["Основание"] || "")) ||
+      /^\\s*[ab]\\s*[—–-]/i.test(String(row["Техника/сегмент"] || ""));
+    const concreteReviewEvent =
+      /(закупк|тендер|контракт|договор|приобрет|купил|куплен|лизинг|на балансе|в собственности|собственн.{0,30}парк|автопарк|эксплуат|водител.{0,40}(прицеп|полуприцеп)|заказчик.{0,80}(прицеп|полуприцеп)|клиент.{0,80}(прицеп|полуприцеп)|выполн.{0,40}ремонт|акт выполненн|заказ.наряд)/i.test(allText);
+    const negativeOnly = /(ликвидирован|прекратил деятельность|не относится к региону)/.test(allText) &&
+      !concreteReviewEvent;
+    // REVIEW is deliberately narrower than a generic trailer/service mention:
+    // retain discovery A/B or a concrete commercial/operational event, but do
+    // not send every directory/service listing through the expensive final batch.
+    const reviewSignal = commercialSignal && (discoveryStrong || concreteReviewEvent);
+    const status = decision.grade ? "KEEP" : reviewSignal && !negativeOnly ? "REVIEW" : "EXCLUDE";
     if (status === "KEEP") {
       included++;
       if (name) keepNames.add(name);
