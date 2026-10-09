@@ -822,7 +822,7 @@ async function discoverRegionSearchScopes(client, region) {
 Для региона "${region}" перечисли 12–18 наиболее полезных географических точек для B2B-поиска тяжёлой логистики: областной центр, крупные и средние города, значимые районные центры. В clusters дай до 6 известных промышленных/аграрных/лесных/карьерных территорий или муниципальных кластеров.
 ВАЖНО: каждый элемент places и clusters должен быть ПРОСТОЙ СТРОКОЙ с названием, не объектом и не структурой JSON.
 Не включай населённые пункты вне региона. Используй web_search для проверки принадлежности к региону.`,
-    model: client.__discoveryModel || MODEL,
+    model: MODEL,
     maxOutputTokens: 5000,
     webSearch: true,
     responseSchema: GEO_SCOPE_SCHEMA,
@@ -1393,7 +1393,7 @@ async function resolveCandidateIdentities({
             `\n\nРЕГИОН: ${region}
 ВЕРОЯТНЫЙ КЛАСТЕР:
 ${JSON.stringify(compactIdentityCluster(cluster))}`,
-          model: client.__identityModel || TARGETED_SEARCH_MODEL,
+          model: TARGETED_SEARCH_MODEL,
           maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
           webSearch: true,
           responseSchema: IDENTITY_SCHEMA,
@@ -2965,12 +2965,9 @@ async function askJson(client, {
 }
 
 function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS, diagnosticLabel = "") {
-  const modelGuide = client.__discoveryModel === "gpt-6-luna"
-    ? "\n\nПРАВИЛО ПОЛНОТЫ ДЛЯ ЭТОГО ПРОХОДА: не ограничивайся несколькими очевидными компаниями. Пройди разные типы источников, включая первичные документы, местные каталоги, вакансии, закупки и реальные кейсы, насколько они соответствуют теме ветки. Последовательно извлекай все разные юридические лица, подтверждённые evidence; не выдумывай кандидатов и не ослабляй критерии A/B/C. Если источник дал только сервис, ищи его реального клиента, а не заполняй результат похожими сервисами."
-    : "";
   return askJson(client, {
-    input: input + modelGuide,
-    model: client.__discoveryModel || MODEL,
+    input,
+    model: MODEL,
     maxOutputTokens,
     webSearch: true,
     responseSchema: DISCOVERY_SCHEMA,
@@ -3455,15 +3452,6 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
-  const selectedModels = job.data?.models || {};
-  const allowedModels = new Set(["gpt-5.6-luna", "gpt-6-luna"]);
-  client.__discoveryModel = allowedModels.has(selectedModels.discovery) ? selectedModels.discovery : MODEL;
-  client.__identityModel = allowedModels.has(selectedModels.identity) ? selectedModels.identity : TARGETED_SEARCH_MODEL;
-  console.log("[JOB_MODELS] " + JSON.stringify({
-    discovery: client.__discoveryModel,
-    identity: client.__identityModel,
-    other_models: "Render defaults"
-  }));
   client.__tokenUsage = emptyTokenUsage();
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
@@ -3780,93 +3768,6 @@ ${JSON.stringify(compactCourtArchive)}
         step: i + 1,
         percent: i * 9 + Math.floor(((branchIndex + 1) / Math.max(1, branches.length)) * 8)
       });
-    }
-
-    // GPT-6 discovery can return zero or very few candidates even when a branch
-    // has a distinct source channel. Give at most three weak branches one
-    // source-switch attempt each, without touching archive search or dedupe.
-    if (!stageBudgetStopped && client.__discoveryModel === "gpt-6-luna" &&
-        (!testProfile || testProfile.recovery) && i !== 6) {
-      const weakBranches = branchDiagnostics
-        .filter((item) => item.marginalNew <= 4 || item.strongNew === 0)
-        .sort((a, b) =>
-          a.marginalNew - b.marginalNew ||
-          a.strongNew - b.strongNew ||
-          a.branchIndex - b.branchIndex
-        )
-        .slice(0, 3);
-      console.log("[DISCOVERY_WEAK_BRANCH_PLAN] " + JSON.stringify({
-        stage: i + 1,
-        model: client.__discoveryModel,
-        eligible: weakBranches.length,
-        branches: weakBranches.map((item) => ({
-          branch: item.branchIndex + 1,
-          primary_new: item.marginalNew,
-          primary_strong: item.strongNew,
-          source_gaps: discoverySourceFamilyGaps(item.sourceFamilies, 3)
-        }))
-      }));
-      for (const weak of weakBranches) {
-        await assertNotCancelled();
-        const before = uniqueResearchCount(combined);
-        const gaps = discoverySourceFamilyGaps(weak.sourceFamilies, 3);
-        const scope = discoveryScopesForBranch(i, weak.branchIndex, researchScopes)[0] ||
-          `весь регион: ${region}`;
-        const known = foundOrganizationNames(combined, 120);
-        let added = 0;
-        let stopReason = "no_new_organizations";
-        try {
-          const prompt = compactRecoveryPrompt({
-            region,
-            stageIndex: i,
-            theme: "Адресный добор слабой ветки: по новому типу источников найти новые юридические лица, в том числе клиентов и владельцев техники за сервисами и дилерами.",
-            scope,
-            alreadyFound: known,
-            uniqueCount: before,
-            anchorBranch: weak.branch,
-            sourceFamilyGaps: gaps
-          });
-          const result = normalize(await askResearch(
-            client,
-            prompt,
-            RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
-            `этап ${i + 1} | weak-source-switch | ветка ${weak.branchIndex + 1} | ${scope}`
-          ));
-          appendResearchResult(combined, result, `weak-branch-${weak.branchIndex + 1}`);
-          added = Math.max(0, uniqueResearchCount(combined) - before);
-          const quality = discoveryYieldStats(result, known);
-          const newFamilies = discoverySourceFamilyStats(result);
-          stopReason = added ? "one_bounded_source_switch_completed" : "no_new_organizations";
-          console.log("[DISCOVERY_WEAK_BRANCH_RESULT] " + JSON.stringify({
-            stage: i + 1,
-            branch: weak.branchIndex + 1,
-            scope,
-            primary_new: weak.marginalNew,
-            before,
-            added,
-            quality_yield: quality,
-            source_family_gaps: gaps,
-            recovered_source_families: newFamilies,
-            stop_reason: stopReason,
-            token_usage_cumulative: tokenUsageSnapshot(client),
-            companies: diagnosticDiscoveryRows(result)
-          }));
-        } catch (error) {
-          if (isWebBudgetStop(error)) {
-            stageBudgetStopped = true;
-            stopReason = "web_budget_reached";
-          } else {
-            stopReason = "search_error";
-          }
-          console.error("[DISCOVERY_WEAK_BRANCH_STOP] " + JSON.stringify({
-            stage: i + 1,
-            branch: weak.branchIndex + 1,
-            reason: stopReason,
-            error: error?.message || String(error)
-          }));
-          if (stageBudgetStopped) break;
-        }
-      }
     }
 
     // Recovery should deepen branches that have already proven they can yield
