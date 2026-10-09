@@ -4192,6 +4192,29 @@ ${JSON.stringify(compactCourtArchive)}
       diagnosticPrefix: "test12 final qualification"
     });
     const qualified = applyFinalQualification(qaRecords, decisions);
+    let excludedAuditCount = 0;
+    for (const record of qaRecords) {
+      const decision = decisions.get(record.id);
+      if (decision?.grade && decision?.decision === "include") continue;
+      const row = record.row || {};
+      console.log("[FINAL_EXCLUDED_COMPANY] " + JSON.stringify({
+        id: record.id,
+        organization: row["Организация"] || "",
+        city: row["Город/район"] || "",
+        sheet: record.sheet,
+        reason: decision?.reason || "",
+        segment: row["Техника/сегмент"] || "",
+        basis: row["Основание"] || "",
+        evidence_notes: (row.__evidence?.notes || []).slice(0, 5),
+        source_urls: (row.__evidence?.source_urls || []).slice(0, 5)
+      }));
+      excludedAuditCount++;
+    }
+    console.log("[FINAL_EXCLUDED_AUDIT_SUMMARY] " + JSON.stringify({
+      region,
+      excluded: excludedAuditCount,
+      no_additional_search: true
+    }));
     const currentQualificationCheckpoint = buildQualificationCheckpoint(qaRecords, decisions);
     const replayQualificationComparison =
       replayMode && Array.isArray(job.data?.snapshot?.qualification_checkpoint?.records)
