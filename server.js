@@ -185,16 +185,9 @@ app.post("/api/jobs", async (req, res) => {
     data = { region, stage };
   }
 
-  const allowedModels = new Set(["gpt-5.6-luna", "gpt-6-luna"]);
-  const requestedModels = req.body?.models || {};
-  for (const role of ["discovery", "identity"]) {
-    if (requestedModels[role] && !allowedModels.has(requestedModels[role])) {
-      return res.status(400).json({ error: "Неподдерживаемая модель для " + role });
-    }
-  }
   data.models = {
-    discovery: requestedModels.discovery || process.env.OPENAI_MODEL || "gpt-5.6-luna",
-    identity: requestedModels.identity || process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna"
+    discovery: process.env.OPENAI_MODEL || "gpt-5.6-luna",
+    identity: process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna"
   };
 
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
