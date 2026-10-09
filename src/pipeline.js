@@ -4331,10 +4331,7 @@ ${JSON.stringify(compactCourtArchive)}
     identityResolution.candidates = appendReviewCandidates(
       identityResolution.candidates, reviewCandidates, region, "diagnostic"
     );
-    identityResolution.candidates = appendReviewCandidates(
-    identityResolution.candidates, preIdentity.reviewCandidates, region, "full"
-  );
-  const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
+    const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
     const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
 
