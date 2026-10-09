@@ -92,7 +92,12 @@ function adaptiveDiscoveryLowYieldThreshold(knownCount) {
 }
 
 function adaptiveDiscoveryLowYieldStreak(scopeCount) {
-  return Math.max(2, Math.min(3, Math.ceil(Math.max(1, Number(scopeCount || 0)) / 3)));
+  const count = Math.max(1, Number(scopeCount || 0));
+  // With the normal 3-scope layout there is only one local result available
+  // before deciding whether to spend on the third/deep scope. One weak local
+  // scope is therefore enough to stop deeper geographic probing.
+  if (count <= 3) return 1;
+  return Math.max(2, Math.min(3, Math.ceil(count / 3)));
 }
 
 function discoveryKnownNames(result, limit = DISCOVERY_ALREADY_FOUND_LIMIT) {
@@ -249,7 +254,8 @@ function compactRecoveryPrompt({
   alreadyFound,
   uniqueCount,
   anchorBranch,
-  sourceFamilyGaps = []
+  sourceFamilyGaps = [],
+  saturatedSourceFamilies = []
 }) {
   const known = alreadyFound.length
     ? `УЖЕ НАЙДЕННЫЕ — не трать поиск на повторное обнаружение: ${alreadyFound.join("; ")}`
@@ -262,6 +268,7 @@ function compactRecoveryPrompt({
 ДОБОР ДЛЯ ПОЛНОТЫ: ${theme}
 ГЕОГРАФИЯ: ${scope}
 НЕДОПОКРЫТЫЕ СЕМЕЙСТВА ИСТОЧНИКОВ: ${sourceFamilyGaps.length ? sourceFamilyGaps.join(", ") : "не выявлены; выбери новое релевантное семейство источников сам"}.
+НАСЫЩЕННЫЕ СЕМЕЙСТВА — не трать повторные поиски на них без нового конкретного зацепа: ${saturatedSourceFamilies.length ? saturatedSourceFamilies.join(", ") : "нет"}.
 Сейчас найдено ${uniqueCount} уникальных организаций. Это наблюдение, а не квота: продолжай, пока новые формулировки/география дают содержательный прирост.
 ${known}
 
@@ -750,6 +757,14 @@ function discoverySourceFamilyGaps(stats, limit = 3) {
   return [...DISCOVERY_SOURCE_FAMILIES]
     .sort((a, b) => Number(counts[a] || 0) - Number(counts[b] || 0))
     .filter((family) => Number(counts[family] || 0) <= 1)
+    .slice(0, limit);
+}
+
+function discoverySaturatedSourceFamilies(stats, limit = 4) {
+  const counts = stats || {};
+  return [...DISCOVERY_SOURCE_FAMILIES]
+    .sort((a, b) => Number(counts[b] || 0) - Number(counts[a] || 0))
+    .filter((family) => Number(counts[family] || 0) >= 3)
     .slice(0, limit);
 }
 
@@ -3982,6 +3997,10 @@ ${JSON.stringify(compactCourtArchive)}
 
       const anchorBranch = recoveryBranch.branch || DISCOVERY_STAGE_HINTS[i] || "";
       const sourceFamilyGaps = discoverySourceFamilyGaps(recoveryBranch.sourceFamilies, 3);
+      const saturatedSourceFamilies = discoverySaturatedSourceFamilies(
+        recoveryBranch.sourceFamilies,
+        4
+      );
 
       statuses[i].detail =
         `добор ${recoveryIndex + 1} · ветка ${recoveryBranch.branchIndex + 1} · ${before} уникальных · проверяем насыщение`;
@@ -4042,7 +4061,8 @@ ${JSON.stringify(compactCourtArchive)}
                 alreadyFound: recoveryKnown,
                 uniqueCount: before,
                 anchorBranch,
-                sourceFamilyGaps
+                sourceFamilyGaps,
+                saturatedSourceFamilies
               }),
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
               `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`
@@ -4069,6 +4089,7 @@ ${JSON.stringify(compactCourtArchive)}
             anchor_branch_name: anchorBranch,
             theme,
             source_family_gaps: sourceFamilyGaps,
+            saturated_source_families: saturatedSourceFamilies,
             scope_index: scopeIndex + 1,
             scope,
             rows: diagnosticRowCount(value),
