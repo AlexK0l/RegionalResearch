@@ -1119,6 +1119,31 @@ function extractInnFromEvidenceNotes(row) {
   return candidates.size === 1 ? [...candidates][0] : "";
 }
 
+function extractInnFromEvidenceUrls(row) {
+  const urls = Array.isArray(row?.__evidence?.source_urls) ? row.__evidence.source_urls : [];
+  const candidates = new Set();
+
+  for (const raw of urls) {
+    const text = String(raw || "");
+    const decoded = (() => {
+      try { return decodeURIComponent(text); } catch { return text; }
+    })();
+
+    const patterns = [
+      /(?:^|[^a-z])inn[-_/:= ]*(\d{10}|\d{12})(?:\D|$)/gi,
+      /(?:^|[^a-zа-я])инн[-_/:= ]*(\d{10}|\d{12})(?:\D|$)/gi
+    ];
+    for (const pattern of patterns) {
+      for (const match of decoded.matchAll(pattern)) {
+        const inn = normalizeInn(match[1]);
+        if (inn) candidates.add(inn);
+      }
+    }
+  }
+
+  return candidates.size === 1 ? [...candidates][0] : "";
+}
+
 function clusterEvidenceIdentity(cluster) {
   const items = cluster?.items || [];
   const inns = new Set();
@@ -1130,8 +1155,10 @@ function clusterEvidenceIdentity(cluster) {
     const row = item?.data || {};
     const directInn = normalizeInn(row["ИНН"]);
     const evidenceInn = extractInnFromEvidenceNotes(row);
+    const urlInn = extractInnFromEvidenceUrls(row);
     if (directInn) inns.add(directInn);
     if (evidenceInn) inns.add(evidenceInn);
+    if (urlInn) inns.add(urlInn);
 
     const name = normalizeOrgKey(row["Организация"]);
     if (name) names.add(name);
