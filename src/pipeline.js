@@ -4580,6 +4580,9 @@ ${JSON.stringify(compactCourtArchive)}
     }
   });
 
+  identityResolution.candidates = appendReviewCandidates(
+    identityResolution.candidates, preIdentity.reviewCandidates, region, "full"
+  );
   const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
   console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
     region,
