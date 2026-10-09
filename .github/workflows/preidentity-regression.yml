@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
       - name: Syntax
         run: node --check src/pipeline.js
       - name: Offline regression
-        run: node --test test/preidentity-review.test.js
+        run: node --test test/preidentity-review.test.js test/smolensk-preidentity-replay.test.js
