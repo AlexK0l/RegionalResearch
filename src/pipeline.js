@@ -1853,6 +1853,28 @@ function prefilterCandidatesForIdentity(candidates, region = "") {
   };
 }
 
+// REVIEW remains in the evidence stream and is evaluated by the same final QA.
+// Its provisional status never counts as a confirmed A/B/C grade.
+function appendReviewCandidates(resolved, reviewCandidates, region, label) {
+  if (!reviewCandidates?.length) return resolved;
+  const existing = new Set(resolved.map((c) => c.candidate_id));
+  const added = reviewCandidates.filter((c) => !existing.has(c.candidate_id));
+  for (const item of added) {
+    const evidence = item.data?.__evidence || {};
+    item.data.__evidence = {
+      ...evidence,
+      source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
+      notes: Array.isArray(evidence.notes) ? evidence.notes : []
+    };
+    item.data.__pre_identity_status = "REVIEW";
+  }
+  console.log("[PRE_IDENTITY_REVIEW_RETAINED] " + JSON.stringify({
+    label, region, added_mentions: added.length,
+    no_extra_identity_web_search: true
+  }));
+  return [...resolved, ...added];
+}
+
 function makeQaRecords(result) {
   const records = [];
   const groups = ["direct_buyers", "intermediaries", "leasing"];
@@ -4261,6 +4283,7 @@ ${JSON.stringify(compactCourtArchive)}
       : null;
 
     let identityResolution;
+    let reviewCandidates = [];
     if (replayCheckpoint) {
       identityResolution = {
         candidates: replayCheckpoint.candidates,
@@ -4284,6 +4307,7 @@ ${JSON.stringify(compactCourtArchive)}
       });
     } else {
       const preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
+      reviewCandidates = preIdentity.reviewCandidates;
       identityResolution = await resolveCandidateIdentities({
         client,
         candidates: preIdentity.candidates,
@@ -4304,7 +4328,13 @@ ${JSON.stringify(compactCourtArchive)}
       });
     }
 
-    const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
+    identityResolution.candidates = appendReviewCandidates(
+      identityResolution.candidates, reviewCandidates, region, "diagnostic"
+    );
+    identityResolution.candidates = appendReviewCandidates(
+    identityResolution.candidates, preIdentity.reviewCandidates, region, "full"
+  );
+  const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
     const canonicalMap = new Map(canonicalPool.map((x) => [x.canonical_id, x]));
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
 
