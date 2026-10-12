@@ -133,14 +133,36 @@ function preliminaryDiscoveryGrade(row) {
 function discoveryYieldStats(result, knownNames = []) {
   const known = new Set((knownNames || []).map((x) => normalizeOrgKey(x)).filter(Boolean));
   const byOrg = new Map();
+  const modelPreliminary = { A: 0, B: 0, C: 0, ungraded: 0 };
 
-  for (const row of allResearchRows(result)) {
-    const key = normalizeOrgKey(row?.["Организация"]);
-    if (!key || known.has(key)) continue;
-    const grade = preliminaryDiscoveryGrade(row);
-    const weight = grade === "A" ? 4 : grade === "B" ? 2 : grade === "C" ? 0.35 : 1;
-    const previous = byOrg.get(key);
-    if (!previous || weight > previous.weight) byOrg.set(key, { grade, weight });
+  for (const [sheet, rows] of [
+    ["direct_buyers", result?.direct_buyers || []],
+    ["intermediaries", result?.intermediaries || []],
+    ["leasing", result?.leasing || []]
+  ]) {
+    for (const row of rows) {
+      const key = normalizeOrgKey(row?.["Организация"]);
+      if (!key || known.has(key)) continue;
+
+      const modelGrade = preliminaryDiscoveryGrade(row);
+      if (modelGrade) modelPreliminary[modelGrade]++;
+      else modelPreliminary.ungraded++;
+
+      // Do not let the discovery model's self-assigned A/B drive more paid
+      // geography/recovery searches. Reuse the same deterministic evidence
+      // policy that will be applied later in qualification.
+      const decision = deterministicQualificationDecision({
+        id: key,
+        sheet,
+        row
+      });
+      const grade = decision?.grade || "";
+      const weight = grade === "A" ? 4 : grade === "B" ? 2 : grade === "C" ? 0.35 : 0.5;
+      const previous = byOrg.get(key);
+      if (!previous || weight > previous.weight) {
+        byOrg.set(key, { grade, weight });
+      }
+    }
   }
 
   let a = 0, b = 0, c = 0, ungraded = 0, qualityScore = 0;
@@ -156,7 +178,9 @@ function discoveryYieldStats(result, knownNames = []) {
     newOrganizations: byOrg.size,
     a, b, c, ungraded,
     strongNew: a + b,
-    qualityScore: Number(qualityScore.toFixed(2))
+    qualityScore: Number(qualityScore.toFixed(2)),
+    gradingBasis: "deterministic_evidence",
+    modelPreliminary
   };
 }
 
