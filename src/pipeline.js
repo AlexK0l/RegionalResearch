@@ -5131,4 +5131,4 @@ ${JSON.stringify(gaps)}
   };
 }
 
-export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates };
+export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates, discoveryYieldStats };
