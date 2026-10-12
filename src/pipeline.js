@@ -2467,7 +2467,7 @@ function deterministicQualificationDecision(record) {
 
   const speculative = /потенциал|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
-    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|не раскрыва|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
+    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
   const farmImplementOnly =
     /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
   const priorityTrailerModel =
@@ -2531,14 +2531,26 @@ function deterministicQualificationDecision(record) {
 
     const serviceProcurementOnly =
       /(закупк|тендер|контракт|договор).{0,80}услуг.{0,120}(полуприцеп|прицеп)|услуг.{0,120}(закупк|тендер|контракт|договор).{0,120}(полуприцеп|прицеп)/i.test(note);
-    const actualTrailerProcurement = explicitTrailerProcurement && !serviceProcurementOnly;
+    const partsOnly =
+      /(запчаст|комплектующ|оси|подвеск|тормозн|пневматич).{0,100}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,100}(запчаст|комплектующ|оси|подвеск|тормозн|пневматич)/i.test(note);
+    const sellerOnly =
+      /(продает|продаж[а-я]*|продавец|продавцом|предлагает)/i.test(note) &&
+      !/(закупк|приобрет|приобрел|купил|в собственности|на балансе|собственн.{0,30}парк|эксплуат)/i.test(note);
+    const actualTrailerProcurement = explicitTrailerProcurement && !serviceProcurementOnly && !partsOnly;
     const actualServiceEvent =
       intermediaryRole && trailer && specificServiceEvent.test(note);
+    const ongoingTrailerSeller =
+      intermediaryRole &&
+      /(компания|дилер|центр).{0,80}(продает|продаж[а-я]*).{0,100}(прицепн.{0,20}техник|полуприцеп|прицеп)/i.test(note) &&
+      !/(объявлен|карточк|предложени|площадк)/i.test(note);
     const establishedCommercialChannel =
       intermediaryRole &&
       freightTrailerContext &&
-      trailerCommerce.test(note) &&
-      /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note);
+      (
+        trailerCommerce.test(note) &&
+        /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note) ||
+        ongoingTrailerSeller
+      );
     const actualLeaseContract =
       leasingRole &&
       freightTrailerContext &&
@@ -2552,8 +2564,8 @@ function deterministicQualificationDecision(record) {
     if (directRole) {
       if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
-      else if (tractorTrailerOperation && !serviceProcurementOnly) matchedRule = "direct_operation";
-      else if (ceTrailerJob && !serviceProcurementOnly) matchedRule = "direct_driver_operation";
+      else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
+      else if (ceTrailerJob && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (directVinOwnership) matchedRule = "direct_vin_ownership";
     } else if (intermediaryRole) {
       if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
