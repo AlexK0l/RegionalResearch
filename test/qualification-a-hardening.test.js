@@ -121,3 +121,36 @@ test("concrete trailer leasing contracts remain A", () => {
   assert.equal(d.grade, "A");
   assert.equal(d.aRule, "leasing_concrete_contract");
 });
+
+
+test("trailer plus category without driver or vacancy is not driver-operation A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "Карточка техники",
+    "Полуприцеп Schmitz, категория транспортного средства E.",
+    "Полуприцеп Schmitz"
+  ));
+  assert.notEqual(d.aRule, "direct_driver_operation");
+});
+
+test("driver vacancy plus CE category plus trailer remains driver-operation A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Перевозчик»",
+    "Вакансия водителя категории CE для работы на седельном тягаче с полуприцепом.",
+    "Седельный тягач и полуприцеп"
+  ));
+  assert.equal(d.grade, "A");
+  assert.equal(d.aRule, "direct_driver_operation");
+});
+
+test("trailer ownership should resolve to ownership rule, not driver operation", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «ЛК ФАБРИКА»",
+    "В карточке имущества указан полуприцеп KRONE SD и собственник ООО «ЛК ФАБРИКА».",
+    "Полуприцеп KRONE SD"
+  ));
+  assert.equal(d.grade, "A");
+  assert.notEqual(d.aRule, "direct_driver_operation");
+});
