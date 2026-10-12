@@ -2474,8 +2474,11 @@ function deterministicQualificationDecision(record) {
     /(тонар\s*\d{3,5}|grunwald\s*[a-zа-я0-9-]+|kogel\s*[a-zа-я0-9-]+|schmitz\s*[a-zа-я0-9-]+|wielton\s*[a-zа-я0-9-]+|krone\s*[a-zа-я0-9-]+|пс[- ]?\d{1,3}[а-яa-z-]*|пст[- ]?\d{1,3}[а-яa-z-]*|ts\s*\d{2,3})/i;
   const genericTrailerIdentification =
     /((полуприцеп|прицеп).{0,50}(марка|модель|тип|серия|идентификатор).{0,50}[a-zа-я0-9-]{2,})|((марка|модель|тип|серия).{0,50}[a-zа-я0-9-]{2,}.{0,50}(полуприцеп|прицеп))/i;
+  // A driver-operation signal is valid only when the SAME evidence note
+  // contains all three elements: driver/vacancy + CE/E category + trailer.
+  // Order is irrelevant, but none of the three may be omitted.
   const ceTrailerJob =
-    /(водител|ваканси).{0,50}(категори.{0,8}(е|ce|cе)).{0,120}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,120}(водител|категори.{0,8}(е|ce|cе)))/;
+    /(?=[\s\S]*(?:водител|ваканси))(?=[\s\S]*категори.{0,12}(?:е|e|ce|cе))(?=[\s\S]*(?:полуприцеп|прицеп|тонар))/i;
   const trailerFleet =
     /(парк|автопарк|наличие|на балансе|в собственности|имеет|эксплуатирует|эксплуатаци).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(парк|автопарк|наличие|на балансе|в собственности|эксплуатирует|эксплуатаци))/;
   // Объявление об услуге ремонта/обслуживания не подтверждает выполненный
@@ -2507,7 +2510,7 @@ function deterministicQualificationDecision(record) {
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
     const freightTrailerContext =
-      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|2птс[- ]?\d|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
@@ -2517,8 +2520,8 @@ function deterministicQualificationDecision(record) {
     const explicitTrailerOwnership =
       freightTrailerContext &&
       (
-        /(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
-        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци)/i.test(note)
+        /(в собственности|на балансе|собственник|собственником|владелец|владельцем|принадлежит|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственник|собственником|владелец|владельцем|принадлежит|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци)/i.test(note)
       );
     // Если запись сообщает лишь об услуге/возможности ремонта, нельзя
     // выдавать её за конкретный заказ, эксплуатацию или выполненную работу.
@@ -2564,8 +2567,8 @@ function deterministicQualificationDecision(record) {
     if (directRole) {
       if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
+      else if (ceTrailerJob.test(note) && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
-      else if (ceTrailerJob && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (directVinOwnership) matchedRule = "direct_vin_ownership";
     } else if (intermediaryRole) {
       if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
@@ -2584,6 +2587,20 @@ function deterministicQualificationDecision(record) {
       aEvidence = note;
       aRule = matchedRule;
       break;
+    }
+  }
+
+  // Some discovery sources split the ownership statement between the
+  // normalized segment and the evidence note. Permit a narrow fallback only
+  // when the full canonical record explicitly says the trailer fleet is own.
+  if (!aEvidence && directRole) {
+    const explicitOwnFleetInRecord =
+      /(собственн.{0,40}(парк|автопарк|тягач|полуприцеп|прицеп)|свои.{0,30}(тягач|полуприцеп|прицеп))/i.test(text) &&
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(text);
+    if (explicitOwnFleetInRecord) {
+      aEvidence = notes.find((note) => /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note)) ||
+        String(record?.row?.["Техника/сегмент"] || "");
+      aRule = "direct_ownership_or_fleet";
     }
   }
 
