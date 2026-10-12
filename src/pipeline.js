@@ -2510,7 +2510,7 @@ function deterministicQualificationDecision(record) {
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
     const freightTrailerContext =
-      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|2птс[- ]?\d|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
@@ -2520,8 +2520,8 @@ function deterministicQualificationDecision(record) {
     const explicitTrailerOwnership =
       freightTrailerContext &&
       (
-        /(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
-        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци)/i.test(note)
+        /(в собственности|на балансе|собственник|собственником|владелец|владельцем|принадлежит|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственник|собственником|владелец|владельцем|принадлежит|собственн.{0,30}парк|имеет|эксплуатирует|эксплуатаци)/i.test(note)
       );
     // Если запись сообщает лишь об услуге/возможности ремонта, нельзя
     // выдавать её за конкретный заказ, эксплуатацию или выполненную работу.
@@ -2587,6 +2587,20 @@ function deterministicQualificationDecision(record) {
       aEvidence = note;
       aRule = matchedRule;
       break;
+    }
+  }
+
+  // Some discovery sources split the ownership statement between the
+  // normalized segment and the evidence note. Permit a narrow fallback only
+  // when the full canonical record explicitly says the trailer fleet is own.
+  if (!aEvidence && directRole) {
+    const explicitOwnFleetInRecord =
+      /(собственн.{0,40}(парк|автопарк|тягач|полуприцеп|прицеп)|свои.{0,30}(тягач|полуприцеп|прицеп))/i.test(text) &&
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(text);
+    if (explicitOwnFleetInRecord) {
+      aEvidence = notes.find((note) => /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note)) ||
+        String(record?.row?.["Техника/сегмент"] || "");
+      aRule = "direct_ownership_or_fleet";
     }
   }
 
