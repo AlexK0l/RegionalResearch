@@ -154,3 +154,74 @@ test("trailer ownership should resolve to ownership rule, not driver operation",
   assert.equal(d.grade, "A");
   assert.notEqual(d.aRule, "direct_driver_operation");
 });
+
+
+test("negative evidence saying insufficient trailer proof cannot become A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Смоленское карьероуправление»",
+    "Доказательств собственного парка, тягачей, лизинга или конкретных полуприцепов в найденном источнике недостаточно.",
+    "Карьер; тяжелая техника; потенциальная прицепная эксплуатация"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("B-level estimate in evidence cannot become A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «БизнесТрансСтрой»",
+    "ИНН взят из карточки юридического лица; связь с текущей эксплуатацией прицепной техники является оценкой уровня B.",
+    "Тяжелые перевозки"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("transport service procurement with semitrailers cannot become A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Префаб Технологии»",
+    "Закупочная запись содержит тип транспорта — бортовые полуприцепы — и период оказания услуг.",
+    "Бортовые полуприцепы; услуги перевозки"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("potential operator language cannot become A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «ТЭК Смолтрансавто»",
+    "B — автомобильный грузовой транспорт и транспортно-экспедиционные услуги; потенциальный эксплуатант тягачей и полуприцепов.",
+    "Грузовая логистика"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("negative VIN statement cannot become direct_vin_ownership", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ОАО «Автоколонна-1134»",
+    "Данных о марках, VIN, владельцах отдельных единиц и повторных дорогостоящих ремонтах нет.",
+    "Ремзона; ремонт прицепов"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("unidentified service customer cannot become completed service A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "intermediaries",
+    "Tracstop67",
+    "В открытой карточке нет достоверной идентификации клиента или модели полуприцепа.",
+    "Ремонт полуприцепов"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("former use wording does not prove intermediary own operation", () => {
+  const d = deterministicQualificationDecision(rec(
+    "intermediaries",
+    "ООО «Литекс»",
+    "Описана переделка и восстановление бывших в эксплуатации шторных полуприцепов, включая TIR-конструкции.",
+    "Ремонт тентов и полуприцепов"
+  ));
+  assert.notEqual(d.aRule, "intermediary_own_operation");
+});

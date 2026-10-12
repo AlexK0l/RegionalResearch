@@ -1,8 +1,8 @@
 {
   "source": "Render stage_test stage 3, Smolensk, deployed c1a44280",
   "count": 38,
-  "expected_keep_a": 24,
-  "expected_downgrade": 14,
+  "expected_keep_a": 23,
+  "expected_downgrade": 15,
   "companies": [
     {
       "organization": "Автосервис «Супер-СТО»",
@@ -354,8 +354,8 @@
       "segments": [
         "Основания: A — собственные седельные тягачи DAF XF 105.460; шторные полуприцепы Schmitz SCS и Schmitz SCO 24; международные автомобильные перевозки и организация перевозок грузов."
       ],
-      "expected_a": true,
-      "audit": "keep_A"
+      "expected_a": false,
+      "audit": "downgrade_from_A: historical a_evidence names models but does not itself prove ownership or operation"
     },
     {
       "organization": "ООО «Флариат Логистик»",

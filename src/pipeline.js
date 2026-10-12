@@ -2465,9 +2465,9 @@ function deterministicQualificationDecision(record) {
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
-  const speculative = /потенциал|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для|наиболее близок|профиль.{0,30}близок/;
+  const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
-    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
+    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|недостаточн.{0,80}(доказательств|данн|сведен)|(доказательств|данн|сведен).{0,180}недостаточн|нет\s+(?:достаточн|достоверн|прямых)[а-я]*.{0,60}(идентификац|клиент|модел|данн|сведен|подтверж)|нет данных|данн.{0,100}нет|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не идентифицир|клиент.{0,80}не (?:идентифицир|раскрыт|указан)|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
   const farmImplementOnly =
     /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
   const priorityTrailerModel =
@@ -2571,10 +2571,16 @@ function deterministicQualificationDecision(record) {
       else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
       else if (directVinOwnership) matchedRule = "direct_vin_ownership";
     } else if (intermediaryRole) {
+      const explicitIntermediaryOwnOperation =
+        freightTrailerContext &&
+        (
+          /(в собственности|на балансе|собственник|собственником|собственн.{0,30}парк|имеет собственн|эксплуатирует).{0,120}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+          /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,120}(в собственности|на балансе|собственник|собственником|собственн.{0,30}парк|имеет собственн|эксплуатирует)/i.test(note)
+        );
       if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
       else if (actualServiceEvent) matchedRule = "intermediary_completed_service";
       else if (establishedCommercialChannel) matchedRule = "intermediary_established_channel";
-      else if (explicitTrailerOwnership) matchedRule = "intermediary_own_operation";
+      else if (explicitIntermediaryOwnOperation) matchedRule = "intermediary_own_operation";
     } else if (leasingRole) {
       if (actualLeaseContract) matchedRule = "leasing_concrete_contract";
       else if (actualTrailerProcurement) matchedRule = "leasing_concrete_transaction";
@@ -2590,19 +2596,8 @@ function deterministicQualificationDecision(record) {
     }
   }
 
-  // Some discovery sources split the ownership statement between the
-  // normalized segment and the evidence note. Permit a narrow fallback only
-  // when the full canonical record explicitly says the trailer fleet is own.
-  if (!aEvidence && directRole) {
-    const explicitOwnFleetInRecord =
-      /(собственн.{0,40}(парк|автопарк|тягач|полуприцеп|прицеп)|свои.{0,30}(тягач|полуприцеп|прицеп))/i.test(text) &&
-      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(text);
-    if (explicitOwnFleetInRecord) {
-      aEvidence = notes.find((note) => /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note)) ||
-        String(record?.row?.["Техника/сегмент"] || "");
-      aRule = "direct_ownership_or_fleet";
-    }
-  }
+  // A is evidence-note only. Segment/basis text may support B/C context but
+  // must never promote a company to A by itself.
 
   let grade = "";
   let reason = "";

@@ -7,8 +7,8 @@ const fixture = JSON.parse(readFileSync(new URL("./fixtures/smolensk-a-audit-202
 
 test("audited 38-company A fixture matches expected A vs downgrade decisions", () => {
   assert.equal(fixture.count, 38);
-  assert.equal(fixture.expected_keep_a, 24);
-  assert.equal(fixture.expected_downgrade, 14);
+  assert.equal(fixture.expected_keep_a, 23);
+  assert.equal(fixture.expected_downgrade, 15);
   const mismatches = [];
   for (const item of fixture.companies) {
     const decision = deterministicQualificationDecision({
