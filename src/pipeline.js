@@ -597,6 +597,7 @@ function identityResolutionContract() {
 - Если ИНН надёжно подтвердить не удалось — оставь confirmed_inn пустым и НЕ объединяй сомнительные упоминания: верни их отдельными entities.
 - Не ищи телефон, директора, email, выручку, численность, холдинг или другие сведения.
 - legal_name и city заполняй только если удалось подтвердить.
+- Если web-проверка показывает, что найденное юридическое лицо относится к ДРУГОМУ региону и исходная региональная привязка ошибочна, ОБЯЗАТЕЛЬНО прямо напиши это в note: "региональный конфликт: юридическое лицо относится к <регион>, исходная привязка к запрошенному региону ошибочна".
 - source_urls — 1–3 URL, подтверждающих идентичность/ИНН.
 - Не выдумывай связи между компаниями.`;
 }
@@ -1348,9 +1349,13 @@ function applyIdentityResult(cluster, result) {
           ...(Array.isArray(existingEvidence.source_urls) ? existingEvidence.source_urls : []),
           ...(Array.isArray(entity?.source_urls) ? entity.source_urls : [])
         ].map(String).filter(Boolean);
+        const identityNote = String(entity?.note || "").trim();
+        const identityNoteWithMarker = identityNote
+          ? `${identityRegionMismatchFromNotes([`Identity: ${identityNote}`]) ? "[IDENTITY_REGION_MISMATCH] " : ""}Identity: ${identityNote}`
+          : "";
         const notes = [
           ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
-          entity?.note ? `Identity: ${entity.note}` : "",
+          identityNoteWithMarker,
           inn ? `Подтверждённый ИНН: ${inn}` : ""
         ].filter(Boolean);
         data.__evidence = {
@@ -2450,6 +2455,14 @@ const QUAL_TRANSPORT_PATTERNS = [
   /перевозк.{0,35}(зерн|щеб|пес|пгс|торф|щеп|лес|лом|отход|стройматериал)/
 ];
 
+function identityRegionMismatchFromNotes(notes = []) {
+  return notes.some((raw) => {
+    const note = String(raw || "").toLowerCase().replace(/ё/g, "е");
+    if (!note.includes("identity:")) return false;
+    return /региональн.{0,30}конфликт.{0,160}ошибочн|исходн.{0,40}(регион|указан).{0,80}ошибочн|не относится.{0,100}(регион|област|край|республик)|юридическ.{0,80}(?:адрес|лиц).{0,120}(?:друг|ином|не.{0,20}регион)|организац.{0,80}(?:из|зарегистрирован).{0,80}(?:друг|ином).{0,30}регион|упоминан.{0,80}относится.{0,80}(?:друг|ином).{0,30}регион/.test(note);
+  });
+}
+
 function deterministicQualificationDecision(record) {
   const text = qualificationText(record);
   const role = String(record?.sheet || "");
@@ -2457,6 +2470,7 @@ function deterministicQualificationDecision(record) {
   const intermediaryRole = role === "intermediaries";
   const leasingRole = role === "leasing";
   const notes = qualificationEvidenceNotes(record);
+  const identityRegionMismatch = identityRegionMismatchFromNotes(notes);
   const priorityTarget = hasAnyPattern(text, QUAL_PRIORITY_TARGET_PATTERNS);
   const generalTarget =
     hasAnyPattern(text, QUAL_GENERAL_TARGET_PATTERNS) &&
@@ -2465,9 +2479,9 @@ function deterministicQualificationDecision(record) {
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
-  const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|наиболее близок|профиль.{0,30}близок/;
+  const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|экономическ.{0,30}рациональн|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
-    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|недостаточн.{0,80}(доказательств|данн|сведен)|(доказательств|данн|сведен).{0,180}недостаточн|нет\s+(?:достаточн|достоверн|прямых)[а-я]*.{0,60}(идентификац|клиент|модел|данн|сведен|подтверж)|нет данных|данн.{0,100}нет|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не идентифицир|клиент.{0,80}не (?:идентифицир|раскрыт|указан)|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
+    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|не обнаружен|не обнаружено|не обнаружены|нет подтвержден|нет достаточн|недостаточн.{0,80}(доказательств|данн|сведен)|(доказательств|данн|сведен).{0,180}недостаточн|нет\s+(?:достаточн|достоверн|прямых)[а-я]*.{0,60}(идентификац|клиент|модел|данн|сведен|подтверж)|нет данных|данн.{0,100}нет|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не идентифицир|клиент.{0,80}не (?:идентифицир|раскрыт|указан)|не дает.{0,40}подтверж|нет основан.{0,80}(утвержд|считать|полагать)|не дает.{0,40}основан.{0,80}(утвержд|считать|полагать)|не является|а не.{0,80}(владел|собственник|эксплуат|перевозчик)|не собственник|не доказательств.{0,30}собственн|не доказательство.{0,50}собственн|роль.{0,30}(оператор|посредник).{0,80}(?:а не|не явля)|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|уровень c|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
   const farmImplementOnly =
     /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
   const priorityTrailerModel =
@@ -2602,7 +2616,9 @@ function deterministicQualificationDecision(record) {
   let grade = "";
   let reason = "";
 
-  if (aEvidence) {
+  if (identityRegionMismatch) {
+    reason = "Identity-resolution подтвердил, что организация относится к другому региону; кандидат исключён до A/B/C.";
+  } else if (aEvidence) {
     grade = "A";
     reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
   } else if (target && heavy) {
@@ -2629,7 +2645,8 @@ function deterministicQualificationDecision(record) {
       generalTarget,
       heavy,
       transport,
-      aEvidence: Boolean(aEvidence)
+      aEvidence: Boolean(aEvidence),
+      identityRegionMismatch
     }
   };
 }

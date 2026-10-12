@@ -225,3 +225,76 @@ test("former use wording does not prove intermediary own operation", () => {
   ));
   assert.notEqual(d.aRule, "intermediary_own_operation");
 });
+
+
+test("explicit negative note blocks own-fleet A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "АО «Смоленский авиационный завод»",
+    "Прямое подтверждение ремонта именно прицепной техники или собственного парка тягачей/полуприцепов не обнаружено; кандидат оставлен на уровне C.",
+    "Тяжелая техника"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("terminal operator not owner cannot become intermediary own-operation A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "intermediaries",
+    "ООО «Вяземский терминал»",
+    "Организация выступает оператором складской/терминальной услуги, а не собственником полуприцепа.",
+    "Терминал; полуприцепы"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("no published clients or trailer models blocks completed-service A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "intermediaries",
+    "ООО «МОССТРОЙСНАБ»",
+    "Конкретные клиенты, модели гидроцилиндров или полуприцепов не опубликованы; уровень C.",
+    "Ремонт гидравлики и полуприцепов"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("economic-rationality inference cannot prove own fleet A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Флариат Логистик»",
+    "Количество оснащенных автомобилей подтверждает наличие собственного или контролируемого автопарка; для такого профиля экономически рациональны шторные, бортовые и иные магистральные полуприцепы.",
+    "Грузовые автомобили; потенциальные полуприцепы"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("rail hopper evidence cannot become road trailer A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Транзит Сервис»",
+    "Смоленская страница посвящена перевозке зерна в вагонах-хопперах; это подтверждает грузопоток, но не дает основания утверждать наличие собственных автоприцепов.",
+    "Железнодорожные хопперы; зерно"
+  ));
+  assert.notEqual(d.grade, "A");
+});
+
+test("sale listing explicitly not own fleet cannot become intermediary own-operation A", () => {
+  const d = deterministicQualificationDecision(rec(
+    "intermediaries",
+    "ООО «БЕЛСЕЛЬХОЗСНАБ 67»",
+    "Организация размещает предложение по продаже самосвального прицепа ПСТ-3,5; это прямой канал к покупателям прицепной техники, но не доказательство собственного парка.",
+    "Самосвальный прицеп ПСТ-3,5"
+  ));
+  assert.notEqual(d.aRule, "intermediary_own_operation");
+});
+
+test("confirmed identity region mismatch excludes otherwise strong company", () => {
+  const d = deterministicQualificationDecision(rec(
+    "direct_buyers",
+    "ООО «Новотранс»",
+    "Identity: региональный конфликт: юридическое лицо относится к Вологодской области, исходная привязка к запрошенному региону ошибочна.",
+    "Собственный парк тягачей и полуприцепов"
+  ));
+  assert.equal(d.decision, "exclude");
+  assert.equal(d.grade, "");
+  assert.equal(d.signals.identityRegionMismatch, true);
+});
