@@ -2567,8 +2567,8 @@ function deterministicQualificationDecision(record) {
     if (directRole) {
       if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
+      else if (ceTrailerJob.test(note) && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
-      else if (ceTrailerJob && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (directVinOwnership) matchedRule = "direct_vin_ownership";
     } else if (intermediaryRole) {
       if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
