@@ -2452,6 +2452,10 @@ const QUAL_TRANSPORT_PATTERNS = [
 
 function deterministicQualificationDecision(record) {
   const text = qualificationText(record);
+  const role = String(record?.sheet || "");
+  const directRole = role === "direct_buyers";
+  const intermediaryRole = role === "intermediaries";
+  const leasingRole = role === "leasing";
   const notes = qualificationEvidenceNotes(record);
   const priorityTarget = hasAnyPattern(text, QUAL_PRIORITY_TARGET_PATTERNS);
   const generalTarget =
@@ -2461,9 +2465,9 @@ function deterministicQualificationDecision(record) {
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
 
-  const speculative = /потенциал|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для/;
+  const speculative = /потенциал|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|целевой сегмент|подходит для|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
-    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
+    /не подтвержд(ен|ена|ено|ены|ает|ают|ается|аются)|нет подтвержден|нет достаточн|не найден|не указа[нн]|не раскрыва|не раскрыт|не раскрыты|не дает.{0,40}подтверж|не является|а не.{0,60}(владел|эксплуат|перевозчик)|роль.{0,30}(оператор|посредник).{0,60}не|только.{0,30}(канал|каталог|карточк)|без.{0,50}(конкретн.{0,20}(клиент|ремонт|сделк)|подтвержден)|требует дополнительн|требуется дополнительн|уровень b|а не a|собственн.{0,40}(парк|эксплуатац).{0,40}не подтвержд|доказательств.{0,80}нет|прямых сведений.{0,80}не найден/;
   const farmImplementOnly =
     /(прицепн.{0,20}агрегат|плуг|сеялк|опрыскивател|разбрасывател).{0,120}/;
   const priorityTrailerModel =
@@ -2473,11 +2477,11 @@ function deterministicQualificationDecision(record) {
   const ceTrailerJob =
     /(водител|ваканси).{0,50}(категори.{0,8}(е|ce|cе)).{0,120}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,120}(водител|категори.{0,8}(е|ce|cе)))/;
   const trailerFleet =
-    /(парк|автопарк|на балансе|в собственности|имеет|эксплуатирует|эксплуатаци).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(парк|автопарк|на балансе|в собственности|эксплуатирует|эксплуатаци))/;
+    /(парк|автопарк|наличие|на балансе|в собственности|имеет|эксплуатирует|эксплуатаци).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(парк|автопарк|наличие|на балансе|в собственности|эксплуатирует|эксплуатаци))/;
   // Объявление об услуге ремонта/обслуживания не подтверждает выполненный
   // ремонт конкретной техники. Не приравниваем каталог сервиса к сделке.
   const trailerCommerce =
-    /(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда))/;
+    /(продает|продаем|продаж[а-я]*|лизинг|лизингует|сдает в аренду|аренда).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(продает|продаем|продаж[а-я]*|лизинг|лизингует|сдает в аренду|аренда))/;
   const serviceOffering =
     /(сервис|сто|автосервис|ремонт|обслужив|диагностик|услуг|каталог|карточк|специализац)/;
   const specificServiceEvent =
@@ -2486,6 +2490,7 @@ function deterministicQualificationDecision(record) {
     /(оказыва.{0,30}услуг|предлага.{0,30}(ремонт|услуг)|перечень услуг|указан.{0,40}(ремонт|услуг)|заявлен.{0,40}(ремонт|услуг)|карточк.{0,70}ремонт|специализиру.{0,50}ремонт)/;
 
   let aEvidence = "";
+  let aRule = "";
 
   for (const note of notes) {
     if (speculative.test(note) || negativeAEvidence.test(note)) continue;
@@ -2506,8 +2511,8 @@ function deterministicQualificationDecision(record) {
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
-        /(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор).{0,140}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
-        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,140}(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор)/i.test(note)
+        /(закупк|тендер|поставк|приобрет|приобрел|приобрела|приобрели|купил|куплен|контракт|договор).{0,140}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,140}(закупк|тендер|поставк|приобрет|приобрел|приобрела|приобрели|купил|куплен|контракт|договор)/i.test(note)
       );
     const explicitTrailerOwnership =
       freightTrailerContext &&
@@ -2524,22 +2529,60 @@ function deterministicQualificationDecision(record) {
       !/(приобрел|приобретен|купил|куплен|лизинг|на балансе|эксплуатирует|собственн.{0,30}парк|вин|vin|госномер)/.test(note);
     if (genericServiceOnly) continue;
 
-    const strongLinkedSignal =
-      priorityTrailerModel.test(note) ||
-      genericTrailerIdentification.test(note) ||
-      ceTrailerJob.test(note) ||
-      trailerFleet.test(note) ||
-      trailerCommerce.test(note);
+    const serviceProcurementOnly =
+      /(закупк|тендер|контракт|договор).{0,80}услуг.{0,120}(полуприцеп|прицеп)|услуг.{0,120}(закупк|тендер|контракт|договор).{0,120}(полуприцеп|прицеп)/i.test(note);
+    const partsOnly =
+      /(запчаст|комплектующ|оси|подвеск|тормозн|пневматич).{0,100}(полуприцеп|прицеп)|(полуприцеп|прицеп).{0,100}(запчаст|комплектующ|оси|подвеск|тормозн|пневматич)/i.test(note);
+    const sellerOnly =
+      /(продает|продаж[а-я]*|продавец|продавцом|предлагает)/i.test(note) &&
+      !/(закупк|приобрет|приобрел|купил|в собственности|на балансе|собственн.{0,30}парк|эксплуат)/i.test(note);
+    const actualTrailerProcurement = explicitTrailerProcurement && !serviceProcurementOnly && !partsOnly;
+    const actualServiceEvent =
+      intermediaryRole && trailer && specificServiceEvent.test(note);
+    const ongoingTrailerSeller =
+      intermediaryRole &&
+      /(компания|дилер|центр).{0,80}(продает|продаж[а-я]*).{0,100}(прицепн.{0,20}техник|полуприцеп|прицеп)/i.test(note) &&
+      !/(объявлен|карточк|предложени|площадк)/i.test(note);
+    const establishedCommercialChannel =
+      intermediaryRole &&
+      freightTrailerContext &&
+      (
+        trailerCommerce.test(note) &&
+        /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note) ||
+        ongoingTrailerSeller
+      );
+    const actualLeaseContract =
+      leasingRole &&
+      freightTrailerContext &&
+      /(договор.{0,50}лизинг|лизингов.{0,50}договор|клиент.{0,100}лизинг|лизинг.{0,100}(тонар|полуприцеп|прицеп))/i.test(note);
+    const directVinOwnership =
+      directRole &&
+      explicitVinOrPlate &&
+      /(собствен|принадлеж|владел|эксплуат|перевозчик)/i.test(note);
 
-    if (
-      explicitVinOrPlate ||
-      tractorTrailerOperation ||
-      explicitTrailerProcurement ||
-      explicitTrailerOwnership ||
-      strongLinkedSignal ||
-      (trailer && trailerAction && /(конкретн|фактич|в собственности|на балансе|эксплуат|продаж|лизинг|ремонт|аренд)/.test(note))
-    ) {
+    let matchedRule = "";
+    if (directRole) {
+      if (actualTrailerProcurement) matchedRule = "direct_procurement";
+      else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
+      else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
+      else if (ceTrailerJob && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
+      else if (directVinOwnership) matchedRule = "direct_vin_ownership";
+    } else if (intermediaryRole) {
+      if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
+      else if (actualServiceEvent) matchedRule = "intermediary_completed_service";
+      else if (establishedCommercialChannel) matchedRule = "intermediary_established_channel";
+      else if (explicitTrailerOwnership) matchedRule = "intermediary_own_operation";
+    } else if (leasingRole) {
+      if (actualLeaseContract) matchedRule = "leasing_concrete_contract";
+      else if (actualTrailerProcurement) matchedRule = "leasing_concrete_transaction";
+    }
+
+    // A model name, product card, directory listing or generic sale/service
+    // offer is supporting context only. It cannot independently promote a row
+    // to A without a role-appropriate concrete event or operating signal.
+    if (matchedRule) {
       aEvidence = note;
+      aRule = matchedRule;
       break;
     }
   }
@@ -2567,6 +2610,7 @@ function deterministicQualificationDecision(record) {
     grade,
     reason,
     aEvidence,
+    aRule,
     signals: {
       target,
       priorityTarget,
@@ -2596,7 +2640,8 @@ async function runFinalQualification({
       decision: decision.decision,
       grade: decision.grade,
       reason: decision.reason,
-      aEvidence: decision.aEvidence || ""
+      aEvidence: decision.aEvidence || "",
+      aRule: decision.aRule || ""
     });
 
     if (decision.grade) counts[decision.grade]++;
@@ -2637,6 +2682,7 @@ function applyFinalQualification(records, decisions) {
     row.__decision = "include";
     row.__decision_reason = decision.reason;
     row.__a_evidence = decision.grade === "A" ? String(decision.aEvidence || "") : "";
+    row.__a_rule = decision.grade === "A" ? String(decision.aRule || "") : "";
     row["Основание"] = `${decision.grade} — ${decision.reason}`;
     counts[decision.grade]++;
 
@@ -2658,7 +2704,8 @@ function buildQualificationCheckpoint(records, decisions) {
         grade: String(decision.grade || ""),
         decision: String(decision.decision || "exclude"),
         reason: String(decision.reason || ""),
-        a_evidence: String(decision.aEvidence || "")
+        a_evidence: String(decision.aEvidence || ""),
+        a_rule: String(decision.aRule || "")
       };
     })
   };
@@ -4461,6 +4508,7 @@ ${JSON.stringify(compactCourtArchive)}
           grade: row.__final_grade || "",
           reason: row.__decision_reason || "",
           a_evidence: row.__a_evidence || "",
+          a_rule: row.__a_rule || "",
           stages: canonical?.source_steps || [],
           segments: String(row["Техника/сегмент"] || "")
             .split("|")
