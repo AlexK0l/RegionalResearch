@@ -2481,7 +2481,7 @@ function deterministicQualificationDecision(record) {
   // Объявление об услуге ремонта/обслуживания не подтверждает выполненный
   // ремонт конкретной техники. Не приравниваем каталог сервиса к сделке.
   const trailerCommerce =
-    /(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(продает|продаем|продажа|лизинг|лизингует|сдает в аренду|аренда))/;
+    /(продает|продаем|продаж[а-я]*|лизинг|лизингует|сдает в аренду|аренда).{0,100}(полуприцеп|прицеп|тонар)|((полуприцеп|прицеп|тонар).{0,100}(продает|продаем|продаж[а-я]*|лизинг|лизингует|сдает в аренду|аренда))/;
   const serviceOffering =
     /(сервис|сто|автосервис|ремонт|обслужив|диагностик|услуг|каталог|карточк|специализац)/;
   const specificServiceEvent =
@@ -2511,8 +2511,8 @@ function deterministicQualificationDecision(record) {
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
-        /(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор).{0,140}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
-        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,140}(закупк|тендер|поставк|приобрет|купил|куплен|контракт|договор)/i.test(note)
+        /(закупк|тендер|поставк|приобрет|приобрел|приобрела|приобрели|купил|куплен|контракт|договор).{0,140}(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald)/i.test(note) ||
+        /(полуприцеп|прицеп|тонар|kogel|krone|schmitz|wielton|grunwald).{0,140}(закупк|тендер|поставк|приобрет|приобрел|приобрела|приобрели|купил|куплен|контракт|договор)/i.test(note)
       );
     const explicitTrailerOwnership =
       freightTrailerContext &&
@@ -2538,7 +2538,7 @@ function deterministicQualificationDecision(record) {
       intermediaryRole &&
       freightTrailerContext &&
       trailerCommerce.test(note) &&
-      /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note);
+      /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note);
     const actualLeaseContract =
       leasingRole &&
       freightTrailerContext &&
@@ -2552,8 +2552,8 @@ function deterministicQualificationDecision(record) {
     if (directRole) {
       if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
-      else if (tractorTrailerOperation) matchedRule = "direct_operation";
-      else if (ceTrailerJob) matchedRule = "direct_driver_operation";
+      else if (tractorTrailerOperation && !serviceProcurementOnly) matchedRule = "direct_operation";
+      else if (ceTrailerJob && !serviceProcurementOnly) matchedRule = "direct_driver_operation";
       else if (directVinOwnership) matchedRule = "direct_vin_ownership";
     } else if (intermediaryRole) {
       if (actualTrailerProcurement) matchedRule = "intermediary_completed_transaction";
