@@ -84,8 +84,19 @@ function discoveryGeoExpansionWorthwhile(stats) {
   return (
     Number(value.a || 0) >= 1 ||
     Number(value.strongNew || 0) >= 2 ||
-    Number(value.qualityScore || 0) >= 5
+    (
+      Number(value.qualityScore || 0) >= 5 &&
+      Number(value.sourceFamilyNovelty || 0) >= 1
+    )
   );
+}
+
+function discoverySourceFamilyNovelty(current, previous = {}) {
+  return Object.keys(current || {}).filter(
+    (family) =>
+      Number(current?.[family] || 0) > 0 &&
+      Number(previous?.[family] || 0) === 0
+  ).length;
 }
 
 function adaptiveDiscoveryLowYieldThreshold(knownCount) {
@@ -1017,6 +1028,8 @@ async function runResearchMicroBatch({
   let lowYieldStreak = 0;
   let regionalYield = null;
   let firstLocalYield = null;
+  let regionalFamilies = {};
+  let previousScopeFamilies = {};
 
   for (let scopeIndex = 0; scopeIndex < selectedScopes.length; scopeIndex++) {
     if (
@@ -1060,9 +1073,24 @@ async function runResearchMicroBatch({
 
       const normalized = normalize(value);
       const yieldStats = discoveryYieldStats(normalized, beforeKnown);
+      const familyStats = discoverySourceFamilyStats(normalized);
+      yieldStats.sourceFamilyNovelty = discoverySourceFamilyNovelty(
+        familyStats,
+        scopeIndex === 0 ? {} : previousScopeFamilies
+      );
       const added = yieldStats.newOrganizations;
-      if (scopeIndex === 0) regionalYield = yieldStats;
-      if (scopeIndex === 1) firstLocalYield = yieldStats;
+      if (scopeIndex === 0) {
+        regionalYield = yieldStats;
+        regionalFamilies = familyStats;
+      }
+      if (scopeIndex === 1) {
+        yieldStats.sourceFamilyNovelty = discoverySourceFamilyNovelty(
+          familyStats,
+          regionalFamilies
+        );
+        firstLocalYield = yieldStats;
+      }
+      previousScopeFamilies = familyStats;
       console.log("[DISCOVERY_SCOPE_RESULT] " + JSON.stringify({
         stage: stageIndex + 1,
         branch: branchIndex + 1,
@@ -1072,6 +1100,8 @@ async function runResearchMicroBatch({
         rows: diagnosticRowCount(normalized),
         new_organizations: added,
         quality_yield: yieldStats,
+        source_families: familyStats,
+        source_family_novelty: yieldStats.sourceFamilyNovelty,
         token_usage_cumulative: tokenUsageSnapshot(client),
         companies: diagnosticDiscoveryRows(normalized)
       }));
@@ -4685,10 +4715,13 @@ ${JSON.stringify(compactCourtArchive)}
         c: 0,
         ungraded: 0,
         strongNew: 0,
-        qualityScore: 0
+        qualityScore: 0,
+        sourceFamilyNovelty: 0
       };
       let recoveryRegionalYield = null;
       let recoveryFirstLocalYield = null;
+      let recoveryRegionalFamilies = {};
+      let recoveryPreviousFamilies = {};
 
       for (let scopeIndex = 0; scopeIndex < recoveryScopes.length; scopeIndex++) {
         await assertNotCancelled();
@@ -4735,9 +4768,24 @@ ${JSON.stringify(compactCourtArchive)}
           );
 
           const scopeYield = discoveryYieldStats(value, knownBeforeScope);
+          const scopeFamilies = discoverySourceFamilyStats(value);
+          scopeYield.sourceFamilyNovelty = discoverySourceFamilyNovelty(
+            scopeFamilies,
+            scopeIndex === 0 ? {} : recoveryPreviousFamilies
+          );
           const addedInScope = scopeYield.newOrganizations;
-          if (scopeIndex === 0) recoveryRegionalYield = scopeYield;
-          if (scopeIndex === 1) recoveryFirstLocalYield = scopeYield;
+          if (scopeIndex === 0) {
+            recoveryRegionalYield = scopeYield;
+            recoveryRegionalFamilies = scopeFamilies;
+          }
+          if (scopeIndex === 1) {
+            scopeYield.sourceFamilyNovelty = discoverySourceFamilyNovelty(
+              scopeFamilies,
+              recoveryRegionalFamilies
+            );
+            recoveryFirstLocalYield = scopeYield;
+          }
+          recoveryPreviousFamilies = scopeFamilies;
           recoveryYieldAggregate.newOrganizations += scopeYield.newOrganizations;
           recoveryYieldAggregate.a += scopeYield.a;
           recoveryYieldAggregate.b += scopeYield.b;
@@ -4746,6 +4794,9 @@ ${JSON.stringify(compactCourtArchive)}
           recoveryYieldAggregate.strongNew += scopeYield.strongNew;
           recoveryYieldAggregate.qualityScore = Number(
             (recoveryYieldAggregate.qualityScore + scopeYield.qualityScore).toFixed(2)
+          );
+          recoveryYieldAggregate.sourceFamilyNovelty += Number(
+            scopeYield.sourceFamilyNovelty || 0
           );
           console.log("[DISCOVERY_RECOVERY_RESULT] " + JSON.stringify({
             stage: i + 1,
@@ -4760,6 +4811,8 @@ ${JSON.stringify(compactCourtArchive)}
             rows: diagnosticRowCount(value),
             new_organizations: addedInScope,
             quality_yield: scopeYield,
+            source_families: scopeFamilies,
+            source_family_novelty: scopeYield.sourceFamilyNovelty,
             token_usage_cumulative: tokenUsageSnapshot(client),
             companies: diagnosticDiscoveryRows(value)
           }));
