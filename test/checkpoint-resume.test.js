@@ -25,6 +25,7 @@ test("checkpoint format validates and summarizes resume state", () => {
     completed_final_batches: 4,
     enrichment_completed: 1,
     contacts_completed: 1,
+    pipeline_version: 0,
     updated_at: null
   });
   assert.equal(normalizeCheckpoint({ version: 2, region: "x" }), null);
@@ -70,12 +71,19 @@ test("discovery economics and evidence-oriented recovery are logged", () => {
 });
 
 
-test("checkpoint backend health and non-fatal fallback are wired", () => {
+test("checkpoint backend uses SQLite and region-aware lookup", () => {
   const store = readFileSync(new URL("../src/checkpointStore.js", import.meta.url), "utf8");
-  assert.match(store, /checkpointBackendStatus/);
-  assert.match(store, /connectTimeout: 3000/);
-  assert.match(store, /reconnectStrategy: false/);
+  assert.match(store, /from "node:sqlite"/);
+  assert.match(store, /CREATE TABLE IF NOT EXISTS research_checkpoints/);
+  assert.match(store, /findLatestCheckpoint/);
+  assert.match(store, /supersedeRegionCheckpoints/);
+  assert.match(store, /CHECKPOINT_DB_PATH/);
+  assert.doesNotMatch(store, /redis|createClient/i);
   assert.match(server, /checkpoints = await checkpointBackendStatus/);
+  assert.match(server, /app\.get\("\/api\/checkpoints"/);
+  assert.match(server, /CHECKPOINT_EXISTS/);
+  assert.match(server, /startFresh/);
+  assert.match(server, /checkpointId/);
 });
 
 test("large discovery diagnostics are sampled instead of fully dumped", () => {
