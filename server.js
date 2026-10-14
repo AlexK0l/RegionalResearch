@@ -6,13 +6,19 @@ import { runResearchPipeline } from "./src/pipeline.js";
 import { buildWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
+import {
+  checkpointSummary,
+  loadCheckpoint,
+  normalizeCheckpoint,
+  saveCheckpoint
+} from "./src/checkpointStore.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "32mb" }));
 
 const allowedOrigins = new Set(
   [
@@ -142,7 +148,9 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
   }
 });
 
-const JOB_MODES = new Set(["full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay"]);
+const JOB_MODES = new Set([
+  "full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay", "resume"
+]);
 
 function queueJob(job, apiKey) {
   queueMicrotask(async () => {
@@ -225,6 +233,26 @@ app.post("/api/jobs", async (req, res) => {
     data = { region, snapshot, sourceJobId: sourceJob?.id || sourceJobId || "" };
   }
 
+  if (mode === "resume") {
+    const sourceJobId = String(req.body?.sourceJobId || "").trim();
+    const sourceJob = sourceJobId ? jobs.get(sourceJobId) : null;
+    const storedCheckpoint = sourceJobId ? await loadCheckpoint(sourceJobId) : null;
+    const checkpoint = normalizeCheckpoint(
+      sourceJob?.latestCheckpoint || storedCheckpoint || req.body?.checkpoint
+    );
+    if (!checkpoint) {
+      return res.status(409).json({
+        error: "Для Resume нужен sourceJobId с сохранённым checkpoint или checkpoint в теле запроса"
+      });
+    }
+    region = String(checkpoint.region || "").trim();
+    data = {
+      region,
+      checkpoint,
+      sourceJobId: sourceJob?.id || sourceJobId || ""
+    };
+  }
+
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
 
   const id = crypto.randomUUID();
@@ -240,8 +268,15 @@ app.post("/api/jobs", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
+    latestCheckpoint: mode === "resume" ? normalizeCheckpoint(data.checkpoint) : null,
     async updateProgress(progress) {
       this.progress = progress;
+    },
+    async updateCheckpoint(checkpoint) {
+      const normalized = normalizeCheckpoint(checkpoint);
+      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
+      this.latestCheckpoint = normalized;
+      await saveCheckpoint(this.id, normalized);
     }
   };
   jobs.set(id, job);
@@ -271,8 +306,69 @@ app.get("/api/jobs/:id", (req, res) => {
           replay_available: Boolean(job.result?.discovery_snapshot)
         }
       : null,
+    checkpoint: checkpointSummary(job.latestCheckpoint),
+    resume_available: Boolean(job.latestCheckpoint),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
+});
+
+app.get("/api/jobs/:id/checkpoint", async (req, res) => {
+  const job = jobs.get(req.params.id);
+  const checkpoint = normalizeCheckpoint(
+    job?.latestCheckpoint || await loadCheckpoint(req.params.id)
+  );
+  if (!checkpoint) {
+    return res.status(404).json({ error: "Checkpoint для этого задания не найден" });
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json(checkpoint);
+});
+
+app.post("/api/jobs/:id/resume", async (req, res) => {
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
+
+  const sourceJob = jobs.get(req.params.id);
+  const checkpoint = normalizeCheckpoint(
+    sourceJob?.latestCheckpoint || await loadCheckpoint(req.params.id)
+  );
+  if (!checkpoint) {
+    return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
+  }
+
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    region: checkpoint.region,
+    mode: "resume",
+    data: { region: checkpoint.region, checkpoint, sourceJobId: req.params.id },
+    state: "waiting",
+    progress: {},
+    result: null,
+    error: null,
+    cancelled: false,
+    abortController: new AbortController(),
+    createdAt: Date.now(),
+    latestCheckpoint: checkpoint,
+    async updateProgress(progress) {
+      this.progress = progress;
+    },
+    async updateCheckpoint(nextCheckpoint) {
+      const normalized = normalizeCheckpoint(nextCheckpoint);
+      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
+      this.latestCheckpoint = normalized;
+      await saveCheckpoint(this.id, normalized);
+    }
+  };
+  jobs.set(id, job);
+  res.status(202).json({
+    id,
+    region: checkpoint.region,
+    mode: "resume",
+    resumedFrom: req.params.id,
+    checkpoint: checkpointSummary(checkpoint)
+  });
+  queueJob(job, apiKey);
 });
 
 app.get("/api/jobs/:id/snapshot", (req, res) => {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261009-fixed">
+<link rel="stylesheet" href="/styles.css?v=20261014-checkpoint">
 </head>
 <body>
 <main class="shell">
@@ -39,10 +39,12 @@
       <button id="stageBtn" class="secondary" disabled>Запустить выбранный этап</button>
       <button id="replayBtn" class="secondary" hidden disabled>Replay без web</button>
       <button id="dedupeReplayBtn" class="secondary" hidden disabled>Dedupe replay</button>
+      <button id="resumeBtn" class="secondary" hidden disabled>Продолжить с checkpoint</button>
+      <button id="checkpointBtn" class="secondary" hidden disabled>Скачать checkpoint</button>
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261009-fixed</p>
+    <p class="note">UI build: 20261014-checkpoint</p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -69,6 +71,6 @@
     <button id="downloadBtn">Скачать XLSX</button>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261009-fixed"></script>
+<script type="module" src="/app.js?v=20261014-checkpoint"></script>
 </body>
 </html>
