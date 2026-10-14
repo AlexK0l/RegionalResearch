@@ -91,6 +91,7 @@ export async function saveCheckpoint(jobId, checkpoint) {
 
   const normalized = normalizeCheckpoint(checkpoint);
   if (!normalized) throw new Error("Некорректный checkpoint");
+  normalized.pipeline_version = PIPELINE_VERSION;
 
   const database = ensureDb();
   const now = new Date().toISOString();
@@ -240,6 +241,7 @@ export function checkpointSummary(value) {
       ? value.enrichment_completed_ids.length : 0,
     contacts_completed: Array.isArray(value.contact_completed_ids)
       ? value.contact_completed_ids.length : 0,
+    pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };
 }
