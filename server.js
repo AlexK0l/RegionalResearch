@@ -9,9 +9,13 @@ import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
   checkpointBackendStatus,
   checkpointSummary,
+  findLatestCheckpoint,
+  listRegionCheckpoints,
   loadCheckpoint,
   normalizeCheckpoint,
-  saveCheckpoint
+  PIPELINE_VERSION,
+  saveCheckpoint,
+  supersedeRegionCheckpoints
 } from "./src/checkpointStore.js";
 
 const app = express();
@@ -44,7 +48,6 @@ app.use((req, res, next) => {
 app.get("/health", async (_req, res) => {
   const checkpoints = await checkpointBackendStatus().catch((error) => ({
     backend: "unknown",
-    configured: Boolean(String(process.env.CHECKPOINT_REDIS_URL || "").trim()),
     ready: false,
     error: error?.message || String(error)
   }));
@@ -52,9 +55,26 @@ app.get("/health", async (_req, res) => {
 });
 
 app.get("/api/config", (_req, res) => {
-  res.json({ steps: STEPS });
+  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION });
 });
 
+app.get("/api/checkpoints", async (req, res) => {
+  try {
+    const region = String(req.query.region || "").trim();
+    const mode = String(req.query.mode || "full").trim() || "full";
+    if (!region) return res.status(400).json({ error: "Регион обязателен" });
+
+    const checkpoint = await findLatestCheckpoint(region, mode);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      exists: Boolean(checkpoint),
+      checkpoint,
+      history: await listRegionCheckpoints(region, mode, 5)
+    });
+  } catch (error) {
+    res.status(500).json({ error: error?.message || "Не удалось прочитать checkpoints" });
+  }
+});
 
 function requireCourtArchiveAdmin(req, res, next) {
   const expected = String(process.env.COURT_ARCHIVE_ADMIN_TOKEN || "").trim();
@@ -241,26 +261,56 @@ app.post("/api/jobs", async (req, res) => {
   }
 
   if (mode === "resume") {
-    const sourceJobId = String(req.body?.sourceJobId || "").trim();
-    const sourceJob = sourceJobId ? jobs.get(sourceJobId) : null;
-    const storedCheckpoint = sourceJobId ? await loadCheckpoint(sourceJobId) : null;
+    const checkpointId = String(
+      req.body?.checkpointId || req.body?.sourceJobId || ""
+    ).trim();
+    const sourceJob = checkpointId ? jobs.get(checkpointId) : null;
+    const storedCheckpoint = checkpointId ? await loadCheckpoint(checkpointId) : null;
     const checkpoint = normalizeCheckpoint(
       sourceJob?.latestCheckpoint || storedCheckpoint || req.body?.checkpoint
     );
     if (!checkpoint) {
       return res.status(409).json({
-        error: "Для Resume нужен sourceJobId с сохранённым checkpoint или checkpoint в теле запроса"
+        error: "Для Resume нужен checkpointId или сохранённый checkpoint в теле запроса"
+      });
+    }
+    if (
+      Number(checkpoint.pipeline_version || PIPELINE_VERSION) !== PIPELINE_VERSION
+    ) {
+      return res.status(409).json({
+        code: "CHECKPOINT_VERSION_MISMATCH",
+        error: "Checkpoint создан несовместимой версией pipeline",
+        checkpointPipelineVersion: Number(checkpoint.pipeline_version || 0),
+        currentPipelineVersion: PIPELINE_VERSION
       });
     }
     region = String(checkpoint.region || "").trim();
     data = {
       region,
       checkpoint,
-      sourceJobId: sourceJob?.id || sourceJobId || ""
+      sourceJobId: checkpointId
     };
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
+
+  if (mode === "full") {
+    const existingCheckpoint = await findLatestCheckpoint(region, "full");
+    if (existingCheckpoint && !req.body?.startFresh) {
+      return res.status(409).json({
+        code: "CHECKPOINT_EXISTS",
+        error: "Для региона есть незавершённое исследование",
+        checkpoint: existingCheckpoint
+      });
+    }
+    if (req.body?.startFresh) {
+      await supersedeRegionCheckpoints(region, "full");
+    }
+  }
+
+  if (mode === "resume" && data.sourceJobId) {
+    await supersedeRegionCheckpoints(region, "full", data.sourceJobId);
+  }
 
   const id = crypto.randomUUID();
   const job = {
@@ -288,7 +338,12 @@ app.post("/api/jobs", async (req, res) => {
   };
   jobs.set(id, job);
 
-  res.status(202).json({ id, region, mode });
+  res.status(202).json({
+    id,
+    region,
+    mode,
+    resumedFrom: mode === "resume" ? data.sourceJobId || "" : ""
+  });
   queueJob(job, apiKey);
 });
 
@@ -342,6 +397,13 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
   }
+  if (Number(checkpoint.pipeline_version || PIPELINE_VERSION) !== PIPELINE_VERSION) {
+    return res.status(409).json({
+      code: "CHECKPOINT_VERSION_MISMATCH",
+      error: "Checkpoint создан несовместимой версией pipeline"
+    });
+  }
+  await supersedeRegionCheckpoints(checkpoint.region, "full", req.params.id);
 
   const id = crypto.randomUUID();
   const job = {
