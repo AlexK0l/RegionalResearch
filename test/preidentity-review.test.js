@@ -34,9 +34,10 @@ test("REVIEW never duplicates an already retained candidate", () => {
   assert.equal(result.length, 1);
 });
 
-test("Both diagnostic and full pipeline preserve REVIEW candidates", () => {
+test("diagnostic preserves REVIEW locally while full pipeline sends REVIEW through identity for INN", () => {
   assert.match(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates, reviewCandidates, region, "diagnostic"/);
-  assert.match(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates, preIdentity\.reviewCandidates, region, "full"/);
+  assert.match(source, /candidates: \[\.\.\.preIdentity\.candidates, \.\.\.preIdentity\.reviewCandidates\]/);
+  assert.doesNotMatch(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates, preIdentity\.reviewCandidates, region, "full"/);
 });
 
 test("INN checksum validation and triage audit are present", () => {

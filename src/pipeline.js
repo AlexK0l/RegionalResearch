@@ -16,7 +16,7 @@ const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
   Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 128000)
 );
 const RESEARCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
-const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
+const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(24000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_QA_MAX_OUTPUT_TOKENS = Math.min(30000, OPENAI_MAX_OUTPUT_TOKENS);
 const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(8000, OPENAI_MAX_OUTPUT_TOKENS);
 const STATISTICS_MAX_OUTPUT_TOKENS = Math.min(12000, OPENAI_MAX_OUTPUT_TOKENS);
@@ -411,8 +411,16 @@ const RESEARCH_RECOVERY_THEMES = [
   "Цепочки второго порядка: от найденных грузовладельцев иди к перевозчикам; от сервисов к клиентам; от проектов к подрядчикам/эксплуатантам; от лизинга/тендеров к фактическим пользователям."
 ];
 const FINAL_BATCH_SIZE = Math.max(
-  20,
-  Math.min(100, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 60))
+  10,
+  Math.min(60, Number(process.env.OPENAI_FINAL_BATCH_SIZE || 30))
+);
+const FINAL_BATCH_MIN_SPLIT_SIZE = Math.max(
+  1,
+  Math.min(10, Number(process.env.OPENAI_FINAL_BATCH_MIN_SPLIT_SIZE || 5))
+);
+const FINAL_CONFLICT_GROUP_BATCH_SIZE = Math.max(
+  5,
+  Math.min(30, Number(process.env.OPENAI_FINAL_CONFLICT_GROUP_BATCH_SIZE || 12))
 );
 const IDENTITY_CONCURRENCY = Math.max(
   1,
@@ -490,6 +498,84 @@ const IDENTITY_SCHEMA = {
     }
   },
   required: ["entities"]
+};
+
+const FINAL_BATCH_DELTA_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          canonical_id: { type: "string" },
+          sheet: { type: "string", enum: ["direct_buyers", "intermediaries", "leasing"] },
+          decision: { type: "string", enum: ["keep", "review"] },
+          decision_reason: { type: "string" },
+          changes: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                field: { type: "string", enum: [...COLS, "__comment"] },
+                value: { type: "string" }
+              },
+              required: ["field", "value"]
+            }
+          }
+        },
+        required: ["canonical_id", "sheet", "decision", "decision_reason", "changes"]
+      }
+    }
+  },
+  required: ["items"]
+};
+
+const FINAL_QA_DELTA_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    remove_ids: { type: "array", items: { type: "string" } },
+    moves: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          sheet: { type: "string", enum: ["direct_buyers", "intermediaries", "leasing"] }
+        },
+        required: ["id", "sheet"]
+      }
+    },
+    patches: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          changes: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                field: { type: "string", enum: [...COLS, "__comment", "__decision", "__decision_reason"] },
+                value: { type: "string" }
+              },
+              required: ["field", "value"]
+            }
+          }
+        },
+        required: ["id", "changes"]
+      }
+    }
+  },
+  required: ["remove_ids", "moves", "patches"]
 };
 
 const GEO_SCOPE_SCHEMA = {
@@ -593,8 +679,8 @@ function contract(final = false) {
 
 ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
 - Сначала находи как можно больше разных релевантных организаций по текущей теме и географии.
-- НЕ трать отдельные web_search на ИНН, телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
-- Если ИНН случайно встретился в уже открытом основном источнике и однозначно относится к этой организации — заполни поле "ИНН" (10 или 12 цифр) и также можешь упомянуть его в "__evidence.notes". НЕ запускай отдельный поиск ради ИНН.
+- НЕ трать отдельные web_search на телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
+- ИНН является обязательным реквизитом итоговой базы. Во время discovery НЕ запускай отдельный поиск только ради ИНН, но если ИНН встретился в любом уже открытом источнике, ОБЯЗАТЕЛЬНО заполни поле "ИНН" (10 или 12 цифр) и сохрани подтверждающий источник/примечание. Отдельный жёсткий проход по отсутствующим ИНН выполняется позже.
 - Телефон, сайт и иные реквизиты, случайно встретившиеся в основном источнике, можешь упомянуть в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
 - Не заполняй поля полной финальной таблицы на этом этапе. Они будут обогащены позже отдельным проходом.
 - Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
@@ -642,39 +728,32 @@ function identityResolutionContract() {
 }
 
 function finalBatchContract() {
-  return `\n\nПАКЕТНЫЙ ТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
-{"direct_buyers":[],"intermediaries":[],"leasing":[]}.
-На входе находятся CANONICAL-компании. Каждую входную canonical-компанию верни РОВНО ОДИН РАЗ и обязательно сохрани её "__canonical_id".
-Не удаляй компанию и НЕ принимай здесь окончательное решение A/B/C. Финальная qualification выполняется только после глобальной дедупликации.
-Для каждой canonical-компании используй ВСЕ элементы массива evidence как единый набор доказательств и сохрани объединённый evidence в "__evidence".
-"__evidence" имеет вид {"source_urls":[],"notes":[]} и должен включать уникальные URL/notes из всех упоминаний canonical-компании.
-Если компания кажется нерелевантной, можешь поставить "__decision":"review" и объяснить сомнение в "__decision_reason", но не исключай её на этом шаге.
-Поле "Основание" на этом шаге является СВОДКОЙ evidence, а не окончательной A/B/C оценкой; не начинай его с A/B/C.
-Этот пакет обрабатывается БЕЗ web_search: не требуй нового поиска и не придумывай отсутствующие факты.
-Каждый коммерческий объект содержит ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, "__comment", "__canonical_id", "__decision", "__decision_reason", "__evidence".
-"__comment" обязателен и содержит ровно пять смысловых строк: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:".
-Не возвращай статистику. Не выдумывай данные.`;
+  return `\n\nПАКЕТНЫЙ ТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО JSON по схеме items.
+На входе CANONICAL-компании. Для каждого входного "__canonical_id" верни ровно один item.
+НЕ переписывай исходный "__evidence": он сохраняется программно и не должен возвращаться моделью.
+НЕ удаляй компании и НЕ назначай окончательный A/B/C — финальная qualification детерминированная и выполняется позже.
+sheet — только фактическая роль: direct_buyers, intermediaries или leasing.
+changes — только реально нужные изменения видимых полей или "__comment"; неизменённые поля не возвращай.
+"Основание" на этом шаге — краткая сводка переданного evidence без A/B/C-префикса.
+"__comment", если меняется, должен содержать пять строк: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:".
+ИНН не выдумывай и не стирай уже подтверждённый. Новый web_search запрещён.
+Главная цель — нормализовать роль/описание с минимальным JSON-output, сохранив исходные доказательства программно.`;
 }
 
 function finalQaContract() {
-  return `\n\nГЛОБАЛЬНЫЙ DEDUPE/QA — верни ТОЛЬКО валидный JSON без markdown:
-{
-  "remove_ids": [],
-  "moves": [{"id":"","sheet":"direct_buyers|intermediaries|leasing"}],
-  "patches": [{"id":"","fields":{}}]
-}
+  return `\n\nГЛОБАЛЬНЫЙ DEDUPE/QA — верни только delta JSON по заданной схеме.
 Не возвращай полный список компаний и не выполняй web_search.
-На этом шаге решай идентичность дублей, целевой лист и фактические противоречия. НЕ назначай окончательный A/B/C — это отдельный следующий проход.
-remove_ids — строки, которые действительно нужно удалить как дубли или явно ошибочные сущности.
-moves — только строки, которые нужно перенести на другой коммерческий лист.
-patches — исправления сохранённой строки; fields может содержать видимые коммерческие поля, "__comment" и "__evidence".
-КРИТИЧНО: при схлопывании дублей ОБЪЕДИНИ "__evidence.source_urls" и "__evidence.notes" всех удаляемых дублей в сохраняемую строку через patch. Не теряй ни одного сильного доказательства.
-Одна организация должна остаться только один раз во всей итоговой совокупности.`;
+На этом шаге решай только неоднозначные дубли, целевой лист и фактические противоречия. НЕ назначай окончательный A/B/C.
+remove_ids — только реальные дубли/ошибочные сущности.
+moves — только необходимые переносы листа.
+patches[].changes — только минимальные изменения полей. Evidence не переписывай: при удалении дубля исходный evidence объединяется программно.
+Разные подтверждённые ИНН никогда не объединяй.`;
 }
 
 function conflictContract() {
   return `\n\nРАЗРЕШЕНИЕ КОНФЛИКТОВ — верни ТОЛЬКО JSON:
 {"remove_ids":[],"moves":[],"patches":[]}.
+patches использует changes:[{"field":"","value":""}].
 На входе ТОЛЬКО конфликтные группы. Не анализируй остальные компании.
 Разные подтверждённые ИНН — разные юридические лица и никогда не должны объединяться.
 Если совпадает телефон/название, но ИНН разные, сохрани обе строки и исправь ошибочную привязку через patch только при явном основании из переданных данных.
@@ -1499,7 +1578,8 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
           responseSchema: IDENTITY_SCHEMA,
           schemaName: "identity_resolution",
           diagnosticLabel:
-            `identity | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`
+            `identity | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`,
+          maxToolCalls: clusterEvidenceIdentity(cluster).inns.length > 1 ? 3 : 2
         })
       )
     );
@@ -1552,6 +1632,71 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     });
     if (identityBudgetStopped) break;
   }
+
+  // Mandatory second pass for every surviving company that still lacks INN.
+  const resolvedIndex = new Map(resolved.map((item, index) => [String(item.candidate_id), index]));
+  const missingInnClusters = [];
+  for (const cluster of clusters) {
+    const missingItems = cluster.items.filter((original) => {
+      const index = resolvedIndex.get(String(original.candidate_id));
+      const item = index === undefined ? original : resolved[index];
+      return !normalizeInn(item?.data?.["ИНН"]);
+    });
+    if (missingItems.length) missingInnClusters.push({ ...cluster, items: missingItems });
+  }
+
+  let hardRetryClusters = 0;
+  let hardRetryRecoveredMentions = 0;
+  if (allowWebSearch && missingInnClusters.length) {
+    for (const cluster of missingInnClusters) {
+      await assertNotCancelled();
+      try {
+        const result = await askJson(client, {
+          input:
+            prompt +
+            identityResolutionContract() +
+            `\n\nПОВТОРНЫЙ ЖЁСТКИЙ ПОИСК ТОЛЬКО ОТСУТСТВУЮЩИХ ИНН.
+РЕГИОН: ${region}
+Не ищи и не обогащай другие поля. Сделай до двух точных поисковых попыток на сущность.
+Если ИНН объективно не подтверждается, оставь confirmed_inn пустым и явно укажи это в note.
+
+КЛАСТЕР БЕЗ ИНН:
+${JSON.stringify(compactIdentityCluster(cluster))}`,
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
+          webSearch: true,
+          responseSchema: IDENTITY_SCHEMA,
+          schemaName: "identity_inn_retry",
+          diagnosticLabel:
+            `identity inn retry | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`,
+          maxToolCalls: 2
+        });
+        hardRetryClusters++;
+        const retried = applyIdentityResult(cluster, result);
+        for (const item of retried) {
+          const index = resolvedIndex.get(String(item.candidate_id));
+          if (index === undefined) continue;
+          const previousInn = normalizeInn(resolved[index]?.data?.["ИНН"]);
+          const nextInn = normalizeInn(item?.data?.["ИНН"]);
+          if (!previousInn && nextInn) hardRetryRecoveredMentions++;
+          resolved[index] = item;
+        }
+      } catch (error) {
+        if (isWebBudgetStop(error)) throw error;
+        console.error("[INN_HARD_RETRY_ERROR] " + JSON.stringify({
+          cluster: cluster.cluster_id,
+          error: error?.message || String(error)
+        }));
+      }
+    }
+  }
+  confirmedInnMentions += hardRetryRecoveredMentions;
+  console.log("[INN_HARD_RETRY_SUMMARY] " + JSON.stringify({
+    region,
+    missing_clusters_before_retry: missingInnClusters.length,
+    retried_clusters: hardRetryClusters,
+    recovered_mentions: hardRetryRecoveredMentions
+  }));
 
   // Diagnostic only: no extra API calls, and no comparison with any benchmark.
   const resolvedById = new Map(resolved.map((item) => [String(item.candidate_id), item]));
@@ -1790,6 +1935,111 @@ function ensureBatchCoverage(batch, batchResult) {
   return output;
 }
 
+function applyFinalBatchDelta(batch, delta) {
+  const byId = new Map((delta?.items || []).map((item) => [String(item?.canonical_id || ""), item]));
+  const output = { direct_buyers: [], intermediaries: [], leasing: [] };
+  const allowedFields = new Set([...COLS, "__comment"]);
+
+  for (const canonical of batch) {
+    const item = byId.get(String(canonical.canonical_id || "")) || null;
+    const row = baselineRowFromCanonical(canonical);
+    if (item) {
+      for (const change of Array.isArray(item.changes) ? item.changes : []) {
+        const field = String(change?.field || "");
+        if (allowedFields.has(field)) row[field] = String(change?.value ?? "");
+      }
+      row.__decision = item.decision === "keep" ? "keep" : "review";
+      row.__decision_reason = String(item.decision_reason || "");
+    }
+    row.__evidence = mergedEvidenceFromCanonical(canonical);
+    const requestedSheet = String(item?.sheet || "");
+    const preferred = ["direct_buyers", "intermediaries", "leasing"].includes(requestedSheet)
+      ? requestedSheet
+      : canonical.source_sheets.includes("Лизинг")
+        ? "leasing"
+        : canonical.source_sheets.includes("Прямые покупатели")
+          ? "direct_buyers"
+          : "intermediaries";
+    output[preferred].push(row);
+  }
+  return output;
+}
+
+function isMaxOutputTokensError(error) {
+  return /max_output_tokens|incomplete; reason: max_output_tokens/i.test(
+    String(error?.message || error || "")
+  );
+}
+
+async function processFinalBatchResilient({
+  client,
+  prompt,
+  region,
+  batch,
+  assertNotCancelled,
+  label,
+  depth = 0
+}) {
+  await assertNotCancelled();
+  try {
+    const delta = await askJson(client, {
+      input:
+        prompt +
+        finalBatchContract() +
+        `\n\nРЕГИОН: ${region}
+Это пакет CANONICAL-компаний после discovery 1–9 и identity-resolution.
+Все подтверждённые ИНН уже перенесены в записи. Не ищи новые данные и не переписывай evidence.
+Верни компактный delta для каждого canonical_id.
+
+ПАКЕТ CANONICAL-КОМПАНИЙ JSON:
+${JSON.stringify(batch)}`,
+      model: FINAL_BATCH_MODEL,
+      maxOutputTokens: FINAL_BATCH_MAX_OUTPUT_TOKENS,
+      webSearch: false,
+      responseSchema: FINAL_BATCH_DELTA_SCHEMA,
+      schemaName: "final_batch_delta",
+      diagnosticLabel: `final batch | ${label} | size ${batch.length}`
+    });
+    return applyFinalBatchDelta(batch, delta);
+  } catch (error) {
+    if (!isMaxOutputTokensError(error)) throw error;
+    if (batch.length <= FINAL_BATCH_MIN_SPLIT_SIZE) {
+      console.error("[FINAL_BATCH_FALLBACK] " + JSON.stringify({
+        label,
+        size: batch.length,
+        depth,
+        reason: "max_output_tokens",
+        action: "deterministic_baseline"
+      }));
+      return applyFinalBatchDelta(batch, { items: [] });
+    }
+
+    const middle = Math.ceil(batch.length / 2);
+    const left = batch.slice(0, middle);
+    const right = batch.slice(middle);
+    console.log("[FINAL_BATCH_SPLIT] " + JSON.stringify({
+      label,
+      size: batch.length,
+      depth,
+      reason: "max_output_tokens",
+      split: [left.length, right.length]
+    }));
+    const leftResult = await processFinalBatchResilient({
+      client, prompt, region, batch: left, assertNotCancelled,
+      label: `${label}.1`, depth: depth + 1
+    });
+    const rightResult = await processFinalBatchResilient({
+      client, prompt, region, batch: right, assertNotCancelled,
+      label: `${label}.2`, depth: depth + 1
+    });
+    return {
+      direct_buyers: [...leftResult.direct_buyers, ...rightResult.direct_buyers],
+      intermediaries: [...leftResult.intermediaries, ...rightResult.intermediaries],
+      leasing: [...leftResult.leasing, ...rightResult.leasing]
+    };
+  }
+}
+
 function prefilterCandidatesForIdentity(candidates, region = "") {
   const canonicalPool = canonicalizeCandidates(candidates, region);
   const staged = { direct_buyers: [], intermediaries: [], leasing: [] };
@@ -1959,12 +2209,38 @@ function applyFinalQa(records, qa) {
   const patches = new Map();
   for (const item of Array.isArray(qa?.patches) ? qa.patches : []) {
     const id = String(item?.id || "");
-    if (!id || !item?.fields || typeof item.fields !== "object") continue;
+    if (!id) continue;
     const filtered = {};
-    for (const [key, value] of Object.entries(item.fields)) {
-      if (allowedFields.has(key)) filtered[key] = value ?? "";
+    if (item?.fields && typeof item.fields === "object") {
+      for (const [key, value] of Object.entries(item.fields)) {
+        if (allowedFields.has(key)) filtered[key] = value ?? "";
+      }
+    }
+    for (const change of Array.isArray(item?.changes) ? item.changes : []) {
+      const key = String(change?.field || "");
+      if (allowedFields.has(key)) filtered[key] = change?.value ?? "";
     }
     if (Object.keys(filtered).length) patches.set(id, filtered);
+  }
+
+  const byId = new Map(records.map((record) => [record.id, record]));
+  for (const removedId of removeIds) {
+    const removed = byId.get(removedId);
+    if (!removed) continue;
+    const removedInn = normalizeInn(removed?.row?.["ИНН"]);
+    const removedName = String(removed?.row?.["Организация"] || "");
+    const target = records.find((record) => {
+      if (removeIds.has(record.id) || record.id === removedId) return false;
+      const targetInn = normalizeInn(record?.row?.["ИНН"]);
+      if (removedInn && targetInn) return removedInn === targetInn;
+      return organizationNamesCompatible(
+        removedName,
+        String(record?.row?.["Организация"] || "")
+      );
+    });
+    if (!target) continue;
+    const merged = mergeQaRecordRows([target, removed]);
+    target.row = merged.row;
   }
 
   const result = {
@@ -3103,7 +3379,8 @@ async function askJson(client, {
   diagnosticLabel = "",
   responseSchema = null,
   schemaName = "structured_output",
-  allowJsonRepair = true
+  allowJsonRepair = true,
+  maxToolCalls = null
 }) {
   const request = {
     model,
@@ -3132,6 +3409,9 @@ async function askJson(client, {
   if (tools.length) {
     request.tools = tools;
     request.tool_choice = "required";
+    if (Number.isFinite(Number(maxToolCalls)) && Number(maxToolCalls) > 0) {
+      request.max_tool_calls = Math.floor(Number(maxToolCalls));
+    }
   }
 
   const requestOptions = client.__jobSignal
@@ -3238,6 +3518,7 @@ async function askJson(client, {
       schema_name: responseSchema ? schemaName : null,
       initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
+      max_tool_calls: maxToolCalls,
       status: response?.status || "",
       stop_reason: stopReason,
       duration_ms: Date.now() - startedAt,
@@ -3289,7 +3570,13 @@ async function askJson(client, {
   }
 }
 
-function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS, diagnosticLabel = "") {
+function askResearch(
+  client,
+  input,
+  maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS,
+  diagnosticLabel = "",
+  maxToolCalls = 4
+) {
   return askJson(client, {
     input,
     model: MODEL,
@@ -3297,7 +3584,8 @@ function askResearch(client, input, maxOutputTokens = RESEARCH_MAX_OUTPUT_TOKENS
     webSearch: true,
     responseSchema: DISCOVERY_SCHEMA,
     schemaName: "research_discovery",
-    diagnosticLabel
+    diagnosticLabel,
+    maxToolCalls
   });
 }
 
@@ -3315,7 +3603,8 @@ function askTargetedSearch(client, input) {
     input,
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
-    webSearch: true
+    webSearch: true,
+    maxToolCalls: 3
   });
 }
 
@@ -4266,7 +4555,8 @@ ${JSON.stringify(compactCourtArchive)}
                 saturatedSourceFamilies
               }),
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
-              `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`
+              `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`,
+              3
             )
           );
 
@@ -4384,8 +4674,12 @@ ${JSON.stringify(compactCourtArchive)}
       branches: branches.length,
       branch_coverage: branchDiagnostics,
       token_usage: stageTokenUsage,
-      token_usage_cumulative: stageTokenEnd,
-      companies: diagnosticDiscoveryRows(combined)
+      token_usage_cumulative: stageTokenEnd
+    }));
+    console.log("[DISCOVERY_STAGE_COMPANIES_SAMPLE] " + JSON.stringify({
+      stage: i + 1,
+      region,
+      sample: diagnosticDiscoveryRows(combined).slice(0, 20)
     }));
     statuses[i].detail =
       `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · tokens: ${stageTokenUsage.total_tokens} · adaptive geo-scope`;
@@ -4689,7 +4983,7 @@ ${JSON.stringify(compactCourtArchive)}
 
   const identityResolution = await resolveCandidateIdentities({
     client,
-    candidates: preIdentity.candidates,
+    candidates: [...preIdentity.candidates, ...preIdentity.reviewCandidates],
     region,
     prompt: prompts[9],
     assertNotCancelled,
@@ -4705,9 +4999,6 @@ ${JSON.stringify(compactCourtArchive)}
     }
   });
 
-  identityResolution.candidates = appendReviewCandidates(
-    identityResolution.candidates, preIdentity.reviewCandidates, region, "full"
-  );
   const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
   console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
     region,
@@ -4741,28 +5032,15 @@ ${JSON.stringify(compactCourtArchive)}
       percent: 82 + Math.floor(((batchIndex + 1) / batchCount) * 5)
     });
 
-    const rawBatchResult = normalize(
-      await askWithoutSearch(
-        client,
-        prompts[9] +
-          finalBatchContract() +
-          `\n\nРЕГИОН: ${region}
-Это пакет CANONICAL-компаний после discovery 1–9 и отдельного identity-resolution прохода.
-До этого шага похожие упоминания использовались только как вероятные кластеры для поиска юридической идентичности. Программно объединены только строки с одинаковым подтверждённым ИНН.
-Строки без подтверждённого ИНН НЕ были окончательно объединены только по названию, городу, домену или похожести и должны разбираться на глобальном QA по совокупности признаков.
-Не игнорируй отдельные элементы evidence: факты из разных шагов должны дополнять друг друга.
-Не удаляй canonical-компании и обязательно верни каждый "__canonical_id" ровно один раз.
-Сохраняй максимум полезной информации из evidence. Новый web_search здесь запрещён; пробелы будут обработаны отдельным точечным проходом.
-Глобальная дедупликация между canonical-компаниями будет отдельным QA-вызовом после обработки всех пакетов.
+    const batchResult = await processFinalBatchResilient({
+      client,
+      prompt: prompts[9],
+      region,
+      batch,
+      assertNotCancelled,
+      label: `${batchIndex + 1}/${batchCount}`
+    });
 
-ПАКЕТ CANONICAL-КОМПАНИЙ JSON:
-${JSON.stringify(batch)}`,
-        FINAL_BATCH_MODEL,
-        FINAL_BATCH_MAX_OUTPUT_TOKENS
-      )
-    );
-
-    const batchResult = ensureBatchCoverage(batch, rawBatchResult);
     stagedResult.direct_buyers.push(...batchResult.direct_buyers);
     stagedResult.intermediaries.push(...batchResult.intermediaries);
     stagedResult.leasing.push(...batchResult.leasing);
@@ -4771,54 +5049,43 @@ ${JSON.stringify(batch)}`,
 
 
   await assertNotCancelled();
-  let qaRecords = makeQaRecords(stagedResult);
-  const conflictGroups = buildConflictGroups(qaRecords);
+  const beforeDeterministicDedupe = makeQaRecords(stagedResult);
+  let qaRecords = deterministicGlobalDedupe(beforeDeterministicDedupe, null, region);
+  console.log("[DETERMINISTIC_GLOBAL_DEDUPE] " + JSON.stringify({
+    before: beforeDeterministicDedupe.length,
+    after: qaRecords.length,
+    removed: beforeDeterministicDedupe.length - qaRecords.length
+  }));
 
+  const conflictGroups = buildConflictGroups(qaRecords);
   if (conflictGroups.length) {
-    statuses[9].detail = `разрешение конфликтов · ${conflictGroups.length} групп`;
+    statuses[9].detail = `разрешение неоднозначных конфликтов · ${conflictGroups.length} групп`;
     await progress({ phase: "dedupe", step: 10, percent: 88 });
 
-    const conflictQa = await askWithoutSearch(
-      client,
-      prompts[9] +
-        conflictContract() +
-        `\n\nКОНФЛИКТНЫЕ ГРУППЫ:
-${JSON.stringify(conflictGroups)}`,
-      CONFLICT_MODEL,
-      FINAL_QA_MAX_OUTPUT_TOKENS
-    );
-
-    const conflictResolved = applyFinalQa(qaRecords, conflictQa);
-    stagedResult.direct_buyers = conflictResolved.direct_buyers;
-    stagedResult.intermediaries = conflictResolved.intermediaries;
-    stagedResult.leasing = conflictResolved.leasing;
-    qaRecords = makeQaRecords(stagedResult);
+    for (let offset = 0; offset < conflictGroups.length; offset += FINAL_CONFLICT_GROUP_BATCH_SIZE) {
+      await assertNotCancelled();
+      const groupBatch = conflictGroups.slice(offset, offset + FINAL_CONFLICT_GROUP_BATCH_SIZE);
+      const conflictQa = await askJson(client, {
+        input:
+          prompts[9] +
+          conflictContract() +
+          `\n\nКОНФЛИКТНЫЕ ГРУППЫ:
+${JSON.stringify(groupBatch)}`,
+        model: CONFLICT_MODEL,
+        maxOutputTokens: FINAL_QA_MAX_OUTPUT_TOKENS,
+        webSearch: false,
+        responseSchema: FINAL_QA_DELTA_SCHEMA,
+        schemaName: "final_conflict_delta",
+        diagnosticLabel: `final conflict qa | batch ${Math.floor(offset / FINAL_CONFLICT_GROUP_BATCH_SIZE) + 1}`
+      });
+      const resolved = applyFinalQa(qaRecords, conflictQa);
+      qaRecords = makeQaRecords(resolved);
+    }
   }
 
-  statuses[9].detail = `глобальный QA · ${qaRecords.length} организаций`;
+  const dedupedRecords = qaRecords;
+  statuses[9].detail = `глобальный QA · ${dedupedRecords.length} организаций · deterministic-first`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
-
-  const qa = await askWithoutSearch(
-    client,
-    prompts[9] +
-      finalQaContract() +
-      `\n\nРЕГИОН: ${region}
-Ниже уже обработанные canonical-компании с техническими id и canonical_id.
-Выполни глобальную дедупликацию и QA только по переданным данным.
-НЕ выполняй A/B/C-квалификацию: она будет отдельным следующим проходом после дедупликации.
-Не переписывай весь массив компаний: верни только remove_ids, moves и patches.
-Разные подтверждённые ИНН никогда не объединяй.
-При удалении дубля обязательно перенеси его evidence в сохраняемую строку.
-Работай без web_search.
-
-КОММЕРЧЕСКИЕ СТРОКИ JSON:
-${JSON.stringify(qaRecords)}`,
-    FINAL_QA_MODEL,
-    FINAL_QA_MAX_OUTPUT_TOKENS
-  );
-
-  const dedupedResult = applyFinalQa(qaRecords, qa);
-  const dedupedRecords = makeQaRecords(dedupedResult);
 
   statuses[9].detail = `финальная A/B/C qualification · ${dedupedRecords.length} уникальных строк`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
