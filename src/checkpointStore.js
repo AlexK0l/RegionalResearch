@@ -26,7 +26,13 @@ async function getRedisClient() {
   if (redisClient?.isReady) return redisClient;
 
   try {
-    redisClient = createClient({ url });
+    redisClient = createClient({
+      url,
+      socket: {
+        connectTimeout: 3000,
+        reconnectStrategy: false
+      }
+    });
     redisClient.on("error", (error) => {
       console.error("[CHECKPOINT_REDIS_ERROR] " + JSON.stringify({
         error: error?.message || String(error)
@@ -48,9 +54,10 @@ function cloneCheckpoint(checkpoint) {
 }
 
 export async function saveCheckpoint(jobId, checkpoint) {
-  if (!jobId || !checkpoint) return;
+  if (!jobId || !checkpoint) return { redisSaved: false, fileSaved: false };
   const value = JSON.stringify(checkpoint);
   let redisSaved = false;
+  let fileSaved = false;
 
   const client = await getRedisClient();
   if (client) {
@@ -71,13 +78,14 @@ export async function saveCheckpoint(jobId, checkpoint) {
     const temp = target + ".tmp";
     await fs.writeFile(temp, value, "utf8");
     await fs.rename(temp, target);
+    fileSaved = true;
   } catch (error) {
     console.error("[CHECKPOINT_FILE_SAVE_ERROR] " + JSON.stringify({
       job_id: jobId,
       error: error?.message || String(error)
     }));
-    if (!redisSaved) throw error;
   }
+  return { redisSaved, fileSaved };
 }
 
 export async function loadCheckpoint(jobId) {
@@ -139,5 +147,38 @@ export function checkpointSummary(value) {
     contacts_completed: Array.isArray(value.contact_completed_ids)
       ? value.contact_completed_ids.length : 0,
     updated_at: value.updated_at || null
+  };
+}
+
+
+export async function checkpointBackendStatus() {
+  const redisConfigured = Boolean(String(process.env.CHECKPOINT_REDIS_URL || "").trim());
+  if (redisConfigured) {
+    const client = await getRedisClient();
+    if (client) {
+      try {
+        const pong = await client.ping();
+        return {
+          backend: "redis",
+          configured: true,
+          ready: pong === "PONG",
+          file_fallback: true
+        };
+      } catch (error) {
+        return {
+          backend: "file",
+          configured: true,
+          ready: true,
+          redis_error: error?.message || String(error),
+          file_fallback: true
+        };
+      }
+    }
+  }
+  return {
+    backend: "file",
+    configured: redisConfigured,
+    ready: true,
+    file_fallback: true
   };
 }
