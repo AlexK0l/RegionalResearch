@@ -4062,6 +4062,51 @@ function discoverySnapshot(
   };
 }
 
+const PIPELINE_CHECKPOINT_VERSION = 1;
+const PIPELINE_PHASE_ORDER = {
+  starting: 0,
+  discovery: 1,
+  pre_identity: 2,
+  identity: 3,
+  final_batches: 4,
+  dedupe: 5,
+  qualification: 6,
+  enrichment: 7,
+  statistics: 8,
+  contacts: 9,
+  completed: 10
+};
+
+function cloneJson(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function checkpointPhaseAtLeast(checkpoint, phase) {
+  return Number(PIPELINE_PHASE_ORDER[String(checkpoint?.phase || "")] || 0) >=
+    Number(PIPELINE_PHASE_ORDER[phase] || 0);
+}
+
+function checkpointRowId(row) {
+  return String(row?.__canonical_id || "").trim() ||
+    [normalizeOrgKey(row?.["Организация"]), normalizePlaceKey(row?.["Город/район"])]
+      .filter(Boolean)
+      .join("|");
+}
+
+function checkpointSummaryForLog(checkpoint) {
+  return {
+    version: checkpoint?.version,
+    phase: checkpoint?.phase,
+    completed_stage: Number(checkpoint?.completed_stage || 0),
+    completed_final_batches: Number(checkpoint?.completed_final_batches || 0),
+    enrichment_completed: Array.isArray(checkpoint?.enrichment_completed_ids)
+      ? checkpoint.enrichment_completed_ids.length : 0,
+    contacts_completed: Array.isArray(checkpoint?.contact_completed_ids)
+      ? checkpoint.contact_completed_ids.length : 0,
+    updated_at: checkpoint?.updated_at || null
+  };
+}
+
 export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
@@ -4071,11 +4116,16 @@ export async function runResearchPipeline({ job, apiKey }) {
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
   const mode = String(job.mode || "full");
+  const resumeCheckpoint =
+    mode === "resume" && job.data?.checkpoint?.version === PIPELINE_CHECKPOINT_VERSION
+      ? cloneJson(job.data.checkpoint)
+      : null;
+  const executionMode = mode === "resume" ? "full" : mode;
   const requestedStage = Number(job.data?.stage || 0);
-  const testProfile = testProfileForMode(mode, requestedStage);
+  const testProfile = testProfileForMode(executionMode, requestedStage);
   const diagnosticMode = Boolean(testProfile);
-  const replayMode = mode === "replay";
-  const dedupeReplayMode = mode === "dedupe_replay";
+  const replayMode = executionMode === "replay";
+  const dedupeReplayMode = executionMode === "dedupe_replay";
   const researchStageLimit = diagnosticMode ? testProfile.stageLimit : 9;
   const researchStageIndexes = Array.isArray(testProfile?.stageIndexes)
     ? testProfile.stageIndexes
@@ -4091,6 +4141,34 @@ export async function runResearchPipeline({ job, apiKey }) {
       region,
       ...patch
     });
+  };
+
+  const checkpointState = resumeCheckpoint || {
+    version: PIPELINE_CHECKPOINT_VERSION,
+    region,
+    source_mode: "full",
+    phase: "starting",
+    completed_stage: 0,
+    parts: [],
+    created_at: new Date().toISOString()
+  };
+
+  const persistCheckpoint = async (phase, patch = {}) => {
+    Object.assign(checkpointState, cloneJson(patch), {
+      version: PIPELINE_CHECKPOINT_VERSION,
+      region,
+      source_mode: "full",
+      phase,
+      updated_at: new Date().toISOString()
+    });
+    if (!checkpointState.created_at) checkpointState.created_at = checkpointState.updated_at;
+    if (typeof job.updateCheckpoint === "function") {
+      await job.updateCheckpoint(checkpointState);
+    }
+    console.log("[PIPELINE_CHECKPOINT] " + JSON.stringify({
+      job_id: job.id || "",
+      ...checkpointSummaryForLog(checkpointState)
+    }));
   };
 
   const assertNotCancelled = async () => {
@@ -4114,6 +4192,15 @@ export async function runResearchPipeline({ job, apiKey }) {
     });
 
   await progress({ phase: "starting", percent: 0 });
+  if (!resumeCheckpoint) {
+    await persistCheckpoint("starting", { parts: [] });
+  } else {
+    console.log("[PIPELINE_RESUME] " + JSON.stringify({
+      job_id: job.id || "",
+      source_job_id: job.data?.sourceJobId || "",
+      checkpoint: checkpointSummaryForLog(resumeCheckpoint)
+    }));
+  }
 
   if (dedupeReplayMode) {
     const snapshot = job.data?.snapshot;
@@ -4204,7 +4291,19 @@ export async function runResearchPipeline({ job, apiKey }) {
   }
 
   const prompts = await Promise.all(Array.from({ length: 10 }, (_, i) => loadPrompt(i + 1)));
-  let parts = [];
+  let parts = resumeCheckpoint && Array.isArray(resumeCheckpoint.parts)
+    ? cloneJson(resumeCheckpoint.parts)
+    : [];
+  const completedDiscoveryStage = resumeCheckpoint
+    ? Math.max(0, Math.min(9, Number(resumeCheckpoint.completed_stage || 0)))
+    : 0;
+  for (let index = 0; index < completedDiscoveryStage; index++) {
+    if (!parts[index]) continue;
+    statuses[index].status = "done";
+    statuses[index].detail =
+      `восстановлен из checkpoint · ${rowCount(parts[index])} записей · ${uniqueResearchCount(parts[index])} уникальных`;
+    statuses[index].completedAt = Date.now();
+  }
   const compactCourtArchive = COURT_VECTOR_STORE_ID ? [] : courtArchiveCandidates(region, 180);
   const compactCourtArchiveMeta = COURT_VECTOR_STORE_ID ? null : courtArchiveStats();
 
@@ -4229,8 +4328,9 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   let researchScopes = [];
   if (!replayMode) {
-    researchScopes =
-      mode === "smoke"
+    researchScopes = Array.isArray(resumeCheckpoint?.research_scopes)
+      ? cloneJson(resumeCheckpoint.research_scopes)
+      : executionMode === "smoke"
         ? [`весь регион: ${region}`]
         : await discoverRegionSearchScopes(client, region);
 
@@ -4240,12 +4340,17 @@ export async function runResearchPipeline({ job, apiKey }) {
 
     console.log("[RESEARCH_SCOPES] " + JSON.stringify({
       region,
-      mode,
+      mode: executionMode,
+      resumed: Boolean(resumeCheckpoint),
       scopes: researchScopes
     }));
   }
 
-  for (const i of !replayMode ? researchStageIndexes : []) {
+  const pendingResearchStageIndexes = !replayMode
+    ? researchStageIndexes.filter((index) => index >= completedDiscoveryStage)
+    : [];
+
+  for (const i of pendingResearchStageIndexes) {
     await assertNotCancelled();
     startStep(statuses[i]);
     const stageTokenStart = tokenUsageSnapshot(client);
@@ -4684,6 +4789,11 @@ ${JSON.stringify(compactCourtArchive)}
     statuses[i].detail =
       `выполнен · ${rowCount(combined)} записей · ${uniqueResearchCount(combined)} уникальных · ${branches.length} веток · tokens: ${stageTokenUsage.total_tokens} · adaptive geo-scope`;
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
+    await persistCheckpoint("discovery", {
+      completed_stage: i + 1,
+      parts,
+      research_scopes: researchScopes
+    });
   }
 
   if (diagnosticMode) {
@@ -4973,31 +5083,68 @@ ${JSON.stringify(compactCourtArchive)}
   startStep(statuses[9]);
   const candidatePool = flattenCandidates(parts);
 
-  statuses[9].detail = `identity resolution · подготовка ${candidatePool.length} упоминаний`;
-  await progress({ phase: "dedupe", step: 10, percent: 81 });
+  let preIdentity = null;
+  let identityResolution = null;
 
-  const preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
-  statuses[9].detail =
-    `pre-identity filter · ${candidatePool.length} → ${preIdentity.candidates.length} упоминаний`;
-  await progress({ phase: "dedupe", step: 10, percent: 82 });
+  if (
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "identity") &&
+    Array.isArray(resumeCheckpoint?.identity_resolution?.candidates)
+  ) {
+    identityResolution = cloneJson(resumeCheckpoint.identity_resolution);
+    statuses[9].detail =
+      `identity восстановлен из checkpoint · ${identityResolution.candidates.length} упоминаний`;
+    await progress({ phase: "dedupe", step: 10, percent: 84 });
+    console.log("[RESUME_IDENTITY_CHECKPOINT] " + JSON.stringify({
+      candidates: identityResolution.candidates.length,
+      clusters: Number(identityResolution.clusters || 0),
+      searched_web_clusters: Number(identityResolution.searchedWebClusters || 0)
+    }));
+  } else {
+    statuses[9].detail = `identity resolution · подготовка ${candidatePool.length} упоминаний`;
+    await progress({ phase: "dedupe", step: 10, percent: 81 });
 
-  const identityResolution = await resolveCandidateIdentities({
-    client,
-    candidates: [...preIdentity.candidates, ...preIdentity.reviewCandidates],
-    region,
-    prompt: prompts[9],
-    assertNotCancelled,
-    onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
-      statuses[9].detail =
-        `identity resolution · ${completed} / ${total} кластеров · ИНН: ${confirmedInnMentions} · без web: ${skippedWebClusters || 0} · с web: ${searchedWebClusters || 0}` +
-        (failedClusters ? ` · ошибок: ${failedClusters}` : "");
-      await progress({
-        phase: "dedupe",
-        step: 10,
-        percent: 81 + Math.floor((completed / Math.max(1, total)) * 3)
-      });
-    }
-  });
+    preIdentity = prefilterCandidatesForIdentity(candidatePool, region);
+    statuses[9].detail =
+      `pre-identity filter · ${candidatePool.length} → ${preIdentity.candidates.length + preIdentity.reviewCandidates.length} упоминаний`;
+    await progress({ phase: "dedupe", step: 10, percent: 82 });
+    await persistCheckpoint("pre_identity", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      pre_identity_summary: {
+        input_mentions: candidatePool.length,
+        keep_mentions: preIdentity.candidates.length,
+        review_mentions: preIdentity.reviewCandidates.length,
+        excluded_mentions: preIdentity.excludedCandidates.length
+      }
+    });
+
+    identityResolution = await resolveCandidateIdentities({
+      client,
+      candidates: [...preIdentity.candidates, ...preIdentity.reviewCandidates],
+      region,
+      prompt: prompts[9],
+      assertNotCancelled,
+      onProgress: async ({ completed, total, confirmedInnMentions, failedClusters, skippedWebClusters, searchedWebClusters }) => {
+        statuses[9].detail =
+          `identity resolution · ${completed} / ${total} кластеров · ИНН: ${confirmedInnMentions} · без web: ${skippedWebClusters || 0} · с web: ${searchedWebClusters || 0}` +
+          (failedClusters ? ` · ошибок: ${failedClusters}` : "");
+        await progress({
+          phase: "dedupe",
+          step: 10,
+          percent: 81 + Math.floor((completed / Math.max(1, total)) * 3)
+        });
+      }
+    });
+
+    await persistCheckpoint("identity", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution
+    });
+  }
 
   const canonicalPool = canonicalizeCandidates(identityResolution.candidates, region);
   console.log("[IDENTITY_SUMMARY] " + JSON.stringify({
@@ -5012,13 +5159,19 @@ ${JSON.stringify(compactCourtArchive)}
   }));
 
   const batchCount = Math.max(1, Math.ceil(canonicalPool.length / FINAL_BATCH_SIZE));
-  const stagedResult = {
-    direct_buyers: [],
-    intermediaries: [],
-    leasing: []
-  };
+  const stagedResult =
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "final_batches") &&
+    resumeCheckpoint.staged_result
+      ? cloneJson(resumeCheckpoint.staged_result)
+      : { direct_buyers: [], intermediaries: [], leasing: [] };
+  const completedFinalBatches =
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "final_batches")
+      ? Math.max(0, Math.min(batchCount, Number(resumeCheckpoint.completed_final_batches || 0)))
+      : 0;
 
-  for (let batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+  for (let batchIndex = completedFinalBatches; batchIndex < batchCount; batchIndex++) {
     await assertNotCancelled();
     const batch = canonicalPool.slice(
       batchIndex * FINAL_BATCH_SIZE,
@@ -5044,11 +5197,28 @@ ${JSON.stringify(compactCourtArchive)}
     stagedResult.direct_buyers.push(...batchResult.direct_buyers);
     stagedResult.intermediaries.push(...batchResult.intermediaries);
     stagedResult.leasing.push(...batchResult.leasing);
+
+    await persistCheckpoint("final_batches", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchIndex + 1,
+      staged_result: stagedResult
+    });
   }
 
-
-
   await assertNotCancelled();
+  let dedupedRecords = null;
+  if (
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "dedupe") &&
+    Array.isArray(resumeCheckpoint.deduped_records)
+  ) {
+    dedupedRecords = cloneJson(resumeCheckpoint.deduped_records);
+    statuses[9].detail = `global dedupe восстановлен · ${dedupedRecords.length} организаций`;
+    await progress({ phase: "dedupe", step: 10, percent: 89 });
+  } else {
   const beforeDeterministicDedupe = makeQaRecords(stagedResult);
   let qaRecords = deterministicGlobalDedupe(beforeDeterministicDedupe, null, region);
   console.log("[DETERMINISTIC_GLOBAL_DEDUPE] " + JSON.stringify({
@@ -5083,32 +5253,74 @@ ${JSON.stringify(groupBatch)}`,
     }
   }
 
-  const dedupedRecords = qaRecords;
+  dedupedRecords = qaRecords;
   statuses[9].detail = `глобальный QA · ${dedupedRecords.length} организаций · deterministic-first`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
+  await persistCheckpoint("dedupe", {
+    completed_stage: 9,
+    parts,
+    research_scopes: researchScopes,
+    identity_resolution: identityResolution,
+    completed_final_batches: batchCount,
+    staged_result: stagedResult,
+    deduped_records: dedupedRecords
+  });
+  }
 
   statuses[9].detail = `финальная A/B/C qualification · ${dedupedRecords.length} уникальных строк`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
 
-  const finalDecisions = await runFinalQualification({
-    client,
-    records: dedupedRecords,
-    region,
-    assertNotCancelled,
-    diagnosticPrefix: "full final qualification"
-  });
-  const qualifiedFinal = applyFinalQualification(dedupedRecords, finalDecisions);
-  const finalResult = qualifiedFinal.result;
+  let qualifiedFinal;
+  let finalResult;
+  if (
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "qualification") &&
+    resumeCheckpoint.final_result &&
+    resumeCheckpoint.qualification_counts
+  ) {
+    finalResult = cloneJson(resumeCheckpoint.final_result);
+    qualifiedFinal = {
+      result: finalResult,
+      counts: cloneJson(resumeCheckpoint.qualification_counts)
+    };
+    console.log("[RESUME_QUALIFICATION_CHECKPOINT] " + JSON.stringify({
+      input_rows: dedupedRecords.length,
+      counts: qualifiedFinal.counts,
+      output_rows: rowCount(finalResult)
+    }));
+  } else {
+    const finalDecisions = await runFinalQualification({
+      client,
+      records: dedupedRecords,
+      region,
+      assertNotCancelled,
+      diagnosticPrefix: "full final qualification"
+    });
+    qualifiedFinal = applyFinalQualification(dedupedRecords, finalDecisions);
+    finalResult = qualifiedFinal.result;
 
-  console.log("[FINAL_QUALIFICATION_SUMMARY] " + JSON.stringify({
-    region,
-    input_rows: dedupedRecords.length,
-    A: qualifiedFinal.counts.A,
-    B: qualifiedFinal.counts.B,
-    C: qualifiedFinal.counts.C,
-    excluded: qualifiedFinal.counts.excluded,
-    output_rows: rowCount(finalResult)
-  }));
+    console.log("[FINAL_QUALIFICATION_SUMMARY] " + JSON.stringify({
+      region,
+      input_rows: dedupedRecords.length,
+      A: qualifiedFinal.counts.A,
+      B: qualifiedFinal.counts.B,
+      C: qualifiedFinal.counts.C,
+      excluded: qualifiedFinal.counts.excluded,
+      output_rows: rowCount(finalResult)
+    }));
+    await persistCheckpoint("qualification", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      enrichment_completed_ids: []
+    });
+  }
 
   await assertNotCancelled();
   const finalCompaniesForEnrichment = [
@@ -5116,11 +5328,21 @@ ${JSON.stringify(groupBatch)}`,
     ...finalResult.intermediaries,
     ...finalResult.leasing
   ];
-  let targetedSearches = 0;
+  let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
+  const enrichmentCompleted = new Set(
+    Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
+      ? resumeCheckpoint.enrichment_completed_ids.map(String)
+      : []
+  );
 
   for (const row of finalCompaniesForEnrichment) {
+    const rowId = checkpointRowId(row);
+    if (rowId && enrichmentCompleted.has(rowId)) continue;
     const gaps = missingResearchFields(row);
-    if (!gaps.length) continue;
+    if (!gaps.length) {
+      if (rowId) enrichmentCompleted.add(rowId);
+      continue;
+    }
 
     await assertNotCancelled();
     targetedSearches++;
@@ -5141,21 +5363,58 @@ ${JSON.stringify(gaps)}
 Сделай один точечный web_search только по этой компании. Ищи только перечисленные недостающие сведения. Не перепроверяй заполненные поля без необходимости.`
     );
     applyTargetedPatch(row, enriched);
+    if (rowId) enrichmentCompleted.add(rowId);
+    await persistCheckpoint("enrichment", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      targeted_searches: targetedSearches,
+      enrichment_completed_ids: [...enrichmentCompleted]
+    });
   }
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
 
-  const statsResult = await askJson(client, {
-    input:
-      prompts[9] +
-      statisticsContract() +
-      `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
-    model: TARGETED_SEARCH_MODEL,
-    maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
-    webSearch: true
-  });
-  finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
+  if (
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
+    Array.isArray(resumeCheckpoint?.final_result?.statistics)
+  ) {
+    finalResult.statistics = cloneJson(resumeCheckpoint.final_result.statistics);
+  } else {
+    const statsResult = await askJson(client, {
+      input:
+        prompts[9] +
+        statisticsContract() +
+        `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
+      model: TARGETED_SEARCH_MODEL,
+      maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
+      webSearch: true,
+      maxToolCalls: 3,
+      diagnosticLabel: "regional statistics"
+    });
+    finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
+    await persistCheckpoint("statistics", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      targeted_searches: targetedSearches,
+      enrichment_completed_ids: [...enrichmentCompleted]
+    });
+  }
 
   finishStep(statuses[9]);
   statuses[9].detail =
@@ -5183,11 +5442,17 @@ ${JSON.stringify(gaps)}
     contactTotal: googleCompanies.length
   });
 
-  let ok = 0;
-  let unavailable = 0;
-  let notFound = 0;
-  let solRetries = 0;
-  let solRecovered = 0;
+  const contactCompleted = new Set(
+    Array.isArray(resumeCheckpoint?.contact_completed_ids)
+      ? resumeCheckpoint.contact_completed_ids.map(String)
+      : []
+  );
+  const resumedContactStats = resumeCheckpoint?.contact_stats || {};
+  let ok = Number(resumedContactStats.ok || 0);
+  let unavailable = Number(resumedContactStats.unavailable || 0);
+  let notFound = Number(resumedContactStats.notFound || 0);
+  let solRetries = Number(resumedContactStats.solRetries || 0);
+  let solRecovered = Number(resumedContactStats.solRecovered || 0);
   let browser;
   let session;
 
@@ -5226,6 +5491,10 @@ ${JSON.stringify(gaps)}
       }
 
       const row = googleCompanies[i];
+      const contactRowId = checkpointRowId(row);
+      if (contactRowId && contactCompleted.has(contactRowId)) {
+        continue;
+      }
       statuses[10].detail = `${i} / ${googleCompanies.length} · ${row["Организация"] || ""}`;
       await progress({
         phase: "google_ai",
@@ -5354,6 +5623,22 @@ ${JSON.stringify(gaps)}
         contactCompany: row["Организация"] || "",
         contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
       });
+      if (contactRowId) contactCompleted.add(contactRowId);
+      await persistCheckpoint("contacts", {
+        completed_stage: 9,
+        parts,
+        research_scopes: researchScopes,
+        identity_resolution: identityResolution,
+        completed_final_batches: batchCount,
+        staged_result: stagedResult,
+        deduped_records: dedupedRecords,
+        qualification_counts: qualifiedFinal.counts,
+        final_result: finalResult,
+        targeted_searches: targetedSearches,
+        enrichment_completed_ids: [...enrichmentCompleted],
+        contact_completed_ids: [...contactCompleted],
+        contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
+      });
 
       if (i < googleCompanies.length - 1) {
         await abortableSleep(5000);
@@ -5374,9 +5659,24 @@ ${JSON.stringify(gaps)}
     contactTotal: googleCompanies.length,
     contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
   });
+  await persistCheckpoint("completed", {
+    completed_stage: 9,
+    parts,
+    research_scopes: researchScopes,
+    identity_resolution: identityResolution,
+    completed_final_batches: batchCount,
+    staged_result: stagedResult,
+    deduped_records: dedupedRecords,
+    qualification_counts: qualifiedFinal.counts,
+    final_result: finalResult,
+    targeted_searches: targetedSearches,
+    enrichment_completed_ids: [...enrichmentCompleted],
+    contact_completed_ids: [...contactCompleted],
+    contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
+  });
 
   return {
-    mode: "full",
+    mode: mode === "resume" ? "resume" : "full",
     result: finalResult,
     region,
     counts: {
