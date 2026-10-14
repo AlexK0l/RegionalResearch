@@ -68,3 +68,28 @@ test("discovery economics and evidence-oriented recovery are logged", () => {
   assert.match(pipeline, /evidence_oriented_saturation_stop/);
   assert.match(pipeline, /sourceFamilyNovelty/);
 });
+
+
+test("checkpoint backend health and non-fatal fallback are wired", () => {
+  const store = readFileSync(new URL("../src/checkpointStore.js", import.meta.url), "utf8");
+  assert.match(store, /checkpointBackendStatus/);
+  assert.match(store, /connectTimeout: 3000/);
+  assert.match(store, /reconnectStrategy: false/);
+  assert.match(server, /checkpoints = await checkpointBackendStatus/);
+});
+
+test("large discovery diagnostics are sampled instead of fully dumped", () => {
+  assert.doesNotMatch(pipeline, /companies: diagnosticDiscoveryRows\(normalized\)/);
+  assert.doesNotMatch(pipeline, /companies: diagnosticDiscoveryRows\(branchResult\)/);
+  assert.doesNotMatch(pipeline, /companies: diagnosticDiscoveryRows\(value\)/);
+  assert.match(pipeline, /DISCOVERY_SCOPE_COMPANIES_SAMPLE/);
+  assert.match(pipeline, /DISCOVERY_BRANCH_COMPANIES_SAMPLE/);
+  assert.match(pipeline, /DISCOVERY_RECOVERY_COMPANIES_SAMPLE/);
+});
+
+test("non-A enrichment never spends a standalone search only for revenue or headcount", () => {
+  assert.match(pipeline, /function prioritizedResearchGaps\(row\)/);
+  assert.match(pipeline, /if \(grade === "A"\) return gaps/);
+  assert.match(pipeline, /const coreGaps = gaps\.filter/);
+  assert.match(pipeline, /const gaps = prioritizedResearchGaps\(row\)/);
+});

@@ -7,6 +7,7 @@ import { buildWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
+  checkpointBackendStatus,
   checkpointSummary,
   loadCheckpoint,
   normalizeCheckpoint,
@@ -40,8 +41,14 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "sat-region-research" });
+app.get("/health", async (_req, res) => {
+  const checkpoints = await checkpointBackendStatus().catch((error) => ({
+    backend: "unknown",
+    configured: Boolean(String(process.env.CHECKPOINT_REDIS_URL || "").trim()),
+    ready: false,
+    error: error?.message || String(error)
+  }));
+  res.json({ ok: true, service: "sat-region-research", checkpoints });
 });
 
 app.get("/api/config", (_req, res) => {

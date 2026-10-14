@@ -1102,8 +1102,13 @@ async function runResearchMicroBatch({
         quality_yield: yieldStats,
         source_families: familyStats,
         source_family_novelty: yieldStats.sourceFamilyNovelty,
-        token_usage_cumulative: tokenUsageSnapshot(client),
-        companies: diagnosticDiscoveryRows(normalized)
+        token_usage_cumulative: tokenUsageSnapshot(client)
+      }));
+      console.log("[DISCOVERY_SCOPE_COMPANIES_SAMPLE] " + JSON.stringify({
+        stage: stageIndex + 1,
+        branch: branchIndex + 1,
+        scope_index: scopeIndex + 1,
+        sample: diagnosticDiscoveryRows(normalized).slice(0, 10)
       }));
       appendResearchResult(
         merged,
@@ -3749,6 +3754,27 @@ function missingResearchFields(row) {
   return [...new Set(gaps)];
 }
 
+function prioritizedResearchGaps(row) {
+  const gaps = missingResearchFields(row);
+  if (!gaps.length) return gaps;
+
+  const grade = String(row?.__final_grade || "").toUpperCase();
+  const core = new Set([
+    "сайт/источник",
+    "ИНН",
+    "email",
+    "краткое описание деятельности",
+    "холдинг/УК/группа"
+  ]);
+
+  // A gets the full enrichment set. For B/C, revenue/headcount never justify
+  // a standalone paid search, but are still requested when a core gap already
+  // makes the search necessary. INN is always a core gap and is never skipped.
+  if (grade === "A") return gaps;
+  const coreGaps = gaps.filter((gap) => core.has(gap));
+  return coreGaps.length ? gaps : [];
+}
+
 function applyTargetedPatch(row, result) {
   const allowed = new Set([
     "Управляющая компания",
@@ -4470,8 +4496,12 @@ ${JSON.stringify(compactCourtArchive)}
           archive_pass: archivePass + 1,
           theme: archiveThemes[archivePass],
           rows: diagnosticRowCount(archiveOutput),
-          token_usage_cumulative: tokenUsageSnapshot(client),
-          companies: diagnosticDiscoveryRows(archiveOutput)
+          token_usage_cumulative: tokenUsageSnapshot(client)
+        }));
+        console.log("[DISCOVERY_ARCHIVE_COMPANIES_SAMPLE] " + JSON.stringify({
+          stage: i + 1,
+          archive_pass: archivePass + 1,
+          sample: diagnosticDiscoveryRows(archiveOutput).slice(0, 10)
         }));
         appendResearchResult(combined, archiveOutput, `archive-${archivePass + 1}`);
       }
@@ -4551,8 +4581,12 @@ ${JSON.stringify(compactCourtArchive)}
         marginal_new: Math.max(0, after - before),
         quality_yield: branchYield,
         ...branchEconomics,
-        token_usage_cumulative: tokenUsageSnapshot(client),
-        companies: diagnosticDiscoveryRows(branchResult)
+        token_usage_cumulative: tokenUsageSnapshot(client)
+      }));
+      console.log("[DISCOVERY_BRANCH_COMPANIES_SAMPLE] " + JSON.stringify({
+        stage: i + 1,
+        branch: branchIndex + 1,
+        sample: diagnosticDiscoveryRows(branchResult).slice(0, 10)
       }));
 
       branchDiagnostics.push({
@@ -4813,8 +4847,14 @@ ${JSON.stringify(compactCourtArchive)}
             quality_yield: scopeYield,
             source_families: scopeFamilies,
             source_family_novelty: scopeYield.sourceFamilyNovelty,
-            token_usage_cumulative: tokenUsageSnapshot(client),
-            companies: diagnosticDiscoveryRows(value)
+            token_usage_cumulative: tokenUsageSnapshot(client)
+          }));
+          console.log("[DISCOVERY_RECOVERY_COMPANIES_SAMPLE] " + JSON.stringify({
+            stage: i + 1,
+            recovery: recoveryIndex + 1,
+            anchor_branch: recoveryBranch.branchIndex + 1,
+            scope_index: scopeIndex + 1,
+            sample: diagnosticDiscoveryRows(value).slice(0, 10)
           }));
           appendResearchResult(
             combined,
@@ -5468,7 +5508,7 @@ ${JSON.stringify(groupBatch)}`,
   for (const row of finalCompaniesForEnrichment) {
     const rowId = checkpointRowId(row);
     if (rowId && enrichmentCompleted.has(rowId)) continue;
-    const gaps = missingResearchFields(row);
+    const gaps = prioritizedResearchGaps(row);
     if (!gaps.length) {
       if (rowId) enrichmentCompleted.add(rowId);
       continue;
