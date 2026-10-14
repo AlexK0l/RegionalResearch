@@ -20,6 +20,10 @@ const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(24000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_QA_MAX_OUTPUT_TOKENS = Math.min(30000, OPENAI_MAX_OUTPUT_TOKENS);
 const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(8000, OPENAI_MAX_OUTPUT_TOKENS);
 const STATISTICS_MAX_OUTPUT_TOKENS = Math.min(12000, OPENAI_MAX_OUTPUT_TOKENS);
+const OPENAI_WEB_SEARCH_COST_PER_CALL = Math.max(
+  0,
+  Number(process.env.OPENAI_WEB_SEARCH_COST_PER_CALL || 0.01)
+);
 const FINAL_BATCH_MODEL = process.env.FINAL_BATCH_MODEL || "gpt-5.6-luna";
 const TARGETED_SEARCH_MODEL = process.env.TARGETED_SEARCH_MODEL || "gpt-5.6-luna";
 const FINAL_QA_MODEL = process.env.FINAL_QA_MODEL || "gpt-5.6-luna";
@@ -3202,6 +3206,46 @@ function assertWebBudgetBeforeCall(client, diagnosticLabel) {
   }
 }
 
+function recordWebUsage(client, diagnosticLabel, calls) {
+  const amount = Math.max(0, Number(calls || 0));
+  if (!amount) return;
+  if (!client.__webUsage) {
+    client.__webUsage = { total: 0, by_scope: {} };
+  }
+  const scope = webBudgetScope(diagnosticLabel);
+  client.__webUsage.total = Number(client.__webUsage.total || 0) + amount;
+  client.__webUsage.by_scope[scope] =
+    Number(client.__webUsage.by_scope[scope] || 0) + amount;
+}
+
+function webUsageSnapshot(client) {
+  return Number(client?.__webUsage?.total || 0);
+}
+
+function webYieldMetrics(webCalls, unique, strong) {
+  const calls = Math.max(0, Number(webCalls || 0));
+  return {
+    web_calls: calls,
+    estimated_web_cost_usd: Number((calls * OPENAI_WEB_SEARCH_COST_PER_CALL).toFixed(4)),
+    unique_per_web: calls ? Number((Number(unique || 0) / calls).toFixed(3)) : null,
+    strong_per_web: calls ? Number((Number(strong || 0) / calls).toFixed(3)) : null
+  };
+}
+
+function stageRecoveryEvidenceOriented(stageIndex) {
+  return stageIndex === 1 || stageIndex === 6;
+}
+
+function recoveryBranchIsSaturated(stageIndex, item) {
+  if (!stageRecoveryEvidenceOriented(stageIndex)) return false;
+  const familyCount = Object.values(item?.sourceFamilies || {})
+    .filter((value) => Number(value || 0) > 0).length;
+  return (
+    (Number(item?.preliminaryA || 0) >= 2 || Number(item?.qualityScore || 0) >= 8) &&
+    familyCount >= 2
+  );
+}
+
 function recordWebBudgetUsage(client, diagnosticLabel, calls) {
   const budget = client?.__webBudget;
   const amount = Math.max(0, Number(calls || 0));
@@ -3431,10 +3475,12 @@ async function askJson(client, {
       (response?.status === "completed" ? "completed" : response?.status || "unknown");
     const toolCounts = diagnosticToolCounts(response);
     if (webSearch) {
+      const webCalls = Number(toolCounts.web_search_call || 0);
+      recordWebUsage(client, diagnosticLabel, webCalls);
       recordWebBudgetUsage(
         client,
         diagnosticLabel,
-        Number(toolCounts.web_search_call || 0)
+        webCalls
       );
     }
 
@@ -4112,6 +4158,7 @@ export async function runResearchPipeline({ job, apiKey }) {
 
   const client = new OpenAI({ apiKey });
   client.__tokenUsage = emptyTokenUsage();
+  client.__webUsage = { total: 0, by_scope: {} };
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
@@ -4354,6 +4401,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     await assertNotCancelled();
     startStep(statuses[i]);
     const stageTokenStart = tokenUsageSnapshot(client);
+    const stageWebStart = webUsageSnapshot(client);
 
     const combined = emptyResearchResult();
 
@@ -4426,6 +4474,7 @@ ${JSON.stringify(compactCourtArchive)}
 
       const alreadyFound = discoveryKnownNames(combined);
       const branchScopes = discoveryScopesForBranch(i, branchIndex, researchScopes);
+      const branchWebStart = webUsageSnapshot(client);
       let branchResult;
       try {
         branchResult = await runResearchMicroBatch({
@@ -4455,18 +4504,27 @@ ${JSON.stringify(compactCourtArchive)}
         break;
       }
       appendResearchResult(combined, branchResult, `branch-${branchIndex + 1}`);
+      const after = uniqueResearchCount(combined);
+      const branchYield = discoveryYieldStats(branchResult, alreadyFound);
+      const branchWebCalls = Math.max(0, webUsageSnapshot(client) - branchWebStart);
+      const branchEconomics = webYieldMetrics(
+        branchWebCalls,
+        Math.max(0, after - before),
+        branchYield.strongNew
+      );
       console.log("[DISCOVERY_BRANCH_RESULT] " + JSON.stringify({
         stage: i + 1,
         branch: branchIndex + 1,
         branch_name: branches[branchIndex],
         rows: diagnosticRowCount(branchResult),
         unique_in_branch: uniqueResearchCount(branchResult),
+        marginal_new: Math.max(0, after - before),
+        quality_yield: branchYield,
+        ...branchEconomics,
         token_usage_cumulative: tokenUsageSnapshot(client),
         companies: diagnosticDiscoveryRows(branchResult)
       }));
 
-      const after = uniqueResearchCount(combined);
-      const branchYield = discoveryYieldStats(branchResult, alreadyFound);
       branchDiagnostics.push({
         branchIndex,
         branch: branches[branchIndex],
@@ -4478,7 +4536,8 @@ ${JSON.stringify(compactCourtArchive)}
         preliminaryA: branchYield.a,
         preliminaryB: branchYield.b,
         preliminaryC: branchYield.c,
-        sourceFamilies: discoverySourceFamilyStats(branchResult)
+        sourceFamilies: discoverySourceFamilyStats(branchResult),
+        ...branchEconomics
       });
       statuses[i].detail =
         `ветка ${branchIndex + 1} / ${branches.length} · до ${branchScopes.length} geo-scope · +${Math.max(0, after - before)} новых · ${after} уникальных`;
@@ -4494,10 +4553,13 @@ ${JSON.stringify(compactCourtArchive)}
     // almost exclusively weak C rows. If at least two branches have >=2 strong
     // discoveries, prioritize those; otherwise fall back to all branches.
     const recoverableBranches = branchDiagnostics.filter(
-      (item) => Number(item.strongNew || 0) >= 2
+      (item) =>
+        Number(item.strongNew || 0) >= 2 &&
+        !recoveryBranchIsSaturated(i, item)
     );
-    const recoveryPool =
-      recoverableBranches.length >= 2 ? recoverableBranches : branchDiagnostics;
+    const recoveryPool = stageRecoveryEvidenceOriented(i)
+      ? recoverableBranches
+      : recoverableBranches.length >= 2 ? recoverableBranches : branchDiagnostics;
     const recoveryBranchOrder = [...recoveryPool]
       .sort((a, b) => {
         const aStrong = Number(a.strongNew || 0);
@@ -4522,18 +4584,24 @@ ${JSON.stringify(compactCourtArchive)}
     // traversal of every branch. Scale the number of recovery themes with
     // stage breadth: roughly one recovery branch per four primary branches,
     // while respecting the configured global ceiling.
-    const adaptiveRecoveryLimit = Math.max(
-      1,
-      Math.min(
-        RESEARCH_MAX_RECOVERY_BRANCHES,
-        Math.ceil(Math.max(1, branches.length) / 4)
-      )
-    );
+    const adaptiveRecoveryLimit = recoveryPool.length
+      ? Math.max(
+          1,
+          Math.min(
+            stageRecoveryEvidenceOriented(i) ? 1 : RESEARCH_MAX_RECOVERY_BRANCHES,
+            RESEARCH_MAX_RECOVERY_BRANCHES,
+            Math.ceil(Math.max(1, branches.length) / 4)
+          )
+        )
+      : 0;
 
     console.log("[DISCOVERY_BRANCH_COVERAGE] " + JSON.stringify({
       stage: i + 1,
       branches: branchDiagnostics,
       recovery_limit: adaptiveRecoveryLimit,
+      recovery_policy: stageRecoveryEvidenceOriented(i)
+        ? "evidence_oriented_saturation_stop"
+        : "breadth_oriented",
       configured_recovery_limit: RESEARCH_MAX_RECOVERY_BRANCHES,
       recovery_pool: recoveryBranchOrder.map((item) => ({
         branchIndex: item.branchIndex,
@@ -4555,6 +4623,7 @@ ${JSON.stringify(compactCourtArchive)}
     ) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
+      const recoveryWebStart = webUsageSnapshot(client);
       const alreadyFound = foundOrganizationNames(combined, 80);
       const theme = RESEARCH_RECOVERY_THEMES[recoveryIndex % RESEARCH_RECOVERY_THEMES.length];
       const orderedBranch =
@@ -4745,6 +4814,7 @@ ${JSON.stringify(compactCourtArchive)}
       const recoveryLowQuality =
         added <= recoveryThreshold || discoveryQualityIsLow(recoveryYieldAggregate);
       lowYieldStreak = recoveryLowQuality ? lowYieldStreak + 1 : 0;
+      const recoveryWebCalls = Math.max(0, webUsageSnapshot(client) - recoveryWebStart);
       console.log("[DISCOVERY_RECOVERY_SUMMARY] " + JSON.stringify({
         stage: i + 1,
         recovery: recoveryIndex + 1,
@@ -4752,6 +4822,7 @@ ${JSON.stringify(compactCourtArchive)}
         strategy: recoveryStrategy,
         rows_added: added,
         quality_yield: recoveryYieldAggregate,
+        ...webYieldMetrics(recoveryWebCalls, added, recoveryYieldAggregate.strongNew),
         low_yield: recoveryLowQuality,
         threshold: recoveryThreshold
       }));
@@ -4771,6 +4842,10 @@ ${JSON.stringify(compactCourtArchive)}
     finishStep(statuses[i]);
     const stageTokenEnd = tokenUsageSnapshot(client);
     const stageTokenUsage = tokenUsageDelta(stageTokenEnd, stageTokenStart);
+    const stageWebCalls = Math.max(0, webUsageSnapshot(client) - stageWebStart);
+    const stageStrong = branchDiagnostics.reduce(
+      (sum, item) => sum + Number(item.strongNew || 0), 0
+    );
     console.log("[DISCOVERY_STAGE_SUMMARY] " + JSON.stringify({
       stage: i + 1,
       region,
@@ -4778,6 +4853,7 @@ ${JSON.stringify(compactCourtArchive)}
       unique: uniqueResearchCount(combined),
       branches: branches.length,
       branch_coverage: branchDiagnostics,
+      ...webYieldMetrics(stageWebCalls, uniqueResearchCount(combined), stageStrong),
       token_usage: stageTokenUsage,
       token_usage_cumulative: stageTokenEnd
     }));
@@ -4792,7 +4868,8 @@ ${JSON.stringify(compactCourtArchive)}
     await persistCheckpoint("discovery", {
       completed_stage: i + 1,
       parts,
-      research_scopes: researchScopes
+      research_scopes: researchScopes,
+      web_usage_total: webUsageSnapshot(client)
     });
   }
 
