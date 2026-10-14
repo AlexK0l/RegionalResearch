@@ -1,131 +1,225 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
-import { createClient } from "redis";
+import { DatabaseSync } from "node:sqlite";
 
-const CHECKPOINT_TTL_SECONDS = Math.max(
-  3600,
-  Number(process.env.CHECKPOINT_TTL_SECONDS || 7 * 24 * 60 * 60)
+const DEFAULT_DB_PATH = process.env.RENDER
+  ? "/var/data/regionalresearch/checkpoints.sqlite"
+  : path.resolve(".checkpoints/checkpoints.sqlite");
+
+const CHECKPOINT_DB_PATH = path.resolve(
+  String(process.env.CHECKPOINT_DB_PATH || DEFAULT_DB_PATH)
 );
-const CHECKPOINT_DIR = path.resolve(process.env.CHECKPOINT_DIR || ".checkpoints");
+const PIPELINE_VERSION = Math.max(
+  1,
+  Number(process.env.PIPELINE_VERSION || 1)
+);
 
-let redisClient = null;
-let redisDisabled = false;
+let db = null;
 
-function checkpointKey(jobId) {
-  return `regionalresearch:checkpoint:${String(jobId || "").trim()}`;
+function cloneCheckpoint(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
-function checkpointPath(jobId) {
-  const safe = String(jobId || "").replace(/[^a-zA-Z0-9._-]/g, "_");
-  return path.join(CHECKPOINT_DIR, safe + ".json");
+function checkpointMode(checkpoint) {
+  return String(checkpoint?.source_mode || checkpoint?.mode || "full").trim() || "full";
 }
 
-async function getRedisClient() {
-  const url = String(process.env.CHECKPOINT_REDIS_URL || "").trim();
-  if (!url || redisDisabled) return null;
-  if (redisClient?.isReady) return redisClient;
+function checkpointStatus(checkpoint) {
+  return String(checkpoint?.phase || "") === "completed" ? "completed" : "resumable";
+}
 
+function ensureDb() {
+  if (db) return db;
+
+  fs.mkdirSync(path.dirname(CHECKPOINT_DB_PATH), { recursive: true });
+  db = new DatabaseSync(CHECKPOINT_DB_PATH);
+  db.exec("PRAGMA journal_mode=WAL;");
+  db.exec("PRAGMA synchronous=FULL;");
+  db.exec("PRAGMA busy_timeout=5000;");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS research_checkpoints (
+      id TEXT PRIMARY KEY,
+      region TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      pipeline_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      completed_stage INTEGER NOT NULL DEFAULT 0,
+      completed_final_batches INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_checkpoints_region
+      ON research_checkpoints(region, mode, status, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_research_checkpoints_updated
+      ON research_checkpoints(updated_at DESC);
+  `);
+  return db;
+}
+
+function rowToCheckpoint(row) {
+  if (!row?.payload) return null;
   try {
-    redisClient = createClient({
-      url,
-      socket: {
-        connectTimeout: 3000,
-        reconnectStrategy: false
-      }
-    });
-    redisClient.on("error", (error) => {
-      console.error("[CHECKPOINT_REDIS_ERROR] " + JSON.stringify({
-        error: error?.message || String(error)
-      }));
-    });
-    await redisClient.connect();
-    return redisClient;
-  } catch (error) {
-    redisDisabled = true;
-    console.error("[CHECKPOINT_REDIS_DISABLED] " + JSON.stringify({
-      error: error?.message || String(error)
-    }));
+    return JSON.parse(row.payload);
+  } catch {
     return null;
   }
 }
 
-function cloneCheckpoint(checkpoint) {
-  return JSON.parse(JSON.stringify(checkpoint));
+function metadataFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ""),
+    region: String(row.region || ""),
+    mode: String(row.mode || "full"),
+    pipeline_version: Number(row.pipeline_version || 0),
+    status: String(row.status || ""),
+    phase: String(row.phase || ""),
+    completed_stage: Number(row.completed_stage || 0),
+    completed_final_batches: Number(row.completed_final_batches || 0),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    compatible: Number(row.pipeline_version || 0) === PIPELINE_VERSION
+  };
 }
 
 export async function saveCheckpoint(jobId, checkpoint) {
-  if (!jobId || !checkpoint) return { redisSaved: false, fileSaved: false };
-  const value = JSON.stringify(checkpoint);
-  let redisSaved = false;
-  let fileSaved = false;
+  if (!jobId || !checkpoint) return { sqliteSaved: false };
 
-  const client = await getRedisClient();
-  if (client) {
-    try {
-      await client.set(checkpointKey(jobId), value, { EX: CHECKPOINT_TTL_SECONDS });
-      redisSaved = true;
-    } catch (error) {
-      console.error("[CHECKPOINT_REDIS_SAVE_ERROR] " + JSON.stringify({
-        job_id: jobId,
-        error: error?.message || String(error)
-      }));
-    }
-  }
+  const normalized = normalizeCheckpoint(checkpoint);
+  if (!normalized) throw new Error("Некорректный checkpoint");
 
-  try {
-    await fs.mkdir(CHECKPOINT_DIR, { recursive: true });
-    const target = checkpointPath(jobId);
-    const temp = target + ".tmp";
-    await fs.writeFile(temp, value, "utf8");
-    await fs.rename(temp, target);
-    fileSaved = true;
-  } catch (error) {
-    console.error("[CHECKPOINT_FILE_SAVE_ERROR] " + JSON.stringify({
-      job_id: jobId,
-      error: error?.message || String(error)
-    }));
-  }
-  return { redisSaved, fileSaved };
+  const database = ensureDb();
+  const now = new Date().toISOString();
+  const id = String(jobId);
+  const region = String(normalized.region).trim();
+  const mode = checkpointMode(normalized);
+  const status = checkpointStatus(normalized);
+  const phase = String(normalized.phase || "starting");
+  const createdAt = String(normalized.created_at || now);
+  const payload = JSON.stringify(normalized);
+
+  const statement = database.prepare(`
+    INSERT INTO research_checkpoints (
+      id, region, mode, pipeline_version, status, phase,
+      completed_stage, completed_final_batches,
+      payload, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      region = excluded.region,
+      mode = excluded.mode,
+      pipeline_version = excluded.pipeline_version,
+      status = excluded.status,
+      phase = excluded.phase,
+      completed_stage = excluded.completed_stage,
+      completed_final_batches = excluded.completed_final_batches,
+      payload = excluded.payload,
+      updated_at = excluded.updated_at
+  `);
+
+  statement.run(
+    id,
+    region,
+    mode,
+    PIPELINE_VERSION,
+    status,
+    phase,
+    Number(normalized.completed_stage || 0),
+    Number(normalized.completed_final_batches || 0),
+    payload,
+    createdAt,
+    now
+  );
+
+  return { sqliteSaved: true, path: CHECKPOINT_DB_PATH };
 }
 
 export async function loadCheckpoint(jobId) {
   if (!jobId) return null;
-  const client = await getRedisClient();
-  if (client) {
-    try {
-      const value = await client.get(checkpointKey(jobId));
-      if (value) return JSON.parse(value);
-    } catch (error) {
-      console.error("[CHECKPOINT_REDIS_LOAD_ERROR] " + JSON.stringify({
-        job_id: jobId,
-        error: error?.message || String(error)
-      }));
-    }
-  }
+  const row = ensureDb()
+    .prepare("SELECT payload FROM research_checkpoints WHERE id = ?")
+    .get(String(jobId));
+  return rowToCheckpoint(row);
+}
 
-  try {
-    const value = await fs.readFile(checkpointPath(jobId), "utf8");
-    return JSON.parse(value);
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      console.error("[CHECKPOINT_FILE_LOAD_ERROR] " + JSON.stringify({
-        job_id: jobId,
-        error: error?.message || String(error)
-      }));
-    }
-    return null;
+export async function findLatestCheckpoint(region, mode = "full") {
+  const normalizedRegion = String(region || "").trim();
+  if (!normalizedRegion) return null;
+
+  const row = ensureDb().prepare(`
+    SELECT *
+    FROM research_checkpoints
+    WHERE region = ?
+      AND mode = ?
+      AND status = 'resumable'
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(normalizedRegion, String(mode || "full"));
+
+  return metadataFromRow(row);
+}
+
+export async function listRegionCheckpoints(region, mode = "full", limit = 10) {
+  const normalizedRegion = String(region || "").trim();
+  if (!normalizedRegion) return [];
+
+  return ensureDb().prepare(`
+    SELECT id, region, mode, pipeline_version, status, phase,
+           completed_stage, completed_final_batches, created_at, updated_at
+    FROM research_checkpoints
+    WHERE region = ? AND mode = ?
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(
+    normalizedRegion,
+    String(mode || "full"),
+    Math.max(1, Math.min(50, Number(limit || 10)))
+  ).map(metadataFromRow);
+}
+
+export async function supersedeRegionCheckpoints(region, mode = "full", exceptId = "") {
+  const normalizedRegion = String(region || "").trim();
+  if (!normalizedRegion) return 0;
+
+  const now = new Date().toISOString();
+  let result;
+  if (exceptId) {
+    result = ensureDb().prepare(`
+      UPDATE research_checkpoints
+      SET status = 'superseded', updated_at = ?
+      WHERE region = ? AND mode = ? AND status = 'resumable' AND id <> ?
+    `).run(now, normalizedRegion, String(mode || "full"), String(exceptId));
+  } else {
+    result = ensureDb().prepare(`
+      UPDATE research_checkpoints
+      SET status = 'superseded', updated_at = ?
+      WHERE region = ? AND mode = ? AND status = 'resumable'
+    `).run(now, normalizedRegion, String(mode || "full"));
   }
+  return Number(result?.changes || 0);
+}
+
+export async function markCheckpointStatus(jobId, status) {
+  if (!jobId) return 0;
+  const allowed = new Set(["resumable", "completed", "superseded"]);
+  const value = allowed.has(String(status)) ? String(status) : "resumable";
+  const result = ensureDb().prepare(`
+    UPDATE research_checkpoints
+    SET status = ?, updated_at = ?
+    WHERE id = ?
+  `).run(value, new Date().toISOString(), String(jobId));
+  return Number(result?.changes || 0);
 }
 
 export async function deleteCheckpoint(jobId) {
-  if (!jobId) return;
-  const client = await getRedisClient();
-  if (client) {
-    try {
-      await client.del(checkpointKey(jobId));
-    } catch {}
-  }
-  await fs.rm(checkpointPath(jobId), { force: true }).catch(() => {});
+  if (!jobId) return 0;
+  const result = ensureDb()
+    .prepare("DELETE FROM research_checkpoints WHERE id = ?")
+    .run(String(jobId));
+  return Number(result?.changes || 0);
 }
 
 export function normalizeCheckpoint(value) {
@@ -150,35 +244,26 @@ export function checkpointSummary(value) {
   };
 }
 
-
 export async function checkpointBackendStatus() {
-  const redisConfigured = Boolean(String(process.env.CHECKPOINT_REDIS_URL || "").trim());
-  if (redisConfigured) {
-    const client = await getRedisClient();
-    if (client) {
-      try {
-        const pong = await client.ping();
-        return {
-          backend: "redis",
-          configured: true,
-          ready: pong === "PONG",
-          file_fallback: true
-        };
-      } catch (error) {
-        return {
-          backend: "file",
-          configured: true,
-          ready: true,
-          redis_error: error?.message || String(error),
-          file_fallback: true
-        };
-      }
-    }
+  try {
+    const database = ensureDb();
+    database.prepare("SELECT 1 AS ok").get();
+    return {
+      backend: "sqlite",
+      ready: true,
+      path: CHECKPOINT_DB_PATH,
+      pipeline_version: PIPELINE_VERSION,
+      persistent_disk_expected: CHECKPOINT_DB_PATH.startsWith("/var/data/")
+    };
+  } catch (error) {
+    return {
+      backend: "sqlite",
+      ready: false,
+      path: CHECKPOINT_DB_PATH,
+      pipeline_version: PIPELINE_VERSION,
+      error: error?.message || String(error)
+    };
   }
-  return {
-    backend: "file",
-    configured: redisConfigured,
-    ready: true,
-    file_fallback: true
-  };
 }
+
+export { CHECKPOINT_DB_PATH, PIPELINE_VERSION };
