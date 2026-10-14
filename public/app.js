@@ -4,6 +4,9 @@ const REGIONS=["Республика Адыгея","Республика Алт�
 const e={
   region:document.querySelector("#region"),
   regions:document.querySelector("#regions"),
+  regionCheckpointBox:document.querySelector("#regionCheckpointBox"),
+  regionCheckpointText:document.querySelector("#regionCheckpointText"),
+  regionResume:document.querySelector("#regionResumeBtn"),
   start:document.querySelector("#startBtn"),
   smoke:document.querySelector("#smokeBtn"),
   quality:document.querySelector("#qualityBtn"),
@@ -37,6 +40,8 @@ let currentJobId=localStorage.getItem("sat_current_job")||"";
 let pollTimer=null;
 let timerTick=null;
 let lastProgress=null;
+let regionCheckpoint=null;
+let regionCheckpointTimer=null;
 const SNAPSHOT_STORAGE_KEY="sat_discovery_snapshot_v1";
 
 function loadSavedSnapshot(){
@@ -86,9 +91,71 @@ async function api(url,options={}){
   if(!r.ok){
     const err=new Error(data.error||("HTTP "+r.status));
     err.status=r.status;
+    err.code=data.code||"";
+    err.data=data;
     throw err;
   }
   return data;
+}
+
+function formatCheckpointPhase(phase){
+  return ({
+    starting:"подготовка",
+    discovery:"этапы discovery",
+    pre_identity:"pre-identity",
+    identity:"identity / ИНН",
+    final_batches:"финальные пакеты",
+    dedupe:"глобальная дедупликация",
+    qualification:"финальная qualification",
+    enrichment:"enrichment",
+    statistics:"статистика",
+    contacts:"контакты",
+    completed:"завершено"
+  })[phase]||phase||"неизвестный этап";
+}
+
+function renderRegionCheckpoint(checkpoint){
+  regionCheckpoint=checkpoint||null;
+  if(!checkpoint){
+    e.regionCheckpointBox.hidden=true;
+    e.regionResume.disabled=true;
+    e.start.textContent="Запустить исследование";
+    return;
+  }
+
+  const updated=checkpoint.updated_at
+    ? new Date(checkpoint.updated_at).toLocaleString("ru-RU")
+    : "неизвестно";
+  const batch=Number(checkpoint.completed_final_batches||0);
+  e.regionCheckpointText.textContent=
+    "Есть незавершённое исследование · "+formatCheckpointPhase(checkpoint.phase)+
+    " · завершено discovery-этапов: "+Number(checkpoint.completed_stage||0)+
+    (batch?" · final batches: "+batch:"")+
+    " · сохранено: "+updated+
+    (checkpoint.compatible===false?" · версия pipeline несовместима":"");
+  e.regionCheckpointBox.hidden=false;
+  e.regionResume.disabled=checkpoint.compatible===false;
+  e.start.textContent="Начать новое исследование";
+}
+
+async function refreshRegionCheckpoint(){
+  const region=e.region.value.trim();
+  if(!region||!backendReady){
+    renderRegionCheckpoint(null);
+    return;
+  }
+  try{
+    const data=await api("/api/checkpoints?region="+encodeURIComponent(region)+"&mode=full");
+    renderRegionCheckpoint(data.checkpoint||null);
+  }catch(err){
+    console.warn("Не удалось проверить checkpoint региона:",err);
+    renderRegionCheckpoint(null);
+  }
+}
+
+function scheduleRegionCheckpointRefresh(){
+  if(regionCheckpointTimer)clearTimeout(regionCheckpointTimer);
+  regionCheckpointTimer=setTimeout(refreshRegionCheckpoint,350);
 }
 
 function formatDuration(ms){
@@ -137,6 +204,10 @@ function resetIdleState(){
   e.contactBox.hidden=true;
   e.progressCard.hidden=true;
   e.cancel.disabled=true;
+  regionCheckpoint=null;
+  e.regionCheckpointBox.hidden=true;
+  e.regionResume.disabled=true;
+  e.start.textContent="Запустить исследование";
   const savedSnapshot=loadSavedSnapshot();
   e.replay.hidden=!savedSnapshot;
   e.replay.disabled=!savedSnapshot;
@@ -368,7 +439,7 @@ async function poll(restoring=false){
   }
 }
 
-async function startJob(mode="full"){
+async function startJob(mode="full",extraPayload={}){
   const region=e.region.value.trim();
   if(!region){alert("Выберите или введите регион.");return;}
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
@@ -376,7 +447,9 @@ async function startJob(mode="full"){
   e.replay.hidden=true;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
   try{
-    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify({region,mode})});
+    const payload={region,mode,...extraPayload};
+    if(mode==="full")payload.startFresh=true;
+    const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
@@ -388,7 +461,32 @@ async function startJob(mode="full"){
   }
 }
 
-async function start(){return startJob("full");}
+async function startRegionResume(){
+  const checkpoint=regionCheckpoint;
+  if(!checkpoint?.id)return;
+  e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
+  e.progressCard.hidden=false;
+  e.regionResume.disabled=true;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.cancel.disabled=false;
+  try{
+    const d=await api("/api/jobs",{
+      method:"POST",
+      body:JSON.stringify({mode:"resume",checkpointId:checkpoint.id})
+    });
+    currentJobId=d.id;
+    localStorage.setItem("sat_current_job",currentJobId);
+    renderRegionCheckpoint(null);
+    if(pollTimer)clearInterval(pollTimer);
+    await poll();
+    pollTimer=setInterval(poll,2000);
+  }catch(err){
+    e.regionResume.disabled=false;
+    e.start.disabled=false;
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
+
+async function start(){return startJob("full",{startFresh:true});}
 async function startSmoke(){return startJob("smoke");}
 async function startQuality(){return startJob("quality");}
 async function startTest(){return startJob("test12");}
@@ -574,6 +672,7 @@ async function waitForBackend(){
           e.replay.disabled=!savedSnapshot;
           e.dedupeReplay.hidden=!Array.isArray(savedSnapshot?.identity_checkpoint?.candidates);
           e.dedupeReplay.disabled=e.dedupeReplay.hidden;
+          await refreshRegionCheckpoint();
         }
         return true;
       }
@@ -583,6 +682,9 @@ async function waitForBackend(){
   }
 }
 
+e.region.oninput=scheduleRegionCheckpointRefresh;
+e.region.onchange=refreshRegionCheckpoint;
+e.regionResume.onclick=startRegionResume;
 e.start.onclick=start;
 e.smoke.onclick=startSmoke;
 e.quality.onclick=startQuality;
