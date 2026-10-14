@@ -12,6 +12,8 @@ const e={
   stage:document.querySelector("#stageBtn"),
   replay:document.querySelector("#replayBtn"),
   dedupeReplay:document.querySelector("#dedupeReplayBtn"),
+  resume:document.querySelector("#resumeBtn"),
+  checkpoint:document.querySelector("#checkpointBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
   progressCard:document.querySelector("#progressCard"),
@@ -140,6 +142,10 @@ function resetIdleState(){
   e.replay.disabled=!savedSnapshot;
   e.dedupeReplay.hidden=!Array.isArray(savedSnapshot?.identity_checkpoint?.candidates);
   e.dedupeReplay.disabled=e.dedupeReplay.hidden;
+  e.resume.hidden=true;
+  e.resume.disabled=true;
+  e.checkpoint.hidden=true;
+  e.checkpoint.disabled=true;
   if(backendReady){
     e.start.disabled=false;
     e.smoke.disabled=false;
@@ -240,6 +246,9 @@ async function poll(restoring=false){
     e.stage.disabled=false;
     e.stageSelect.disabled=false;
       e.cancel.disabled=true;
+      e.resume.hidden=true;e.resume.disabled=true;
+      e.checkpoint.hidden=d.resume_available?false:true;
+      e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
       const r=d.result||{},c=r.counts||{},g=r.contacts||{};
       const isTestMode=["test12","smoke","quality","stage_test","replay","dedupe_replay"].includes(r.mode);
@@ -318,7 +327,13 @@ async function poll(restoring=false){
     if(d.state==="failed"){
       clearInterval(pollTimer);pollTimer=null;
       e.start.disabled=false;e.smoke.disabled=false;e.quality.disabled=false;e.test.disabled=false;e.stage.disabled=false;e.stageSelect.disabled=false;e.cancel.disabled=true;
-      e.error.hidden=false;e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой");
+      e.resume.hidden=!d.resume_available;
+      e.resume.disabled=!d.resume_available;
+      e.checkpoint.hidden=!d.resume_available;
+      e.checkpoint.disabled=!d.resume_available;
+      e.error.hidden=false;
+      e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой")+
+        (d.resume_available?" · Доступно продолжение с последнего checkpoint.":"");
       return;
     }
 
@@ -337,13 +352,13 @@ async function poll(restoring=false){
     }
 
     if(d.state==="cancelling"){
-      e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=true;
+      e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.resume.disabled=true;e.checkpoint.disabled=true;e.cancel.disabled=true;
       e.statusTitle.textContent="Останавливаем";
       e.statusText.textContent="Прерываем активные запросы…";
       return;
     }
 
-    e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.cancel.disabled=false;
+    e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.resume.hidden=true;e.resume.disabled=true;e.checkpoint.hidden=!d.resume_available;e.checkpoint.disabled=!d.resume_available;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
       resetIdleState();
@@ -453,6 +468,44 @@ async function startReplay(){
   }
 }
 
+async function resumeFromCheckpoint(){
+  if(!currentJobId)return;
+  e.error.hidden=true;
+  e.resume.disabled=true;
+  e.checkpoint.disabled=true;
+  e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.cancel.disabled=false;
+  try{
+    const d=await api("/api/jobs/"+encodeURIComponent(currentJobId)+"/resume",{method:"POST"});
+    currentJobId=d.id;
+    localStorage.setItem("sat_current_job",currentJobId);
+    e.resume.hidden=true;
+    e.checkpoint.hidden=true;
+    if(pollTimer)clearInterval(pollTimer);
+    await poll();
+    pollTimer=setInterval(poll,2000);
+  }catch(err){
+    e.resume.disabled=false;
+    e.checkpoint.disabled=false;
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
+
+async function downloadCheckpoint(){
+  if(!currentJobId)return;
+  try{
+    const checkpoint=await api("/api/jobs/"+encodeURIComponent(currentJobId)+"/checkpoint");
+    const blob=new Blob([JSON.stringify(checkpoint,null,2)],{type:"application/json"});
+    const u=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=u;
+    a.download="regionalresearch-checkpoint-"+currentJobId+".json";
+    document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),1000);
+  }catch(err){
+    e.error.hidden=false;e.error.textContent=err.message;
+  }
+}
+
 async function cancel(){
   if(!currentJobId)return;
   e.cancel.disabled=true;
@@ -497,6 +550,8 @@ async function waitForBackend(){
   e.stageSelect.disabled=true;
   e.replay.disabled=true;
   e.dedupeReplay.disabled=true;
+  e.resume.disabled=true;
+  e.checkpoint.disabled=true;
   setServiceStatus("Сервис запускается…","starting");
   while(!backendReady){
     try{
@@ -535,6 +590,8 @@ e.test.onclick=startTest;
 e.stage.onclick=startStageTest;
 e.replay.onclick=startReplay;
 e.dedupeReplay.onclick=startDedupeReplay;
+e.resume.onclick=resumeFromCheckpoint;
+e.checkpoint.onclick=downloadCheckpoint;
 e.cancel.onclick=cancel;
 e.download.onclick=download;
 
@@ -550,7 +607,7 @@ timerTick=setInterval(()=>{
     if(currentJobId){
       try{
         const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
-        if(d.state==="cancelled"||d.state==="failed"){
+        if(d.state==="cancelled"){
           resetIdleState();
         }else{
           e.progressCard.hidden=false;
