@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261014-checkpoint">
+<link rel="stylesheet" href="/styles.css?v=20261014-sqlite">
 </head>
 <body>
 <main class="shell">
@@ -22,6 +22,12 @@
       <input id="region" list="regions" placeholder="Например: Воронежская область" autocomplete="off">
       <datalist id="regions"></datalist>
     </label>
+    <div id="regionCheckpointBox" class="contact-box" hidden>
+      <div id="regionCheckpointText"></div>
+      <div class="actions">
+        <button id="regionResumeBtn" class="secondary" disabled>Продолжить с checkpoint</button>
+      </div>
+    </div>
     <div class="actions">
       <button id="startBtn" disabled>Запустить исследование</button>
       <button id="smokeBtn" class="secondary" disabled>Smoke test</button>
@@ -44,7 +50,7 @@
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261014-checkpoint</p>
+    <p class="note">UI build: 20261014-sqlite</p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -71,6 +77,6 @@
     <button id="downloadBtn">Скачать XLSX</button>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261014-checkpoint"></script>
+<script type="module" src="/app.js?v=20261014-sqlite"></script>
 </body>
 </html>
