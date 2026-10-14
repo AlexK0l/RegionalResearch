@@ -1690,6 +1690,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
       }
     }
   }
+  confirmedInnMentions += hardRetryRecoveredMentions;
   console.log("[INN_HARD_RETRY_SUMMARY] " + JSON.stringify({
     region,
     missing_clusters_before_retry: missingInnClusters.length,
