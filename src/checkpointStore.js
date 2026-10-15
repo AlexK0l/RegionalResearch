@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 const DEFAULT_DB_PATH = process.env.RENDER
-  ? "/var/data/regionalresearch/checkpoints.sqlite"
+  ? "/tmp/regionalresearch/checkpoints.sqlite"
   : path.resolve(".checkpoints/checkpoints.sqlite");
 
 const CHECKPOINT_DB_PATH = path.resolve(
