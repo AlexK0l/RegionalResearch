@@ -43,6 +43,9 @@ let lastProgress=null;
 let regionCheckpoint=null;
 let regionCheckpointTimer=null;
 const SNAPSHOT_STORAGE_KEY="sat_discovery_snapshot_v1";
+const BROWSER_CHECKPOINT_STORAGE_KEY="sat_browser_checkpoint_v1";
+let browserCheckpointSyncInFlight=null;
+let lastBrowserCheckpointSignature="";
 
 function loadSavedSnapshot(){
   try{
@@ -72,6 +75,113 @@ async function cacheSnapshot(jobId){
     console.warn("Discovery snapshot не сохранён:",err);
     return false;
   }
+}
+
+function loadBrowserCheckpointRecord(){
+  try{
+    const raw=sessionStorage.getItem(BROWSER_CHECKPOINT_STORAGE_KEY);
+    if(!raw)return null;
+    const record=JSON.parse(raw);
+    const checkpoint=record?.checkpoint;
+    if(Number(checkpoint?.version)!==1||!String(checkpoint?.region||"").trim())return null;
+    return record;
+  }catch(err){
+    console.warn("Не удалось прочитать checkpoint из sessionStorage:",err);
+    return null;
+  }
+}
+
+function saveBrowserCheckpoint(checkpoint,jobId=""){
+  try{
+    if(Number(checkpoint?.version)!==1||!String(checkpoint?.region||"").trim())return false;
+    const record={
+      job_id:String(jobId||""),
+      saved_at:new Date().toISOString(),
+      checkpoint
+    };
+    sessionStorage.setItem(BROWSER_CHECKPOINT_STORAGE_KEY,JSON.stringify(record));
+    return true;
+  }catch(err){
+    console.warn("Не удалось сохранить checkpoint в sessionStorage:",err);
+    return false;
+  }
+}
+
+function clearBrowserCheckpoint(region=""){
+  try{
+    const record=loadBrowserCheckpointRecord();
+    if(!region||!record||String(record.checkpoint?.region||"").trim()===String(region||"").trim()){
+      sessionStorage.removeItem(BROWSER_CHECKPOINT_STORAGE_KEY);
+      lastBrowserCheckpointSignature="";
+    }
+  }catch{}
+}
+
+function browserCheckpointForRegion(region){
+  const record=loadBrowserCheckpointRecord();
+  const checkpoint=record?.checkpoint;
+  if(!checkpoint||String(checkpoint.region||"").trim()!==String(region||"").trim())return null;
+  const pipelineVersion=Number(checkpoint.pipeline_version||0);
+  return {
+    id:String(record.job_id||""),
+    region:String(checkpoint.region||""),
+    mode:String(checkpoint.source_mode||checkpoint.mode||"full"),
+    pipeline_version:pipelineVersion,
+    status:String(checkpoint.phase||"")==="completed"?"completed":"resumable",
+    phase:String(checkpoint.phase||""),
+    completed_stage:Number(checkpoint.completed_stage||0),
+    completed_final_batches:Number(checkpoint.completed_final_batches||0),
+    created_at:checkpoint.created_at||null,
+    updated_at:checkpoint.updated_at||record.saved_at||null,
+    compatible:!config?.pipelineVersion||!pipelineVersion||pipelineVersion===Number(config.pipelineVersion),
+    source:"browser",
+    browser_checkpoint:checkpoint
+  };
+}
+
+function checkpointTimestamp(checkpoint){
+  const value=checkpoint?.updated_at||checkpoint?.created_at||"";
+  const parsed=Date.parse(value);
+  return Number.isFinite(parsed)?parsed:0;
+}
+
+function chooseLatestCheckpoint(backendCheckpoint,browserCheckpoint){
+  if(!backendCheckpoint)return browserCheckpoint||null;
+  if(!browserCheckpoint)return {...backendCheckpoint,source:"backend"};
+  const backend={...backendCheckpoint,source:"backend"};
+  return checkpointTimestamp(browserCheckpoint)>=checkpointTimestamp(backend)
+    ? browserCheckpoint
+    : backend;
+}
+
+async function syncBrowserCheckpointFromBackend(jobId,summary=null){
+  if(!jobId)return false;
+  const signature=JSON.stringify({
+    jobId,
+    phase:summary?.phase||"",
+    completed_stage:Number(summary?.completed_stage||0),
+    completed_final_batches:Number(summary?.completed_final_batches||0),
+    enrichment_completed:Number(summary?.enrichment_completed||0),
+    contacts_completed:Number(summary?.contacts_completed||0),
+    updated_at:summary?.updated_at||""
+  });
+  if(signature===lastBrowserCheckpointSignature)return true;
+  if(browserCheckpointSyncInFlight)return browserCheckpointSyncInFlight;
+
+  browserCheckpointSyncInFlight=(async()=>{
+    try{
+      const checkpoint=await api("/api/jobs/"+encodeURIComponent(jobId)+"/checkpoint");
+      const saved=saveBrowserCheckpoint(checkpoint,jobId);
+      if(saved)lastBrowserCheckpointSignature=signature;
+      return saved;
+    }catch(err){
+      console.warn("Не удалось синхронизировать checkpoint в браузер:",err);
+      return false;
+    }finally{
+      browserCheckpointSyncInFlight=null;
+    }
+  })();
+  return browserCheckpointSyncInFlight;
 }
 
 
@@ -127,11 +237,13 @@ function renderRegionCheckpoint(checkpoint){
     ? new Date(checkpoint.updated_at).toLocaleString("ru-RU")
     : "неизвестно";
   const batch=Number(checkpoint.completed_final_batches||0);
+  const sourceText=checkpoint.source==="browser"?"браузер":"Render";
   e.regionCheckpointText.textContent=
     "Есть незавершённое исследование · "+formatCheckpointPhase(checkpoint.phase)+
     " · завершено discovery-этапов: "+Number(checkpoint.completed_stage||0)+
     (batch?" · final batches: "+batch:"")+
     " · сохранено: "+updated+
+    " · источник: "+sourceText+
     (checkpoint.compatible===false?" · версия pipeline несовместима":"");
   e.regionCheckpointBox.hidden=false;
   e.regionResume.disabled=checkpoint.compatible===false;
@@ -140,16 +252,23 @@ function renderRegionCheckpoint(checkpoint){
 
 async function refreshRegionCheckpoint(){
   const region=e.region.value.trim();
-  if(!region||!backendReady){
+  if(!region){
     renderRegionCheckpoint(null);
     return;
   }
+
+  const browserCheckpoint=browserCheckpointForRegion(region);
+  if(!backendReady){
+    renderRegionCheckpoint(browserCheckpoint);
+    return;
+  }
+
   try{
     const data=await api("/api/checkpoints?region="+encodeURIComponent(region)+"&mode=full");
-    renderRegionCheckpoint(data.checkpoint||null);
+    renderRegionCheckpoint(chooseLatestCheckpoint(data.checkpoint||null,browserCheckpoint));
   }catch(err){
-    console.warn("Не удалось проверить checkpoint региона:",err);
-    renderRegionCheckpoint(null);
+    console.warn("Не удалось проверить checkpoint региона на backend:",err);
+    renderRegionCheckpoint(browserCheckpoint);
   }
 }
 
@@ -307,6 +426,9 @@ async function poll(restoring=false){
     const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
     e.progressCard.hidden=false;
     setProgress(d.progress||{});
+    if(d.resume_available&&d.checkpoint){
+      void syncBrowserCheckpointFromBackend(currentJobId,d.checkpoint);
+    }
 
     if(d.state==="completed"){
       clearInterval(pollTimer);pollTimer=null;
@@ -432,7 +554,9 @@ async function poll(restoring=false){
     e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.replay.disabled=true;e.resume.hidden=true;e.resume.disabled=true;e.checkpoint.hidden=!d.resume_available;e.checkpoint.disabled=!d.resume_available;e.cancel.disabled=false;
   }catch(err){
     if(err?.status===404){
+      const region=e.region.value.trim();
       resetIdleState();
+      if(region)await refreshRegionCheckpoint();
       return;
     }
     e.error.hidden=false;e.error.textContent=err.message;
@@ -450,6 +574,7 @@ async function startJob(mode="full",extraPayload={}){
     const payload={region,mode,...extraPayload};
     if(mode==="full")payload.startFresh=true;
     const d=await api("/api/jobs",{method:"POST",body:JSON.stringify(payload)});
+    if(mode==="full")clearBrowserCheckpoint(region);
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
     if(pollTimer)clearInterval(pollTimer);
@@ -463,18 +588,31 @@ async function startJob(mode="full",extraPayload={}){
 
 async function startRegionResume(){
   const checkpoint=regionCheckpoint;
-  if(!checkpoint?.id)return;
+  if(!checkpoint)return;
   e.error.hidden=true;e.resultCard.hidden=true;e.contactBox.hidden=true;
   e.progressCard.hidden=false;
   e.regionResume.disabled=true;
   e.start.disabled=true;e.smoke.disabled=true;e.quality.disabled=true;e.test.disabled=true;e.stage.disabled=true;e.stageSelect.disabled=true;e.cancel.disabled=false;
   try{
+    const resumePayload={mode:"resume"};
+    if(checkpoint.source==="browser"&&checkpoint.browser_checkpoint){
+      resumePayload.checkpoint=checkpoint.browser_checkpoint;
+    }else if(checkpoint.id){
+      resumePayload.checkpointId=checkpoint.id;
+    }else if(checkpoint.browser_checkpoint){
+      resumePayload.checkpoint=checkpoint.browser_checkpoint;
+    }else{
+      throw new Error("Checkpoint для продолжения недоступен");
+    }
     const d=await api("/api/jobs",{
       method:"POST",
-      body:JSON.stringify({mode:"resume",checkpointId:checkpoint.id})
+      body:JSON.stringify(resumePayload)
     });
     currentJobId=d.id;
     localStorage.setItem("sat_current_job",currentJobId);
+    if(checkpoint.source==="browser"&&checkpoint.browser_checkpoint){
+      saveBrowserCheckpoint(checkpoint.browser_checkpoint,currentJobId);
+    }
     renderRegionCheckpoint(null);
     if(pollTimer)clearInterval(pollTimer);
     await poll();
@@ -592,6 +730,7 @@ async function downloadCheckpoint(){
   if(!currentJobId)return;
   try{
     const checkpoint=await api("/api/jobs/"+encodeURIComponent(currentJobId)+"/checkpoint");
+    saveBrowserCheckpoint(checkpoint,currentJobId);
     const blob=new Blob([JSON.stringify(checkpoint,null,2)],{type:"application/json"});
     const u=URL.createObjectURL(blob);
     const a=document.createElement("a");
@@ -721,8 +860,11 @@ timerTick=setInterval(()=>{
           }
         }
       }catch(err){
-        if(err?.status===404) resetIdleState();
-        else throw err;
+        if(err?.status===404){
+          const region=e.region.value.trim();
+          resetIdleState();
+          if(region)await refreshRegionCheckpoint();
+        }else throw err;
       }
     }
   }catch(err){
