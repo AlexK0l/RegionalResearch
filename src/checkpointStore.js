@@ -255,7 +255,7 @@ export async function checkpointBackendStatus() {
       ready: true,
       path: CHECKPOINT_DB_PATH,
       pipeline_version: PIPELINE_VERSION,
-      persistent_disk_expected: CHECKPOINT_DB_PATH.startsWith("/var/data/")
+      ephemeral_storage: process.env.RENDER ? CHECKPOINT_DB_PATH.startsWith("/tmp/") : false
     };
   } catch (error) {
     return {
