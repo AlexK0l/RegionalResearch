@@ -8,6 +8,7 @@ on:
       - '.github/workflows/preidentity-regression.yml'
   push:
     branches:
+      - 'main'
       - 'audit/preidentity-review-20261009'
       - 'audit/qualification-a-hardening-20261012'
 
