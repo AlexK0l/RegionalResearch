@@ -34,10 +34,12 @@ test("REVIEW never duplicates an already retained candidate", () => {
   assert.equal(result.length, 1);
 });
 
-test("diagnostic preserves REVIEW locally while full pipeline sends REVIEW through identity for INN", () => {
+test("REVIEW is retained without identity web-search and final INN runs after qualification", () => {
   assert.match(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates, reviewCandidates, region, "diagnostic"/);
-  assert.match(source, /candidates: \[\.\.\.preIdentity\.candidates, \.\.\.preIdentity\.reviewCandidates\]/);
-  assert.doesNotMatch(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates, preIdentity\.reviewCandidates, region, "full"/);
+  assert.match(source, /candidates: preIdentity\.candidates/);
+  assert.match(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates,\s*preIdentity\.reviewCandidates,\s*region,\s*"full"/);
+  assert.match(source, /resolveFinalMissingInns\(\{/);
+  assert.match(source, /persistCheckpoint\("final_inn"/);
 });
 
 test("INN checksum validation and triage audit are present", () => {
