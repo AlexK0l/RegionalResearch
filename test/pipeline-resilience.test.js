@@ -7,17 +7,17 @@ const source = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf
 test("discovery and identity web search have hard tool-call caps", () => {
   assert.match(source, /max_tool_calls = Math\.floor\(Number\(maxToolCalls\)\)/);
   assert.match(source, /maxToolCalls = 4/);
-  assert.match(source, /identity \| .*maxToolCalls: clusterEvidenceIdentity\(cluster\)\.inns\.length > 1 \? 3 : 2/s);
-  assert.match(source, /identity inn retry[\s\S]*maxToolCalls: 2/);
+  assert.match(source, /identity \| .*maxToolCalls: 2/s);
+  assert.match(source, /final inn \| .*maxToolCalls: 2/s);
   assert.match(source, /recovery[\s\S]*RESEARCH_MICRO_MAX_OUTPUT_TOKENS,[\s\S]*3\n\s*\)/);
 });
 
 test("INN remains mandatory for all surviving companies", () => {
   assert.match(source, /ИНН является обязательным реквизитом итоговой базы/);
-  assert.match(source, /candidates: \[\.\.\.preIdentity\.candidates, \.\.\.preIdentity\.reviewCandidates\]/);
-  assert.match(source, /Mandatory second pass for every surviving company that still lacks INN/);
-  assert.match(source, /INN_HARD_RETRY_SUMMARY/);
-  assert.match(source, /if \(!normalizeInn\(row\?\.\["ИНН"\]\)\) gaps\.push\("ИНН"\)/);
+  assert.match(source, /candidates: preIdentity\.candidates/);
+  assert.match(source, /resolveFinalMissingInns\(\{/);
+  assert.match(source, /enforceFinalInnRequirement\(finalResult\)/);
+  assert.match(source, /FINAL_INN_ENFORCEMENT/);
 });
 
 test("final batch is compact, structured and recursively splittable", () => {
