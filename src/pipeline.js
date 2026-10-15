@@ -441,7 +441,18 @@ const IDENTITY_CONCURRENCY = Math.max(
   1,
   Math.min(8, Number(process.env.OPENAI_IDENTITY_CONCURRENCY || 4))
 );
-const IDENTITY_MAX_OUTPUT_TOKENS = Math.min(6000, OPENAI_MAX_OUTPUT_TOKENS);
+const IDENTITY_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(800, Number(process.env.OPENAI_IDENTITY_MAX_OUTPUT_TOKENS || 1800)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
+const FINAL_INN_BATCH_SIZE = Math.max(
+  2,
+  Math.min(8, Number(process.env.OPENAI_FINAL_INN_BATCH_SIZE || 5))
+);
+const FINAL_INN_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(1200, Number(process.env.OPENAI_FINAL_INN_MAX_OUTPUT_TOKENS || 2500)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
 
 const DISCOVERY_SCHEMA = {
   type: "object",
@@ -513,6 +524,28 @@ const IDENTITY_SCHEMA = {
     }
   },
   required: ["entities"]
+};
+
+const FINAL_INN_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          confirmed_inn: { type: "string" },
+          source_urls: { type: "array", items: { type: "string" } },
+          note: { type: "string" }
+        },
+        required: ["id", "confirmed_inn", "source_urls", "note"]
+      }
+    }
+  },
+  required: ["items"]
 };
 
 const FINAL_BATCH_DELTA_SCHEMA = {
@@ -1551,38 +1584,27 @@ async function resolveCandidateIdentities({
 
   const directClusters = [];
   const webClusters = [];
-  let hardInnLookupClusters = 0;
 
   for (const cluster of clusters) {
-    const identity = clusterEvidenceIdentity(cluster);
-    const needsHardInnLookup = identity.inns.length !== 1;
     const needsIdentityLookup = clusterNeedsIdentityWebSearch(cluster);
-
-    if (allowWebSearch && (needsHardInnLookup || needsIdentityLookup)) {
-      webClusters.push(cluster);
-      if (needsHardInnLookup) hardInnLookupClusters++;
-    } else {
-      directClusters.push(cluster);
-    }
+    if (allowWebSearch && needsIdentityLookup) webClusters.push(cluster);
+    else directClusters.push(cluster);
   }
 
-  console.log("[HARD_INN_SEARCH_PLAN] " + JSON.stringify({
+  console.log("[IDENTITY_SEARCH_PLAN] " + JSON.stringify({
     total_clusters: clusters.length,
-    hard_inn_lookup_clusters: hardInnLookupClusters,
-    identity_or_inn_web_clusters: webClusters.length,
-    direct_clusters_with_confirmed_inn: directClusters.length,
+    identity_web_clusters: webClusters.length,
+    direct_clusters: directClusters.length,
+    missing_inn_deferred_to_final: true,
     allow_web_search: allowWebSearch
   }));
 
-  // Без web-search оставляем только кластеры, где уже есть ровно один подтверждённый ИНН
-  // и нет дополнительной неоднозначности идентичности.
   for (const cluster of directClusters) {
     await assertNotCancelled();
     const rows = resolveClusterWithoutWeb(cluster);
     confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
     resolved.push(...rows);
     completed++;
-    skippedWebClusters++;
 
     if (completed % 25 === 0 || completed === clusters.length) {
       await onProgress({
@@ -1596,7 +1618,6 @@ async function resolveCandidateIdentities({
     }
   }
 
-  // Web-search остаётся только для неоднозначных и multi-mention кластеров.
   const identityConcurrency = client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
   let identityBudgetStopped = false;
   for (let offset = 0; offset < webClusters.length; offset += identityConcurrency) {
@@ -1606,7 +1627,6 @@ async function resolveCandidateIdentities({
       batch.map((cluster) =>
         askJson(client, {
           input:
-            prompt +
             identityResolutionContract() +
             `\n\nРЕГИОН: ${region}
 ВЕРОЯТНЫЙ КЛАСТЕР:
@@ -1618,7 +1638,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
           schemaName: "identity_resolution",
           diagnosticLabel:
             `identity | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`,
-          maxToolCalls: clusterEvidenceIdentity(cluster).inns.length > 1 ? 3 : 2
+          maxToolCalls: 2
         })
       )
     );
@@ -1633,6 +1653,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
         resolved.push(...rows);
       } else {
+        if (isOpenAIBillingStop(item.reason)) throw item.reason;
         if (isWebBudgetStop(item.reason)) {
           identityBudgetStopped = true;
           resolved.push(...cluster.items);
@@ -1672,134 +1693,23 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     if (identityBudgetStopped) break;
   }
 
-  // Mandatory second pass for every surviving company that still lacks INN.
-  const resolvedIndex = new Map(resolved.map((item, index) => [String(item.candidate_id), index]));
-  const missingInnClusters = [];
-  for (const cluster of clusters) {
-    const missingItems = cluster.items.filter((original) => {
-      const index = resolvedIndex.get(String(original.candidate_id));
-      const item = index === undefined ? original : resolved[index];
-      return !normalizeInn(item?.data?.["ИНН"]);
-    });
-    if (missingItems.length) missingInnClusters.push({ ...cluster, items: missingItems });
-  }
-
-  let hardRetryClusters = 0;
-  let hardRetryRecoveredMentions = 0;
-  if (allowWebSearch && missingInnClusters.length) {
-    for (const cluster of missingInnClusters) {
-      await assertNotCancelled();
-      try {
-        const result = await askJson(client, {
-          input:
-            prompt +
-            identityResolutionContract() +
-            `\n\nПОВТОРНЫЙ ЖЁСТКИЙ ПОИСК ТОЛЬКО ОТСУТСТВУЮЩИХ ИНН.
-РЕГИОН: ${region}
-Не ищи и не обогащай другие поля. Сделай до двух точных поисковых попыток на сущность.
-Если ИНН объективно не подтверждается, оставь confirmed_inn пустым и явно укажи это в note.
-
-КЛАСТЕР БЕЗ ИНН:
-${JSON.stringify(compactIdentityCluster(cluster))}`,
-          model: TARGETED_SEARCH_MODEL,
-          maxOutputTokens: IDENTITY_MAX_OUTPUT_TOKENS,
-          webSearch: true,
-          responseSchema: IDENTITY_SCHEMA,
-          schemaName: "identity_inn_retry",
-          diagnosticLabel:
-            `identity inn retry | ${cluster.cluster_id} | ${cluster.items.map((x) => x?.data?.["Организация"] || "").join(" / ")}`,
-          maxToolCalls: 2
-        });
-        hardRetryClusters++;
-        const retried = applyIdentityResult(cluster, result);
-        for (const item of retried) {
-          const index = resolvedIndex.get(String(item.candidate_id));
-          if (index === undefined) continue;
-          const previousInn = normalizeInn(resolved[index]?.data?.["ИНН"]);
-          const nextInn = normalizeInn(item?.data?.["ИНН"]);
-          if (!previousInn && nextInn) hardRetryRecoveredMentions++;
-          resolved[index] = item;
-        }
-      } catch (error) {
-        if (isWebBudgetStop(error)) throw error;
-        console.error("[INN_HARD_RETRY_ERROR] " + JSON.stringify({
-          cluster: cluster.cluster_id,
-          error: error?.message || String(error)
-        }));
-      }
-    }
-  }
-  confirmedInnMentions += hardRetryRecoveredMentions;
-  console.log("[INN_HARD_RETRY_SUMMARY] " + JSON.stringify({
-    region,
-    missing_clusters_before_retry: missingInnClusters.length,
-    retried_clusters: hardRetryClusters,
-    recovered_mentions: hardRetryRecoveredMentions
-  }));
-
-  // Diagnostic only: no extra API calls, and no comparison with any benchmark.
-  const resolvedById = new Map(resolved.map((item) => [String(item.candidate_id), item]));
-  let innConfirmed = 0;
-  let innMissing = 0;
-  let innConflictClusters = 0;
-  let innConflictedMentions = 0;
-  for (const cluster of clusters) {
-    const inns = new Set();
-    let confirmed = 0;
-    for (const original of cluster.items) {
-      const item = resolvedById.get(String(original.candidate_id)) || original;
-      const inn = normalizeInn(item?.data?.["ИНН"]);
-      if (inn) {
-        confirmed++;
-        inns.add(inn);
-      }
-    }
-    innConfirmed += confirmed;
-    innMissing += cluster.items.length - confirmed;
-    if (inns.size > 1) {
-      innConflictClusters++;
-      innConflictedMentions += cluster.items.length;
-    }
-  }
-  const missingInnRows = resolved
-    .filter((item) => !normalizeInn(item?.data?.["ИНН"]))
-    .map((item) => ({
-      candidate_id: String(item.candidate_id || ""),
-      organization: String(item?.data?.["Организация"] || "").slice(0, 140),
-      city: String(item?.data?.["Город/район"] || "").slice(0, 100),
-      source_step: item.source_step,
-      evidence_urls: (Array.isArray(item?.data?.__evidence?.source_urls)
-        ? item.data.__evidence.source_urls : []).slice(0, 3),
-      identity_notes: (Array.isArray(item?.data?.__evidence?.notes)
-        ? item.data.__evidence.notes : [])
-        .filter((note) => /инн|identity|юрлиц|не удалось|не найден|конфликт/i.test(String(note)))
-        .slice(-2).map((note) => String(note).slice(0, 300))
-    }));
-  console.log("[INN_MISSING_DIAGNOSTIC] " + JSON.stringify({
-    region,
-    missing: missingInnRows.length,
-    companies: missingInnRows
-  }));
-
-  console.log("[INN_COVERAGE_SUMMARY] " + JSON.stringify({
+  const missingAfterIdentity = resolved.filter(
+    (item) => !normalizeInn(item?.data?.["ИНН"])
+  ).length;
+  console.log("[INN_DEFERRED_TO_FINAL] " + JSON.stringify({
     region,
     mentions: resolved.length,
-    inn_present: innConfirmed,
-    inn_missing: innMissing,
-    inn_conflict_clusters: innConflictClusters,
-    inn_conflict_mentions: innConflictedMentions,
-    web_searched_clusters: searchedWebClusters,
-    web_failed_clusters: failedClusters,
-    definition: "ИНН присутствует и имеет корректную длину; наличие ИНН само по себе не гарантирует независимое подтверждение"
+    inn_present: resolved.length - missingAfterIdentity,
+    inn_missing: missingAfterIdentity,
+    reason: "mandatory INN lookup now runs only after final qualification"
   }));
 
   console.log("[IDENTITY_WEB_SAVINGS] " + JSON.stringify({
     total_clusters: clusters.length,
-    hard_inn_lookup_clusters: hardInnLookupClusters,
-    skipped_web_clusters: skippedWebClusters,
+    skipped_web_clusters: clusters.length - searchedWebClusters,
     searched_web_clusters: searchedWebClusters,
     skip_share: clusters.length
-      ? Number((skippedWebClusters / clusters.length).toFixed(4))
+      ? Number(((clusters.length - searchedWebClusters) / clusters.length).toFixed(4))
       : 0
   }));
 
@@ -1808,9 +1718,192 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
     clusters: clusters.length,
     confirmedInnMentions,
     failedClusters,
-    skippedWebClusters,
+    skippedWebClusters: clusters.length - searchedWebClusters,
     searchedWebClusters
   };
+}
+
+
+function finalInnLookupContract() {
+  return `\n\nФИНАЛЬНЫЙ ПОИСК ИНН — верни ТОЛЬКО JSON по заданной схеме.
+На входе только компании, уже прошедшие dedupe и финальную A/B/C qualification.
+Для КАЖДОГО id обязательно попытайся подтвердить ИНН 10 или 12 цифр.
+Ищи только ИНН и юридическую идентичность, необходимую для его проверки. Не ищи телефон, директора, email, выручку, холдинг и другие поля.
+Сначала используй точное название + город/регион + ИНН; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
+Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай.
+source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
+Каждый входной id должен встретиться ровно один раз.`;
+}
+
+function compactFinalInnTarget(row) {
+  const evidence = row?.__evidence || {};
+  return {
+    id: checkpointRowId(row),
+    organization: String(row?.["Организация"] || "").slice(0, 180),
+    city: String(row?.["Город/район"] || "").slice(0, 120),
+    evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
+      .map(String).filter(Boolean).slice(0, 3),
+    evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
+      .map(String).filter(Boolean)
+      .filter((note) => /адрес|огрн|суд|закуп|договор|официал|сайт|домен|реестр|инн/i.test(note))
+      .slice(0, 2)
+      .map((note) => note.slice(0, 350))
+  };
+}
+
+function applyFinalInnItems(rowsById, result) {
+  let recovered = 0;
+  for (const item of Array.isArray(result?.items) ? result.items : []) {
+    const row = rowsById.get(String(item?.id || ""));
+    if (!row) continue;
+    const inn = normalizeInn(item?.confirmed_inn);
+    if (inn && !normalizeInn(row["ИНН"])) {
+      row["ИНН"] = inn;
+      recovered++;
+    }
+    const existing = row.__evidence || {};
+    const urls = [
+      ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
+      ...(Array.isArray(item?.source_urls) ? item.source_urls : [])
+    ].map(String).filter(Boolean);
+    const note = String(item?.note || "").trim();
+    row.__evidence = {
+      ...existing,
+      source_urls: [...new Set(urls)],
+      notes: [
+        ...(Array.isArray(existing.notes) ? existing.notes : []),
+        note ? `Final INN: ${note}` : "",
+        inn ? `Подтверждённый ИНН: ${inn}` : ""
+      ].filter(Boolean)
+    };
+  }
+  return recovered;
+}
+
+async function lookupFinalInnBatch({
+  client,
+  rows,
+  region,
+  assertNotCancelled,
+  label
+}) {
+  await assertNotCancelled();
+  const targets = rows.map(compactFinalInnTarget);
+  try {
+    return await askJson(client, {
+      input:
+        finalInnLookupContract() +
+        `\n\nРЕГИОН: ${region}
+КОМПАНИИ:
+${JSON.stringify(targets)}`,
+      model: TARGETED_SEARCH_MODEL,
+      maxOutputTokens: FINAL_INN_MAX_OUTPUT_TOKENS,
+      webSearch: true,
+      responseSchema: FINAL_INN_SCHEMA,
+      schemaName: "final_inn_lookup",
+      diagnosticLabel: `final inn | ${label} | size ${rows.length}`,
+      maxToolCalls: 2,
+      allowJsonRepair: false
+    });
+  } catch (error) {
+    if (isOpenAIBillingStop(error)) throw error;
+    if (!isMaxOutputTokensError(error) || rows.length <= 1) throw error;
+    const middle = Math.ceil(rows.length / 2);
+    const left = await lookupFinalInnBatch({
+      client, rows: rows.slice(0, middle), region, assertNotCancelled,
+      label: `${label}.1`
+    });
+    const right = await lookupFinalInnBatch({
+      client, rows: rows.slice(middle), region, assertNotCancelled,
+      label: `${label}.2`
+    });
+    return { items: [...(left?.items || []), ...(right?.items || [])] };
+  }
+}
+
+async function resolveFinalMissingInns({
+  client,
+  finalResult,
+  region,
+  assertNotCancelled,
+  completedIds = new Set(),
+  onBatch = async () => {}
+}) {
+  const companies = [
+    ...(finalResult?.direct_buyers || []),
+    ...(finalResult?.intermediaries || []),
+    ...(finalResult?.leasing || [])
+  ];
+  const rowsById = new Map(
+    companies.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
+  );
+
+  for (const row of companies) {
+    const id = checkpointRowId(row);
+    if (id && normalizeInn(row?.["ИНН"])) completedIds.add(id);
+  }
+
+  const pending = companies.filter((row) => {
+    const id = checkpointRowId(row);
+    return id && !completedIds.has(id) && !normalizeInn(row?.["ИНН"]);
+  });
+
+  let attempted = 0;
+  let recovered = 0;
+  let missing = 0;
+
+  console.log("[FINAL_INN_PLAN] " + JSON.stringify({
+    region,
+    final_companies: companies.length,
+    already_completed: completedIds.size,
+    missing_to_search: pending.length,
+    batch_size: FINAL_INN_BATCH_SIZE
+  }));
+
+  for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
+    await assertNotCancelled();
+    const batch = pending.slice(offset, offset + FINAL_INN_BATCH_SIZE);
+    const result = await lookupFinalInnBatch({
+      client,
+      rows: batch,
+      region,
+      assertNotCancelled,
+      label: `${Math.floor(offset / FINAL_INN_BATCH_SIZE) + 1}/${Math.ceil(pending.length / FINAL_INN_BATCH_SIZE)}`
+    });
+    attempted += batch.length;
+    recovered += applyFinalInnItems(rowsById, result);
+
+    for (const row of batch) {
+      const id = checkpointRowId(row);
+      if (id) completedIds.add(id);
+      if (!normalizeInn(row?.["ИНН"])) missing++;
+    }
+
+    console.log("[FINAL_INN_BATCH] " + JSON.stringify({
+      completed: Math.min(offset + batch.length, pending.length),
+      total: pending.length,
+      recovered,
+      still_missing_in_processed: missing
+    }));
+    await onBatch({
+      completedIds,
+      attempted,
+      recovered,
+      pendingTotal: pending.length
+    });
+  }
+
+  const finalMissing = companies.filter((row) => !normalizeInn(row?.["ИНН"])).length;
+  console.log("[FINAL_INN_SUMMARY] " + JSON.stringify({
+    region,
+    final_companies: companies.length,
+    attempted,
+    recovered,
+    inn_present: companies.length - finalMissing,
+    inn_missing: finalMissing
+  }));
+
+  return { completedIds, attempted, recovered, missing: finalMissing };
 }
 
 function canonicalizeCandidates(candidates, region = "") {
@@ -3325,6 +3418,16 @@ function isWebBudgetStop(error) {
   return error?.code === "WEB_BUDGET_STOP" || error?.name === "WebBudgetStopError";
 }
 
+function isOpenAIBillingStop(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("no credits remaining") ||
+    message.includes("insufficient_quota") ||
+    message.includes("billing") && message.includes("credit") ||
+    message.includes("quota") && message.includes("exceeded")
+  );
+}
+
 function diagnosticRowCount(data) {
   return (
     (Array.isArray(data?.direct_buyers) ? data.direct_buyers.length : 0) +
@@ -3633,6 +3736,9 @@ async function askJson(client, {
     if (parseError) throw new Error(parseError);
     return parsed;
   } catch (error) {
+    if (isOpenAIBillingStop(error)) {
+      error.code = "OPENAI_BILLING_STOP";
+    }
     console.error("[OPENAI_DIAG] " + JSON.stringify({
       query,
       model,
@@ -4173,10 +4279,11 @@ const PIPELINE_PHASE_ORDER = {
   final_batches: 4,
   dedupe: 5,
   qualification: 6,
-  enrichment: 7,
-  statistics: 8,
-  contacts: 9,
-  completed: 10
+  final_inn: 7,
+  enrichment: 8,
+  statistics: 9,
+  contacts: 10,
+  completed: 11
 };
 
 function cloneJson(value) {
@@ -5292,7 +5399,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     identityResolution = await resolveCandidateIdentities({
       client,
-      candidates: [...preIdentity.candidates, ...preIdentity.reviewCandidates],
+      candidates: preIdentity.candidates,
       region,
       prompt: prompts[9],
       assertNotCancelled,
@@ -5308,6 +5415,12 @@ ${JSON.stringify(compactCourtArchive)}
       }
     });
 
+    identityResolution.candidates = appendReviewCandidates(
+      identityResolution.candidates,
+      preIdentity.reviewCandidates,
+      region,
+      "full"
+    );
     await persistCheckpoint("identity", {
       completed_stage: 9,
       parts,
@@ -5493,6 +5606,63 @@ ${JSON.stringify(groupBatch)}`,
   }
 
   await assertNotCancelled();
+  const finalInnCompleted = new Set(
+    Array.isArray(resumeCheckpoint?.final_inn_completed_ids)
+      ? resumeCheckpoint.final_inn_completed_ids.map(String)
+      : []
+  );
+  statuses[9].detail = `финальный поиск ИНН · уже обработано ${finalInnCompleted.size}`;
+  await progress({ phase: "dedupe", step: 10, percent: 89 });
+
+  const finalInnStats = await resolveFinalMissingInns({
+    client,
+    finalResult,
+    region,
+    assertNotCancelled,
+    completedIds: finalInnCompleted,
+    onBatch: async ({ completedIds, attempted, recovered, pendingTotal }) => {
+      statuses[9].detail =
+        `финальный поиск ИНН · ${Math.min(completedIds.size, rowCount(finalResult))} / ${rowCount(finalResult)} · найдено: ${recovered}`;
+      await progress({ phase: "dedupe", step: 10, percent: 89 });
+      await persistCheckpoint("final_inn", {
+        completed_stage: 9,
+        parts,
+        research_scopes: researchScopes,
+        identity_resolution: identityResolution,
+        completed_final_batches: batchCount,
+        staged_result: stagedResult,
+        deduped_records: dedupedRecords,
+        qualification_counts: qualifiedFinal.counts,
+        final_result: finalResult,
+        final_inn_completed_ids: [...completedIds],
+        final_inn_attempted: attempted,
+        final_inn_recovered: recovered,
+        final_inn_pending_total: pendingTotal,
+        enrichment_completed_ids: []
+      });
+    }
+  });
+
+  await persistCheckpoint("final_inn", {
+    completed_stage: 9,
+    parts,
+    research_scopes: researchScopes,
+    identity_resolution: identityResolution,
+    completed_final_batches: batchCount,
+    staged_result: stagedResult,
+    deduped_records: dedupedRecords,
+    qualification_counts: qualifiedFinal.counts,
+    final_result: finalResult,
+    final_inn_completed_ids: [...finalInnStats.completedIds],
+    final_inn_attempted: finalInnStats.attempted,
+    final_inn_recovered: finalInnStats.recovered,
+    final_inn_missing: finalInnStats.missing,
+    enrichment_completed_ids: Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
+      ? resumeCheckpoint.enrichment_completed_ids
+      : []
+  });
+
+  await assertNotCancelled();
   const finalCompaniesForEnrichment = [
     ...finalResult.direct_buyers,
     ...finalResult.intermediaries,
@@ -5544,6 +5714,10 @@ ${JSON.stringify(gaps)}
       deduped_records: dedupedRecords,
       qualification_counts: qualifiedFinal.counts,
       final_result: finalResult,
+      final_inn_completed_ids: [...finalInnStats.completedIds],
+      final_inn_attempted: finalInnStats.attempted,
+      final_inn_recovered: finalInnStats.recovered,
+      final_inn_missing: finalInnStats.missing,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted]
     });
@@ -5581,6 +5755,10 @@ ${JSON.stringify(gaps)}
       deduped_records: dedupedRecords,
       qualification_counts: qualifiedFinal.counts,
       final_result: finalResult,
+      final_inn_completed_ids: [...finalInnStats.completedIds],
+      final_inn_attempted: finalInnStats.attempted,
+      final_inn_recovered: finalInnStats.recovered,
+      final_inn_missing: finalInnStats.missing,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted]
     });
