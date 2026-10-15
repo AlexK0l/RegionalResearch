@@ -1790,7 +1790,7 @@ async function lookupFinalInnBatch({
   await assertNotCancelled();
   const targets = rows.map(compactFinalInnTarget);
   try {
-    return await askJson(client, {
+    const result = await askJson(client, {
       input:
         finalInnLookupContract() +
         `\n\nРЕГИОН: ${region}
@@ -1805,6 +1805,44 @@ ${JSON.stringify(targets)}`,
       maxToolCalls: 2,
       allowJsonRepair: false
     });
+
+    const returned = new Set(
+      (Array.isArray(result?.items) ? result.items : [])
+        .map((item) => String(item?.id || ""))
+        .filter(Boolean)
+    );
+    const omittedRows = rows.filter((row) => !returned.has(checkpointRowId(row)));
+    if (!omittedRows.length) return result;
+
+    console.log("[FINAL_INN_RESPONSE_GAP] " + JSON.stringify({
+      label,
+      requested: rows.length,
+      returned: returned.size,
+      omitted: omittedRows.map((row) => checkpointRowId(row))
+    }));
+
+    if (rows.length <= 1) {
+      return {
+        items: [
+          ...(result?.items || []),
+          {
+            id: checkpointRowId(rows[0]),
+            confirmed_inn: "",
+            source_urls: [],
+            note: "ИНН не подтверждён: ответ поиска не содержал результата по этой компании."
+          }
+        ]
+      };
+    }
+
+    const recovered = await lookupFinalInnBatch({
+      client,
+      rows: omittedRows,
+      region,
+      assertNotCancelled,
+      label: `${label}.gap`
+    });
+    return { items: [...(result?.items || []), ...(recovered?.items || [])] };
   } catch (error) {
     if (isOpenAIBillingStop(error)) throw error;
     if (!isMaxOutputTokensError(error) || rows.length <= 1) throw error;
@@ -1904,6 +1942,31 @@ async function resolveFinalMissingInns({
   }));
 
   return { completedIds, attempted, recovered, missing: finalMissing };
+}
+
+
+function enforceFinalInnRequirement(finalResult) {
+  const removed = [];
+  for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+    const kept = [];
+    for (const row of finalResult?.[sheet] || []) {
+      if (normalizeInn(row?.["ИНН"])) kept.push(row);
+      else {
+        removed.push({
+          sheet,
+          id: checkpointRowId(row),
+          organization: String(row?.["Организация"] || ""),
+          city: String(row?.["Город/район"] || "")
+        });
+      }
+    }
+    finalResult[sheet] = kept;
+  }
+  console.log("[FINAL_INN_ENFORCEMENT] " + JSON.stringify({
+    removed_without_inn: removed.length,
+    companies: removed
+  }));
+  return removed;
 }
 
 function canonicalizeCandidates(candidates, region = "") {
@@ -4308,6 +4371,9 @@ function checkpointSummaryForLog(checkpoint) {
     phase: checkpoint?.phase,
     completed_stage: Number(checkpoint?.completed_stage || 0),
     completed_final_batches: Number(checkpoint?.completed_final_batches || 0),
+    final_inn_completed: Array.isArray(checkpoint?.final_inn_completed_ids)
+      ? checkpoint.final_inn_completed_ids.length : 0,
+    final_inn_removed_without_inn: Number(checkpoint?.final_inn_removed_without_inn || 0),
     enrichment_completed: Array.isArray(checkpoint?.enrichment_completed_ids)
       ? checkpoint.enrichment_completed_ids.length : 0,
     contacts_completed: Array.isArray(checkpoint?.contact_completed_ids)
@@ -5642,6 +5708,8 @@ ${JSON.stringify(groupBatch)}`,
       });
     }
   });
+  const finalInnRemoved = enforceFinalInnRequirement(finalResult);
+  finalInnStats.removedWithoutInn = finalInnRemoved.length;
 
   await persistCheckpoint("final_inn", {
     completed_stage: 9,
@@ -5657,6 +5725,7 @@ ${JSON.stringify(groupBatch)}`,
     final_inn_attempted: finalInnStats.attempted,
     final_inn_recovered: finalInnStats.recovered,
     final_inn_missing: finalInnStats.missing,
+    final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
     enrichment_completed_ids: Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids
       : []
@@ -5718,6 +5787,7 @@ ${JSON.stringify(gaps)}
       final_inn_attempted: finalInnStats.attempted,
       final_inn_recovered: finalInnStats.recovered,
       final_inn_missing: finalInnStats.missing,
+      final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted]
     });
@@ -5759,6 +5829,7 @@ ${JSON.stringify(gaps)}
       final_inn_attempted: finalInnStats.attempted,
       final_inn_recovered: finalInnStats.recovered,
       final_inn_missing: finalInnStats.missing,
+      final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted]
     });
