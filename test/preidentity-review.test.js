@@ -40,6 +40,8 @@ test("REVIEW is retained without identity web-search and final INN runs after qu
   assert.match(source, /identityResolution\.candidates = appendReviewCandidates\(\s*identityResolution\.candidates,\s*preIdentity\.reviewCandidates,\s*region,\s*"full"/);
   assert.match(source, /resolveFinalMissingInns\(\{/);
   assert.match(source, /persistCheckpoint\("final_inn"/);
+  assert.match(source, /enforceFinalInnRequirement\(finalResult\)/);
+  assert.doesNotMatch(source, /identity inn retry \|/);
 });
 
 test("INN checksum validation and triage audit are present", () => {
