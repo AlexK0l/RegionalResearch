@@ -12,12 +12,14 @@ test("discovery and identity web search have hard tool-call caps", () => {
   assert.match(source, /recovery[\s\S]*RESEARCH_MICRO_MAX_OUTPUT_TOKENS,[\s\S]*3\n\s*\)/);
 });
 
-test("INN remains mandatory for all surviving companies", () => {
-  assert.match(source, /ИНН является обязательным реквизитом итоговой базы/);
+test("INN is rechecked for every surviving company without deleting unresolved rows", () => {
   assert.match(source, /candidates: preIdentity\.candidates/);
   assert.match(source, /resolveFinalMissingInns\(\{/);
+  assert.match(source, /ФИНАЛЬНАЯ ПОВТОРНАЯ ПРОВЕРКА ИНН/);
+  assert.match(source, /existing_inn: normalizeInn/);
   assert.match(source, /enforceFinalInnRequirement\(finalResult\)/);
-  assert.match(source, /FINAL_INN_ENFORCEMENT/);
+  assert.match(source, /kept_without_confirmed_inn/);
+  assert.match(source, /return \[\];/);
 });
 
 test("final batch is compact, structured and recursively splittable", () => {
