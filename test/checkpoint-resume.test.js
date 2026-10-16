@@ -95,9 +95,9 @@ test("large discovery diagnostics are sampled instead of fully dumped", () => {
   assert.match(pipeline, /DISCOVERY_RECOVERY_COMPANIES_SAMPLE/);
 });
 
-test("non-A enrichment never spends a standalone search only for revenue or headcount", () => {
+test("post-dedupe enrichment searches missing revenue or headcount for every final grade", () => {
   assert.match(pipeline, /function prioritizedResearchGaps\(row\)/);
-  assert.match(pipeline, /if \(grade === "A"\) return gaps/);
-  assert.match(pipeline, /const coreGaps = gaps\.filter/);
+  assert.match(pipeline, /return missingResearchFields\(row\)/);
+  assert.doesNotMatch(pipeline, /if \(grade === "A"\) return gaps/);
   assert.match(pipeline, /const gaps = prioritizedResearchGaps\(row\)/);
 });
