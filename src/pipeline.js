@@ -706,9 +706,9 @@ function contract(final = false) {
     return `\n\nТЕХНИЧЕСКИЙ ФОРМАТ: верни ТОЛЬКО валидный JSON без markdown:
 {"direct_buyers":[],"intermediaries":[],"leasing":[],"statistics":[]}.
 Коммерческие объекты содержат ключи: ${COLS.map((x) => `"${x}"`).join(", ")}, а также служебный ключ "__comment".
-"__comment" — текст Excel-примечания для ячейки первого столбца "Организация". Он обязателен для каждой коммерческой организации и должен содержать отдельными строками: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:". Этот служебный ключ не является колонкой XLSX.
+"__comment" — текст Excel-примечания для ячейки столбца "Организация". Он обязателен для каждой коммерческой организации и должен содержать отдельными строками: "Сайт/источник:", "ИНН:", "Деятельность:", "Холдинг/УК/группа:", "Email:". Этот служебный ключ не является колонкой XLSX.
 Статистика содержит ровно ключи: ${STAT_COLS.map((x) => `"${x}"`).join(", ")}.
-Не добавляй видимое поле/колонку "Источник". Если значения нет — пустая строка; в "__comment" для неподтвержденных сведений явно укажи "не подтверждено" или "не найден".`;
+На коммерческие объекты не добавляй поле "Источник"; в объектах statistics поле "Источник" обязательно, если оно входит в STAT_COLS. Если значения нет — пустая строка; в "__comment" для неподтвержденных сведений явно укажи "не подтверждено" или "не найден".`;
   }
 
   return `\n\nDISCOVERY-ФОРМАТ — ЭТАПЫ 1–9. Верни ТОЛЬКО валидный JSON без markdown:
@@ -823,7 +823,7 @@ function targetedSearchContract() {
 Ищи ТОЛЬКО указанную компанию и ТОЛЬКО перечисленные недостающие сведения.
 fields может содержать только: "Управляющая компания", "ИНН", "Телефон", "Руководитель / ЛПР", "Выручка последнего подтвержденного года", "Численность".
 "__comment" должен содержать пять строк: Сайт/источник; ИНН; Деятельность; Холдинг/УК/группа; Email.
-Не заменяй уже подтверждённые сведения более слабыми. Не выдумывай данные.`;
+Выручку возвращай только полным числом рублей, численность — только целым числом сотрудников; без года, единиц, слов, сокращений и диапазонов. Не заменяй уже подтверждённые сведения более слабыми. Не выдумывай данные.`;
 }
 
 async function loadPrompt(n) {
@@ -1725,12 +1725,12 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
 
 
 function finalInnLookupContract() {
-  return `\n\nФИНАЛЬНЫЙ ПОИСК ИНН — верни ТОЛЬКО JSON по заданной схеме.
+  return `\n\nФИНАЛЬНАЯ ПОВТОРНАЯ ПРОВЕРКА ИНН — верни ТОЛЬКО JSON по заданной схеме.
 На входе только компании, уже прошедшие dedupe и финальную A/B/C qualification.
-Для КАЖДОГО id обязательно попытайся подтвердить ИНН 10 или 12 цифр.
+Для КАЖДОГО id обязательно заново проверь ИНН 10 или 12 цифр, даже если existing_inn уже заполнен.
 Ищи только ИНН и юридическую идентичность, необходимую для его проверки. Не ищи телефон, директора, email, выручку, холдинг и другие поля.
-Сначала используй точное название + город/регион + ИНН; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
-Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай.
+Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
+Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай. Если надёжно подтверждён другой ИНН того же юрлица, верни подтверждённый корректный ИНН.
 source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
 Каждый входной id должен встретиться ровно один раз.`;
 }
@@ -1741,6 +1741,7 @@ function compactFinalInnTarget(row) {
     id: checkpointRowId(row),
     organization: String(row?.["Организация"] || "").slice(0, 180),
     city: String(row?.["Город/район"] || "").slice(0, 120),
+    existing_inn: normalizeInn(row?.["ИНН"]),
     evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .map(String).filter(Boolean).slice(0, 3),
     evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
@@ -1757,10 +1758,9 @@ function applyFinalInnItems(rowsById, result) {
     const row = rowsById.get(String(item?.id || ""));
     if (!row) continue;
     const inn = normalizeInn(item?.confirmed_inn);
-    if (inn && !normalizeInn(row["ИНН"])) {
-      row["ИНН"] = inn;
-      recovered++;
-    }
+    const previousInn = normalizeInn(row["ИНН"]);
+    row["ИНН"] = inn || "";
+    if (inn && inn !== previousInn) recovered++;
     const existing = row.__evidence || {};
     const urls = [
       ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
@@ -1876,14 +1876,9 @@ async function resolveFinalMissingInns({
     companies.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
   );
 
-  for (const row of companies) {
-    const id = checkpointRowId(row);
-    if (id && normalizeInn(row?.["ИНН"])) completedIds.add(id);
-  }
-
   const pending = companies.filter((row) => {
     const id = checkpointRowId(row);
-    return id && !completedIds.has(id) && !normalizeInn(row?.["ИНН"]);
+    return id && !completedIds.has(id);
   });
 
   let attempted = 0;
@@ -1894,7 +1889,7 @@ async function resolveFinalMissingInns({
     region,
     final_companies: companies.length,
     already_completed: completedIds.size,
-    missing_to_search: pending.length,
+    companies_to_recheck: pending.length,
     batch_size: FINAL_INN_BATCH_SIZE
   }));
 
@@ -1946,13 +1941,11 @@ async function resolveFinalMissingInns({
 
 
 function enforceFinalInnRequirement(finalResult) {
-  const removed = [];
+  const missing = [];
   for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
-    const kept = [];
     for (const row of finalResult?.[sheet] || []) {
-      if (normalizeInn(row?.["ИНН"])) kept.push(row);
-      else {
-        removed.push({
+      if (!normalizeInn(row?.["ИНН"])) {
+        missing.push({
           sheet,
           id: checkpointRowId(row),
           organization: String(row?.["Организация"] || ""),
@@ -1960,15 +1953,15 @@ function enforceFinalInnRequirement(finalResult) {
         });
       }
     }
-    finalResult[sheet] = kept;
   }
   console.log("[FINAL_INN_ENFORCEMENT] " + JSON.stringify({
-    removed_without_inn: removed.length,
-    companies: removed
+    kept_without_confirmed_inn: missing.length,
+    companies: missing
   }));
-  return removed;
+  // По синхронизированным инструкциям отсутствие подтверждённого ИНН
+  // не является причиной удалять релевантную компанию.
+  return [];
 }
-
 function canonicalizeCandidates(candidates, region = "") {
   const parent = candidates.map((_, i) => i);
   const rank = candidates.map(() => 0);
@@ -3924,24 +3917,18 @@ function missingResearchFields(row) {
 }
 
 function prioritizedResearchGaps(row) {
-  const gaps = missingResearchFields(row);
-  if (!gaps.length) return gaps;
+  // После dedupe усиливаем enrichment для всех итоговых организаций.
+  // В частности, отсутствие выручки или численности само по себе является
+  // достаточным основанием для одного точечного поиска независимо от A/B/C.
+  return missingResearchFields(row);
+}
 
-  const grade = String(row?.__final_grade || "").toUpperCase();
-  const core = new Set([
-    "сайт/источник",
-    "ИНН",
-    "email",
-    "краткое описание деятельности",
-    "холдинг/УК/группа"
-  ]);
-
-  // A gets the full enrichment set. For B/C, revenue/headcount never justify
-  // a standalone paid search, but are still requested when a core gap already
-  // makes the search necessary. INN is always a core gap and is never skipped.
-  if (grade === "A") return gaps;
-  const coreGaps = gaps.filter((gap) => core.has(gap));
-  return coreGaps.length ? gaps : [];
+function strictResearchNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.round(value) : "";
+  const text = String(value ?? "").trim().replace(/\s+/g, "");
+  if (!/^\d+(?:[.,]\d+)?$/.test(text)) return "";
+  const parsed = Number(text.replace(",", "."));
+  return Number.isFinite(parsed) ? Math.round(parsed) : "";
 }
 
 function applyTargetedPatch(row, result) {
@@ -3956,8 +3943,14 @@ function applyTargetedPatch(row, result) {
   for (const [key, value] of Object.entries(result?.fields || {})) {
     if (!allowed.has(key)) continue;
     if (value === undefined || value === null || String(value).trim() === "") continue;
-    if (key === "Телефон") row[key] = mergePhone(row[key], value);
-    else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) row[key] = value;
+    if (key === "Телефон") {
+      row[key] = mergePhone(row[key], value);
+    } else if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
+      const numeric = strictResearchNumber(value);
+      if (numeric !== "") row[key] = numeric;
+    } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
+      row[key] = value;
+    }
   }
   if (String(result?.__comment || "").trim()) row.__comment = String(result.__comment).trim();
 }
