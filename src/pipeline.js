@@ -6695,18 +6695,16 @@ ${JSON.stringify(gaps)}
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}`;
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
-  const companies = [
-    ...finalResult.direct_buyers,
-    ...finalResult.intermediaries,
-    ...finalResult.leasing
-  ];
+  const companies = allResearchRows(finalResult);
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
+  const stage11StartedAt = Date.now();
+  const stage11DeadlineAt = stage11StartedAt + STAGE11_MAX_MS;
 
   startStep(statuses[10]);
   statuses[10].detail = googleCompanies.length
-    ? `0 / ${googleCompanies.length} · пропущено готовых: ${skippedGoogle}`
+    ? `web-first контакты · 0 / ${googleCompanies.length} · готовых: ${skippedGoogle}`
     : `контакты уже заполнены · пропущено: ${skippedGoogle}`;
   await progress({
     phase: "google_ai",
@@ -6716,24 +6714,268 @@ ${JSON.stringify(gaps)}
     contactTotal: googleCompanies.length
   });
 
+  const resumedContactStats = resumeCheckpoint?.contact_stats || {};
+  const contactCheckpointVersion = Number(resumedContactStats.version || 0);
   const contactCompleted = new Set(
-    Array.isArray(resumeCheckpoint?.contact_completed_ids)
+    contactCheckpointVersion >= 2 && Array.isArray(resumeCheckpoint?.contact_completed_ids)
       ? resumeCheckpoint.contact_completed_ids.map(String)
       : []
   );
-  const resumedContactStats = resumeCheckpoint?.contact_stats || {};
-  let ok = Number(resumedContactStats.ok || 0);
-  let unavailable = Number(resumedContactStats.unavailable || 0);
-  let notFound = Number(resumedContactStats.notFound || 0);
-  let solRetries = Number(resumedContactStats.solRetries || 0);
-  let solRecovered = Number(resumedContactStats.solRecovered || 0);
-  let browser;
-  let session;
 
-  try {
-    if (googleCompanies.length) {
+  let webOk = Number(resumedContactStats.webOk || 0);
+  let webNotFound = Number(resumedContactStats.webNotFound || 0);
+  let webUnavailable = Number(resumedContactStats.webUnavailable || 0);
+  let browserFallbacks = Number(resumedContactStats.browserFallbacks || 0);
+  let browserRecovered = Number(resumedContactStats.browserRecovered || 0);
+  let browserUnavailable = Number(resumedContactStats.browserUnavailable || 0);
+  let phoneConflicts = Number(resumedContactStats.phoneConflicts || 0);
+  let phoneVerified = Number(resumedContactStats.phoneVerified || 0);
+  let deadlineSkipped = Number(resumedContactStats.deadlineSkipped || 0);
+  let solRetries = 0;
+  let solRecovered = 0;
+
+  const primaryResults = new Map();
+  const contactOutcomes = new Map();
+  let primaryProcessed = 0;
+
+  const contactStatsSnapshot = () => ({
+    version: 2,
+    ok: [...contactOutcomes.values()].filter((value) => value === "ok").length,
+    unavailable: [...contactOutcomes.values()].filter((value) => value === "unavailable").length,
+    notFound: [...contactOutcomes.values()].filter((value) => value === "not_found").length,
+    solRetries,
+    solRecovered,
+    webOk,
+    webNotFound,
+    webUnavailable,
+    browserFallbacks,
+    browserRecovered,
+    browserUnavailable,
+    phoneConflicts,
+    phoneVerified,
+    deadlineSkipped,
+    primaryProcessed,
+    browserCircuitOpen: false
+  });
+
+  let browserCircuitOpen = false;
+  const persistContactsCheckpoint = async () => {
+    const stats = contactStatsSnapshot();
+    stats.browserCircuitOpen = browserCircuitOpen;
+    await persistCheckpoint("contacts", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      targeted_searches: targetedSearches,
+      enrichment_completed_ids: [...enrichmentCompleted],
+      contact_completed_ids: [...contactCompleted],
+      contact_stats: stats,
+      stage10_duration_ms: Date.now() - stage10StartedAt,
+      stage11_duration_ms: Date.now() - stage11StartedAt
+    });
+  };
+  const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
+
+  const contactPending = googleCompanies.filter((row) => {
+    const id = checkpointRowId(row);
+    return !id || !contactCompleted.has(id);
+  });
+
+  console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
+    total_companies: companies.length,
+    target_companies: googleCompanies.length,
+    already_completed: contactCompleted.size,
+    pending: contactPending.length,
+    concurrency: CONTACT_CONCURRENCY,
+    stage_deadline_ms: STAGE11_MAX_MS
+  }));
+
+  await mapWithConcurrency(
+    contactPending,
+    CONTACT_CONCURRENCY,
+    async (row) => {
+      await assertNotCancelled();
+      const rowId = checkpointRowId(row);
+      if (deadlineRemaining(stage11DeadlineAt) <= 6000) {
+        deadlineSkipped++;
+        webUnavailable++;
+        if (rowId) {
+          contactOutcomes.set(rowId, "unavailable");
+          contactCompleted.add(rowId);
+        }
+        primaryProcessed++;
+        await contactCheckpointBatcher.request();
+        return;
+      }
+
+      try {
+        const result = await searchContactsWithWeb({
+          client,
+          row,
+          region,
+          deadlineAt: stage11DeadlineAt
+        });
+        primaryResults.set(rowId, result);
+        if (result.status === "ok") webOk++;
+        else webNotFound++;
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        webUnavailable++;
+        primaryResults.set(rowId, {
+          status: "unavailable",
+          phones: [],
+          leader: "",
+          note: error?.message || "contact web search unavailable"
+        });
+      }
+
+      primaryProcessed++;
+      if (primaryProcessed % 10 === 0 || primaryProcessed === contactPending.length) {
+        statuses[10].detail =
+          `web-first контакты · ${primaryProcessed} / ${contactPending.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
+        await progress({
+          phase: "google_ai",
+          step: 11,
+          percent: 90 + Math.floor((primaryProcessed / Math.max(1, contactPending.length)) * 5),
+          contactCurrent: primaryProcessed,
+          contactTotal: googleCompanies.length,
+          contactCompany: "",
+          contactStats: contactStatsSnapshot()
+        });
+      }
+    }
+  );
+
+  // Build a global claim map BEFORE accepting newly found phones. This catches
+  // both conflicts with existing cells and the same new phone returned for
+  // several legal entities in the concurrent primary pass.
+  const phoneClaims = new Map();
+  const addPhoneClaim = (phone, row, source) => {
+    const normalized = normalizePhoneDigits(phone);
+    if (!normalized) return;
+    if (!phoneClaims.has(normalized)) phoneClaims.set(normalized, []);
+    const claims = phoneClaims.get(normalized);
+    if (!claims.some((item) => item.row === row && item.source === source)) {
+      claims.push({ row, source });
+    }
+  };
+
+  for (const row of companies) {
+    for (const phone of splitPhoneEntries(row["Телефон"])) {
+      addPhoneClaim(phone, row, "existing");
+    }
+  }
+  for (const row of contactPending) {
+    const result = primaryResults.get(checkpointRowId(row));
+    for (const phone of result?.phones || []) addPhoneClaim(phone, row, "web");
+  }
+
+  const conflictChecks = [];
+  for (const row of contactPending) {
+    const rowId = checkpointRowId(row);
+    const result = primaryResults.get(rowId);
+    if (!result) continue;
+
+    if (result.leader && !hasConfirmedLeader(row)) {
+      row["Руководитель / ЛПР"] = String(result.leader).trim();
+    }
+
+    for (const phone of result.phones || []) {
+      const normalized = normalizePhoneDigits(phone);
+      if (!normalized) continue;
+      const claims = phoneClaims.get(normalized) || [];
+      const otherRows = claims.some((claim) => claim.row !== row);
+
+      if (!otherRows) {
+        row["Телефон"] = mergePhone(row["Телефон"], normalized);
+        if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
+        if (!phoneOwners.get(normalized).includes(row)) phoneOwners.get(normalized).push(row);
+        continue;
+      }
+
+      phoneConflicts++;
+      conflictChecks.push({ row, rowId, phone: normalized });
+    }
+  }
+
+  const verifiedConflictPhones = new Set();
+  await mapWithConcurrency(
+    conflictChecks,
+    CONTACT_CONCURRENCY,
+    async ({ row, rowId, phone }) => {
+      await assertNotCancelled();
+      if (deadlineRemaining(stage11DeadlineAt) <= 6000) return;
+      try {
+        const verification = await verifyPhoneWithWebSearch({
+          client,
+          row,
+          region,
+          phone,
+          deadlineAt: stage11DeadlineAt
+        });
+        if (verification?.confirmed) {
+          verifiedConflictPhones.add(`${rowId}|${phone}`);
+          phoneVerified++;
+        }
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        console.error("[PHONE_CONFLICT_VERIFY_ERROR] " + JSON.stringify({
+          id: rowId,
+          phone,
+          error: error?.message || String(error)
+        }));
+      }
+    }
+  );
+
+  for (const { row, rowId, phone } of conflictChecks) {
+    if (!verifiedConflictPhones.has(`${rowId}|${phone}`)) continue;
+    row["Телефон"] = mergePhone(row["Телефон"], phone);
+    if (!phoneOwners.has(phone)) phoneOwners.set(phone, []);
+    if (!phoneOwners.get(phone).includes(row)) phoneOwners.get(phone).push(row);
+  }
+
+  for (const row of contactPending) {
+    const rowId = checkpointRowId(row);
+    const result = primaryResults.get(rowId);
+    if (!result) continue;
+    const gained = hasConfirmedPhone(row) ||
+      Boolean(result?.leader && hasConfirmedLeader(row));
+    if (rowId) contactOutcomes.set(
+      rowId,
+      gained ? "ok" : result.status === "unavailable" ? "unavailable" : "not_found"
+    );
+  }
+
+  // Google AI Mode is now a small fallback for unresolved A/B rows only.
+  // It is never the primary path and never triggers a full automatic Sol retry.
+  const browserFallbackCandidates = contactPending.filter((row) => {
+    if (!isPriorityAB(row)) return false;
+    if (!needsGoogleResearch(row)) return false;
+    return deadlineRemaining(stage11DeadlineAt) > 45000;
+  });
+
+  let browser = null;
+  const browserSessions = [];
+  let browserAttemptsThisRun = 0;
+  let browserUnavailableThisRun = 0;
+
+  if (browserFallbackCandidates.length && deadlineRemaining(stage11DeadlineAt) > 45000) {
+    try {
       browser = await launchResearchBrowser();
-      session = await createResearchSession(browser);
+      const sessionCount = Math.min(
+        GOOGLE_FALLBACK_CONCURRENCY,
+        browserFallbackCandidates.length
+      );
+      for (let index = 0; index < sessionCount; index++) {
+        browserSessions.push(await createResearchSession(browser));
+      }
       if (jobSignal) {
         jobSignal.addEventListener(
           "abort",
@@ -6741,197 +6983,160 @@ ${JSON.stringify(gaps)}
           { once: true }
         );
       }
-    }
 
-    for (let i = 0; i < googleCompanies.length; i++) {
-      await assertNotCancelled();
+      await mapWithConcurrency(
+        browserFallbackCandidates,
+        browserSessions.length,
+        async (row, _index, workerIndex) => {
+          await assertNotCancelled();
+          if (browserCircuitOpen || deadlineRemaining(stage11DeadlineAt) <= 15000) return;
 
-      if (i > 0 && i % 90 === 0) {
-        if (session) await closeResearchSession(session);
-        if (browser) await browser.close().catch(() => {});
-        browser = await launchResearchBrowser();
-        session = await createResearchSession(browser);
-        statuses[10].detail = `${i} / ${googleCompanies.length} · новая сессия поиска`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-          contactCurrent: i,
-          contactTotal: googleCompanies.length,
-          contactCompany: "",
-          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-        });
-        await abortableSleep(2000);
-      }
+          const rowId = checkpointRowId(row);
+          const timeoutMs = Math.min(
+            GOOGLE_AI_COMPANY_TIMEOUT_MS,
+            Math.max(10000, deadlineRemaining(stage11DeadlineAt) - 5000)
+          );
+          const timeoutSignal = AbortSignal.timeout(timeoutMs);
+          const attemptSignal = jobSignal
+            ? AbortSignal.any([jobSignal, timeoutSignal])
+            : timeoutSignal;
 
-      const row = googleCompanies[i];
-      const contactRowId = checkpointRowId(row);
-      if (contactRowId && contactCompleted.has(contactRowId)) {
-        continue;
-      }
-      statuses[10].detail = `${i} / ${googleCompanies.length} · ${row["Организация"] || ""}`;
-      await progress({
-        phase: "google_ai",
-        step: 11,
-        percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-        contactCurrent: i,
-        contactTotal: googleCompanies.length,
-        contactCompany: row["Организация"] || ""
-      });
-
-      let contact;
-      try {
-        const needPhone = !hasConfirmedPhone(row);
-        const needLeader = !hasConfirmedLeader(row);
-        contact = await enrichCompanyWithGoogleAI({
-          client,
-          session,
-          row,
-          region,
-          needPhone,
-          needLeader,
-          isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
-        });
-      } catch (error) {
-        contact = {
-          status: "unavailable",
-          phone: "",
-          leader: "",
-          note: error?.message || "browser error"
-        };
-      }
-
-      if (contact.status === "not_found" && GOOGLE_AI_SOL_RETRY_PRIORITY_AB && isPriorityAB(row)) {
-        solRetries++;
-        statuses[10].detail = `${i + 1} / ${googleCompanies.length} · Sol retry · ${row["Организация"] || ""}`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-          contactCurrent: i,
-          contactTotal: googleCompanies.length,
-          contactCompany: row["Организация"] || "",
-          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-        });
-
-        try {
-          const needPhone = !hasConfirmedPhone(row);
-          const needLeader = !hasConfirmedLeader(row);
-          contact = await enrichCompanyWithGoogleAI({
-            client,
-            session,
-            row,
-            region,
-            needPhone,
-            needLeader,
-            forceFallback: true,
-            isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
-          });
-          if (contact.status === "ok") solRecovered++;
-        } catch (error) {
-          contact = {
-            status: "unavailable",
-            phone: "",
-            leader: "",
-            note: error?.message || "Sol retry browser error"
-          };
-        }
-      }
-
-      if (contact.status === "ok") {
-        const candidates = filterAlreadyInCurrentCell(row["Телефон"], contact.phone);
-        const accepted = [];
-
-        for (const entry of candidates) {
-          const normalized = normalizePhoneDigits(entry);
-          if (!normalized) continue;
-
-          const owners = phoneOwners.get(normalized) || [];
-          const belongsElsewhere = owners.some((owner) => owner !== row);
-
-          if (belongsElsewhere) {
-            const verification = await verifyPhoneForCompanyWithGoogleAI({
+          browserAttemptsThisRun++;
+          browserFallbacks++;
+          let contact;
+          try {
+            contact = await enrichCompanyWithGoogleAI({
               client,
-              session,
+              session: browserSessions[workerIndex],
               row,
               region,
-              phone: normalized,
+              needPhone: !hasConfirmedPhone(row),
+              needLeader: !hasConfirmedLeader(row),
+              forceFallback: false,
               isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
+              signal: attemptSignal
             });
-            if (!verification?.confirmed) continue;
+          } catch (error) {
+            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            contact = {
+              status: "unavailable",
+              phone: "",
+              leader: "",
+              note: error?.message || "browser fallback unavailable"
+            };
           }
 
-          accepted.push(entry);
-          if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
-          if (!phoneOwners.get(normalized).includes(row)) {
-            phoneOwners.get(normalized).push(row);
+          if (contact?.status === "unavailable") {
+            browserUnavailable++;
+            browserUnavailableThisRun++;
+          }
+
+          if (
+            browserAttemptsThisRun >= 10 &&
+            browserUnavailableThisRun / browserAttemptsThisRun >= 0.7
+          ) {
+            browserCircuitOpen = true;
+            console.log("[GOOGLE_AI_CIRCUIT_OPEN] " + JSON.stringify({
+              attempts: browserAttemptsThisRun,
+              unavailable: browserUnavailableThisRun,
+              unavailable_share: Number(
+                (browserUnavailableThisRun / browserAttemptsThisRun).toFixed(3)
+              )
+            }));
+          }
+
+          let applied = false;
+          if (contact?.status === "ok") {
+            if (contact.leader && !hasConfirmedLeader(row)) {
+              row["Руководитель / ЛПР"] = String(contact.leader).trim();
+              applied = true;
+            }
+
+            for (const entry of splitPhoneEntries(contact.phone)) {
+              const normalized = normalizePhoneDigits(entry);
+              if (!normalized) continue;
+              const owners = phoneOwners.get(normalized) || [];
+              const belongsElsewhere = owners.some((owner) => owner !== row);
+              let accept = !belongsElsewhere;
+
+              if (belongsElsewhere && deadlineRemaining(stage11DeadlineAt) > 6000) {
+                phoneConflicts++;
+                try {
+                  const verification = await verifyPhoneWithWebSearch({
+                    client,
+                    row,
+                    region,
+                    phone: normalized,
+                    deadlineAt: stage11DeadlineAt
+                  });
+                  accept = Boolean(verification?.confirmed);
+                  if (accept) phoneVerified++;
+                } catch (error) {
+                  if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+                  accept = false;
+                }
+              }
+
+              if (!accept) continue;
+              row["Телефон"] = mergePhone(row["Телефон"], normalized);
+              if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
+              if (!phoneOwners.get(normalized).includes(row)) {
+                phoneOwners.get(normalized).push(row);
+              }
+              applied = true;
+            }
+          }
+
+          if (applied) {
+            browserRecovered++;
+            if (rowId) contactOutcomes.set(rowId, "ok");
           }
         }
-
-        if (accepted.length) {
-          contact.phone = accepted.join("; ");
-          applyContact(row, contact);
-          ok++;
-        } else if (contact.leader) {
-          applyContact(row, { ...contact, phone: "" });
-          ok++;
-        } else {
-          notFound++;
-        }
-      } else if (contact.status === "not_found") {
-        notFound++;
-      } else {
-        unavailable++;
+      );
+    } catch (error) {
+      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      browserCircuitOpen = true;
+      console.error("[GOOGLE_AI_FALLBACK_STAGE_ERROR] " + JSON.stringify({
+        error: error?.message || String(error)
+      }));
+    } finally {
+      for (const session of browserSessions) {
+        await closeResearchSession(session);
       }
-
-      statuses[10].detail = `${i + 1} / ${googleCompanies.length} · выполнено`;
-      await progress({
-        phase: "google_ai",
-        step: 11,
-        percent: 90 + Math.floor(((i + 1) / Math.max(1, googleCompanies.length)) * 9),
-        contactCurrent: i + 1,
-        contactTotal: googleCompanies.length,
-        contactCompany: row["Организация"] || "",
-        contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-      });
-      if (contactRowId) contactCompleted.add(contactRowId);
-      await persistCheckpoint("contacts", {
-        completed_stage: 9,
-        parts,
-        research_scopes: researchScopes,
-        identity_resolution: identityResolution,
-        completed_final_batches: batchCount,
-        staged_result: stagedResult,
-        deduped_records: dedupedRecords,
-        qualification_counts: qualifiedFinal.counts,
-        final_result: finalResult,
-        targeted_searches: targetedSearches,
-        enrichment_completed_ids: [...enrichmentCompleted],
-        contact_completed_ids: [...contactCompleted],
-        contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
-      });
-
-      if (i < googleCompanies.length - 1) {
-        await abortableSleep(5000);
-      }
+      if (browser) await browser.close().catch(() => {});
     }
-  } finally {
-    if (session) await closeResearchSession(session);
-    if (browser) await browser.close().catch(() => {});
   }
 
+  for (const row of contactPending) {
+    const rowId = checkpointRowId(row);
+    if (!rowId) continue;
+    if (!contactOutcomes.has(rowId)) {
+      contactOutcomes.set(
+        rowId,
+        needsGoogleResearch(row) ? "not_found" : "ok"
+      );
+    }
+    contactCompleted.add(rowId);
+    await contactCheckpointBatcher.request();
+  }
+  await contactCheckpointBatcher.flush();
+
+  const contactStats = contactStatsSnapshot();
+  contactStats.browserCircuitOpen = browserCircuitOpen;
+  const ok = contactStats.ok;
+  const unavailable = contactStats.unavailable;
+  const notFound = contactStats.notFound;
+
   finishStep(statuses[10]);
-  statuses[10].detail = `выполнен · проверено ${googleCompanies.length}, пропущено ${skippedGoogle}`;
+  statuses[10].detail =
+    `выполнен · web-first проверено ${googleCompanies.length} · browser fallback ${browserFallbacks} · conflicts ${phoneConflicts}`;
   await progress({
     phase: "completed",
     step: 11,
     percent: 100,
     contactCurrent: googleCompanies.length,
     contactTotal: googleCompanies.length,
-    contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
+    contactStats
   });
   await persistCheckpoint("completed", {
     completed_stage: 9,
@@ -6946,7 +7151,9 @@ ${JSON.stringify(gaps)}
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
-    contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
+    contact_stats: contactStats,
+    stage10_duration_ms: Date.now() - stage10StartedAt,
+    stage11_duration_ms: Date.now() - stage11StartedAt
   });
 
   return {
@@ -6967,7 +7174,18 @@ ${JSON.stringify(gaps)}
       unavailable,
       notFound,
       solRetries,
-      solRecovered
+      solRecovered,
+      webOk,
+      webNotFound,
+      webUnavailable,
+      browserFallbacks,
+      browserRecovered,
+      browserUnavailable,
+      phoneConflicts,
+      phoneVerified,
+      deadlineSkipped,
+      browserCircuitOpen,
+      stage11DurationMs: Date.now() - stage11StartedAt
     }
   };
 }
