@@ -6220,52 +6220,46 @@ ${JSON.stringify(compactCourtArchive)}
   }));
 
   const batchCount = Math.max(1, Math.ceil(canonicalPool.length / FINAL_BATCH_SIZE));
-  const stagedResult =
+  let stagedResult;
+
+  if (
     resumeCheckpoint &&
     checkpointPhaseAtLeast(resumeCheckpoint, "final_batches") &&
     resumeCheckpoint.staged_result
-      ? cloneJson(resumeCheckpoint.staged_result)
-      : { direct_buyers: [], intermediaries: [], leasing: [] };
-  const completedFinalBatches =
-    resumeCheckpoint &&
-    checkpointPhaseAtLeast(resumeCheckpoint, "final_batches")
-      ? Math.max(0, Math.min(batchCount, Number(resumeCheckpoint.completed_final_batches || 0)))
-      : 0;
+  ) {
+    stagedResult = cloneJson(resumeCheckpoint.staged_result);
+    console.log("[DETERMINISTIC_STAGING_RESUME] " + JSON.stringify({
+      rows: rowCount(stagedResult),
+      completed_final_batches: Number(resumeCheckpoint.completed_final_batches || 0)
+    }));
+  } else {
+    stagedResult = { direct_buyers: [], intermediaries: [], leasing: [] };
+    for (const canonical of canonicalPool) {
+      const row = baselineRowFromCanonical(canonical);
+      const sheet = canonical.source_sheets.includes("Лизинг")
+        ? "leasing"
+        : canonical.source_sheets.includes("Прямые покупатели")
+          ? "direct_buyers"
+          : "intermediaries";
+      stagedResult[sheet].push(row);
+    }
 
-  for (let batchIndex = completedFinalBatches; batchIndex < batchCount; batchIndex++) {
-    await assertNotCancelled();
-    const batch = canonicalPool.slice(
-      batchIndex * FINAL_BATCH_SIZE,
-      (batchIndex + 1) * FINAL_BATCH_SIZE
-    );
-
-    statuses[9].detail = `пакет ${batchIndex + 1} / ${batchCount} · ${batch.length} компаний`;
-    await progress({
-      phase: "dedupe",
-      step: 10,
-      percent: 82 + Math.floor(((batchIndex + 1) / batchCount) * 5)
-    });
-
-    const batchResult = await processFinalBatchResilient({
-      client,
-      prompt: prompts[9],
-      region,
-      batch,
-      assertNotCancelled,
-      label: `${batchIndex + 1}/${batchCount}`
-    });
-
-    stagedResult.direct_buyers.push(...batchResult.direct_buyers);
-    stagedResult.intermediaries.push(...batchResult.intermediaries);
-    stagedResult.leasing.push(...batchResult.leasing);
-
+    console.log("[DETERMINISTIC_STAGING] " + JSON.stringify({
+      canonical_companies: canonicalPool.length,
+      staged_rows: rowCount(stagedResult),
+      skipped_mass_llm_batches: batchCount
+    }));
+    statuses[9].detail =
+      `deterministic staging · ${rowCount(stagedResult)} компаний · массовые LLM-batch отключены`;
+    await progress({ phase: "dedupe", step: 10, percent: 87 });
     await persistCheckpoint("final_batches", {
       completed_stage: 9,
       parts,
       research_scopes: researchScopes,
       identity_resolution: identityResolution,
-      completed_final_batches: batchIndex + 1,
-      staged_result: stagedResult
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deterministic_staging: true
     });
   }
 
