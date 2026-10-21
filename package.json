@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "benchmark:reference": "node scripts/benchmark-reference.js"
+    "benchmark:reference": "node scripts/benchmark-reference.js",
+    "local": "node --env-file=.env server.js",
+    "browser:install": "playwright install chromium"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "express": "^5.1.0",
     "openai": "^5.20.0",
