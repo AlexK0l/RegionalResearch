@@ -56,10 +56,12 @@ test("government bodies are excluded even when procurement evidence is strong", 
     )
   );
 
-  assert.equal(classifyEntityType(decision ? record(
-    "Администрация муниципального образования Ярцевский муниципальный округ",
-    ""
-  ).row : {}), "government_body");
+  assert.equal(
+    classifyEntityType({
+      "Организация": "Администрация муниципального образования Ярцевский муниципальный округ"
+    }),
+    "government_body"
+  );
   assert.equal(decision.decision, "exclude");
   assert.equal(decision.grade, "");
   assert.equal(decision.signals.entityType, "government_body");
