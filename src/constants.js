@@ -1,4 +1,4 @@
-export const MODEL = process.env.OPENAI_MODEL || "gpt-5.6";
+export const MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
 
 export const STEPS = [
   "Объявления, б/у техника и вакансии",
