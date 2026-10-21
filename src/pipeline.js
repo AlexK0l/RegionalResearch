@@ -6386,34 +6386,115 @@ ${JSON.stringify(groupBatch)}`,
   statuses[9].detail = `финальный поиск ИНН · уже обработано ${finalInnCompleted.size}`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
 
+  let latestFinalInnProgress = {
+    completedIds: finalInnCompleted,
+    attempted: 0,
+    recovered: 0,
+    retried: 0,
+    pendingTotal: rowCount(finalResult)
+  };
+  let finalInnProgressEvents = 0;
+  const finalInnCheckpointBatcher = createCheckpointBatcher(async () => {
+    await persistCheckpoint("final_inn", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      final_inn_completed_ids: [...latestFinalInnProgress.completedIds],
+      final_inn_attempted: latestFinalInnProgress.attempted,
+      final_inn_recovered: latestFinalInnProgress.recovered,
+      final_inn_retried: latestFinalInnProgress.retried,
+      final_inn_pending_total: latestFinalInnProgress.pendingTotal,
+      enrichment_completed_ids: []
+    });
+  });
+
   const finalInnStats = await resolveFinalMissingInns({
     client,
     finalResult,
     region,
     assertNotCancelled,
     completedIds: finalInnCompleted,
-    onBatch: async ({ completedIds, attempted, recovered, pendingTotal }) => {
+    onBatch: async (progressState) => {
+      latestFinalInnProgress = progressState;
+      finalInnProgressEvents++;
       statuses[9].detail =
-        `финальный поиск ИНН · ${Math.min(completedIds.size, rowCount(finalResult))} / ${rowCount(finalResult)} · найдено: ${recovered}`;
-      await progress({ phase: "dedupe", step: 10, percent: 89 });
-      await persistCheckpoint("final_inn", {
-        completed_stage: 9,
-        parts,
-        research_scopes: researchScopes,
-        identity_resolution: identityResolution,
-        completed_final_batches: batchCount,
-        staged_result: stagedResult,
-        deduped_records: dedupedRecords,
-        qualification_counts: qualifiedFinal.counts,
-        final_result: finalResult,
-        final_inn_completed_ids: [...completedIds],
-        final_inn_attempted: attempted,
-        final_inn_recovered: recovered,
-        final_inn_pending_total: pendingTotal,
-        enrichment_completed_ids: []
-      });
+        `финальный поиск ИНН · ${Math.min(progressState.completedIds.size, rowCount(finalResult))} / ${rowCount(finalResult)} · найдено: ${progressState.recovered} · retry: ${progressState.retried || 0}`;
+      if (finalInnProgressEvents % 4 === 0) {
+        await progress({ phase: "dedupe", step: 10, percent: 89 });
+      }
+      await finalInnCheckpointBatcher.request();
     }
   });
+  await finalInnCheckpointBatcher.flush();
+
+  const preservedStatistics = Array.isArray(finalResult.statistics)
+    ? cloneJson(finalResult.statistics)
+    : [];
+
+  const postInnDiagnostics = { merges: [] };
+  let postInn = postInnDedupe(finalResult, region, postInnDiagnostics);
+  dedupedRecords = postInn.records;
+  qualifiedFinal = postInn.qualified;
+  finalResult = qualifiedFinal.result;
+  if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+
+  let innConflictGroups = duplicateInnConflictGroups(finalResult);
+  let innConflictRechecks = 0;
+  if (innConflictGroups.length) {
+    console.log("[POST_INN_CONFLICT_PLAN] " + JSON.stringify({
+      groups: innConflictGroups.length,
+      inns: innConflictGroups.map((group) => group.inn)
+    }));
+    await mapWithConcurrency(
+      innConflictGroups,
+      Math.min(FINAL_INN_CONCURRENCY, 3),
+      async (group, groupIndex) => {
+        await assertNotCancelled();
+        const rowsById = new Map(
+          group.rows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
+        );
+        const result = await lookupFinalInnBatch({
+          client,
+          rows: group.rows,
+          region,
+          assertNotCancelled,
+          label: `post-inn-conflict-${groupIndex + 1}/${innConflictGroups.length}`
+        });
+        innConflictRechecks += group.rows.length;
+        finalInnStats.recovered += applyFinalInnItems(rowsById, result);
+      }
+    );
+
+    postInn = postInnDedupe(finalResult, region, postInnDiagnostics);
+    dedupedRecords = postInn.records;
+    qualifiedFinal = postInn.qualified;
+    finalResult = qualifiedFinal.result;
+    if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+    innConflictGroups = duplicateInnConflictGroups(finalResult);
+  }
+
+  for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
+
+  finalInnStats.missing = allResearchRows(finalResult)
+    .filter((row) => !normalizeInn(row?.["ИНН"])).length;
+  finalInnStats.innConflictRechecks = innConflictRechecks;
+  finalInnStats.remainingInnConflicts = innConflictGroups.length;
+
+  console.log("[POST_INN_DEDUPE_SUMMARY] " + JSON.stringify({
+    merges: postInnDiagnostics.merges.length,
+    output_rows: rowCount(finalResult),
+    qualification_counts: qualifiedFinal.counts,
+    conflict_rechecks: innConflictRechecks,
+    remaining_inn_conflicts: innConflictGroups.length,
+    missing_inn: finalInnStats.missing
+  }));
+
   const finalInnRemoved = enforceFinalInnRequirement(finalResult);
   finalInnStats.removedWithoutInn = finalInnRemoved.length;
 
@@ -6429,8 +6510,11 @@ ${JSON.stringify(groupBatch)}`,
     final_result: finalResult,
     final_inn_completed_ids: [...finalInnStats.completedIds],
     final_inn_attempted: finalInnStats.attempted,
+    final_inn_retried: finalInnStats.retried,
     final_inn_recovered: finalInnStats.recovered,
     final_inn_missing: finalInnStats.missing,
+    final_inn_conflict_rechecks: finalInnStats.innConflictRechecks,
+    final_inn_remaining_conflicts: finalInnStats.remainingInnConflicts,
     final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
     enrichment_completed_ids: Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids
@@ -6438,47 +6522,45 @@ ${JSON.stringify(groupBatch)}`,
   });
 
   await assertNotCancelled();
-  const finalCompaniesForEnrichment = [
-    ...finalResult.direct_buyers,
-    ...finalResult.intermediaries,
-    ...finalResult.leasing
-  ];
+  const finalCompaniesForEnrichment = allResearchRows(finalResult);
   let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
   const enrichmentCompleted = new Set(
     Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids.map(String)
       : []
   );
+  let enrichmentProcessed = 0;
+  let enrichmentErrors = 0;
+  let enrichmentDeadlineSkipped = 0;
 
-  for (const row of finalCompaniesForEnrichment) {
-    const rowId = checkpointRowId(row);
-    if (rowId && enrichmentCompleted.has(rowId)) continue;
-    const gaps = prioritizedResearchGaps(row);
-    if (!gaps.length) {
-      if (rowId) enrichmentCompleted.add(rowId);
-      continue;
-    }
+  for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
 
-    await assertNotCancelled();
-    targetedSearches++;
-    statuses[9].detail =
-      `точечное enrichment после qualification ${targetedSearches} · ${row["Организация"] || ""}`;
-    await progress({ phase: "dedupe", step: 10, percent: 89 });
+  const statisticsPromise =
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
+    Array.isArray(resumeCheckpoint?.final_result?.statistics)
+      ? Promise.resolve(cloneJson(resumeCheckpoint.final_result.statistics))
+      : askJson(client, {
+          input:
+            statisticsContract() +
+            `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
+          webSearch: true,
+          maxToolCalls: 3,
+          diagnosticLabel: "regional statistics",
+          timeoutMs: Math.min(45000, Math.max(8000, deadlineRemaining(stage10DeadlineAt) - 3000))
+        })
+          .then((result) => Array.isArray(result?.statistics) ? result.statistics : [])
+          .catch((error) => {
+            if (jobSignal?.aborted) throw error;
+            console.error("[STATISTICS_ERROR] " + JSON.stringify({
+              error: error?.message || String(error)
+            }));
+            return [];
+          });
 
-    const enriched = await askTargetedSearch(
-      client,
-      prompts[9] +
-        targetedSearchContract() +
-        `\n\nРЕГИОН: ${region}
-КОМПАНИЯ:
-${JSON.stringify(row)}
-НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
-${JSON.stringify(gaps)}
-Компания уже прошла identity, global dedupe и финальную A/B/C qualification.
-Сделай один точечный web_search только по этой компании. Ищи только перечисленные недостающие сведения. Не перепроверяй заполненные поля без необходимости.`
-    );
-    applyTargetedPatch(row, enriched);
-    if (rowId) enrichmentCompleted.add(rowId);
+  const enrichmentCheckpointBatcher = createCheckpointBatcher(async () => {
     await persistCheckpoint("enrichment", {
       completed_stage: 9,
       parts,
@@ -6491,55 +6573,122 @@ ${JSON.stringify(gaps)}
       final_result: finalResult,
       final_inn_completed_ids: [...finalInnStats.completedIds],
       final_inn_attempted: finalInnStats.attempted,
+      final_inn_retried: finalInnStats.retried,
       final_inn_recovered: finalInnStats.recovered,
       final_inn_missing: finalInnStats.missing,
       final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
       targeted_searches: targetedSearches,
-      enrichment_completed_ids: [...enrichmentCompleted]
+      enrichment_completed_ids: [...enrichmentCompleted],
+      enrichment_errors: enrichmentErrors,
+      enrichment_deadline_skipped: enrichmentDeadlineSkipped
     });
-  }
+  });
+
+  const enrichmentPending = finalCompaniesForEnrichment.filter((row) => {
+    const id = checkpointRowId(row);
+    return !id || !enrichmentCompleted.has(id);
+  });
+
+  console.log("[ENRICHMENT_PLAN] " + JSON.stringify({
+    total: finalCompaniesForEnrichment.length,
+    already_completed: enrichmentCompleted.size,
+    pending: enrichmentPending.length,
+    concurrency: ENRICHMENT_CONCURRENCY,
+    stage_deadline_ms: STAGE10_MAX_MS
+  }));
+
+  await mapWithConcurrency(
+    enrichmentPending,
+    ENRICHMENT_CONCURRENCY,
+    async (row) => {
+      await assertNotCancelled();
+      const rowId = checkpointRowId(row);
+      const gaps = prioritizedResearchGaps(row);
+      if (!gaps.length) {
+        if (rowId) enrichmentCompleted.add(rowId);
+        enrichmentProcessed++;
+        await enrichmentCheckpointBatcher.request();
+        return;
+      }
+
+      if (deadlineRemaining(stage10DeadlineAt) <= 7000) {
+        enrichmentDeadlineSkipped++;
+        enrichmentProcessed++;
+        console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
+          id: rowId,
+          organization: row?.["Организация"] || "",
+          gaps
+        }));
+        return;
+      }
+
+      targetedSearches++;
+      try {
+        const timeoutMs = Math.min(
+          ENRICHMENT_SEARCH_TIMEOUT_MS,
+          Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)
+        );
+        const enriched = await askTargetedSearch(
+          client,
+          targetedSearchContract() +
+            `\n\nРЕГИОН: ${region}
+КОМПАНИЯ:
+${JSON.stringify(compactEnrichmentTarget(row))}
+НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
+${JSON.stringify(gaps)}
+Компания уже прошла identity, global dedupe, финальную A/B/C qualification и отдельную проверку ИНН.
+Сделай один точечный web_search только по этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля без необходимости.`,
+          timeoutMs
+        );
+        applyTargetedPatch(row, enriched);
+        if (rowId) enrichmentCompleted.add(rowId);
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        enrichmentErrors++;
+        console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
+          id: rowId,
+          organization: row?.["Организация"] || "",
+          error: error?.message || String(error)
+        }));
+      }
+
+      enrichmentProcessed++;
+      if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
+        statuses[9].detail =
+          `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
+        await progress({ phase: "dedupe", step: 10, percent: 89 });
+      }
+      await enrichmentCheckpointBatcher.request();
+    }
+  );
+  await enrichmentCheckpointBatcher.flush();
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
+  finalResult.statistics = await statisticsPromise;
 
-  if (
-    resumeCheckpoint &&
-    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
-    Array.isArray(resumeCheckpoint?.final_result?.statistics)
-  ) {
-    finalResult.statistics = cloneJson(resumeCheckpoint.final_result.statistics);
-  } else {
-    const statsResult = await askJson(client, {
-      input:
-        prompts[9] +
-        statisticsContract() +
-        `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
-      model: TARGETED_SEARCH_MODEL,
-      maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
-      webSearch: true,
-      maxToolCalls: 3,
-      diagnosticLabel: "regional statistics"
-    });
-    finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
-    await persistCheckpoint("statistics", {
-      completed_stage: 9,
-      parts,
-      research_scopes: researchScopes,
-      identity_resolution: identityResolution,
-      completed_final_batches: batchCount,
-      staged_result: stagedResult,
-      deduped_records: dedupedRecords,
-      qualification_counts: qualifiedFinal.counts,
-      final_result: finalResult,
-      final_inn_completed_ids: [...finalInnStats.completedIds],
-      final_inn_attempted: finalInnStats.attempted,
-      final_inn_recovered: finalInnStats.recovered,
-      final_inn_missing: finalInnStats.missing,
-      final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
-      targeted_searches: targetedSearches,
-      enrichment_completed_ids: [...enrichmentCompleted]
-    });
-  }
+  await persistCheckpoint("statistics", {
+    completed_stage: 9,
+    parts,
+    research_scopes: researchScopes,
+    identity_resolution: identityResolution,
+    completed_final_batches: batchCount,
+    staged_result: stagedResult,
+    deduped_records: dedupedRecords,
+    qualification_counts: qualifiedFinal.counts,
+    final_result: finalResult,
+    final_inn_completed_ids: [...finalInnStats.completedIds],
+    final_inn_attempted: finalInnStats.attempted,
+    final_inn_retried: finalInnStats.retried,
+    final_inn_recovered: finalInnStats.recovered,
+    final_inn_missing: finalInnStats.missing,
+    final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
+    targeted_searches: targetedSearches,
+    enrichment_completed_ids: [...enrichmentCompleted],
+    enrichment_errors: enrichmentErrors,
+    enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+    stage10_duration_ms: Date.now() - stage10StartedAt
+  });
 
   finishStep(statuses[9]);
   statuses[9].detail =
