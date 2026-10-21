@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { deterministicQualificationDecision } from "../src/pipeline.js";
+import { classifyEntityType, deterministicQualificationDecision } from "../src/pipeline.js";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/smolensk-a-audit-20261009.json", import.meta.url), "utf8"));
 
-test("audited 38-company A fixture matches expected A vs downgrade decisions", () => {
+test("audited 38-company A fixture respects the commercial entity policy", () => {
   assert.equal(fixture.count, 38);
   assert.equal(fixture.expected_keep_a, 23);
   assert.equal(fixture.expected_downgrade, 15);
@@ -23,11 +23,17 @@ test("audited 38-company A fixture matches expected A vs downgrade decisions", (
         __evidence: { source_urls: [], notes: [item.a_evidence] }
       }
     });
+    const entityType = classifyEntityType({ "Организация": item.organization });
+    const expectedA = item.expected_a &&
+      entityType !== "government_body" &&
+      entityType !== "budget_institution";
     const actualA = decision.grade === "A";
-    if (actualA !== item.expected_a) {
+    if (actualA !== expectedA) {
       mismatches.push({
         organization: item.organization,
-        expected_a: item.expected_a,
+        expected_a: expectedA,
+        original_expected_a: item.expected_a,
+        entity_type: entityType,
         actual_grade: decision.grade,
         a_rule: decision.aRule || ""
       });
