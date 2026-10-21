@@ -37,7 +37,7 @@ test("full stage 10 uses deterministic staging instead of mass final LLM batches
 test("stage 10 has bounded concurrency and batched checkpoints", () => {
   assert.match(source, /OPENAI_FINAL_INN_CONCURRENCY \|\| 4/);
   assert.match(source, /OPENAI_ENRICHMENT_CONCURRENCY \|\| 8/);
-  assert.match(source, /mapWithConcurrency\(batches, concurrency/);
+  assert.match(source, /mapWithConcurrency\(\s*batches,\s*concurrency/);
   assert.match(source, /ENRICHMENT_CONCURRENCY/);
   assert.match(source, /createCheckpointBatcher/);
   assert.match(source, /CHECKPOINT_FLUSH_EVERY/);
