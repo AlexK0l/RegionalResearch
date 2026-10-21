@@ -2,7 +2,8 @@ import { chromium } from "playwright";
 
 const COMPUTER_MODEL = process.env.COMPUTER_MODEL || "gpt-5.6-luna";
 const COMPUTER_FALLBACK_MODEL = process.env.COMPUTER_FALLBACK_MODEL || "gpt-5.6-sol";
-const MAX_TURNS = Math.max(1, Number(process.env.GOOGLE_AI_MAX_TURNS || 6));
+const MAX_TURNS = Math.max(1, Math.min(3, Number(process.env.GOOGLE_AI_MAX_TURNS || 2)));
+const AUTO_FALLBACK = String(process.env.GOOGLE_AI_AUTO_FALLBACK || "false").toLowerCase() === "true";
 const VIEWPORT_WIDTH = Math.max(800, Number(process.env.GOOGLE_AI_VIEWPORT_WIDTH || 1024));
 const VIEWPORT_HEIGHT = Math.max(600, Number(process.env.GOOGLE_AI_VIEWPORT_HEIGHT || 768));
 const SCREENSHOT_DETAIL = process.env.GOOGLE_AI_SCREENSHOT_DETAIL || "low";
@@ -36,7 +37,7 @@ export async function closeResearchSession(session) {
 async function resetGooglePage(page, query) {
   await page.goto(
     "https://www.google.com/search?q=" + encodeURIComponent(query),
-    { waitUntil: "domcontentloaded", timeout: 30000 }
+    { waitUntil: "domcontentloaded", timeout: 15000 }
   );
   await page.waitForTimeout(900);
 }
@@ -485,7 +486,7 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
 
   if (primary?.status !== "unavailable" && primary?.confirmed !== undefined) return primary;
   if (primary?.status && primary.status !== "unavailable") return primary;
-  if (COMPUTER_FALLBACK_MODEL === COMPUTER_MODEL) return primary;
+  if (!AUTO_FALLBACK || COMPUTER_FALLBACK_MODEL === COMPUTER_MODEL) return primary;
 
   try {
     return await runComputerJsonOnce({
