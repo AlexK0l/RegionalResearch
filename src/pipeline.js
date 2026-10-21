@@ -18,7 +18,14 @@ const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
 const RESEARCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(24000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_QA_MAX_OUTPUT_TOKENS = Math.min(30000, OPENAI_MAX_OUTPUT_TOKENS);
-const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(8000, OPENAI_MAX_OUTPUT_TOKENS);
+const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(1200, Number(process.env.OPENAI_TARGETED_SEARCH_MAX_OUTPUT_TOKENS || 3000)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
+const CONTACT_SEARCH_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(800, Number(process.env.OPENAI_CONTACT_MAX_OUTPUT_TOKENS || 1800)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
 const STATISTICS_MAX_OUTPUT_TOKENS = Math.min(12000, OPENAI_MAX_OUTPUT_TOKENS);
 const OPENAI_WEB_SEARCH_COST_PER_CALL = Math.max(
   0,
@@ -35,10 +42,10 @@ const COURT_FILE_SEARCH_MAX_RESULTS = Math.max(
   Math.min(50, Number(process.env.COURT_FILE_SEARCH_MAX_RESULTS || 40))
 );
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
-  String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
+  String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "false").toLowerCase() === "true";
 const RESEARCH_MAX_RECOVERY_BRANCHES = Math.max(
   0,
-  Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 3))
+  Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 1))
 );
 const RESEARCH_MICRO_MAX_OUTPUT_TOKENS = Math.min(
   16000,
@@ -48,8 +55,64 @@ const RESEARCH_GEO_GROUPS = Math.max(
   2,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
+const FINAL_INN_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, Number(process.env.OPENAI_FINAL_INN_CONCURRENCY || 4))
+);
+const ENRICHMENT_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.OPENAI_ENRICHMENT_CONCURRENCY || 8))
+);
+const CONTACT_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.OPENAI_CONTACT_CONCURRENCY || 8))
+);
+const GOOGLE_FALLBACK_CONCURRENCY = Math.max(
+  1,
+  Math.min(3, Number(process.env.OPENAI_GOOGLE_FALLBACK_CONCURRENCY || 2))
+);
+const ENRICHMENT_SEARCH_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.OPENAI_ENRICHMENT_SEARCH_TIMEOUT_MS || 20000)
+);
+const CONTACT_SEARCH_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.OPENAI_CONTACT_SEARCH_TIMEOUT_MS || 18000)
+);
+const GOOGLE_AI_COMPANY_TIMEOUT_MS = Math.max(
+  10000,
+  Number(process.env.GOOGLE_AI_COMPANY_TIMEOUT_MS || 30000)
+);
+const STAGE10_MAX_MS = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.STAGE10_MAX_MS || 28 * 60 * 1000)
+);
+const STAGE11_MAX_MS = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.STAGE11_MAX_MS || 28 * 60 * 1000)
+);
+const CHECKPOINT_FLUSH_EVERY = Math.max(
+  1,
+  Number(process.env.CHECKPOINT_FLUSH_EVERY || 10)
+);
+const CHECKPOINT_FLUSH_INTERVAL_MS = Math.max(
+  1000,
+  Number(process.env.CHECKPOINT_FLUSH_INTERVAL_MS || 10000)
+);
+const CENSUS_ENABLED =
+  String(process.env.OPENAI_CENSUS_ENABLED || "true").toLowerCase() !== "false";
+const CENSUS_BUCKET_MIN = Math.max(
+  3,
+  Number(process.env.OPENAI_CENSUS_BUCKET_MIN || 12)
+);
+const COVERAGE_GAP_MAX = Math.max(
+  0,
+  Math.min(7, Number(process.env.OPENAI_COVERAGE_GAP_MAX || 4))
+);
+const INCLUDE_PUBLIC_OPERATORS =
+  String(process.env.INCLUDE_PUBLIC_OPERATORS || "true").toLowerCase() !== "false";
 
-const DEDUPE_CHECKPOINT_VERSION = 12;
+const DEDUPE_CHECKPOINT_VERSION = 13;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -548,6 +611,30 @@ const FINAL_INN_SCHEMA = {
   required: ["items"]
 };
 
+const CONTACT_SEARCH_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    status: { type: "string", enum: ["ok", "not_found"] },
+    phones: { type: "array", items: { type: "string" } },
+    leader: { type: "string" },
+    official_site: { type: "string" },
+    note: { type: "string" }
+  },
+  required: ["status", "phones", "leader", "official_site", "note"]
+};
+
+const PHONE_VERIFY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    confirmed: { type: "boolean" },
+    phone: { type: "string" },
+    note: { type: "string" }
+  },
+  required: ["confirmed", "phone", "note"]
+};
+
 const FINAL_BATCH_DELTA_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -858,6 +945,61 @@ function rowCount(result) {
 
 function emptyResearchResult() {
   return { direct_buyers: [], intermediaries: [], leasing: [] };
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) return [];
+  const limit = Math.max(1, Math.min(Number(concurrency || 1), source.length));
+  const results = new Array(source.length);
+  let cursor = 0;
+
+  async function run(workerIndex) {
+    while (true) {
+      const index = cursor++;
+      if (index >= source.length) return;
+      results[index] = await worker(source[index], index, workerIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, (_, workerIndex) => run(workerIndex)));
+  return results;
+}
+
+function deadlineRemaining(deadlineAt) {
+  return Math.max(0, Number(deadlineAt || 0) - Date.now());
+}
+
+function createCheckpointBatcher(flush) {
+  let pending = 0;
+  let lastFlushAt = Date.now();
+  let chain = Promise.resolve();
+
+  const request = async ({ force = false } = {}) => {
+    pending++;
+    const due = force ||
+      pending >= CHECKPOINT_FLUSH_EVERY ||
+      Date.now() - lastFlushAt >= CHECKPOINT_FLUSH_INTERVAL_MS;
+    if (!due) return;
+
+    pending = 0;
+    lastFlushAt = Date.now();
+    chain = chain.then(() => flush()).catch((error) => {
+      console.error("[CHECKPOINT_BATCH_FLUSH_ERROR] " + JSON.stringify({
+        error: error?.message || String(error)
+      }));
+      throw error;
+    });
+    await chain;
+  };
+
+  return {
+    request,
+    flush: async () => {
+      if (pending > 0) await request({ force: true });
+      else await chain;
+    }
+  };
 }
 
 function appendResearchResult(target, source, passNumber) {
@@ -3618,7 +3760,8 @@ async function askJson(client, {
   responseSchema = null,
   schemaName = "structured_output",
   allowJsonRepair = true,
-  maxToolCalls = null
+  maxToolCalls = null,
+  timeoutMs = null
 }) {
   const request = {
     model,
@@ -3652,9 +3795,14 @@ async function askJson(client, {
     }
   }
 
-  const requestOptions = client.__jobSignal
-    ? { signal: client.__jobSignal }
-    : undefined;
+  let requestSignal = client.__jobSignal || null;
+  if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+    const timeoutSignal = AbortSignal.timeout(Math.floor(Number(timeoutMs)));
+    requestSignal = requestSignal
+      ? AbortSignal.any([requestSignal, timeoutSignal])
+      : timeoutSignal;
+  }
+  const requestOptions = requestSignal ? { signal: requestSignal } : undefined;
   const startedAt = Date.now();
   const query = compactDiagnosticQuery(input, diagnosticLabel);
 
@@ -3759,6 +3907,7 @@ async function askJson(client, {
       initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
       max_tool_calls: maxToolCalls,
+      timeout_ms: timeoutMs,
       status: response?.status || "",
       stop_reason: stopReason,
       duration_ms: Date.now() - startedAt,
@@ -3804,6 +3953,7 @@ async function askJson(client, {
       schema_name: responseSchema ? schemaName : null,
       initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
+      timeout_ms: timeoutMs,
       status: "error",
       stop_reason: client.__jobSignal?.aborted ? "cancelled" : "error",
       duration_ms: Date.now() - startedAt,
