@@ -908,8 +908,11 @@ function targetedSearchContract() {
   return `\n\nТОЧЕЧНОЕ ОБОГАЩЕНИЕ ОДНОЙ КОМПАНИИ — верни ТОЛЬКО JSON:
 {"fields":{},"__comment":""}.
 Ищи ТОЛЬКО указанную компанию и ТОЛЬКО перечисленные недостающие сведения.
-fields может содержать только: "Управляющая компания", "ИНН", "Телефон", "Руководитель / ЛПР", "Выручка последнего подтвержденного года", "Численность".
+fields может содержать только: "Управляющая компания", "Выручка последнего подтвержденного года", "Численность".
+ИНН на этом этапе НЕ ИЩИ и НЕ ИЗМЕНЯЙ: им владеет отдельный final-INN pass.
+Телефон и Руководитель / ЛПР на этом этапе НЕ ИЩИ: это отдельный этап 11.
 "__comment" должен содержать пять строк: Сайт/источник; ИНН; Деятельность; Холдинг/УК/группа; Email.
+Строку ИНН в "__comment" копируй только из переданного подтверждённого ИНН, не заменяй её результатом поиска.
 Выручку возвращай только полным числом рублей, численность — только целым числом сотрудников; без года, единиц, слов, сокращений и диапазонов. Не заменяй уже подтверждённые сведения более слабыми. Не выдумывай данные.`;
 }
 
@@ -4227,13 +4230,138 @@ function askWithoutSearch(client, input, model, maxOutputTokens) {
   });
 }
 
-function askTargetedSearch(client, input) {
+function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS) {
   return askJson(client, {
     input,
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true,
-    maxToolCalls: 3
+    maxToolCalls: 2,
+    timeoutMs
+  });
+}
+
+function contactSearchPrompt(row, region, kind = "contacts") {
+  const organization = String(row?.["Организация"] || "").trim();
+  const inn = normalizeInn(row?.["ИНН"]);
+  const exactQuery = [
+    organization,
+    inn,
+    kind === "phone" ? "телефон" : "контакты"
+  ].filter(Boolean).join(" ");
+
+  return `ПОИСК КОНТАКТОВ ОДНОЙ КОМПАНИИ.
+РЕГИОН: ${region}
+ОРГАНИЗАЦИЯ: ${organization}
+ИНН: ${inn || "не подтверждён"}
+
+ОБЯЗАТЕЛЬНЫЙ ПЕРВИЧНЫЙ ЗАПРОС: "${exactQuery}".
+Используй web_search. Приоритет: официальный сайт/страница контактов, официальный реестр/документ, устойчивый бизнес-реестр.
+Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
+Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
+Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
+Не выдумывай и не дополняй цифры.
+Верни ТОЛЬКО JSON по схеме.`;
+}
+
+async function searchContactsWithWeb({
+  client,
+  row,
+  region,
+  deadlineAt
+}) {
+  const firstTimeout = Math.min(
+    CONTACT_SEARCH_TIMEOUT_MS,
+    Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+  );
+  const first = await askJson(client, {
+    input: contactSearchPrompt(row, region, "contacts"),
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
+    webSearch: true,
+    responseSchema: CONTACT_SEARCH_SCHEMA,
+    schemaName: "contact_search",
+    diagnosticLabel: `contact web | ${row?.["Организация"] || ""}`,
+    maxToolCalls: 2,
+    timeoutMs: firstTimeout,
+    allowJsonRepair: false
+  });
+
+  const phones = new Set(
+    (Array.isArray(first?.phones) ? first.phones : [])
+      .map(normalizePhoneDigits)
+      .filter(Boolean)
+  );
+
+  let second = null;
+  if (!phones.size && deadlineRemaining(deadlineAt) > 7000) {
+    const secondTimeout = Math.min(
+      CONTACT_SEARCH_TIMEOUT_MS,
+      Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+    );
+    second = await askJson(client, {
+      input: contactSearchPrompt(row, region, "phone"),
+      model: TARGETED_SEARCH_MODEL,
+      maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
+      webSearch: true,
+      responseSchema: CONTACT_SEARCH_SCHEMA,
+      schemaName: "contact_phone_search",
+      diagnosticLabel: `contact phone retry | ${row?.["Организация"] || ""}`,
+      maxToolCalls: 2,
+      timeoutMs: secondTimeout,
+      allowJsonRepair: false
+    });
+    for (const phone of Array.isArray(second?.phones) ? second.phones : []) {
+      const normalized = normalizePhoneDigits(phone);
+      if (normalized) phones.add(normalized);
+    }
+  }
+
+  const leader = String(first?.leader || second?.leader || "").trim();
+  return {
+    status: phones.size || leader ? "ok" : "not_found",
+    phones: [...phones],
+    leader,
+    official_site: String(first?.official_site || second?.official_site || "").trim(),
+    note: [first?.note, second?.note].map((value) => String(value || "").trim()).filter(Boolean).join(" | ")
+  };
+}
+
+async function verifyPhoneWithWebSearch({
+  client,
+  row,
+  region,
+  phone,
+  deadlineAt
+}) {
+  const inn = normalizeInn(row?.["ИНН"]);
+  if (!inn || deadlineRemaining(deadlineAt) <= 5000) {
+    return { confirmed: false, phone, note: "Недостаточно времени или нет подтверждённого ИНН для конфликтной проверки." };
+  }
+  const timeoutMs = Math.min(
+    CONTACT_SEARCH_TIMEOUT_MS,
+    Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+  );
+  return askJson(client, {
+    input: `ПРОВЕРКА ПРИНАДЛЕЖНОСТИ ТЕЛЕФОНА.
+РЕГИОН: ${region}
+КОМПАНИЯ: ${row?.["Организация"] || ""}
+ИНН: ${inn}
+ТЕЛЕФОН: ${phone}
+
+Выполни web_search запрос строго по смыслу: "${phone} ${inn}".
+confirmed=true только если найденные сведения явно связывают этот телефон именно с этим юрлицом/ИНН.
+Одноимённые, соседние и связанные компании не подходят. Не угадывай.
+Верни только JSON по схеме.`,
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: 900,
+    webSearch: true,
+    responseSchema: PHONE_VERIFY_SCHEMA,
+    schemaName: "phone_owner_verification",
+    diagnosticLabel: `phone verify | ${phone} | ${inn}`,
+    maxToolCalls: 2,
+    timeoutMs,
+    allowJsonRepair: false
   });
 }
 
@@ -4278,13 +4406,80 @@ function isMissingText(value) {
     text.includes("требуется финальная проверка");
 }
 
+function evidenceEmail(row) {
+  const evidence = row?.__evidence || {};
+  const texts = [
+    evidence.email,
+    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
+  ].map((value) => String(value || ""));
+  for (const text of texts) {
+    const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (match) return match[0];
+  }
+  return "";
+}
+
+function compactActivityDescription(row) {
+  const raw = String(
+    row?.["Техника/сегмент"] ||
+    row?.["Основание"] ||
+    ""
+  )
+    .replace(/^\s*[ABC]\s*[—–:-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return raw ? raw.slice(0, 420) : "требуется финальная проверка";
+}
+
+function mergeResearchComment(row, incomingComment = "") {
+  const current = String(row?.__comment || "");
+  const evidence = row?.__evidence || {};
+  const pickIncoming = (label) => {
+    const value = commentValue(incomingComment, label);
+    return isMissingText(value) ? "" : value;
+  };
+  const pickCurrent = (label) => {
+    const value = commentValue(current, label);
+    return isMissingText(value) ? "" : value;
+  };
+
+  const source =
+    pickIncoming("Сайт/источник") ||
+    pickCurrent("Сайт/источник") ||
+    String(evidence.official_site || "").trim() ||
+    (Array.isArray(evidence.source_urls) ? String(evidence.source_urls[0] || "").trim() : "") ||
+    "не подтверждено";
+  const activity =
+    pickIncoming("Деятельность") ||
+    pickCurrent("Деятельность") ||
+    compactActivityDescription(row);
+  const manager = String(row?.["Управляющая компания"] || "").trim();
+  const holding =
+    pickIncoming("Холдинг/УК/группа") ||
+    pickCurrent("Холдинг/УК/группа") ||
+    (manager && !/не подтвержд/i.test(manager) ? manager : "") ||
+    "не подтверждено";
+  const email =
+    pickIncoming("Email") ||
+    pickCurrent("Email") ||
+    evidenceEmail(row) ||
+    "не найден";
+
+  row.__comment = [
+    `Сайт/источник: ${source}`,
+    `ИНН: ${normalizeInn(row?.["ИНН"]) || "не подтверждено"}`,
+    `Деятельность: ${activity}`,
+    `Холдинг/УК/группа: ${holding}`,
+    `Email: ${email}`
+  ].join("\n");
+  return row.__comment;
+}
+
 function missingResearchFields(row) {
+  mergeResearchComment(row);
   const gaps = [];
   const comment = row?.__comment || "";
-  if (isMissingText(commentValue(comment, "Сайт/источник"))) gaps.push("сайт/источник");
-  if (!normalizeInn(row?.["ИНН"])) gaps.push("ИНН");
   if (isMissingText(commentValue(comment, "Email"))) gaps.push("email");
-  if (isMissingText(commentValue(comment, "Деятельность"))) gaps.push("краткое описание деятельности");
 
   const holding = commentValue(comment, "Холдинг/УК/группа");
   const manager = String(row?.["Управляющая компания"] || "").trim();
@@ -4303,10 +4498,25 @@ function missingResearchFields(row) {
 }
 
 function prioritizedResearchGaps(row) {
-  // После dedupe усиливаем enrichment для всех итоговых организаций.
-  // В частности, отсутствие выручки или численности само по себе является
-  // достаточным основанием для одного точечного поиска независимо от A/B/C.
   return missingResearchFields(row);
+}
+
+function compactEnrichmentTarget(row) {
+  const evidence = row?.__evidence || {};
+  return {
+    id: checkpointRowId(row),
+    organization: String(row?.["Организация"] || "").slice(0, 180),
+    inn: normalizeInn(row?.["ИНН"]),
+    city: String(row?.["Город/район"] || "").slice(0, 120),
+    manager: String(row?.["Управляющая компания"] || "").slice(0, 180),
+    revenue: row?.["Выручка последнего подтвержденного года"] || "",
+    headcount: row?.["Численность"] || "",
+    comment: String(row?.__comment || "").slice(0, 1200),
+    evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
+      .map(String).filter(Boolean).slice(0, 3),
+    evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
+      .map(String).filter(Boolean).slice(0, 3).map((value) => value.slice(0, 420))
+  };
 }
 
 function strictResearchNumber(value) {
@@ -4320,25 +4530,20 @@ function strictResearchNumber(value) {
 function applyTargetedPatch(row, result) {
   const allowed = new Set([
     "Управляющая компания",
-    "ИНН",
-    "Телефон",
-    "Руководитель / ЛПР",
     "Выручка последнего подтвержденного года",
     "Численность"
   ]);
   for (const [key, value] of Object.entries(result?.fields || {})) {
     if (!allowed.has(key)) continue;
     if (value === undefined || value === null || String(value).trim() === "") continue;
-    if (key === "Телефон") {
-      row[key] = mergePhone(row[key], value);
-    } else if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
+    if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
       const numeric = strictResearchNumber(value);
       if (numeric !== "") row[key] = numeric;
     } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
       row[key] = value;
     }
   }
-  if (String(result?.__comment || "").trim()) row.__comment = String(result.__comment).trim();
+  mergeResearchComment(row, String(result?.__comment || "").trim());
 }
 
 function buildConflictGroups(records) {
