@@ -2621,11 +2621,7 @@ function applyFinalBatchDelta(batch, delta) {
     const requestedSheet = String(item?.sheet || "");
     const preferred = ["direct_buyers", "intermediaries", "leasing"].includes(requestedSheet)
       ? requestedSheet
-      : canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      : preferredSheetForCanonical(canonical);
     output[preferred].push(row);
   }
   return output;
@@ -5230,11 +5226,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
-      const sheet = canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      const sheet = preferredSheetForCanonical(canonical);
       stagedTest[sheet].push(row);
     }
 
@@ -5938,11 +5930,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
-      const sheet = canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      const sheet = preferredSheetForCanonical(canonical);
       stagedTest[sheet].push(row);
     }
 
@@ -6295,11 +6283,7 @@ ${JSON.stringify(compactCourtArchive)}
     stagedResult = { direct_buyers: [], intermediaries: [], leasing: [] };
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
-      const sheet = canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      const sheet = preferredSheetForCanonical(canonical);
       stagedResult[sheet].push(row);
     }
 
