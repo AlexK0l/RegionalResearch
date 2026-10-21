@@ -16,6 +16,7 @@ const originalConsole = {
 };
 
 let initialized = false;
+const streams = new Map();
 
 function fileDate(value = new Date()) {
   return value.toISOString().slice(0, 10);
@@ -52,12 +53,37 @@ function serializeArg(value) {
   });
 }
 
+function streamFor(filePath) {
+  let stream = streams.get(filePath);
+  if (stream && !stream.destroyed) return stream;
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  stream = fs.createWriteStream(filePath, {
+    flags: "a",
+    encoding: "utf8"
+  });
+  stream.on("error", (error) => {
+    originalConsole.error("File log stream failed:", error?.message || error);
+  });
+  streams.set(filePath, stream);
+  return stream;
+}
+
 function appendLine(filePath, level, args) {
   const line =
     `${new Date().toISOString()} [${String(level || "log").toUpperCase()}] ` +
     args.map(serializeArg).join(" ");
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, line + "\n", "utf8");
+  streamFor(filePath).write(line + "\n");
+}
+
+async function closeLogStream(filePath) {
+  const stream = streams.get(filePath);
+  if (!stream || stream.destroyed) {
+    streams.delete(filePath);
+    return;
+  }
+  await new Promise((resolve) => stream.end(resolve));
+  streams.delete(filePath);
 }
 
 function writeRoutedLog(level, args) {
@@ -125,6 +151,7 @@ export async function runWithJobLog(job, task) {
           id: job?.id || "",
           state: job?.state || "unknown"
         }));
+        await closeLogStream(job.logFile);
       }
     }
   );
