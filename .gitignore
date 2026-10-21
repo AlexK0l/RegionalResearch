@@ -1,0 +1,12 @@
+node_modules/
+.env
+data/
+logs/
+.checkpoints/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+playwright-report/
+test-results/
+.DS_Store
+Thumbs.db
