@@ -2208,28 +2208,35 @@ async function resolveFinalMissingInns({
     const id = checkpointRowId(row);
     return id && !completedIds.has(id);
   });
+  const batches = [];
+  for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
+    batches.push(pending.slice(offset, offset + FINAL_INN_BATCH_SIZE));
+  }
 
   let attempted = 0;
   let recovered = 0;
-  let missing = 0;
+  let retried = 0;
+  let completedBatches = 0;
+  const concurrency = client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
 
   console.log("[FINAL_INN_PLAN] " + JSON.stringify({
     region,
     final_companies: companies.length,
     already_completed: completedIds.size,
     companies_to_recheck: pending.length,
-    batch_size: FINAL_INN_BATCH_SIZE
+    batch_size: FINAL_INN_BATCH_SIZE,
+    concurrency,
+    batches: batches.length
   }));
 
-  for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
+  await mapWithConcurrency(batches, concurrency, async (batch, batchIndex) => {
     await assertNotCancelled();
-    const batch = pending.slice(offset, offset + FINAL_INN_BATCH_SIZE);
     const result = await lookupFinalInnBatch({
       client,
       rows: batch,
       region,
       assertNotCancelled,
-      label: `${Math.floor(offset / FINAL_INN_BATCH_SIZE) + 1}/${Math.ceil(pending.length / FINAL_INN_BATCH_SIZE)}`
+      label: `${batchIndex + 1}/${batches.length}`
     });
     attempted += batch.length;
     recovered += applyFinalInnItems(rowsById, result);
@@ -2237,36 +2244,116 @@ async function resolveFinalMissingInns({
     for (const row of batch) {
       const id = checkpointRowId(row);
       if (id) completedIds.add(id);
-      if (!normalizeInn(row?.["ИНН"])) missing++;
     }
 
+    completedBatches++;
+    const missingProcessed = companies.filter(
+      (row) => completedIds.has(checkpointRowId(row)) && !normalizeInn(row?.["ИНН"])
+    ).length;
     console.log("[FINAL_INN_BATCH] " + JSON.stringify({
-      completed: Math.min(offset + batch.length, pending.length),
-      total: pending.length,
+      completed_batches: completedBatches,
+      total_batches: batches.length,
+      completed_companies: completedIds.size,
+      total_companies: companies.length,
       recovered,
-      still_missing_in_processed: missing
+      still_missing_in_processed: missingProcessed
     }));
     await onBatch({
       completedIds,
       attempted,
       recovered,
+      retried,
       pendingTotal: pending.length
+    });
+  });
+
+  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]));
+  if (retryRows.length) {
+    const retryBatches = [];
+    for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
+      retryBatches.push(retryRows.slice(offset, offset + FINAL_INN_BATCH_SIZE));
+    }
+    console.log("[FINAL_INN_RETRY_PLAN] " + JSON.stringify({
+      missing_after_first_pass: retryRows.length,
+      batches: retryBatches.length,
+      concurrency
+    }));
+
+    await mapWithConcurrency(retryBatches, concurrency, async (batch, batchIndex) => {
+      await assertNotCancelled();
+      const result = await lookupFinalInnBatch({
+        client,
+        rows: batch,
+        region,
+        assertNotCancelled,
+        label: `retry-${batchIndex + 1}/${retryBatches.length}`
+      });
+      retried += batch.length;
+      recovered += applyFinalInnItems(rowsById, result);
+      await onBatch({
+        completedIds,
+        attempted,
+        recovered,
+        retried,
+        pendingTotal: pending.length
+      });
     });
   }
 
+  for (const row of companies) mergeResearchComment(row);
   const finalMissing = companies.filter((row) => !normalizeInn(row?.["ИНН"])).length;
   console.log("[FINAL_INN_SUMMARY] " + JSON.stringify({
     region,
     final_companies: companies.length,
     attempted,
+    retried,
     recovered,
     inn_present: companies.length - finalMissing,
     inn_missing: finalMissing
   }));
 
-  return { completedIds, attempted, recovered, missing: finalMissing };
+  return { completedIds, attempted, retried, recovered, missing: finalMissing };
 }
 
+function duplicateInnConflictGroups(finalResult) {
+  const groups = new Map();
+  for (const row of allResearchRows(finalResult)) {
+    const inn = normalizeInn(row?.["ИНН"]);
+    if (!inn) continue;
+    if (!groups.has(inn)) groups.set(inn, []);
+    groups.get(inn).push(row);
+  }
+  return [...groups.entries()]
+    .filter(([, rows]) => rows.length > 1)
+    .map(([inn, rows]) => ({ inn, rows }));
+}
+
+function deterministicRequalification(records) {
+  const decisions = new Map();
+  for (const record of records) {
+    const decision = deterministicQualificationDecision(record);
+    decisions.set(record.id, {
+      decision: decision.decision,
+      grade: decision.grade,
+      reason: decision.reason,
+      aEvidence: decision.aEvidence || "",
+      aRule: decision.aRule || ""
+    });
+  }
+  return applyFinalQualification(records, decisions);
+}
+
+function postInnDedupe(finalResult, region, diagnostics = null) {
+  const records = deterministicGlobalDedupe(
+    makeQaRecords(finalResult),
+    diagnostics,
+    region
+  );
+  return {
+    records,
+    qualified: deterministicRequalification(records)
+  };
+}
 
 function enforceFinalInnRequirement(finalResult) {
   const missing = [];
