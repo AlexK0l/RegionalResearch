@@ -173,10 +173,14 @@ function buildColorStatisticsSheet() {
     ["Серый", 5, "В обработке", ""]
   ];
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws.D2 = { t: "n", f: "COUNTIF('Прямые покупатели'!B:B,\"<>\")-1" };
+  // SheetJS omits formula-only numeric cells when writing XLSX unless a cached
+  // value is present. Keep v=0 so formulas survive the write/read round-trip;
+  // Excel/LibreOffice will recalculate them when the workbook is opened.
+  ws.D2 = { t: "n", v: 0, f: "COUNTIF('Прямые покупатели'!B:B,\"<>\")-1" };
   for (let row = 4; row <= 9; row++) {
     ws[`D${row}`] = {
       t: "n",
+      v: 0,
       f: `COUNTIF('Прямые покупатели'!K:K,${row - 4})`
     };
   }
