@@ -3100,6 +3100,46 @@ const QUAL_TRANSPORT_PATTERNS = [
   /перевозк.{0,35}(зерн|щеб|пес|пгс|торф|щеп|лес|лом|отход|стройматериал)/
 ];
 
+const QUAL_OPERATING_PROCESS_PATTERNS = [
+  /производств/, /добыч/, /переработ/, /выращив/, /сельск.{0,20}хозяйств/,
+  /фермер/, /кфх\b/, /спк\b/, /элеватор/, /комбикорм/, /карьер/,
+  /лесозаготов/, /деревообработ/, /лесопил/, /заготовк.{0,30}(лом|вторсыр)/,
+  /прием.{0,30}(лом|вторсыр|отход)/, /приём.{0,30}(лом|вторсыр|отход)/,
+  /отгруз/, /погруз/, /разгруз/, /грузопоток/, /регулярн.{0,30}(перевоз|достав|вывоз)/
+];
+
+const GOVERNMENT_ENTITY_PATTERNS = [
+  /(^|\s)администраци/,
+  /(^|\s)министерств/,
+  /(^|\s)департамент/,
+  /(^|\s)комитет(\s|$)/,
+  /(^|\s)правительств/,
+  /совет.{0,20}депутат/,
+  /городск.{0,20}дума/,
+  /муниципальн.{0,30}(совет|собрани)/
+];
+const BUDGET_ENTITY_PATTERN =
+  /(^|\s)(фку|фгбу|гбу|гку|мбу|мку|гау|мау|согбу|огбу|огку|мбоу|гбоу)(\s|$)/;
+const PUBLIC_OPERATOR_PATTERN =
+  /(^|\s)(фгуп|гуп|муп)(\s|$)/;
+
+function classifyEntityType(row) {
+  const name = normalizeOrgKey(row?.["Организация"] || "");
+  if (!name) return "commercial";
+  if (GOVERNMENT_ENTITY_PATTERNS.some((pattern) => pattern.test(name))) {
+    return "government_body";
+  }
+  if (BUDGET_ENTITY_PATTERN.test(name)) return "budget_institution";
+  if (PUBLIC_OPERATOR_PATTERN.test(name)) return "public_operator";
+  return "commercial";
+}
+
+function entityTypeExcluded(entityType) {
+  return entityType === "government_body" ||
+    entityType === "budget_institution" ||
+    (!INCLUDE_PUBLIC_OPERATORS && entityType === "public_operator");
+}
+
 function identityRegionMismatchFromNotes(notes = []) {
   return notes.some((raw) => {
     const note = String(raw || "").toLowerCase().replace(/ё/g, "е");
@@ -3123,6 +3163,8 @@ function deterministicQualificationDecision(record) {
   const target = priorityTarget || generalTarget;
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
+  const operatingProcess = hasAnyPattern(text, QUAL_OPERATING_PROCESS_PATTERNS);
+  const entityType = classifyEntityType(record?.row || {});
 
   const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|экономическ.{0,30}рациональн|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
@@ -3261,7 +3303,13 @@ function deterministicQualificationDecision(record) {
   let grade = "";
   let reason = "";
 
-  if (identityRegionMismatch) {
+  if (entityTypeExcluded(entityType)) {
+    reason = entityType === "government_body"
+      ? "Орган власти исключён из коммерческого списка независимо от факта закупки техники."
+      : entityType === "budget_institution"
+        ? "Бюджетное/казённое учреждение исключено из коммерческого списка."
+        : "Публичный оператор исключён настройкой INCLUDE_PUBLIC_OPERATORS.";
+  } else if (identityRegionMismatch) {
     reason = "Identity-resolution подтвердил, что организация относится к другому региону; кандидат исключён до A/B/C.";
   } else if (aEvidence) {
     grade = "A";
@@ -3269,12 +3317,15 @@ function deterministicQualificationDecision(record) {
   } else if (target && heavy) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
+  } else if (directRole && target && operatingProcess) {
+    grade = "C";
+    reason = "Подтверждён действующий целевой производственный/грузовой процесс коммерческого грузовладельца; собственная техника или перевозчик пока не установлены.";
   } else if (target && transport) {
     grade = "C";
     reason = "В evidence подтверждены целевой груз/процесс и конкретный транспортно-логистический сигнал, но недостаточно данных для A/B.";
   } else {
     reason = target
-      ? "Подтвержден целевой груз/процесс, но нет достаточного конкретного транспортного сигнала."
+      ? "Целевой груз упомянут, но evidence не подтверждает действующий коммерческий процесс или достаточный транспортный сигнал."
       : "Evidence не подтверждает достаточную коммерческую релевантность для A/B/C.";
   }
 
@@ -3290,6 +3341,8 @@ function deterministicQualificationDecision(record) {
       generalTarget,
       heavy,
       transport,
+      operatingProcess,
+      entityType,
       aEvidence: Boolean(aEvidence),
       identityRegionMismatch
     }
