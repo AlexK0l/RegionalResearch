@@ -134,8 +134,9 @@ STAGE10_MAX_MS=1680000
 STAGE11_MAX_MS=1680000
 CHECKPOINT_FLUSH_EVERY=10
 CHECKPOINT_FLUSH_INTERVAL_MS=10000
-LOG_DIR=./logs
-CHECKPOINT_DB_PATH=./data/checkpoints.sqlite
+LOG_DIR=/tmp/regionalresearch/logs
+CHECKPOINT_DB_PATH=/tmp/regionalresearch/checkpoints.sqlite
+PLAYWRIGHT_BROWSERS_PATH=0
 ```
 
 Шаги 1–9 ограничиваются 50 000 output tokens и сохраняют скрытый evidence (URL, официальный сайт, email и найденные подтверждения). После них Entity Census отдельно проверяет полноту состава действующих организаций по перевозчикам, агро/зерну, карьерам, стройматериалам, лесу, отходам/лому и крупным промышленным грузовладельцам; затем выполняются только ограниченные coverage-gap проходы по недопокрытым сектору и географии.
