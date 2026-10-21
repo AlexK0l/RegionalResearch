@@ -1077,6 +1077,189 @@ function discoverySaturatedSourceFamilies(stats, limit = 4) {
     .slice(0, limit);
 }
 
+const ENTITY_CENSUS_BUCKETS = [
+  {
+    key: "transport",
+    label: "автомобильные грузоперевозчики, АТП и транспортные операторы",
+    pattern: /(грузоперевоз|перевозчик|автотранспорт|атп\b|транспортн.{0,20}(компан|оператор)|экспедитор)/
+  },
+  {
+    key: "agro",
+    label: "агро, зерно, элеваторы, комбикорм и масличные",
+    pattern: /(зерн|элеватор|комбикорм|агро|сельск.{0,20}хозяйств|кфх\b|спк\b|рапс|пшениц|масличн)/
+  },
+  {
+    key: "quarries",
+    label: "карьеры, щебень, песок, ПГС и нерудные материалы",
+    pattern: /(карьер|щеб|песок|пгс|неруд|грави|добыч.{0,30}(камн|пес|грав|щеб))/
+  },
+  {
+    key: "construction",
+    label: "бетон, ЖБИ, цемент, асфальт и строительные материалы",
+    pattern: /(бетон|жби|цемент|асфальт|стройматериал|дорожн.{0,20}(строит|ремонт))/
+  },
+  {
+    key: "wood",
+    label: "лес, деревообработка, лесопиление, щепа и пеллеты",
+    pattern: /(лесозаготов|лесопил|деревообработ|пиломатериал|щеп|опил|пеллет|древес)/
+  },
+  {
+    key: "waste",
+    label: "отходы, вторсырьё, металлолом и вторчермет",
+    pattern: /(отход|тко\b|вторсыр|металлолом|вторчермет|лом.{0,20}металл)/
+  },
+  {
+    key: "industrial",
+    label: "крупные промышленные грузовладельцы с регулярными сыпучими/навалочными потоками",
+    pattern: /(промышлен|производств|завод|фабрик|комбинат|сырь|сыпуч|навалоч|грузопоток)/
+  }
+];
+
+function rowCoverageText(row) {
+  const evidence = row?.__evidence || {};
+  return [
+    row?.["Организация"],
+    row?.["Город/район"],
+    row?.["Техника/сегмент"],
+    row?.["Основание"],
+    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
+  ]
+    .map((value) => String(value || "").toLowerCase().replace(/ё/g, "е"))
+    .join("\n");
+}
+
+function coverageSnapshot(result, scopes = []) {
+  const rows = allResearchRows(result);
+  const sectors = Object.fromEntries(ENTITY_CENSUS_BUCKETS.map((bucket) => [bucket.key, 0]));
+  for (const row of rows) {
+    const text = rowCoverageText(row);
+    for (const bucket of ENTITY_CENSUS_BUCKETS) {
+      if (bucket.pattern.test(text)) sectors[bucket.key]++;
+    }
+  }
+
+  const geography = [];
+  for (const scope of (Array.isArray(scopes) ? scopes.slice(1) : [])) {
+    const places = String(scope || "")
+      .replace(/^география:\s*/i, "")
+      .replace(/^углублённые географические пробелы:\s*/i, "")
+      .split(/[;,]/)
+      .map((value) => value.replace(/\..*$/, "").trim().toLowerCase())
+      .filter((value) => value.length >= 3);
+    if (!places.length) continue;
+    const count = rows.filter((row) => {
+      const place = String(row?.["Город/район"] || "").toLowerCase();
+      return places.some((token) => place.includes(token));
+    }).length;
+    geography.push({ scope: String(scope), count });
+  }
+
+  geography.sort((a, b) => a.count - b.count);
+  return {
+    total: uniqueResearchCount(result),
+    sectors,
+    undercovered_geography: geography.slice(0, 3)
+  };
+}
+
+function entityCensusPrompt({ region, bucket, alreadyFound, geography = "" }) {
+  const known = (alreadyFound || []).slice(-DISCOVERY_ALREADY_FOUND_LIMIT);
+  return `${DISCOVERY_CORE_PROMPT}
+
+ENTITY CENSUS / COVERAGE PASS.
+РЕГИОН: ${region}
+СЕКТОР: ${bucket.label}
+${geography ? `ГЕОГРАФИЧЕСКИЙ ПРОБЕЛ: ${geography}` : "ГЕОГРАФИЯ: весь регион, включая малые города и районы."}
+
+Цель этого вызова — найти СОСТАВ ДЕЙСТВУЮЩИХ ОРГАНИЗАЦИЙ сектора, а не только свежие события.
+Свежая закупка, вакансия, тендер или новость НЕ обязательны.
+Используй официальные отраслевые списки, реестры, каталоги организаций, карты, ассоциации, сайты районов/промзон и обычный web-поиск как discovery-источники.
+Для direct buyer достаточно доказать действующий целевой производственный/грузовой процесс; если собственная техника пока не найдена, это допустимый C-кандидат.
+Органы власти и бюджетные учреждения не возвращай. ГУП/МУП/ФГУП оценивай по фактической хозяйственной роли.
+Не возвращай организации только по одному ОКВЭД без подтверждения реальной деятельности.
+Не обогащай телефон/директора/выручку. Сохраняй 1–3 сильных URL и короткие evidence notes.
+УЖЕ НАЙДЕНО — ищи прежде всего новые организации: ${known.length ? known.join("; ") : "нет"}.
+Верни все подтверждённые новые организации этого сектора, которые удалось найти без выдумывания.`;
+}
+
+async function runEntityCensusAndGapSearch({
+  client,
+  region,
+  parts,
+  researchScopes,
+  assertNotCancelled
+}) {
+  const existing = emptyResearchResult();
+  for (const part of parts) appendResearchResult(existing, part, "pre-census");
+
+  const additions = emptyResearchResult();
+  const known = foundOrganizationNames(existing, DISCOVERY_ALREADY_FOUND_LIMIT);
+
+  for (let index = 0; index < ENTITY_CENSUS_BUCKETS.length; index++) {
+    await assertNotCancelled();
+    const bucket = ENTITY_CENSUS_BUCKETS[index];
+    const result = normalize(await askResearch(
+      client,
+      entityCensusPrompt({ region, bucket, alreadyFound: known }),
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+      `entity census | ${bucket.key} | ${index + 1}/${ENTITY_CENSUS_BUCKETS.length}`,
+      3
+    ));
+    appendResearchResult(additions, result, `census-${bucket.key}`);
+    mergeKnownOrganizationNames(known, result);
+    console.log("[ENTITY_CENSUS_RESULT] " + JSON.stringify({
+      bucket: bucket.key,
+      rows: rowCount(result),
+      unique: uniqueResearchCount(result)
+    }));
+  }
+
+  const combined = emptyResearchResult();
+  appendResearchResult(combined, existing, "existing");
+  appendResearchResult(combined, additions, "census");
+  let coverage = coverageSnapshot(combined, researchScopes);
+
+  const gapBuckets = ENTITY_CENSUS_BUCKETS
+    .map((bucket) => ({
+      ...bucket,
+      count: Number(coverage.sectors[bucket.key] || 0)
+    }))
+    .filter((bucket) => bucket.count < CENSUS_BUCKET_MIN)
+    .sort((a, b) => a.count - b.count)
+    .slice(0, COVERAGE_GAP_MAX);
+
+  for (let index = 0; index < gapBuckets.length; index++) {
+    await assertNotCancelled();
+    const bucket = gapBuckets[index];
+    const geo = coverage.undercovered_geography[index % Math.max(1, coverage.undercovered_geography.length)]?.scope || "";
+    const result = normalize(await askResearch(
+      client,
+      entityCensusPrompt({
+        region,
+        bucket,
+        alreadyFound: known,
+        geography: geo
+      }),
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+      `coverage gap | ${bucket.key} | ${index + 1}/${gapBuckets.length}`,
+      3
+    ));
+    appendResearchResult(additions, result, `coverage-gap-${bucket.key}`);
+    appendResearchResult(combined, result, `coverage-gap-${bucket.key}`);
+    mergeKnownOrganizationNames(known, result);
+  }
+
+  coverage = coverageSnapshot(combined, researchScopes);
+  console.log("[ENTITY_CENSUS_SUMMARY] " + JSON.stringify({
+    added_rows: rowCount(additions),
+    added_unique: uniqueResearchCount(additions),
+    coverage,
+    gap_buckets: gapBuckets.map((bucket) => bucket.key)
+  }));
+
+  return { additions, coverage, gapBuckets: gapBuckets.map((bucket) => bucket.key) };
+}
+
 function researchRowKey(row) {
   const inn = normalizeInn(row?.["ИНН"]);
   if (inn) return `inn:${inn}`;
