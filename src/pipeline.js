@@ -2493,6 +2493,51 @@ function mergedEvidenceFromCanonical(canonical) {
   };
 }
 
+function preferredSheetForCanonical(canonical) {
+  const sourceSheets = new Set(
+    (Array.isArray(canonical?.source_sheets) ? canonical.source_sheets : [])
+      .map((value) => String(value || ""))
+  );
+  const evidenceRows = canonical?.evidence?.map((item) => item?.data || {}) || [];
+  const text = evidenceRows
+    .flatMap((row) => [
+      row?.["Организация"],
+      row?.["Техника/сегмент"],
+      row?.["Основание"],
+      ...(Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [])
+    ])
+    .map((value) => String(value || "").toLowerCase().replace(/ё/g, "е"))
+    .join("\n");
+
+  const lessee =
+    /лизингополучател|получател.{0,20}лизинг|предмет.{0,30}лизинг.{0,80}(эксплуат|использ|парк)|эксплуат.{0,80}лизинг/.test(text);
+  const financier =
+    /лизингодател|лизингов.{0,25}(компан|организац|финанс|услуг)|финанс.{0,25}лизинг|предоставл.{0,30}лизинг/.test(text);
+  const intermediary =
+    /(дилер|сервис|ремонт|шиномонтаж|телематик|гидравлик|запчаст|торгов.{0,20}(дом|центр)|продаж.{0,30}(прицеп|полуприцеп))/.test(text);
+  const directOperation =
+    /(перевозчик|грузоперевоз|собственн.{0,30}парк|эксплуат.{0,50}(тягач|прицеп|полуприцеп|самосвал)|производств|добыч|выращив|элеватор|карьер|лесозаготов|деревообработ|отход|металлолом|зерн|щеб|песок|пгс)/.test(text);
+
+  if (financier && !lessee) return "leasing";
+  if (
+    sourceSheets.has("Прямые покупатели") ||
+    sourceSheets.has("direct_buyers") ||
+    lessee ||
+    (directOperation && !intermediary)
+  ) {
+    return "direct_buyers";
+  }
+  if (
+    sourceSheets.has("Посредники") ||
+    sourceSheets.has("intermediaries") ||
+    intermediary
+  ) {
+    return "intermediaries";
+  }
+  if (sourceSheets.has("Лизинг") || sourceSheets.has("leasing")) return "leasing";
+  return "direct_buyers";
+}
+
 function baselineRowFromCanonical(canonical) {
   const row = {};
   const evidenceRows = canonical?.evidence?.map((x) => x.data || {}) || [];
@@ -2549,11 +2594,7 @@ function ensureBatchCoverage(batch, batchResult) {
     if (seen.has(canonical.canonical_id)) continue;
 
     const fallback = baselineRowFromCanonical(canonical);
-    const preferred = canonical.source_sheets.includes("Лизинг")
-      ? "leasing"
-      : canonical.source_sheets.includes("Прямые покупатели")
-        ? "direct_buyers"
-        : "intermediaries";
+    const preferred = preferredSheetForCanonical(canonical);
     output[preferred].push(fallback);
   }
 
@@ -2671,11 +2712,7 @@ function prefilterCandidatesForIdentity(candidates, region = "") {
 
   for (const canonical of canonicalPool) {
     const row = baselineRowFromCanonical(canonical);
-    const sheet = canonical.source_sheets.includes("Лизинг")
-      ? "leasing"
-      : canonical.source_sheets.includes("Прямые покупатели")
-        ? "direct_buyers"
-        : "intermediaries";
+    const sheet = preferredSheetForCanonical(canonical);
     staged[sheet].push(row);
   }
 
