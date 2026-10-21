@@ -7,7 +7,8 @@
     "start": "node server.js",
     "benchmark:reference": "node scripts/benchmark-reference.js",
     "local": "node --env-file=.env server.js",
-    "browser:install": "playwright install chromium"
+    "browser:install": "playwright install chromium",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"
