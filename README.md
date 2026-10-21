@@ -4,6 +4,8 @@
 
 ## Как работает
 
+Интерфейс оставлен только для рабочего сценария: запуск полного исследования, продолжение с checkpoint, остановка, скачивание checkpoint и итогового XLSX. Smoke/quality/stage/replay-кнопки из пользовательского UI удалены; диагностические режимы остаются внутренними возможностями backend/test-кода.
+
 1. Пользователь выбирает регион.
 2. Шаги 1–9 выполняют последовательный поиск через OpenAI Responses API с web_search.
 3. После discovery выполняется отдельный Entity Census / coverage-pass по ключевым секторам и географическим пробелам.
@@ -14,6 +16,8 @@
 ## Структура
 
 - `server.js` — Express Web Service и API заданий.
+- `src/fileLogger.js` — маршрутизация console-логов в отдельный файл каждого research job.
+- `src/checkpointStore.js` — SQLite-хранилище checkpoint.
 - `src/` — исследовательский pipeline, Google AI Mode и генерация XLSX.
 - `prompts/` — инструкции шагов 1–10.
 - `public/` — пользовательский интерфейс.
@@ -21,17 +25,62 @@
 
 ## Локальный запуск
 
+Локальный режим не требует Redis, Postgres или отдельного хранилища. Checkpoint сохраняется в SQLite на диске, а каждый запуск исследования получает отдельный файл лога.
+
+1. Установите Node.js 22 или новее.
+2. Установите зависимости и Chromium:
+
 ```bash
 npm install
-npx playwright install chromium
-OPENAI_API_KEY=... npm start
+npm run browser:install
 ```
 
-По умолчанию приложение слушает `PORT` или порт `10000`.
+3. Создайте локальный `.env` из примера.
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+macOS / Linux:
+
+```bash
+cp .env.example .env
+```
+
+4. В `.env` укажите как минимум:
+
+```env
+OPENAI_API_KEY=ваш_ключ
+CHECKPOINT_DB_PATH=./data/checkpoints.sqlite
+LOG_DIR=./logs
+```
+
+5. Запустите приложение:
+
+```bash
+npm run local
+```
+
+После запуска откройте `http://localhost:10000`. UI и API работают с одного локального процесса, поэтому отдельный frontend-сервер не нужен.
+
+Локальные данные:
+
+- SQLite checkpoint: `data/checkpoints.sqlite`;
+- WAL-файлы SQLite: рядом с основной БД;
+- общий серверный лог: `logs/server-YYYY-MM-DD.log`;
+- отдельный подробный лог каждого исследования: `logs/jobs/<timestamp>_<region>_<job-id>.log`.
+
+Каталоги `data/`, `logs/` и файл `.env` исключены из Git. После остановки и повторного запуска приложения checkpoint остаётся на диске и доступен через обычную кнопку продолжения исследования.
+
+По умолчанию приложение слушает `PORT` или порт `10000`. Пути можно изменить через `CHECKPOINT_DB_PATH` и `LOG_DIR`.
 
 ## Render
 
 Основная ветка: `main`.
+
+Render продолжает использовать переменные окружения сервиса. Локальный `.env` на Render не нужен. Для free-инстанса текущий путь checkpoint остаётся `/tmp/regionalresearch/checkpoints.sqlite`; локально используется постоянный файл `./data/checkpoints.sqlite`.
 
 Build command:
 
@@ -85,6 +134,8 @@ STAGE10_MAX_MS=1680000
 STAGE11_MAX_MS=1680000
 CHECKPOINT_FLUSH_EVERY=10
 CHECKPOINT_FLUSH_INTERVAL_MS=10000
+LOG_DIR=./logs
+CHECKPOINT_DB_PATH=./data/checkpoints.sqlite
 ```
 
 Шаги 1–9 ограничиваются 50 000 output tokens и сохраняют скрытый evidence (URL, официальный сайт, email и найденные подтверждения). После них Entity Census отдельно проверяет полноту состава действующих организаций по перевозчикам, агро/зерну, карьерам, стройматериалам, лесу, отходам/лому и крупным промышленным грузовладельцам; затем выполняются только ограниченные coverage-gap проходы по недопокрытым сектору и географии.
