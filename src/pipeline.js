@@ -2328,6 +2328,28 @@ function duplicateInnConflictGroups(finalResult) {
     .map(([inn, rows]) => ({ inn, rows }));
 }
 
+function clearUnresolvedInnConflicts(finalResult) {
+  const groups = duplicateInnConflictGroups(finalResult);
+  let clearedRows = 0;
+  for (const group of groups) {
+    for (const row of group.rows) {
+      row["ИНН"] = "";
+      const evidence = row.__evidence || { source_urls: [], notes: [] };
+      row.__evidence = {
+        ...evidence,
+        source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
+        notes: [
+          ...(Array.isArray(evidence.notes) ? evidence.notes : []),
+          `Final INN conflict: ИНН ${group.inn} встретился у несовместимых сущностей и очищен до однозначного подтверждения.`
+        ]
+      };
+      mergeResearchComment(row);
+      clearedRows++;
+    }
+  }
+  return { groups: groups.length, clearedRows };
+}
+
 function deterministicRequalification(records) {
   const decisions = new Map();
   for (const record of records) {
@@ -6479,6 +6501,18 @@ ${JSON.stringify(groupBatch)}`,
     innConflictGroups = duplicateInnConflictGroups(finalResult);
   }
 
+  const unresolvedInnConflictClear = innConflictGroups.length
+    ? clearUnresolvedInnConflicts(finalResult)
+    : { groups: 0, clearedRows: 0 };
+  if (unresolvedInnConflictClear.groups) {
+    const afterConflictClear = postInnDedupe(finalResult, region, postInnDiagnostics);
+    dedupedRecords = afterConflictClear.records;
+    qualifiedFinal = afterConflictClear.qualified;
+    finalResult = qualifiedFinal.result;
+    if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+    innConflictGroups = duplicateInnConflictGroups(finalResult);
+  }
+
   for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
 
   finalInnStats.missing = allResearchRows(finalResult)
@@ -6491,6 +6525,8 @@ ${JSON.stringify(groupBatch)}`,
     output_rows: rowCount(finalResult),
     qualification_counts: qualifiedFinal.counts,
     conflict_rechecks: innConflictRechecks,
+    unresolved_conflict_groups_cleared: unresolvedInnConflictClear.groups,
+    unresolved_conflict_rows_cleared: unresolvedInnConflictClear.clearedRows,
     remaining_inn_conflicts: innConflictGroups.length,
     missing_inn: finalInnStats.missing
   }));
@@ -6736,13 +6772,16 @@ ${JSON.stringify(gaps)}
 
   const primaryResults = new Map();
   const contactOutcomes = new Map();
+  const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
+  const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
+  const resumedNotFound = contactCheckpointVersion >= 2 ? Number(resumedContactStats.notFound || 0) : 0;
   let primaryProcessed = 0;
 
   const contactStatsSnapshot = () => ({
     version: 2,
-    ok: [...contactOutcomes.values()].filter((value) => value === "ok").length,
-    unavailable: [...contactOutcomes.values()].filter((value) => value === "unavailable").length,
-    notFound: [...contactOutcomes.values()].filter((value) => value === "not_found").length,
+    ok: resumedOk + [...contactOutcomes.values()].filter((value) => value === "ok").length,
+    unavailable: resumedUnavailable + [...contactOutcomes.values()].filter((value) => value === "unavailable").length,
+    notFound: resumedNotFound + [...contactOutcomes.values()].filter((value) => value === "not_found").length,
     solRetries,
     solRecovered,
     webOk,
@@ -6815,13 +6854,19 @@ ${JSON.stringify(gaps)}
       }
 
       try {
+        const needPhoneBefore = !hasConfirmedPhone(row);
+        const needLeaderBefore = !hasConfirmedLeader(row);
         const result = await searchContactsWithWeb({
           client,
           row,
           region,
           deadlineAt: stage11DeadlineAt
         });
-        primaryResults.set(rowId, result);
+        primaryResults.set(rowId, {
+          ...result,
+          __needPhone: needPhoneBefore,
+          __needLeader: needLeaderBefore
+        });
         if (result.status === "ok") webOk++;
         else webNotFound++;
       } catch (error) {
@@ -6831,7 +6876,9 @@ ${JSON.stringify(gaps)}
           status: "unavailable",
           phones: [],
           leader: "",
-          note: error?.message || "contact web search unavailable"
+          note: error?.message || "contact web search unavailable",
+          __needPhone: !hasConfirmedPhone(row),
+          __needLeader: !hasConfirmedLeader(row)
         });
       }
 
@@ -6945,11 +6992,19 @@ ${JSON.stringify(gaps)}
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
-    const gained = hasConfirmedPhone(row) ||
-      Boolean(result?.leader && hasConfirmedLeader(row));
+    const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
+    const gainedLeader = Boolean(
+      result.__needLeader &&
+      result?.leader &&
+      hasConfirmedLeader(row)
+    );
     if (rowId) contactOutcomes.set(
       rowId,
-      gained ? "ok" : result.status === "unavailable" ? "unavailable" : "not_found"
+      gainedPhone || gainedLeader
+        ? "ok"
+        : result.status === "unavailable"
+          ? "unavailable"
+          : "not_found"
     );
   }
 
