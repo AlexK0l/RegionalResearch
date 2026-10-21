@@ -7245,4 +7245,13 @@ ${JSON.stringify(gaps)}
   };
 }
 
-export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates, discoveryYieldStats };
+export {
+  prefilterCandidatesForIdentity,
+  deterministicQualificationDecision,
+  appendReviewCandidates,
+  discoveryYieldStats,
+  classifyEntityType,
+  postInnDedupe,
+  duplicateInnConflictGroups,
+  clearUnresolvedInnConflicts
+};
