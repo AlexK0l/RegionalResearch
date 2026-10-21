@@ -39,6 +39,7 @@ test("full pipeline persists checkpoints at every expensive boundary", () => {
     "final_batches",
     "dedupe",
     "qualification",
+    "final_inn",
     "enrichment",
     "statistics",
     "contacts",
@@ -46,7 +47,9 @@ test("full pipeline persists checkpoints at every expensive boundary", () => {
   ]) {
     assert.match(pipeline, new RegExp('persistCheckpoint\\("' + phase + '"'));
   }
-  assert.match(pipeline, /completedFinalBatches/);
+  assert.match(pipeline, /deterministic_staging/);
+  assert.match(pipeline, /completed_final_batches: batchCount/);
+  assert.match(pipeline, /finalInnCheckpointBatcher/);
   assert.match(pipeline, /enrichmentCompleted/);
   assert.match(pipeline, /contactCompleted/);
   assert.match(pipeline, /RESUME_IDENTITY_CHECKPOINT/);

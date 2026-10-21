@@ -7,8 +7,7 @@ import {
   closeResearchSession,
   createResearchSession,
   enrichCompanyWithGoogleAI,
-  launchResearchBrowser,
-  verifyPhoneForCompanyWithGoogleAI
+  launchResearchBrowser
 } from "./googleAiAgent.js";
 
 const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
@@ -18,7 +17,14 @@ const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
 const RESEARCH_MAX_OUTPUT_TOKENS = Math.min(50000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_BATCH_MAX_OUTPUT_TOKENS = Math.min(24000, OPENAI_MAX_OUTPUT_TOKENS);
 const FINAL_QA_MAX_OUTPUT_TOKENS = Math.min(30000, OPENAI_MAX_OUTPUT_TOKENS);
-const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(8000, OPENAI_MAX_OUTPUT_TOKENS);
+const TARGETED_SEARCH_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(1200, Number(process.env.OPENAI_TARGETED_SEARCH_MAX_OUTPUT_TOKENS || 3000)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
+const CONTACT_SEARCH_MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(800, Number(process.env.OPENAI_CONTACT_MAX_OUTPUT_TOKENS || 1800)),
+  OPENAI_MAX_OUTPUT_TOKENS
+);
 const STATISTICS_MAX_OUTPUT_TOKENS = Math.min(12000, OPENAI_MAX_OUTPUT_TOKENS);
 const OPENAI_WEB_SEARCH_COST_PER_CALL = Math.max(
   0,
@@ -35,10 +41,10 @@ const COURT_FILE_SEARCH_MAX_RESULTS = Math.max(
   Math.min(50, Number(process.env.COURT_FILE_SEARCH_MAX_RESULTS || 40))
 );
 const GOOGLE_AI_SOL_RETRY_PRIORITY_AB =
-  String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "true").toLowerCase() !== "false";
+  String(process.env.GOOGLE_AI_SOL_RETRY_PRIORITY_AB || "false").toLowerCase() === "true";
 const RESEARCH_MAX_RECOVERY_BRANCHES = Math.max(
   0,
-  Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 3))
+  Math.min(5, Number(process.env.OPENAI_RESEARCH_MAX_RECOVERY_BRANCHES || 1))
 );
 const RESEARCH_MICRO_MAX_OUTPUT_TOKENS = Math.min(
   16000,
@@ -48,8 +54,64 @@ const RESEARCH_GEO_GROUPS = Math.max(
   2,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
+const FINAL_INN_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, Number(process.env.OPENAI_FINAL_INN_CONCURRENCY || 4))
+);
+const ENRICHMENT_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.OPENAI_ENRICHMENT_CONCURRENCY || 8))
+);
+const CONTACT_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.OPENAI_CONTACT_CONCURRENCY || 8))
+);
+const GOOGLE_FALLBACK_CONCURRENCY = Math.max(
+  1,
+  Math.min(3, Number(process.env.OPENAI_GOOGLE_FALLBACK_CONCURRENCY || 2))
+);
+const ENRICHMENT_SEARCH_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.OPENAI_ENRICHMENT_SEARCH_TIMEOUT_MS || 20000)
+);
+const CONTACT_SEARCH_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.OPENAI_CONTACT_SEARCH_TIMEOUT_MS || 18000)
+);
+const GOOGLE_AI_COMPANY_TIMEOUT_MS = Math.max(
+  10000,
+  Number(process.env.GOOGLE_AI_COMPANY_TIMEOUT_MS || 30000)
+);
+const STAGE10_MAX_MS = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.STAGE10_MAX_MS || 28 * 60 * 1000)
+);
+const STAGE11_MAX_MS = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.STAGE11_MAX_MS || 28 * 60 * 1000)
+);
+const CHECKPOINT_FLUSH_EVERY = Math.max(
+  1,
+  Number(process.env.CHECKPOINT_FLUSH_EVERY || 10)
+);
+const CHECKPOINT_FLUSH_INTERVAL_MS = Math.max(
+  1000,
+  Number(process.env.CHECKPOINT_FLUSH_INTERVAL_MS || 10000)
+);
+const CENSUS_ENABLED =
+  String(process.env.OPENAI_CENSUS_ENABLED || "true").toLowerCase() !== "false";
+const CENSUS_BUCKET_MIN = Math.max(
+  3,
+  Number(process.env.OPENAI_CENSUS_BUCKET_MIN || 12)
+);
+const COVERAGE_GAP_MAX = Math.max(
+  0,
+  Math.min(7, Number(process.env.OPENAI_COVERAGE_GAP_MAX || 4))
+);
+const INCLUDE_PUBLIC_OPERATORS =
+  String(process.env.INCLUDE_PUBLIC_OPERATORS || "true").toLowerCase() !== "false";
 
-const DEDUPE_CHECKPOINT_VERSION = 12;
+const DEDUPE_CHECKPOINT_VERSION = 13;
 
 const DISCOVERY_ALREADY_FOUND_LIMIT = Math.max(
   20,
@@ -548,6 +610,30 @@ const FINAL_INN_SCHEMA = {
   required: ["items"]
 };
 
+const CONTACT_SEARCH_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    status: { type: "string", enum: ["ok", "not_found"] },
+    phones: { type: "array", items: { type: "string" } },
+    leader: { type: "string" },
+    official_site: { type: "string" },
+    note: { type: "string" }
+  },
+  required: ["status", "phones", "leader", "official_site", "note"]
+};
+
+const PHONE_VERIFY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    confirmed: { type: "boolean" },
+    phone: { type: "string" },
+    note: { type: "string" }
+  },
+  required: ["confirmed", "phone", "note"]
+};
+
 const FINAL_BATCH_DELTA_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -821,8 +907,11 @@ function targetedSearchContract() {
   return `\n\nТОЧЕЧНОЕ ОБОГАЩЕНИЕ ОДНОЙ КОМПАНИИ — верни ТОЛЬКО JSON:
 {"fields":{},"__comment":""}.
 Ищи ТОЛЬКО указанную компанию и ТОЛЬКО перечисленные недостающие сведения.
-fields может содержать только: "Управляющая компания", "ИНН", "Телефон", "Руководитель / ЛПР", "Выручка последнего подтвержденного года", "Численность".
+fields может содержать только: "Управляющая компания", "Выручка последнего подтвержденного года", "Численность".
+ИНН на этом этапе НЕ ИЩИ и НЕ ИЗМЕНЯЙ: им владеет отдельный final-INN pass.
+Телефон и Руководитель / ЛПР на этом этапе НЕ ИЩИ: это отдельный этап 11.
 "__comment" должен содержать пять строк: Сайт/источник; ИНН; Деятельность; Холдинг/УК/группа; Email.
+Строку ИНН в "__comment" копируй только из переданного подтверждённого ИНН, не заменяй её результатом поиска.
 Выручку возвращай только полным числом рублей, численность — только целым числом сотрудников; без года, единиц, слов, сокращений и диапазонов. Не заменяй уже подтверждённые сведения более слабыми. Не выдумывай данные.`;
 }
 
@@ -858,6 +947,61 @@ function rowCount(result) {
 
 function emptyResearchResult() {
   return { direct_buyers: [], intermediaries: [], leasing: [] };
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) return [];
+  const limit = Math.max(1, Math.min(Number(concurrency || 1), source.length));
+  const results = new Array(source.length);
+  let cursor = 0;
+
+  async function run(workerIndex) {
+    while (true) {
+      const index = cursor++;
+      if (index >= source.length) return;
+      results[index] = await worker(source[index], index, workerIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, (_, workerIndex) => run(workerIndex)));
+  return results;
+}
+
+function deadlineRemaining(deadlineAt) {
+  return Math.max(0, Number(deadlineAt || 0) - Date.now());
+}
+
+function createCheckpointBatcher(flush) {
+  let pending = 0;
+  let lastFlushAt = Date.now();
+  let chain = Promise.resolve();
+
+  const request = async ({ force = false } = {}) => {
+    pending++;
+    const due = force ||
+      pending >= CHECKPOINT_FLUSH_EVERY ||
+      Date.now() - lastFlushAt >= CHECKPOINT_FLUSH_INTERVAL_MS;
+    if (!due) return;
+
+    pending = 0;
+    lastFlushAt = Date.now();
+    chain = chain.then(() => flush()).catch((error) => {
+      console.error("[CHECKPOINT_BATCH_FLUSH_ERROR] " + JSON.stringify({
+        error: error?.message || String(error)
+      }));
+      throw error;
+    });
+    await chain;
+  };
+
+  return {
+    request,
+    flush: async () => {
+      if (pending > 0) await request({ force: true });
+      else await chain;
+    }
+  };
 }
 
 function appendResearchResult(target, source, passNumber) {
@@ -933,6 +1077,189 @@ function discoverySaturatedSourceFamilies(stats, limit = 4) {
     .sort((a, b) => Number(counts[b] || 0) - Number(counts[a] || 0))
     .filter((family) => Number(counts[family] || 0) >= 3)
     .slice(0, limit);
+}
+
+const ENTITY_CENSUS_BUCKETS = [
+  {
+    key: "transport",
+    label: "автомобильные грузоперевозчики, АТП и транспортные операторы",
+    pattern: /(грузоперевоз|перевозчик|автотранспорт|атп\b|транспортн.{0,20}(компан|оператор)|экспедитор)/
+  },
+  {
+    key: "agro",
+    label: "агро, зерно, элеваторы, комбикорм и масличные",
+    pattern: /(зерн|элеватор|комбикорм|агро|сельск.{0,20}хозяйств|кфх\b|спк\b|рапс|пшениц|масличн)/
+  },
+  {
+    key: "quarries",
+    label: "карьеры, щебень, песок, ПГС и нерудные материалы",
+    pattern: /(карьер|щеб|песок|пгс|неруд|грави|добыч.{0,30}(камн|пес|грав|щеб))/
+  },
+  {
+    key: "construction",
+    label: "бетон, ЖБИ, цемент, асфальт и строительные материалы",
+    pattern: /(бетон|жби|цемент|асфальт|стройматериал|дорожн.{0,20}(строит|ремонт))/
+  },
+  {
+    key: "wood",
+    label: "лес, деревообработка, лесопиление, щепа и пеллеты",
+    pattern: /(лесозаготов|лесопил|деревообработ|пиломатериал|щеп|опил|пеллет|древес)/
+  },
+  {
+    key: "waste",
+    label: "отходы, вторсырьё, металлолом и вторчермет",
+    pattern: /(отход|тко\b|вторсыр|металлолом|вторчермет|лом.{0,20}металл)/
+  },
+  {
+    key: "industrial",
+    label: "крупные промышленные грузовладельцы с регулярными сыпучими/навалочными потоками",
+    pattern: /(промышлен|производств|завод|фабрик|комбинат|сырь|сыпуч|навалоч|грузопоток)/
+  }
+];
+
+function rowCoverageText(row) {
+  const evidence = row?.__evidence || {};
+  return [
+    row?.["Организация"],
+    row?.["Город/район"],
+    row?.["Техника/сегмент"],
+    row?.["Основание"],
+    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
+  ]
+    .map((value) => String(value || "").toLowerCase().replace(/ё/g, "е"))
+    .join("\n");
+}
+
+function coverageSnapshot(result, scopes = []) {
+  const rows = allResearchRows(result);
+  const sectors = Object.fromEntries(ENTITY_CENSUS_BUCKETS.map((bucket) => [bucket.key, 0]));
+  for (const row of rows) {
+    const text = rowCoverageText(row);
+    for (const bucket of ENTITY_CENSUS_BUCKETS) {
+      if (bucket.pattern.test(text)) sectors[bucket.key]++;
+    }
+  }
+
+  const geography = [];
+  for (const scope of (Array.isArray(scopes) ? scopes.slice(1) : [])) {
+    const places = String(scope || "")
+      .replace(/^география:\s*/i, "")
+      .replace(/^углублённые географические пробелы:\s*/i, "")
+      .split(/[;,]/)
+      .map((value) => value.replace(/\..*$/, "").trim().toLowerCase())
+      .filter((value) => value.length >= 3);
+    if (!places.length) continue;
+    const count = rows.filter((row) => {
+      const place = String(row?.["Город/район"] || "").toLowerCase();
+      return places.some((token) => place.includes(token));
+    }).length;
+    geography.push({ scope: String(scope), count });
+  }
+
+  geography.sort((a, b) => a.count - b.count);
+  return {
+    total: uniqueResearchCount(result),
+    sectors,
+    undercovered_geography: geography.slice(0, 3)
+  };
+}
+
+function entityCensusPrompt({ region, bucket, alreadyFound, geography = "" }) {
+  const known = (alreadyFound || []).slice(-DISCOVERY_ALREADY_FOUND_LIMIT);
+  return `${DISCOVERY_CORE_PROMPT}
+
+ENTITY CENSUS / COVERAGE PASS.
+РЕГИОН: ${region}
+СЕКТОР: ${bucket.label}
+${geography ? `ГЕОГРАФИЧЕСКИЙ ПРОБЕЛ: ${geography}` : "ГЕОГРАФИЯ: весь регион, включая малые города и районы."}
+
+Цель этого вызова — найти СОСТАВ ДЕЙСТВУЮЩИХ ОРГАНИЗАЦИЙ сектора, а не только свежие события.
+Свежая закупка, вакансия, тендер или новость НЕ обязательны.
+Используй официальные отраслевые списки, реестры, каталоги организаций, карты, ассоциации, сайты районов/промзон и обычный web-поиск как discovery-источники.
+Для direct buyer достаточно доказать действующий целевой производственный/грузовой процесс; если собственная техника пока не найдена, это допустимый C-кандидат.
+Органы власти и бюджетные учреждения не возвращай. ГУП/МУП/ФГУП оценивай по фактической хозяйственной роли.
+Не возвращай организации только по одному ОКВЭД без подтверждения реальной деятельности.
+Не обогащай телефон/директора/выручку. Сохраняй 1–3 сильных URL и короткие evidence notes.
+УЖЕ НАЙДЕНО — ищи прежде всего новые организации: ${known.length ? known.join("; ") : "нет"}.
+Верни все подтверждённые новые организации этого сектора, которые удалось найти без выдумывания.`;
+}
+
+async function runEntityCensusAndGapSearch({
+  client,
+  region,
+  parts,
+  researchScopes,
+  assertNotCancelled
+}) {
+  const existing = emptyResearchResult();
+  for (const part of parts) appendResearchResult(existing, part, "pre-census");
+
+  const additions = emptyResearchResult();
+  const known = foundOrganizationNames(existing, DISCOVERY_ALREADY_FOUND_LIMIT);
+
+  for (let index = 0; index < ENTITY_CENSUS_BUCKETS.length; index++) {
+    await assertNotCancelled();
+    const bucket = ENTITY_CENSUS_BUCKETS[index];
+    const result = normalize(await askResearch(
+      client,
+      entityCensusPrompt({ region, bucket, alreadyFound: known }),
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+      `entity census | ${bucket.key} | ${index + 1}/${ENTITY_CENSUS_BUCKETS.length}`,
+      3
+    ));
+    appendResearchResult(additions, result, `census-${bucket.key}`);
+    mergeKnownOrganizationNames(known, result);
+    console.log("[ENTITY_CENSUS_RESULT] " + JSON.stringify({
+      bucket: bucket.key,
+      rows: rowCount(result),
+      unique: uniqueResearchCount(result)
+    }));
+  }
+
+  const combined = emptyResearchResult();
+  appendResearchResult(combined, existing, "existing");
+  appendResearchResult(combined, additions, "census");
+  let coverage = coverageSnapshot(combined, researchScopes);
+
+  const gapBuckets = ENTITY_CENSUS_BUCKETS
+    .map((bucket) => ({
+      ...bucket,
+      count: Number(coverage.sectors[bucket.key] || 0)
+    }))
+    .filter((bucket) => bucket.count < CENSUS_BUCKET_MIN)
+    .sort((a, b) => a.count - b.count)
+    .slice(0, COVERAGE_GAP_MAX);
+
+  for (let index = 0; index < gapBuckets.length; index++) {
+    await assertNotCancelled();
+    const bucket = gapBuckets[index];
+    const geo = coverage.undercovered_geography[index % Math.max(1, coverage.undercovered_geography.length)]?.scope || "";
+    const result = normalize(await askResearch(
+      client,
+      entityCensusPrompt({
+        region,
+        bucket,
+        alreadyFound: known,
+        geography: geo
+      }),
+      RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+      `coverage gap | ${bucket.key} | ${index + 1}/${gapBuckets.length}`,
+      3
+    ));
+    appendResearchResult(additions, result, `coverage-gap-${bucket.key}`);
+    appendResearchResult(combined, result, `coverage-gap-${bucket.key}`);
+    mergeKnownOrganizationNames(known, result);
+  }
+
+  coverage = coverageSnapshot(combined, researchScopes);
+  console.log("[ENTITY_CENSUS_SUMMARY] " + JSON.stringify({
+    added_rows: rowCount(additions),
+    added_unique: uniqueResearchCount(additions),
+    coverage,
+    gap_buckets: gapBuckets.map((bucket) => bucket.key)
+  }));
+
+  return { additions, coverage, gapBuckets: gapBuckets.map((bucket) => bucket.key) };
 }
 
 function researchRowKey(row) {
@@ -1880,28 +2207,35 @@ async function resolveFinalMissingInns({
     const id = checkpointRowId(row);
     return id && !completedIds.has(id);
   });
+  const batches = [];
+  for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
+    batches.push(pending.slice(offset, offset + FINAL_INN_BATCH_SIZE));
+  }
 
   let attempted = 0;
   let recovered = 0;
-  let missing = 0;
+  let retried = 0;
+  let completedBatches = 0;
+  const concurrency = client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
 
   console.log("[FINAL_INN_PLAN] " + JSON.stringify({
     region,
     final_companies: companies.length,
     already_completed: completedIds.size,
     companies_to_recheck: pending.length,
-    batch_size: FINAL_INN_BATCH_SIZE
+    batch_size: FINAL_INN_BATCH_SIZE,
+    concurrency,
+    batches: batches.length
   }));
 
-  for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
+  await mapWithConcurrency(batches, concurrency, async (batch, batchIndex) => {
     await assertNotCancelled();
-    const batch = pending.slice(offset, offset + FINAL_INN_BATCH_SIZE);
     const result = await lookupFinalInnBatch({
       client,
       rows: batch,
       region,
       assertNotCancelled,
-      label: `${Math.floor(offset / FINAL_INN_BATCH_SIZE) + 1}/${Math.ceil(pending.length / FINAL_INN_BATCH_SIZE)}`
+      label: `${batchIndex + 1}/${batches.length}`
     });
     attempted += batch.length;
     recovered += applyFinalInnItems(rowsById, result);
@@ -1909,36 +2243,138 @@ async function resolveFinalMissingInns({
     for (const row of batch) {
       const id = checkpointRowId(row);
       if (id) completedIds.add(id);
-      if (!normalizeInn(row?.["ИНН"])) missing++;
     }
 
+    completedBatches++;
+    const missingProcessed = companies.filter(
+      (row) => completedIds.has(checkpointRowId(row)) && !normalizeInn(row?.["ИНН"])
+    ).length;
     console.log("[FINAL_INN_BATCH] " + JSON.stringify({
-      completed: Math.min(offset + batch.length, pending.length),
-      total: pending.length,
+      completed_batches: completedBatches,
+      total_batches: batches.length,
+      completed_companies: completedIds.size,
+      total_companies: companies.length,
       recovered,
-      still_missing_in_processed: missing
+      still_missing_in_processed: missingProcessed
     }));
     await onBatch({
       completedIds,
       attempted,
       recovered,
+      retried,
       pendingTotal: pending.length
+    });
+  });
+
+  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]));
+  if (retryRows.length) {
+    const retryBatches = [];
+    for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
+      retryBatches.push(retryRows.slice(offset, offset + FINAL_INN_BATCH_SIZE));
+    }
+    console.log("[FINAL_INN_RETRY_PLAN] " + JSON.stringify({
+      missing_after_first_pass: retryRows.length,
+      batches: retryBatches.length,
+      concurrency
+    }));
+
+    await mapWithConcurrency(retryBatches, concurrency, async (batch, batchIndex) => {
+      await assertNotCancelled();
+      const result = await lookupFinalInnBatch({
+        client,
+        rows: batch,
+        region,
+        assertNotCancelled,
+        label: `retry-${batchIndex + 1}/${retryBatches.length}`
+      });
+      retried += batch.length;
+      recovered += applyFinalInnItems(rowsById, result);
+      await onBatch({
+        completedIds,
+        attempted,
+        recovered,
+        retried,
+        pendingTotal: pending.length
+      });
     });
   }
 
+  for (const row of companies) mergeResearchComment(row);
   const finalMissing = companies.filter((row) => !normalizeInn(row?.["ИНН"])).length;
   console.log("[FINAL_INN_SUMMARY] " + JSON.stringify({
     region,
     final_companies: companies.length,
     attempted,
+    retried,
     recovered,
     inn_present: companies.length - finalMissing,
     inn_missing: finalMissing
   }));
 
-  return { completedIds, attempted, recovered, missing: finalMissing };
+  return { completedIds, attempted, retried, recovered, missing: finalMissing };
 }
 
+function duplicateInnConflictGroups(finalResult) {
+  const groups = new Map();
+  for (const row of allResearchRows(finalResult)) {
+    const inn = normalizeInn(row?.["ИНН"]);
+    if (!inn) continue;
+    if (!groups.has(inn)) groups.set(inn, []);
+    groups.get(inn).push(row);
+  }
+  return [...groups.entries()]
+    .filter(([, rows]) => rows.length > 1)
+    .map(([inn, rows]) => ({ inn, rows }));
+}
+
+function clearUnresolvedInnConflicts(finalResult) {
+  const groups = duplicateInnConflictGroups(finalResult);
+  let clearedRows = 0;
+  for (const group of groups) {
+    for (const row of group.rows) {
+      row["ИНН"] = "";
+      const evidence = row.__evidence || { source_urls: [], notes: [] };
+      row.__evidence = {
+        ...evidence,
+        source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
+        notes: [
+          ...(Array.isArray(evidence.notes) ? evidence.notes : []),
+          `Final INN conflict: ИНН ${group.inn} встретился у несовместимых сущностей и очищен до однозначного подтверждения.`
+        ]
+      };
+      mergeResearchComment(row);
+      clearedRows++;
+    }
+  }
+  return { groups: groups.length, clearedRows };
+}
+
+function deterministicRequalification(records) {
+  const decisions = new Map();
+  for (const record of records) {
+    const decision = deterministicQualificationDecision(record);
+    decisions.set(record.id, {
+      decision: decision.decision,
+      grade: decision.grade,
+      reason: decision.reason,
+      aEvidence: decision.aEvidence || "",
+      aRule: decision.aRule || ""
+    });
+  }
+  return applyFinalQualification(records, decisions);
+}
+
+function postInnDedupe(finalResult, region, diagnostics = null) {
+  const records = deterministicGlobalDedupe(
+    makeQaRecords(finalResult),
+    diagnostics,
+    region
+  );
+  return {
+    records,
+    qualified: deterministicRequalification(records)
+  };
+}
 
 function enforceFinalInnRequirement(finalResult) {
   const missing = [];
@@ -2056,6 +2492,51 @@ function mergedEvidenceFromCanonical(canonical) {
   };
 }
 
+function preferredSheetForCanonical(canonical) {
+  const sourceSheets = new Set(
+    (Array.isArray(canonical?.source_sheets) ? canonical.source_sheets : [])
+      .map((value) => String(value || ""))
+  );
+  const evidenceRows = canonical?.evidence?.map((item) => item?.data || {}) || [];
+  const text = evidenceRows
+    .flatMap((row) => [
+      row?.["Организация"],
+      row?.["Техника/сегмент"],
+      row?.["Основание"],
+      ...(Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [])
+    ])
+    .map((value) => String(value || "").toLowerCase().replace(/ё/g, "е"))
+    .join("\n");
+
+  const lessee =
+    /лизингополучател|получател.{0,20}лизинг|предмет.{0,30}лизинг.{0,80}(эксплуат|использ|парк)|эксплуат.{0,80}лизинг/.test(text);
+  const financier =
+    /лизингодател|лизингов.{0,25}(компан|организац|финанс|услуг)|финанс.{0,25}лизинг|предоставл.{0,30}лизинг/.test(text);
+  const intermediary =
+    /(дилер|сервис|ремонт|шиномонтаж|телематик|гидравлик|запчаст|торгов.{0,20}(дом|центр)|продаж.{0,30}(прицеп|полуприцеп))/.test(text);
+  const directOperation =
+    /(перевозчик|грузоперевоз|собственн.{0,30}парк|эксплуат.{0,50}(тягач|прицеп|полуприцеп|самосвал)|производств|добыч|выращив|элеватор|карьер|лесозаготов|деревообработ|отход|металлолом|зерн|щеб|песок|пгс)/.test(text);
+
+  if (financier && !lessee) return "leasing";
+  if (
+    sourceSheets.has("Прямые покупатели") ||
+    sourceSheets.has("direct_buyers") ||
+    lessee ||
+    (directOperation && !intermediary)
+  ) {
+    return "direct_buyers";
+  }
+  if (
+    sourceSheets.has("Посредники") ||
+    sourceSheets.has("intermediaries") ||
+    intermediary
+  ) {
+    return "intermediaries";
+  }
+  if (sourceSheets.has("Лизинг") || sourceSheets.has("leasing")) return "leasing";
+  return "direct_buyers";
+}
+
 function baselineRowFromCanonical(canonical) {
   const row = {};
   const evidenceRows = canonical?.evidence?.map((x) => x.data || {}) || [];
@@ -2112,11 +2593,7 @@ function ensureBatchCoverage(batch, batchResult) {
     if (seen.has(canonical.canonical_id)) continue;
 
     const fallback = baselineRowFromCanonical(canonical);
-    const preferred = canonical.source_sheets.includes("Лизинг")
-      ? "leasing"
-      : canonical.source_sheets.includes("Прямые покупатели")
-        ? "direct_buyers"
-        : "intermediaries";
+    const preferred = preferredSheetForCanonical(canonical);
     output[preferred].push(fallback);
   }
 
@@ -2143,11 +2620,7 @@ function applyFinalBatchDelta(batch, delta) {
     const requestedSheet = String(item?.sheet || "");
     const preferred = ["direct_buyers", "intermediaries", "leasing"].includes(requestedSheet)
       ? requestedSheet
-      : canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      : preferredSheetForCanonical(canonical);
     output[preferred].push(row);
   }
   return output;
@@ -2234,11 +2707,7 @@ function prefilterCandidatesForIdentity(candidates, region = "") {
 
   for (const canonical of canonicalPool) {
     const row = baselineRowFromCanonical(canonical);
-    const sheet = canonical.source_sheets.includes("Лизинг")
-      ? "leasing"
-      : canonical.source_sheets.includes("Прямые покупатели")
-        ? "direct_buyers"
-        : "intermediaries";
+    const sheet = preferredSheetForCanonical(canonical);
     staged[sheet].push(row);
   }
 
@@ -2958,6 +3427,46 @@ const QUAL_TRANSPORT_PATTERNS = [
   /перевозк.{0,35}(зерн|щеб|пес|пгс|торф|щеп|лес|лом|отход|стройматериал)/
 ];
 
+const QUAL_OPERATING_PROCESS_PATTERNS = [
+  /производств/, /добыч/, /переработ/, /выращив/, /сельск.{0,20}хозяйств/,
+  /фермер/, /кфх\b/, /спк\b/, /элеватор/, /комбикорм/, /карьер/,
+  /лесозаготов/, /деревообработ/, /лесопил/, /заготовк.{0,30}(лом|вторсыр)/,
+  /прием.{0,30}(лом|вторсыр|отход)/, /приём.{0,30}(лом|вторсыр|отход)/,
+  /отгруз/, /погруз/, /разгруз/, /грузопоток/, /регулярн.{0,30}(перевоз|достав|вывоз)/
+];
+
+const GOVERNMENT_ENTITY_PATTERNS = [
+  /(^|\s)администраци/,
+  /(^|\s)министерств/,
+  /(^|\s)департамент/,
+  /(^|\s)комитет(\s|$)/,
+  /(^|\s)правительств/,
+  /совет.{0,20}депутат/,
+  /городск.{0,20}дума/,
+  /муниципальн.{0,30}(совет|собрани)/
+];
+const BUDGET_ENTITY_PATTERN =
+  /(^|\s)(фку|фгбу|гбу|гку|мбу|мку|гау|мау|согбу|огбу|огку|мбоу|гбоу)(\s|$)/;
+const PUBLIC_OPERATOR_PATTERN =
+  /(^|\s)(фгуп|гуп|муп)(\s|$)/;
+
+function classifyEntityType(row) {
+  const name = normalizeOrgKey(row?.["Организация"] || "");
+  if (!name) return "commercial";
+  if (GOVERNMENT_ENTITY_PATTERNS.some((pattern) => pattern.test(name))) {
+    return "government_body";
+  }
+  if (BUDGET_ENTITY_PATTERN.test(name)) return "budget_institution";
+  if (PUBLIC_OPERATOR_PATTERN.test(name)) return "public_operator";
+  return "commercial";
+}
+
+function entityTypeExcluded(entityType) {
+  return entityType === "government_body" ||
+    entityType === "budget_institution" ||
+    (!INCLUDE_PUBLIC_OPERATORS && entityType === "public_operator");
+}
+
 function identityRegionMismatchFromNotes(notes = []) {
   return notes.some((raw) => {
     const note = String(raw || "").toLowerCase().replace(/ё/g, "е");
@@ -2981,6 +3490,8 @@ function deterministicQualificationDecision(record) {
   const target = priorityTarget || generalTarget;
   const heavy = hasAnyPattern(text, QUAL_HEAVY_PATTERNS);
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
+  const operatingProcess = hasAnyPattern(text, QUAL_OPERATING_PROCESS_PATTERNS);
+  const entityType = classifyEntityType(record?.row || {});
 
   const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|экономическ.{0,30}рациональн|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
@@ -3119,7 +3630,13 @@ function deterministicQualificationDecision(record) {
   let grade = "";
   let reason = "";
 
-  if (identityRegionMismatch) {
+  if (entityTypeExcluded(entityType)) {
+    reason = entityType === "government_body"
+      ? "Орган власти исключён из коммерческого списка независимо от факта закупки техники."
+      : entityType === "budget_institution"
+        ? "Бюджетное/казённое учреждение исключено из коммерческого списка."
+        : "Публичный оператор исключён настройкой INCLUDE_PUBLIC_OPERATORS.";
+  } else if (identityRegionMismatch) {
     reason = "Identity-resolution подтвердил, что организация относится к другому региону; кандидат исключён до A/B/C.";
   } else if (aEvidence) {
     grade = "A";
@@ -3127,12 +3644,15 @@ function deterministicQualificationDecision(record) {
   } else if (target && heavy) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
+  } else if (directRole && target && operatingProcess) {
+    grade = "C";
+    reason = "Подтверждён действующий целевой производственный/грузовой процесс коммерческого грузовладельца; собственная техника или перевозчик пока не установлены.";
   } else if (target && transport) {
     grade = "C";
     reason = "В evidence подтверждены целевой груз/процесс и конкретный транспортно-логистический сигнал, но недостаточно данных для A/B.";
   } else {
     reason = target
-      ? "Подтвержден целевой груз/процесс, но нет достаточного конкретного транспортного сигнала."
+      ? "Целевой груз упомянут, но evidence не подтверждает действующий коммерческий процесс или достаточный транспортный сигнал."
       : "Evidence не подтверждает достаточную коммерческую релевантность для A/B/C.";
   }
 
@@ -3148,6 +3668,8 @@ function deterministicQualificationDecision(record) {
       generalTarget,
       heavy,
       transport,
+      operatingProcess,
+      entityType,
       aEvidence: Boolean(aEvidence),
       identityRegionMismatch
     }
@@ -3618,7 +4140,8 @@ async function askJson(client, {
   responseSchema = null,
   schemaName = "structured_output",
   allowJsonRepair = true,
-  maxToolCalls = null
+  maxToolCalls = null,
+  timeoutMs = null
 }) {
   const request = {
     model,
@@ -3652,9 +4175,14 @@ async function askJson(client, {
     }
   }
 
-  const requestOptions = client.__jobSignal
-    ? { signal: client.__jobSignal }
-    : undefined;
+  let requestSignal = client.__jobSignal || null;
+  if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+    const timeoutSignal = AbortSignal.timeout(Math.floor(Number(timeoutMs)));
+    requestSignal = requestSignal
+      ? AbortSignal.any([requestSignal, timeoutSignal])
+      : timeoutSignal;
+  }
+  const requestOptions = requestSignal ? { signal: requestSignal } : undefined;
   const startedAt = Date.now();
   const query = compactDiagnosticQuery(input, diagnosticLabel);
 
@@ -3759,6 +4287,7 @@ async function askJson(client, {
       initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
       max_tool_calls: maxToolCalls,
+      timeout_ms: timeoutMs,
       status: response?.status || "",
       stop_reason: stopReason,
       duration_ms: Date.now() - startedAt,
@@ -3804,6 +4333,7 @@ async function askJson(client, {
       schema_name: responseSchema ? schemaName : null,
       initial_prompt_chars: String(input || "").length,
       max_output_tokens: maxOutputTokens,
+      timeout_ms: timeoutMs,
       status: "error",
       stop_reason: client.__jobSignal?.aborted ? "cancelled" : "error",
       duration_ms: Date.now() - startedAt,
@@ -3841,13 +4371,138 @@ function askWithoutSearch(client, input, model, maxOutputTokens) {
   });
 }
 
-function askTargetedSearch(client, input) {
+function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS) {
   return askJson(client, {
     input,
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true,
-    maxToolCalls: 3
+    maxToolCalls: 2,
+    timeoutMs
+  });
+}
+
+function contactSearchPrompt(row, region, kind = "contacts") {
+  const organization = String(row?.["Организация"] || "").trim();
+  const inn = normalizeInn(row?.["ИНН"]);
+  const exactQuery = [
+    organization,
+    inn,
+    kind === "phone" ? "телефон" : "контакты"
+  ].filter(Boolean).join(" ");
+
+  return `ПОИСК КОНТАКТОВ ОДНОЙ КОМПАНИИ.
+РЕГИОН: ${region}
+ОРГАНИЗАЦИЯ: ${organization}
+ИНН: ${inn || "не подтверждён"}
+
+ОБЯЗАТЕЛЬНЫЙ ПЕРВИЧНЫЙ ЗАПРОС: "${exactQuery}".
+Используй web_search. Приоритет: официальный сайт/страница контактов, официальный реестр/документ, устойчивый бизнес-реестр.
+Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
+Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
+Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
+Не выдумывай и не дополняй цифры.
+Верни ТОЛЬКО JSON по схеме.`;
+}
+
+async function searchContactsWithWeb({
+  client,
+  row,
+  region,
+  deadlineAt
+}) {
+  const firstTimeout = Math.min(
+    CONTACT_SEARCH_TIMEOUT_MS,
+    Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+  );
+  const first = await askJson(client, {
+    input: contactSearchPrompt(row, region, "contacts"),
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
+    webSearch: true,
+    responseSchema: CONTACT_SEARCH_SCHEMA,
+    schemaName: "contact_search",
+    diagnosticLabel: `contact web | ${row?.["Организация"] || ""}`,
+    maxToolCalls: 2,
+    timeoutMs: firstTimeout,
+    allowJsonRepair: false
+  });
+
+  const phones = new Set(
+    (Array.isArray(first?.phones) ? first.phones : [])
+      .map(normalizePhoneDigits)
+      .filter(Boolean)
+  );
+
+  let second = null;
+  if (!phones.size && deadlineRemaining(deadlineAt) > 7000) {
+    const secondTimeout = Math.min(
+      CONTACT_SEARCH_TIMEOUT_MS,
+      Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+    );
+    second = await askJson(client, {
+      input: contactSearchPrompt(row, region, "phone"),
+      model: TARGETED_SEARCH_MODEL,
+      maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
+      webSearch: true,
+      responseSchema: CONTACT_SEARCH_SCHEMA,
+      schemaName: "contact_phone_search",
+      diagnosticLabel: `contact phone retry | ${row?.["Организация"] || ""}`,
+      maxToolCalls: 2,
+      timeoutMs: secondTimeout,
+      allowJsonRepair: false
+    });
+    for (const phone of Array.isArray(second?.phones) ? second.phones : []) {
+      const normalized = normalizePhoneDigits(phone);
+      if (normalized) phones.add(normalized);
+    }
+  }
+
+  const leader = String(first?.leader || second?.leader || "").trim();
+  return {
+    status: phones.size || leader ? "ok" : "not_found",
+    phones: [...phones],
+    leader,
+    official_site: String(first?.official_site || second?.official_site || "").trim(),
+    note: [first?.note, second?.note].map((value) => String(value || "").trim()).filter(Boolean).join(" | ")
+  };
+}
+
+async function verifyPhoneWithWebSearch({
+  client,
+  row,
+  region,
+  phone,
+  deadlineAt
+}) {
+  const inn = normalizeInn(row?.["ИНН"]);
+  if (!inn || deadlineRemaining(deadlineAt) <= 5000) {
+    return { confirmed: false, phone, note: "Недостаточно времени или нет подтверждённого ИНН для конфликтной проверки." };
+  }
+  const timeoutMs = Math.min(
+    CONTACT_SEARCH_TIMEOUT_MS,
+    Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
+  );
+  return askJson(client, {
+    input: `ПРОВЕРКА ПРИНАДЛЕЖНОСТИ ТЕЛЕФОНА.
+РЕГИОН: ${region}
+КОМПАНИЯ: ${row?.["Организация"] || ""}
+ИНН: ${inn}
+ТЕЛЕФОН: ${phone}
+
+Выполни web_search запрос строго по смыслу: "${phone} ${inn}".
+confirmed=true только если найденные сведения явно связывают этот телефон именно с этим юрлицом/ИНН.
+Одноимённые, соседние и связанные компании не подходят. Не угадывай.
+Верни только JSON по схеме.`,
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: 900,
+    webSearch: true,
+    responseSchema: PHONE_VERIFY_SCHEMA,
+    schemaName: "phone_owner_verification",
+    diagnosticLabel: `phone verify | ${phone} | ${inn}`,
+    maxToolCalls: 2,
+    timeoutMs,
+    allowJsonRepair: false
   });
 }
 
@@ -3892,13 +4547,80 @@ function isMissingText(value) {
     text.includes("требуется финальная проверка");
 }
 
+function evidenceEmail(row) {
+  const evidence = row?.__evidence || {};
+  const texts = [
+    evidence.email,
+    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
+  ].map((value) => String(value || ""));
+  for (const text of texts) {
+    const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (match) return match[0];
+  }
+  return "";
+}
+
+function compactActivityDescription(row) {
+  const raw = String(
+    row?.["Техника/сегмент"] ||
+    row?.["Основание"] ||
+    ""
+  )
+    .replace(/^\s*[ABC]\s*[—–:-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return raw ? raw.slice(0, 420) : "требуется финальная проверка";
+}
+
+function mergeResearchComment(row, incomingComment = "") {
+  const current = String(row?.__comment || "");
+  const evidence = row?.__evidence || {};
+  const pickIncoming = (label) => {
+    const value = commentValue(incomingComment, label);
+    return isMissingText(value) ? "" : value;
+  };
+  const pickCurrent = (label) => {
+    const value = commentValue(current, label);
+    return isMissingText(value) ? "" : value;
+  };
+
+  const source =
+    pickIncoming("Сайт/источник") ||
+    pickCurrent("Сайт/источник") ||
+    String(evidence.official_site || "").trim() ||
+    (Array.isArray(evidence.source_urls) ? String(evidence.source_urls[0] || "").trim() : "") ||
+    "не подтверждено";
+  const activity =
+    pickIncoming("Деятельность") ||
+    pickCurrent("Деятельность") ||
+    compactActivityDescription(row);
+  const manager = String(row?.["Управляющая компания"] || "").trim();
+  const holding =
+    pickIncoming("Холдинг/УК/группа") ||
+    pickCurrent("Холдинг/УК/группа") ||
+    (manager && !/не подтвержд/i.test(manager) ? manager : "") ||
+    "не подтверждено";
+  const email =
+    pickIncoming("Email") ||
+    pickCurrent("Email") ||
+    evidenceEmail(row) ||
+    "не найден";
+
+  row.__comment = [
+    `Сайт/источник: ${source}`,
+    `ИНН: ${normalizeInn(row?.["ИНН"]) || "не подтверждено"}`,
+    `Деятельность: ${activity}`,
+    `Холдинг/УК/группа: ${holding}`,
+    `Email: ${email}`
+  ].join("\n");
+  return row.__comment;
+}
+
 function missingResearchFields(row) {
+  mergeResearchComment(row);
   const gaps = [];
   const comment = row?.__comment || "";
-  if (isMissingText(commentValue(comment, "Сайт/источник"))) gaps.push("сайт/источник");
-  if (!normalizeInn(row?.["ИНН"])) gaps.push("ИНН");
   if (isMissingText(commentValue(comment, "Email"))) gaps.push("email");
-  if (isMissingText(commentValue(comment, "Деятельность"))) gaps.push("краткое описание деятельности");
 
   const holding = commentValue(comment, "Холдинг/УК/группа");
   const manager = String(row?.["Управляющая компания"] || "").trim();
@@ -3917,10 +4639,25 @@ function missingResearchFields(row) {
 }
 
 function prioritizedResearchGaps(row) {
-  // После dedupe усиливаем enrichment для всех итоговых организаций.
-  // В частности, отсутствие выручки или численности само по себе является
-  // достаточным основанием для одного точечного поиска независимо от A/B/C.
   return missingResearchFields(row);
+}
+
+function compactEnrichmentTarget(row) {
+  const evidence = row?.__evidence || {};
+  return {
+    id: checkpointRowId(row),
+    organization: String(row?.["Организация"] || "").slice(0, 180),
+    inn: normalizeInn(row?.["ИНН"]),
+    city: String(row?.["Город/район"] || "").slice(0, 120),
+    manager: String(row?.["Управляющая компания"] || "").slice(0, 180),
+    revenue: row?.["Выручка последнего подтвержденного года"] || "",
+    headcount: row?.["Численность"] || "",
+    comment: String(row?.__comment || "").slice(0, 1200),
+    evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
+      .map(String).filter(Boolean).slice(0, 3),
+    evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
+      .map(String).filter(Boolean).slice(0, 3).map((value) => value.slice(0, 420))
+  };
 }
 
 function strictResearchNumber(value) {
@@ -3934,25 +4671,20 @@ function strictResearchNumber(value) {
 function applyTargetedPatch(row, result) {
   const allowed = new Set([
     "Управляющая компания",
-    "ИНН",
-    "Телефон",
-    "Руководитель / ЛПР",
     "Выручка последнего подтвержденного года",
     "Численность"
   ]);
   for (const [key, value] of Object.entries(result?.fields || {})) {
     if (!allowed.has(key)) continue;
     if (value === undefined || value === null || String(value).trim() === "") continue;
-    if (key === "Телефон") {
-      row[key] = mergePhone(row[key], value);
-    } else if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
+    if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
       const numeric = strictResearchNumber(value);
       if (numeric !== "") row[key] = numeric;
     } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
       row[key] = value;
     }
   }
-  if (String(result?.__comment || "").trim()) row.__comment = String(result.__comment).trim();
+  mergeResearchComment(row, String(result?.__comment || "").trim());
 }
 
 function buildConflictGroups(records) {
@@ -4493,11 +5225,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     const stagedTest = { direct_buyers: [], intermediaries: [], leasing: [] };
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
-      const sheet = canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      const sheet = preferredSheetForCanonical(canonical);
       stagedTest[sheet].push(row);
     }
 
@@ -5201,11 +5929,7 @@ ${JSON.stringify(compactCourtArchive)}
 
     for (const canonical of canonicalPool) {
       const row = baselineRowFromCanonical(canonical);
-      const sheet = canonical.source_sheets.includes("Лизинг")
-        ? "leasing"
-        : canonical.source_sheets.includes("Прямые покупатели")
-          ? "direct_buyers"
-          : "intermediaries";
+      const sheet = preferredSheetForCanonical(canonical);
       stagedTest[sheet].push(row);
     }
 
@@ -5415,7 +6139,48 @@ ${JSON.stringify(compactCourtArchive)}
     };
   }
 
+  const censusCompatibleWithResume =
+    !resumeCheckpoint || !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity");
+  if (
+    !diagnosticMode &&
+    !replayMode &&
+    CENSUS_ENABLED &&
+    censusCompatibleWithResume &&
+    !resumeCheckpoint?.census_completed
+  ) {
+    await assertNotCancelled();
+    statuses[8].detail = "entity census · проверка полноты отраслей и географии";
+    await progress({ phase: "research", step: 9, percent: 81 });
+    const census = await runEntityCensusAndGapSearch({
+      client,
+      region,
+      parts,
+      researchScopes,
+      assertNotCancelled
+    });
+    if (!parts[8]) parts[8] = emptyResearchResult();
+    appendResearchResult(parts[8], census.additions, "entity-census");
+    await persistCheckpoint("discovery", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      census_completed: true,
+      coverage_snapshot: census.coverage,
+      coverage_gap_buckets: census.gapBuckets,
+      web_usage_total: webUsageSnapshot(client)
+    });
+    statuses[8].detail =
+      `выполнен · entity census добавил ${uniqueResearchCount(census.additions)} уникальных · coverage сохранён`;
+  } else if (resumeCheckpoint && checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity")) {
+    console.log("[ENTITY_CENSUS_RESUME_SKIP] " + JSON.stringify({
+      reason: "identity_or_later_checkpoint_must_keep_frozen_candidate_pool",
+      phase: resumeCheckpoint.phase || ""
+    }));
+  }
+
   await assertNotCancelled();
+  const stage10StartedAt = Date.now();
+  const stage10DeadlineAt = stage10StartedAt + STAGE10_MAX_MS;
   startStep(statuses[9]);
   const candidatePool = flattenCandidates(parts);
 
@@ -5501,52 +6266,42 @@ ${JSON.stringify(compactCourtArchive)}
   }));
 
   const batchCount = Math.max(1, Math.ceil(canonicalPool.length / FINAL_BATCH_SIZE));
-  const stagedResult =
+  let stagedResult;
+
+  if (
     resumeCheckpoint &&
     checkpointPhaseAtLeast(resumeCheckpoint, "final_batches") &&
     resumeCheckpoint.staged_result
-      ? cloneJson(resumeCheckpoint.staged_result)
-      : { direct_buyers: [], intermediaries: [], leasing: [] };
-  const completedFinalBatches =
-    resumeCheckpoint &&
-    checkpointPhaseAtLeast(resumeCheckpoint, "final_batches")
-      ? Math.max(0, Math.min(batchCount, Number(resumeCheckpoint.completed_final_batches || 0)))
-      : 0;
+  ) {
+    stagedResult = cloneJson(resumeCheckpoint.staged_result);
+    console.log("[DETERMINISTIC_STAGING_RESUME] " + JSON.stringify({
+      rows: rowCount(stagedResult),
+      completed_final_batches: Number(resumeCheckpoint.completed_final_batches || 0)
+    }));
+  } else {
+    stagedResult = { direct_buyers: [], intermediaries: [], leasing: [] };
+    for (const canonical of canonicalPool) {
+      const row = baselineRowFromCanonical(canonical);
+      const sheet = preferredSheetForCanonical(canonical);
+      stagedResult[sheet].push(row);
+    }
 
-  for (let batchIndex = completedFinalBatches; batchIndex < batchCount; batchIndex++) {
-    await assertNotCancelled();
-    const batch = canonicalPool.slice(
-      batchIndex * FINAL_BATCH_SIZE,
-      (batchIndex + 1) * FINAL_BATCH_SIZE
-    );
-
-    statuses[9].detail = `пакет ${batchIndex + 1} / ${batchCount} · ${batch.length} компаний`;
-    await progress({
-      phase: "dedupe",
-      step: 10,
-      percent: 82 + Math.floor(((batchIndex + 1) / batchCount) * 5)
-    });
-
-    const batchResult = await processFinalBatchResilient({
-      client,
-      prompt: prompts[9],
-      region,
-      batch,
-      assertNotCancelled,
-      label: `${batchIndex + 1}/${batchCount}`
-    });
-
-    stagedResult.direct_buyers.push(...batchResult.direct_buyers);
-    stagedResult.intermediaries.push(...batchResult.intermediaries);
-    stagedResult.leasing.push(...batchResult.leasing);
-
+    console.log("[DETERMINISTIC_STAGING] " + JSON.stringify({
+      canonical_companies: canonicalPool.length,
+      staged_rows: rowCount(stagedResult),
+      skipped_mass_llm_batches: batchCount
+    }));
+    statuses[9].detail =
+      `deterministic staging · ${rowCount(stagedResult)} компаний · массовые LLM-batch отключены`;
+    await progress({ phase: "dedupe", step: 10, percent: 87 });
     await persistCheckpoint("final_batches", {
       completed_stage: 9,
       parts,
       research_scopes: researchScopes,
       identity_resolution: identityResolution,
-      completed_final_batches: batchIndex + 1,
-      staged_result: stagedResult
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deterministic_staging: true
     });
   }
 
@@ -5673,34 +6428,129 @@ ${JSON.stringify(groupBatch)}`,
   statuses[9].detail = `финальный поиск ИНН · уже обработано ${finalInnCompleted.size}`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
 
+  let latestFinalInnProgress = {
+    completedIds: finalInnCompleted,
+    attempted: 0,
+    recovered: 0,
+    retried: 0,
+    pendingTotal: rowCount(finalResult)
+  };
+  let finalInnProgressEvents = 0;
+  const finalInnCheckpointBatcher = createCheckpointBatcher(async () => {
+    await persistCheckpoint("final_inn", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      final_inn_completed_ids: [...latestFinalInnProgress.completedIds],
+      final_inn_attempted: latestFinalInnProgress.attempted,
+      final_inn_recovered: latestFinalInnProgress.recovered,
+      final_inn_retried: latestFinalInnProgress.retried,
+      final_inn_pending_total: latestFinalInnProgress.pendingTotal,
+      enrichment_completed_ids: []
+    });
+  });
+
   const finalInnStats = await resolveFinalMissingInns({
     client,
     finalResult,
     region,
     assertNotCancelled,
     completedIds: finalInnCompleted,
-    onBatch: async ({ completedIds, attempted, recovered, pendingTotal }) => {
+    onBatch: async (progressState) => {
+      latestFinalInnProgress = progressState;
+      finalInnProgressEvents++;
       statuses[9].detail =
-        `финальный поиск ИНН · ${Math.min(completedIds.size, rowCount(finalResult))} / ${rowCount(finalResult)} · найдено: ${recovered}`;
-      await progress({ phase: "dedupe", step: 10, percent: 89 });
-      await persistCheckpoint("final_inn", {
-        completed_stage: 9,
-        parts,
-        research_scopes: researchScopes,
-        identity_resolution: identityResolution,
-        completed_final_batches: batchCount,
-        staged_result: stagedResult,
-        deduped_records: dedupedRecords,
-        qualification_counts: qualifiedFinal.counts,
-        final_result: finalResult,
-        final_inn_completed_ids: [...completedIds],
-        final_inn_attempted: attempted,
-        final_inn_recovered: recovered,
-        final_inn_pending_total: pendingTotal,
-        enrichment_completed_ids: []
-      });
+        `финальный поиск ИНН · ${Math.min(progressState.completedIds.size, rowCount(finalResult))} / ${rowCount(finalResult)} · найдено: ${progressState.recovered} · retry: ${progressState.retried || 0}`;
+      if (finalInnProgressEvents % 4 === 0) {
+        await progress({ phase: "dedupe", step: 10, percent: 89 });
+      }
+      await finalInnCheckpointBatcher.request();
     }
   });
+  await finalInnCheckpointBatcher.flush();
+
+  const preservedStatistics = Array.isArray(finalResult.statistics)
+    ? cloneJson(finalResult.statistics)
+    : [];
+
+  const postInnDiagnostics = { merges: [] };
+  let postInn = postInnDedupe(finalResult, region, postInnDiagnostics);
+  dedupedRecords = postInn.records;
+  qualifiedFinal = postInn.qualified;
+  finalResult = qualifiedFinal.result;
+  if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+
+  let innConflictGroups = duplicateInnConflictGroups(finalResult);
+  let innConflictRechecks = 0;
+  if (innConflictGroups.length) {
+    console.log("[POST_INN_CONFLICT_PLAN] " + JSON.stringify({
+      groups: innConflictGroups.length,
+      inns: innConflictGroups.map((group) => group.inn)
+    }));
+    await mapWithConcurrency(
+      innConflictGroups,
+      Math.min(FINAL_INN_CONCURRENCY, 3),
+      async (group, groupIndex) => {
+        await assertNotCancelled();
+        const rowsById = new Map(
+          group.rows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
+        );
+        const result = await lookupFinalInnBatch({
+          client,
+          rows: group.rows,
+          region,
+          assertNotCancelled,
+          label: `post-inn-conflict-${groupIndex + 1}/${innConflictGroups.length}`
+        });
+        innConflictRechecks += group.rows.length;
+        finalInnStats.recovered += applyFinalInnItems(rowsById, result);
+      }
+    );
+
+    postInn = postInnDedupe(finalResult, region, postInnDiagnostics);
+    dedupedRecords = postInn.records;
+    qualifiedFinal = postInn.qualified;
+    finalResult = qualifiedFinal.result;
+    if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+    innConflictGroups = duplicateInnConflictGroups(finalResult);
+  }
+
+  const unresolvedInnConflictClear = innConflictGroups.length
+    ? clearUnresolvedInnConflicts(finalResult)
+    : { groups: 0, clearedRows: 0 };
+  if (unresolvedInnConflictClear.groups) {
+    const afterConflictClear = postInnDedupe(finalResult, region, postInnDiagnostics);
+    dedupedRecords = afterConflictClear.records;
+    qualifiedFinal = afterConflictClear.qualified;
+    finalResult = qualifiedFinal.result;
+    if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
+    innConflictGroups = duplicateInnConflictGroups(finalResult);
+  }
+
+  for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
+
+  finalInnStats.missing = allResearchRows(finalResult)
+    .filter((row) => !normalizeInn(row?.["ИНН"])).length;
+  finalInnStats.innConflictRechecks = innConflictRechecks;
+  finalInnStats.remainingInnConflicts = innConflictGroups.length;
+
+  console.log("[POST_INN_DEDUPE_SUMMARY] " + JSON.stringify({
+    merges: postInnDiagnostics.merges.length,
+    output_rows: rowCount(finalResult),
+    qualification_counts: qualifiedFinal.counts,
+    conflict_rechecks: innConflictRechecks,
+    unresolved_conflict_groups_cleared: unresolvedInnConflictClear.groups,
+    unresolved_conflict_rows_cleared: unresolvedInnConflictClear.clearedRows,
+    remaining_inn_conflicts: innConflictGroups.length,
+    missing_inn: finalInnStats.missing
+  }));
+
   const finalInnRemoved = enforceFinalInnRequirement(finalResult);
   finalInnStats.removedWithoutInn = finalInnRemoved.length;
 
@@ -5716,8 +6566,11 @@ ${JSON.stringify(groupBatch)}`,
     final_result: finalResult,
     final_inn_completed_ids: [...finalInnStats.completedIds],
     final_inn_attempted: finalInnStats.attempted,
+    final_inn_retried: finalInnStats.retried,
     final_inn_recovered: finalInnStats.recovered,
     final_inn_missing: finalInnStats.missing,
+    final_inn_conflict_rechecks: finalInnStats.innConflictRechecks,
+    final_inn_remaining_conflicts: finalInnStats.remainingInnConflicts,
     final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
     enrichment_completed_ids: Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids
@@ -5725,47 +6578,45 @@ ${JSON.stringify(groupBatch)}`,
   });
 
   await assertNotCancelled();
-  const finalCompaniesForEnrichment = [
-    ...finalResult.direct_buyers,
-    ...finalResult.intermediaries,
-    ...finalResult.leasing
-  ];
+  const finalCompaniesForEnrichment = allResearchRows(finalResult);
   let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
   const enrichmentCompleted = new Set(
     Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids.map(String)
       : []
   );
+  let enrichmentProcessed = 0;
+  let enrichmentErrors = 0;
+  let enrichmentDeadlineSkipped = 0;
 
-  for (const row of finalCompaniesForEnrichment) {
-    const rowId = checkpointRowId(row);
-    if (rowId && enrichmentCompleted.has(rowId)) continue;
-    const gaps = prioritizedResearchGaps(row);
-    if (!gaps.length) {
-      if (rowId) enrichmentCompleted.add(rowId);
-      continue;
-    }
+  for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
 
-    await assertNotCancelled();
-    targetedSearches++;
-    statuses[9].detail =
-      `точечное enrichment после qualification ${targetedSearches} · ${row["Организация"] || ""}`;
-    await progress({ phase: "dedupe", step: 10, percent: 89 });
+  const statisticsPromise =
+    resumeCheckpoint &&
+    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
+    Array.isArray(resumeCheckpoint?.final_result?.statistics)
+      ? Promise.resolve(cloneJson(resumeCheckpoint.final_result.statistics))
+      : askJson(client, {
+          input:
+            statisticsContract() +
+            `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
+          webSearch: true,
+          maxToolCalls: 3,
+          diagnosticLabel: "regional statistics",
+          timeoutMs: Math.min(45000, Math.max(8000, deadlineRemaining(stage10DeadlineAt) - 3000))
+        })
+          .then((result) => Array.isArray(result?.statistics) ? result.statistics : [])
+          .catch((error) => {
+            if (jobSignal?.aborted) throw error;
+            console.error("[STATISTICS_ERROR] " + JSON.stringify({
+              error: error?.message || String(error)
+            }));
+            return [];
+          });
 
-    const enriched = await askTargetedSearch(
-      client,
-      prompts[9] +
-        targetedSearchContract() +
-        `\n\nРЕГИОН: ${region}
-КОМПАНИЯ:
-${JSON.stringify(row)}
-НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
-${JSON.stringify(gaps)}
-Компания уже прошла identity, global dedupe и финальную A/B/C qualification.
-Сделай один точечный web_search только по этой компании. Ищи только перечисленные недостающие сведения. Не перепроверяй заполненные поля без необходимости.`
-    );
-    applyTargetedPatch(row, enriched);
-    if (rowId) enrichmentCompleted.add(rowId);
+  const enrichmentCheckpointBatcher = createCheckpointBatcher(async () => {
     await persistCheckpoint("enrichment", {
       completed_stage: 9,
       parts,
@@ -5778,73 +6629,138 @@ ${JSON.stringify(gaps)}
       final_result: finalResult,
       final_inn_completed_ids: [...finalInnStats.completedIds],
       final_inn_attempted: finalInnStats.attempted,
+      final_inn_retried: finalInnStats.retried,
       final_inn_recovered: finalInnStats.recovered,
       final_inn_missing: finalInnStats.missing,
       final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
       targeted_searches: targetedSearches,
-      enrichment_completed_ids: [...enrichmentCompleted]
+      enrichment_completed_ids: [...enrichmentCompleted],
+      enrichment_errors: enrichmentErrors,
+      enrichment_deadline_skipped: enrichmentDeadlineSkipped
     });
-  }
+  });
+
+  const enrichmentPending = finalCompaniesForEnrichment.filter((row) => {
+    const id = checkpointRowId(row);
+    return !id || !enrichmentCompleted.has(id);
+  });
+
+  console.log("[ENRICHMENT_PLAN] " + JSON.stringify({
+    total: finalCompaniesForEnrichment.length,
+    already_completed: enrichmentCompleted.size,
+    pending: enrichmentPending.length,
+    concurrency: ENRICHMENT_CONCURRENCY,
+    stage_deadline_ms: STAGE10_MAX_MS
+  }));
+
+  await mapWithConcurrency(
+    enrichmentPending,
+    ENRICHMENT_CONCURRENCY,
+    async (row) => {
+      await assertNotCancelled();
+      const rowId = checkpointRowId(row);
+      const gaps = prioritizedResearchGaps(row);
+      if (!gaps.length) {
+        if (rowId) enrichmentCompleted.add(rowId);
+        enrichmentProcessed++;
+        await enrichmentCheckpointBatcher.request();
+        return;
+      }
+
+      if (deadlineRemaining(stage10DeadlineAt) <= 7000) {
+        enrichmentDeadlineSkipped++;
+        enrichmentProcessed++;
+        console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
+          id: rowId,
+          organization: row?.["Организация"] || "",
+          gaps
+        }));
+        return;
+      }
+
+      targetedSearches++;
+      try {
+        const timeoutMs = Math.min(
+          ENRICHMENT_SEARCH_TIMEOUT_MS,
+          Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)
+        );
+        const enriched = await askTargetedSearch(
+          client,
+          targetedSearchContract() +
+            `\n\nРЕГИОН: ${region}
+КОМПАНИЯ:
+${JSON.stringify(compactEnrichmentTarget(row))}
+НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
+${JSON.stringify(gaps)}
+Компания уже прошла identity, global dedupe, финальную A/B/C qualification и отдельную проверку ИНН.
+Сделай один точечный web_search только по этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля без необходимости.`,
+          timeoutMs
+        );
+        applyTargetedPatch(row, enriched);
+        if (rowId) enrichmentCompleted.add(rowId);
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        enrichmentErrors++;
+        console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
+          id: rowId,
+          organization: row?.["Организация"] || "",
+          error: error?.message || String(error)
+        }));
+      }
+
+      enrichmentProcessed++;
+      if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
+        statuses[9].detail =
+          `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
+        await progress({ phase: "dedupe", step: 10, percent: 89 });
+      }
+      await enrichmentCheckpointBatcher.request();
+    }
+  );
+  await enrichmentCheckpointBatcher.flush();
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
+  finalResult.statistics = await statisticsPromise;
 
-  if (
-    resumeCheckpoint &&
-    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
-    Array.isArray(resumeCheckpoint?.final_result?.statistics)
-  ) {
-    finalResult.statistics = cloneJson(resumeCheckpoint.final_result.statistics);
-  } else {
-    const statsResult = await askJson(client, {
-      input:
-        prompts[9] +
-        statisticsContract() +
-        `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
-      model: TARGETED_SEARCH_MODEL,
-      maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
-      webSearch: true,
-      maxToolCalls: 3,
-      diagnosticLabel: "regional statistics"
-    });
-    finalResult.statistics = Array.isArray(statsResult?.statistics) ? statsResult.statistics : [];
-    await persistCheckpoint("statistics", {
-      completed_stage: 9,
-      parts,
-      research_scopes: researchScopes,
-      identity_resolution: identityResolution,
-      completed_final_batches: batchCount,
-      staged_result: stagedResult,
-      deduped_records: dedupedRecords,
-      qualification_counts: qualifiedFinal.counts,
-      final_result: finalResult,
-      final_inn_completed_ids: [...finalInnStats.completedIds],
-      final_inn_attempted: finalInnStats.attempted,
-      final_inn_recovered: finalInnStats.recovered,
-      final_inn_missing: finalInnStats.missing,
-      final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
-      targeted_searches: targetedSearches,
-      enrichment_completed_ids: [...enrichmentCompleted]
-    });
-  }
+  await persistCheckpoint("statistics", {
+    completed_stage: 9,
+    parts,
+    research_scopes: researchScopes,
+    identity_resolution: identityResolution,
+    completed_final_batches: batchCount,
+    staged_result: stagedResult,
+    deduped_records: dedupedRecords,
+    qualification_counts: qualifiedFinal.counts,
+    final_result: finalResult,
+    final_inn_completed_ids: [...finalInnStats.completedIds],
+    final_inn_attempted: finalInnStats.attempted,
+    final_inn_retried: finalInnStats.retried,
+    final_inn_recovered: finalInnStats.recovered,
+    final_inn_missing: finalInnStats.missing,
+    final_inn_removed_without_inn: finalInnStats.removedWithoutInn,
+    targeted_searches: targetedSearches,
+    enrichment_completed_ids: [...enrichmentCompleted],
+    enrichment_errors: enrichmentErrors,
+    enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+    stage10_duration_ms: Date.now() - stage10StartedAt
+  });
 
   finishStep(statuses[9]);
   statuses[9].detail =
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}`;
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
-  const companies = [
-    ...finalResult.direct_buyers,
-    ...finalResult.intermediaries,
-    ...finalResult.leasing
-  ];
+  const companies = allResearchRows(finalResult);
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
+  const stage11StartedAt = Date.now();
+  const stage11DeadlineAt = stage11StartedAt + STAGE11_MAX_MS;
 
   startStep(statuses[10]);
   statuses[10].detail = googleCompanies.length
-    ? `0 / ${googleCompanies.length} · пропущено готовых: ${skippedGoogle}`
+    ? `web-first контакты · 0 / ${googleCompanies.length} · готовых: ${skippedGoogle}`
     : `контакты уже заполнены · пропущено: ${skippedGoogle}`;
   await progress({
     phase: "google_ai",
@@ -5854,24 +6770,304 @@ ${JSON.stringify(gaps)}
     contactTotal: googleCompanies.length
   });
 
+  const resumedContactStats = resumeCheckpoint?.contact_stats || {};
+  const contactCheckpointVersion = Number(resumedContactStats.version || 0);
   const contactCompleted = new Set(
-    Array.isArray(resumeCheckpoint?.contact_completed_ids)
+    contactCheckpointVersion >= 2 && Array.isArray(resumeCheckpoint?.contact_completed_ids)
       ? resumeCheckpoint.contact_completed_ids.map(String)
       : []
   );
-  const resumedContactStats = resumeCheckpoint?.contact_stats || {};
-  let ok = Number(resumedContactStats.ok || 0);
-  let unavailable = Number(resumedContactStats.unavailable || 0);
-  let notFound = Number(resumedContactStats.notFound || 0);
-  let solRetries = Number(resumedContactStats.solRetries || 0);
-  let solRecovered = Number(resumedContactStats.solRecovered || 0);
-  let browser;
-  let session;
 
-  try {
-    if (googleCompanies.length) {
+  let webOk = Number(resumedContactStats.webOk || 0);
+  let webNotFound = Number(resumedContactStats.webNotFound || 0);
+  let webUnavailable = Number(resumedContactStats.webUnavailable || 0);
+  let browserFallbacks = Number(resumedContactStats.browserFallbacks || 0);
+  let browserRecovered = Number(resumedContactStats.browserRecovered || 0);
+  let browserUnavailable = Number(resumedContactStats.browserUnavailable || 0);
+  let phoneConflicts = Number(resumedContactStats.phoneConflicts || 0);
+  let phoneVerified = Number(resumedContactStats.phoneVerified || 0);
+  let deadlineSkipped = Number(resumedContactStats.deadlineSkipped || 0);
+  let solRetries = 0;
+  let solRecovered = 0;
+
+  const primaryResults = new Map(
+    contactCheckpointVersion >= 2 &&
+    resumeCheckpoint?.contact_primary_results &&
+    typeof resumeCheckpoint.contact_primary_results === "object"
+      ? Object.entries(resumeCheckpoint.contact_primary_results)
+      : []
+  );
+  const contactOutcomes = new Map();
+  const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
+  const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
+  const resumedNotFound = contactCheckpointVersion >= 2 ? Number(resumedContactStats.notFound || 0) : 0;
+  let primaryProcessed =
+    contactCheckpointVersion >= 2
+      ? Number(resumedContactStats.primaryProcessed || primaryResults.size || 0)
+      : 0;
+
+  const contactStatsSnapshot = () => ({
+    version: 2,
+    ok: resumedOk + [...contactOutcomes.values()].filter((value) => value === "ok").length,
+    unavailable: resumedUnavailable + [...contactOutcomes.values()].filter((value) => value === "unavailable").length,
+    notFound: resumedNotFound + [...contactOutcomes.values()].filter((value) => value === "not_found").length,
+    solRetries,
+    solRecovered,
+    webOk,
+    webNotFound,
+    webUnavailable,
+    browserFallbacks,
+    browserRecovered,
+    browserUnavailable,
+    phoneConflicts,
+    phoneVerified,
+    deadlineSkipped,
+    primaryProcessed,
+    browserCircuitOpen: false
+  });
+
+  let browserCircuitOpen = false;
+  const persistContactsCheckpoint = async () => {
+    const stats = contactStatsSnapshot();
+    stats.browserCircuitOpen = browserCircuitOpen;
+    await persistCheckpoint("contacts", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      identity_resolution: identityResolution,
+      completed_final_batches: batchCount,
+      staged_result: stagedResult,
+      deduped_records: dedupedRecords,
+      qualification_counts: qualifiedFinal.counts,
+      final_result: finalResult,
+      targeted_searches: targetedSearches,
+      enrichment_completed_ids: [...enrichmentCompleted],
+      contact_completed_ids: [...contactCompleted],
+      contact_primary_results: Object.fromEntries(primaryResults),
+      contact_stats: stats,
+      stage10_duration_ms: Date.now() - stage10StartedAt,
+      stage11_duration_ms: Date.now() - stage11StartedAt
+    });
+  };
+  const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
+
+  const contactPending = googleCompanies.filter((row) => {
+    const id = checkpointRowId(row);
+    return !id || (!contactCompleted.has(id) && !primaryResults.has(id));
+  });
+
+  console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
+    total_companies: companies.length,
+    target_companies: googleCompanies.length,
+    already_completed: contactCompleted.size,
+    pending: contactPending.length,
+    concurrency: CONTACT_CONCURRENCY,
+    stage_deadline_ms: STAGE11_MAX_MS
+  }));
+
+  await mapWithConcurrency(
+    contactPending,
+    CONTACT_CONCURRENCY,
+    async (row) => {
+      await assertNotCancelled();
+      const rowId = checkpointRowId(row);
+      if (deadlineRemaining(stage11DeadlineAt) <= 6000) {
+        deadlineSkipped++;
+        webUnavailable++;
+        if (rowId) {
+          contactOutcomes.set(rowId, "unavailable");
+          contactCompleted.add(rowId);
+        }
+        primaryProcessed++;
+        await contactCheckpointBatcher.request();
+        return;
+      }
+
+      try {
+        const needPhoneBefore = !hasConfirmedPhone(row);
+        const needLeaderBefore = !hasConfirmedLeader(row);
+        const result = await searchContactsWithWeb({
+          client,
+          row,
+          region,
+          deadlineAt: stage11DeadlineAt
+        });
+        primaryResults.set(rowId, {
+          ...result,
+          __needPhone: needPhoneBefore,
+          __needLeader: needLeaderBefore
+        });
+        if (result.status === "ok") webOk++;
+        else webNotFound++;
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        webUnavailable++;
+        primaryResults.set(rowId, {
+          status: "unavailable",
+          phones: [],
+          leader: "",
+          note: error?.message || "contact web search unavailable",
+          __needPhone: !hasConfirmedPhone(row),
+          __needLeader: !hasConfirmedLeader(row)
+        });
+      }
+
+      primaryProcessed++;
+      if (primaryProcessed % 10 === 0 || primaryResults.size >= googleCompanies.length - contactCompleted.size) {
+        statuses[10].detail =
+          `web-first контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
+        await progress({
+          phase: "google_ai",
+          step: 11,
+          percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
+          contactCurrent: primaryProcessed,
+          contactTotal: googleCompanies.length,
+          contactCompany: "",
+          contactStats: contactStatsSnapshot()
+        });
+      }
+      await contactCheckpointBatcher.request();
+    }
+  );
+
+  // Build a global claim map BEFORE accepting newly found phones. This catches
+  // both conflicts with existing cells and the same new phone returned for
+  // several legal entities in the concurrent primary pass.
+  const phoneClaims = new Map();
+  const addPhoneClaim = (phone, row, source) => {
+    const normalized = normalizePhoneDigits(phone);
+    if (!normalized) return;
+    if (!phoneClaims.has(normalized)) phoneClaims.set(normalized, []);
+    const claims = phoneClaims.get(normalized);
+    if (!claims.some((item) => item.row === row && item.source === source)) {
+      claims.push({ row, source });
+    }
+  };
+
+  for (const row of companies) {
+    for (const phone of splitPhoneEntries(row["Телефон"])) {
+      addPhoneClaim(phone, row, "existing");
+    }
+  }
+  for (const row of googleCompanies) {
+    if (contactCompleted.has(checkpointRowId(row))) continue;
+    const result = primaryResults.get(checkpointRowId(row));
+    for (const phone of result?.phones || []) addPhoneClaim(phone, row, "web");
+  }
+
+  const conflictChecks = [];
+  const primaryRowsToApply = googleCompanies.filter((row) => {
+    const id = checkpointRowId(row);
+    return id && !contactCompleted.has(id) && primaryResults.has(id);
+  });
+
+  for (const row of primaryRowsToApply) {
+    const rowId = checkpointRowId(row);
+    const result = primaryResults.get(rowId);
+    if (!result) continue;
+
+    if (result.leader && !hasConfirmedLeader(row)) {
+      row["Руководитель / ЛПР"] = String(result.leader).trim();
+    }
+
+    for (const phone of result.phones || []) {
+      const normalized = normalizePhoneDigits(phone);
+      if (!normalized) continue;
+      const claims = phoneClaims.get(normalized) || [];
+      const otherRows = claims.some((claim) => claim.row !== row);
+
+      if (!otherRows) {
+        row["Телефон"] = mergePhone(row["Телефон"], normalized);
+        if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
+        if (!phoneOwners.get(normalized).includes(row)) phoneOwners.get(normalized).push(row);
+        continue;
+      }
+
+      phoneConflicts++;
+      conflictChecks.push({ row, rowId, phone: normalized });
+    }
+  }
+
+  const verifiedConflictPhones = new Set();
+  await mapWithConcurrency(
+    conflictChecks,
+    CONTACT_CONCURRENCY,
+    async ({ row, rowId, phone }) => {
+      await assertNotCancelled();
+      if (deadlineRemaining(stage11DeadlineAt) <= 6000) return;
+      try {
+        const verification = await verifyPhoneWithWebSearch({
+          client,
+          row,
+          region,
+          phone,
+          deadlineAt: stage11DeadlineAt
+        });
+        if (verification?.confirmed) {
+          verifiedConflictPhones.add(`${rowId}|${phone}`);
+          phoneVerified++;
+        }
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        console.error("[PHONE_CONFLICT_VERIFY_ERROR] " + JSON.stringify({
+          id: rowId,
+          phone,
+          error: error?.message || String(error)
+        }));
+      }
+    }
+  );
+
+  for (const { row, rowId, phone } of conflictChecks) {
+    if (!verifiedConflictPhones.has(`${rowId}|${phone}`)) continue;
+    row["Телефон"] = mergePhone(row["Телефон"], phone);
+    if (!phoneOwners.has(phone)) phoneOwners.set(phone, []);
+    if (!phoneOwners.get(phone).includes(row)) phoneOwners.get(phone).push(row);
+  }
+
+  for (const row of primaryRowsToApply) {
+    const rowId = checkpointRowId(row);
+    const result = primaryResults.get(rowId);
+    if (!result) continue;
+    const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
+    const gainedLeader = Boolean(
+      result.__needLeader &&
+      result?.leader &&
+      hasConfirmedLeader(row)
+    );
+    if (rowId) contactOutcomes.set(
+      rowId,
+      gainedPhone || gainedLeader
+        ? "ok"
+        : result.status === "unavailable"
+          ? "unavailable"
+          : "not_found"
+    );
+  }
+
+  // Google AI Mode is now a small fallback for unresolved A/B rows only.
+  // It is never the primary path and never triggers a full automatic Sol retry.
+  const browserFallbackCandidates = primaryRowsToApply.filter((row) => {
+    if (!isPriorityAB(row)) return false;
+    if (!needsGoogleResearch(row)) return false;
+    return deadlineRemaining(stage11DeadlineAt) > 45000;
+  });
+
+  let browser = null;
+  const browserSessions = [];
+  let browserAttemptsThisRun = 0;
+  let browserUnavailableThisRun = 0;
+
+  if (browserFallbackCandidates.length && deadlineRemaining(stage11DeadlineAt) > 45000) {
+    try {
       browser = await launchResearchBrowser();
-      session = await createResearchSession(browser);
+      const sessionCount = Math.min(
+        GOOGLE_FALLBACK_CONCURRENCY,
+        browserFallbackCandidates.length
+      );
+      for (let index = 0; index < sessionCount; index++) {
+        browserSessions.push(await createResearchSession(browser));
+      }
       if (jobSignal) {
         jobSignal.addEventListener(
           "abort",
@@ -5879,197 +7075,160 @@ ${JSON.stringify(gaps)}
           { once: true }
         );
       }
-    }
 
-    for (let i = 0; i < googleCompanies.length; i++) {
-      await assertNotCancelled();
+      await mapWithConcurrency(
+        browserFallbackCandidates,
+        browserSessions.length,
+        async (row, _index, workerIndex) => {
+          await assertNotCancelled();
+          if (browserCircuitOpen || deadlineRemaining(stage11DeadlineAt) <= 15000) return;
 
-      if (i > 0 && i % 90 === 0) {
-        if (session) await closeResearchSession(session);
-        if (browser) await browser.close().catch(() => {});
-        browser = await launchResearchBrowser();
-        session = await createResearchSession(browser);
-        statuses[10].detail = `${i} / ${googleCompanies.length} · новая сессия поиска`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-          contactCurrent: i,
-          contactTotal: googleCompanies.length,
-          contactCompany: "",
-          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-        });
-        await abortableSleep(2000);
-      }
+          const rowId = checkpointRowId(row);
+          const timeoutMs = Math.min(
+            GOOGLE_AI_COMPANY_TIMEOUT_MS,
+            Math.max(10000, deadlineRemaining(stage11DeadlineAt) - 5000)
+          );
+          const timeoutSignal = AbortSignal.timeout(timeoutMs);
+          const attemptSignal = jobSignal
+            ? AbortSignal.any([jobSignal, timeoutSignal])
+            : timeoutSignal;
 
-      const row = googleCompanies[i];
-      const contactRowId = checkpointRowId(row);
-      if (contactRowId && contactCompleted.has(contactRowId)) {
-        continue;
-      }
-      statuses[10].detail = `${i} / ${googleCompanies.length} · ${row["Организация"] || ""}`;
-      await progress({
-        phase: "google_ai",
-        step: 11,
-        percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-        contactCurrent: i,
-        contactTotal: googleCompanies.length,
-        contactCompany: row["Организация"] || ""
-      });
-
-      let contact;
-      try {
-        const needPhone = !hasConfirmedPhone(row);
-        const needLeader = !hasConfirmedLeader(row);
-        contact = await enrichCompanyWithGoogleAI({
-          client,
-          session,
-          row,
-          region,
-          needPhone,
-          needLeader,
-          isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
-        });
-      } catch (error) {
-        contact = {
-          status: "unavailable",
-          phone: "",
-          leader: "",
-          note: error?.message || "browser error"
-        };
-      }
-
-      if (contact.status === "not_found" && GOOGLE_AI_SOL_RETRY_PRIORITY_AB && isPriorityAB(row)) {
-        solRetries++;
-        statuses[10].detail = `${i + 1} / ${googleCompanies.length} · Sol retry · ${row["Организация"] || ""}`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((i / Math.max(1, googleCompanies.length)) * 9),
-          contactCurrent: i,
-          contactTotal: googleCompanies.length,
-          contactCompany: row["Организация"] || "",
-          contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-        });
-
-        try {
-          const needPhone = !hasConfirmedPhone(row);
-          const needLeader = !hasConfirmedLeader(row);
-          contact = await enrichCompanyWithGoogleAI({
-            client,
-            session,
-            row,
-            region,
-            needPhone,
-            needLeader,
-            forceFallback: true,
-            isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
-          });
-          if (contact.status === "ok") solRecovered++;
-        } catch (error) {
-          contact = {
-            status: "unavailable",
-            phone: "",
-            leader: "",
-            note: error?.message || "Sol retry browser error"
-          };
-        }
-      }
-
-      if (contact.status === "ok") {
-        const candidates = filterAlreadyInCurrentCell(row["Телефон"], contact.phone);
-        const accepted = [];
-
-        for (const entry of candidates) {
-          const normalized = normalizePhoneDigits(entry);
-          if (!normalized) continue;
-
-          const owners = phoneOwners.get(normalized) || [];
-          const belongsElsewhere = owners.some((owner) => owner !== row);
-
-          if (belongsElsewhere) {
-            const verification = await verifyPhoneForCompanyWithGoogleAI({
+          browserAttemptsThisRun++;
+          browserFallbacks++;
+          let contact;
+          try {
+            contact = await enrichCompanyWithGoogleAI({
               client,
-              session,
+              session: browserSessions[workerIndex],
               row,
               region,
-              phone: normalized,
+              needPhone: !hasConfirmedPhone(row),
+              needLeader: !hasConfirmedLeader(row),
+              forceFallback: false,
               isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
-          signal: jobSignal
+              signal: attemptSignal
             });
-            if (!verification?.confirmed) continue;
+          } catch (error) {
+            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            contact = {
+              status: "unavailable",
+              phone: "",
+              leader: "",
+              note: error?.message || "browser fallback unavailable"
+            };
           }
 
-          accepted.push(entry);
-          if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
-          if (!phoneOwners.get(normalized).includes(row)) {
-            phoneOwners.get(normalized).push(row);
+          if (contact?.status === "unavailable") {
+            browserUnavailable++;
+            browserUnavailableThisRun++;
+          }
+
+          if (
+            browserAttemptsThisRun >= 10 &&
+            browserUnavailableThisRun / browserAttemptsThisRun >= 0.7
+          ) {
+            browserCircuitOpen = true;
+            console.log("[GOOGLE_AI_CIRCUIT_OPEN] " + JSON.stringify({
+              attempts: browserAttemptsThisRun,
+              unavailable: browserUnavailableThisRun,
+              unavailable_share: Number(
+                (browserUnavailableThisRun / browserAttemptsThisRun).toFixed(3)
+              )
+            }));
+          }
+
+          let applied = false;
+          if (contact?.status === "ok") {
+            if (contact.leader && !hasConfirmedLeader(row)) {
+              row["Руководитель / ЛПР"] = String(contact.leader).trim();
+              applied = true;
+            }
+
+            for (const entry of splitPhoneEntries(contact.phone)) {
+              const normalized = normalizePhoneDigits(entry);
+              if (!normalized) continue;
+              const owners = phoneOwners.get(normalized) || [];
+              const belongsElsewhere = owners.some((owner) => owner !== row);
+              let accept = !belongsElsewhere;
+
+              if (belongsElsewhere && deadlineRemaining(stage11DeadlineAt) > 6000) {
+                phoneConflicts++;
+                try {
+                  const verification = await verifyPhoneWithWebSearch({
+                    client,
+                    row,
+                    region,
+                    phone: normalized,
+                    deadlineAt: stage11DeadlineAt
+                  });
+                  accept = Boolean(verification?.confirmed);
+                  if (accept) phoneVerified++;
+                } catch (error) {
+                  if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+                  accept = false;
+                }
+              }
+
+              if (!accept) continue;
+              row["Телефон"] = mergePhone(row["Телефон"], normalized);
+              if (!phoneOwners.has(normalized)) phoneOwners.set(normalized, []);
+              if (!phoneOwners.get(normalized).includes(row)) {
+                phoneOwners.get(normalized).push(row);
+              }
+              applied = true;
+            }
+          }
+
+          if (applied) {
+            browserRecovered++;
+            if (rowId) contactOutcomes.set(rowId, "ok");
           }
         }
-
-        if (accepted.length) {
-          contact.phone = accepted.join("; ");
-          applyContact(row, contact);
-          ok++;
-        } else if (contact.leader) {
-          applyContact(row, { ...contact, phone: "" });
-          ok++;
-        } else {
-          notFound++;
-        }
-      } else if (contact.status === "not_found") {
-        notFound++;
-      } else {
-        unavailable++;
+      );
+    } catch (error) {
+      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      browserCircuitOpen = true;
+      console.error("[GOOGLE_AI_FALLBACK_STAGE_ERROR] " + JSON.stringify({
+        error: error?.message || String(error)
+      }));
+    } finally {
+      for (const session of browserSessions) {
+        await closeResearchSession(session);
       }
-
-      statuses[10].detail = `${i + 1} / ${googleCompanies.length} · выполнено`;
-      await progress({
-        phase: "google_ai",
-        step: 11,
-        percent: 90 + Math.floor(((i + 1) / Math.max(1, googleCompanies.length)) * 9),
-        contactCurrent: i + 1,
-        contactTotal: googleCompanies.length,
-        contactCompany: row["Организация"] || "",
-        contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
-      });
-      if (contactRowId) contactCompleted.add(contactRowId);
-      await persistCheckpoint("contacts", {
-        completed_stage: 9,
-        parts,
-        research_scopes: researchScopes,
-        identity_resolution: identityResolution,
-        completed_final_batches: batchCount,
-        staged_result: stagedResult,
-        deduped_records: dedupedRecords,
-        qualification_counts: qualifiedFinal.counts,
-        final_result: finalResult,
-        targeted_searches: targetedSearches,
-        enrichment_completed_ids: [...enrichmentCompleted],
-        contact_completed_ids: [...contactCompleted],
-        contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
-      });
-
-      if (i < googleCompanies.length - 1) {
-        await abortableSleep(5000);
-      }
+      if (browser) await browser.close().catch(() => {});
     }
-  } finally {
-    if (session) await closeResearchSession(session);
-    if (browser) await browser.close().catch(() => {});
   }
 
+  for (const row of primaryRowsToApply) {
+    const rowId = checkpointRowId(row);
+    if (!rowId) continue;
+    if (!contactOutcomes.has(rowId)) {
+      contactOutcomes.set(
+        rowId,
+        needsGoogleResearch(row) ? "not_found" : "ok"
+      );
+    }
+    contactCompleted.add(rowId);
+    await contactCheckpointBatcher.request();
+  }
+  await contactCheckpointBatcher.flush();
+
+  const contactStats = contactStatsSnapshot();
+  contactStats.browserCircuitOpen = browserCircuitOpen;
+  const ok = contactStats.ok;
+  const unavailable = contactStats.unavailable;
+  const notFound = contactStats.notFound;
+
   finishStep(statuses[10]);
-  statuses[10].detail = `выполнен · проверено ${googleCompanies.length}, пропущено ${skippedGoogle}`;
+  statuses[10].detail =
+    `выполнен · web-first проверено ${googleCompanies.length} · browser fallback ${browserFallbacks} · conflicts ${phoneConflicts}`;
   await progress({
     phase: "completed",
     step: 11,
     percent: 100,
     contactCurrent: googleCompanies.length,
     contactTotal: googleCompanies.length,
-    contactStats: { ok, unavailable, notFound, solRetries, solRecovered }
+    contactStats
   });
   await persistCheckpoint("completed", {
     completed_stage: 9,
@@ -6084,7 +7243,10 @@ ${JSON.stringify(gaps)}
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
-    contact_stats: { ok, unavailable, notFound, solRetries, solRecovered }
+    contact_primary_results: {},
+    contact_stats: contactStats,
+    stage10_duration_ms: Date.now() - stage10StartedAt,
+    stage11_duration_ms: Date.now() - stage11StartedAt
   });
 
   return {
@@ -6105,9 +7267,29 @@ ${JSON.stringify(gaps)}
       unavailable,
       notFound,
       solRetries,
-      solRecovered
+      solRecovered,
+      webOk,
+      webNotFound,
+      webUnavailable,
+      browserFallbacks,
+      browserRecovered,
+      browserUnavailable,
+      phoneConflicts,
+      phoneVerified,
+      deadlineSkipped,
+      browserCircuitOpen,
+      stage11DurationMs: Date.now() - stage11StartedAt
     }
   };
 }
 
-export { prefilterCandidatesForIdentity, deterministicQualificationDecision, appendReviewCandidates, discoveryYieldStats };
+export {
+  prefilterCandidatesForIdentity,
+  deterministicQualificationDecision,
+  appendReviewCandidates,
+  discoveryYieldStats,
+  classifyEntityType,
+  postInnDedupe,
+  duplicateInnConflictGroups,
+  clearUnresolvedInnConflicts
+};

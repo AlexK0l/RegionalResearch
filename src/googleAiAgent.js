@@ -2,7 +2,8 @@ import { chromium } from "playwright";
 
 const COMPUTER_MODEL = process.env.COMPUTER_MODEL || "gpt-5.6-luna";
 const COMPUTER_FALLBACK_MODEL = process.env.COMPUTER_FALLBACK_MODEL || "gpt-5.6-sol";
-const MAX_TURNS = Math.max(1, Number(process.env.GOOGLE_AI_MAX_TURNS || 6));
+const MAX_TURNS = Math.max(1, Math.min(3, Number(process.env.GOOGLE_AI_MAX_TURNS || 2)));
+const AUTO_FALLBACK = String(process.env.GOOGLE_AI_AUTO_FALLBACK || "false").toLowerCase() === "true";
 const VIEWPORT_WIDTH = Math.max(800, Number(process.env.GOOGLE_AI_VIEWPORT_WIDTH || 1024));
 const VIEWPORT_HEIGHT = Math.max(600, Number(process.env.GOOGLE_AI_VIEWPORT_HEIGHT || 768));
 const SCREENSHOT_DETAIL = process.env.GOOGLE_AI_SCREENSHOT_DETAIL || "low";
@@ -36,7 +37,7 @@ export async function closeResearchSession(session) {
 async function resetGooglePage(page, query) {
   await page.goto(
     "https://www.google.com/search?q=" + encodeURIComponent(query),
-    { waitUntil: "domcontentloaded", timeout: 30000 }
+    { waitUntil: "domcontentloaded", timeout: 15000 }
   );
   await page.waitForTimeout(900);
 }
@@ -455,9 +456,7 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
         diagnostic
       });
     } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") {
-        throw new Error("JOB_CANCELLED");
-      }
+      if (error?.message === "JOB_CANCELLED") throw error;
       return {
         ...unavailableResult,
         note: `Fallback computer model failed: ${error?.message || "unknown error"}`
@@ -477,15 +476,18 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       diagnostic
     });
   } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") {
-      throw new Error("JOB_CANCELLED");
-    }
-    primary = { ...unavailableResult, note: error?.message || "primary computer model failed" };
+    if (error?.message === "JOB_CANCELLED") throw error;
+    primary = {
+      ...unavailableResult,
+      note: signal?.aborted
+        ? "Computer-use attempt timed out or was aborted"
+        : error?.message || "primary computer model failed"
+    };
   }
 
   if (primary?.status !== "unavailable" && primary?.confirmed !== undefined) return primary;
   if (primary?.status && primary.status !== "unavailable") return primary;
-  if (COMPUTER_FALLBACK_MODEL === COMPUTER_MODEL) return primary;
+  if (!AUTO_FALLBACK || COMPUTER_FALLBACK_MODEL === COMPUTER_MODEL) return primary;
 
   try {
     return await runComputerJsonOnce({
@@ -498,9 +500,7 @@ async function runComputerJson({ client, page, prompt, unavailableResult, forceF
       diagnostic
     });
   } catch (error) {
-    if (signal?.aborted || error?.name === "AbortError") {
-      throw new Error("JOB_CANCELLED");
-    }
+    if (error?.message === "JOB_CANCELLED") throw error;
     return {
       ...unavailableResult,
       note: `Primary and fallback computer models failed: ${error?.message || "unknown error"}`
@@ -543,7 +543,17 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
       (result?.confirmed ? "confirmed" : diagnostic.last_attempt_reason || "not_confirmed");
     return result;
   } catch (error) {
-    diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
+    if (isCancelled?.()) {
+      diagnostic.final_status = "cancelled";
+      diagnostic.final_reason = "JOB_CANCELLED";
+      throw new Error("JOB_CANCELLED");
+    }
+    if (signal?.aborted || error?.name === "AbortError") {
+      diagnostic.final_status = "not_confirmed";
+      diagnostic.final_reason = "timeout_or_abort";
+      return { confirmed: false, phone, note: "Verification timed out or was aborted" };
+    }
+    diagnostic.final_status = "error";
     diagnostic.final_reason = error?.message || String(error);
     throw error;
   } finally {
@@ -598,7 +608,23 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
       result?.note || result?.status || diagnostic.last_attempt_reason || "";
     return result;
   } catch (error) {
-    diagnostic.final_status = signal?.aborted ? "cancelled" : "error";
+    if (isCancelled?.()) {
+      diagnostic.final_status = "cancelled";
+      diagnostic.final_reason = "JOB_CANCELLED";
+      throw new Error("JOB_CANCELLED");
+    }
+    if (signal?.aborted || error?.name === "AbortError") {
+      diagnostic.final_status = "unavailable";
+      diagnostic.final_reason = "timeout_or_abort";
+      return {
+        status: "unavailable",
+        phone: "",
+        leader: "",
+        official_site: "",
+        note: "Computer-use attempt timed out or was aborted"
+      };
+    }
+    diagnostic.final_status = "error";
     diagnostic.final_reason = error?.message || String(error);
     throw error;
   } finally {

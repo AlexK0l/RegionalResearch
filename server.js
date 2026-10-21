@@ -22,6 +22,12 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
+const MAX_ACTIVE_FULL_JOBS = Math.max(
+  1,
+  Math.min(2, Number(process.env.MAX_ACTIVE_FULL_JOBS || 1))
+);
+const pendingFullJobs = [];
+let activeFullJobs = 0;
 
 app.use(express.json({ limit: "32mb" }));
 
@@ -179,30 +185,72 @@ const JOB_MODES = new Set([
   "full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay", "resume"
 ]);
 
-function queueJob(job, apiKey) {
-  queueMicrotask(async () => {
-    job.state = "active";
-    try {
-      const output = await runResearchPipeline({ job, apiKey });
-      if (job.cancelled) throw new Error("JOB_CANCELLED");
-      job.result = output;
-      job.state = "completed";
-    } catch (error) {
-      if (
-        error?.message === "JOB_CANCELLED" ||
-        error?.name === "AbortError" ||
-        job.cancelled ||
-        job.abortController?.signal?.aborted
-      ) {
-        job.state = "cancelled";
-        job.error = "Остановлено пользователем";
-      } else {
-        job.state = "failed";
-        job.error = error?.message || "Ошибка выполнения";
-        console.error(error);
-      }
+async function executeJob(job, apiKey) {
+  job.state = "active";
+  try {
+    const output = await runResearchPipeline({ job, apiKey });
+    if (job.cancelled) throw new Error("JOB_CANCELLED");
+    job.result = output;
+    job.state = "completed";
+  } catch (error) {
+    if (
+      error?.message === "JOB_CANCELLED" ||
+      error?.name === "AbortError" ||
+      job.cancelled ||
+      job.abortController?.signal?.aborted
+    ) {
+      job.state = "cancelled";
+      job.error = "Остановлено пользователем";
+    } else {
+      job.state = "failed";
+      job.error = error?.message || "Ошибка выполнения";
+      console.error(error);
     }
-  });
+  }
+}
+
+function refreshFullQueuePositions() {
+  for (let index = 0; index < pendingFullJobs.length; index++) {
+    const queued = pendingFullJobs[index]?.job;
+    if (!queued || queued.cancelled) continue;
+    queued.progress = {
+      ...(queued.progress || {}),
+      phase: "queued",
+      queuePosition: index + 1,
+      activeFullJobs,
+      maxActiveFullJobs: MAX_ACTIVE_FULL_JOBS
+    };
+  }
+}
+
+function pumpFullJobQueue() {
+  while (activeFullJobs < MAX_ACTIVE_FULL_JOBS && pendingFullJobs.length) {
+    const next = pendingFullJobs.shift();
+    if (!next?.job || next.job.cancelled) continue;
+    activeFullJobs++;
+    refreshFullQueuePositions();
+    queueMicrotask(async () => {
+      try {
+        await executeJob(next.job, next.apiKey);
+      } finally {
+        activeFullJobs = Math.max(0, activeFullJobs - 1);
+        refreshFullQueuePositions();
+        pumpFullJobQueue();
+      }
+    });
+  }
+}
+
+function queueJob(job, apiKey) {
+  const isFullResearch = job.mode === "full" || job.mode === "resume";
+  if (!isFullResearch) {
+    queueMicrotask(() => executeJob(job, apiKey));
+    return;
+  }
+
+  pendingFullJobs.push({ job, apiKey });
+  refreshFullQueuePositions();
+  pumpFullJobQueue();
 }
 
 app.post("/api/jobs", async (req, res) => {
@@ -455,12 +503,15 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
 
+  const wasWaiting = job.state === "waiting";
   job.cancelled = true;
-  job.state = "cancelling";
+  job.state = wasWaiting ? "cancelled" : "cancelling";
+  job.error = wasWaiting ? "Остановлено пользователем" : job.error;
   if (!job.abortController?.signal?.aborted) {
     job.abortController?.abort(new Error("JOB_CANCELLED"));
   }
-  res.json({ ok: true, state: "cancelling" });
+  if (wasWaiting) refreshFullQueuePositions();
+  res.json({ ok: true, state: job.state });
 });
 
 app.get("/api/jobs/:id/download", (req, res) => {
