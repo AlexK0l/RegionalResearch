@@ -6093,7 +6093,48 @@ ${JSON.stringify(compactCourtArchive)}
     };
   }
 
+  const censusCompatibleWithResume =
+    !resumeCheckpoint || !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity");
+  if (
+    !diagnosticMode &&
+    !replayMode &&
+    CENSUS_ENABLED &&
+    censusCompatibleWithResume &&
+    !resumeCheckpoint?.census_completed
+  ) {
+    await assertNotCancelled();
+    statuses[8].detail = "entity census · проверка полноты отраслей и географии";
+    await progress({ phase: "research", step: 9, percent: 81 });
+    const census = await runEntityCensusAndGapSearch({
+      client,
+      region,
+      parts,
+      researchScopes,
+      assertNotCancelled
+    });
+    if (!parts[8]) parts[8] = emptyResearchResult();
+    appendResearchResult(parts[8], census.additions, "entity-census");
+    await persistCheckpoint("discovery", {
+      completed_stage: 9,
+      parts,
+      research_scopes: researchScopes,
+      census_completed: true,
+      coverage_snapshot: census.coverage,
+      coverage_gap_buckets: census.gapBuckets,
+      web_usage_total: webUsageSnapshot(client)
+    });
+    statuses[8].detail =
+      `выполнен · entity census добавил ${uniqueResearchCount(census.additions)} уникальных · coverage сохранён`;
+  } else if (resumeCheckpoint && checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity")) {
+    console.log("[ENTITY_CENSUS_RESUME_SKIP] " + JSON.stringify({
+      reason: "identity_or_later_checkpoint_must_keep_frozen_candidate_pool",
+      phase: resumeCheckpoint.phase || ""
+    }));
+  }
+
   await assertNotCancelled();
+  const stage10StartedAt = Date.now();
+  const stage10DeadlineAt = stage10StartedAt + STAGE10_MAX_MS;
   startStep(statuses[9]);
   const candidatePool = flattenCandidates(parts);
 
