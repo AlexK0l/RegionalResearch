@@ -6770,12 +6770,21 @@ ${JSON.stringify(gaps)}
   let solRetries = 0;
   let solRecovered = 0;
 
-  const primaryResults = new Map();
+  const primaryResults = new Map(
+    contactCheckpointVersion >= 2 &&
+    resumeCheckpoint?.contact_primary_results &&
+    typeof resumeCheckpoint.contact_primary_results === "object"
+      ? Object.entries(resumeCheckpoint.contact_primary_results)
+      : []
+  );
   const contactOutcomes = new Map();
   const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
   const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
   const resumedNotFound = contactCheckpointVersion >= 2 ? Number(resumedContactStats.notFound || 0) : 0;
-  let primaryProcessed = 0;
+  let primaryProcessed =
+    contactCheckpointVersion >= 2
+      ? Number(resumedContactStats.primaryProcessed || primaryResults.size || 0)
+      : 0;
 
   const contactStatsSnapshot = () => ({
     version: 2,
@@ -6814,6 +6823,7 @@ ${JSON.stringify(gaps)}
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted],
       contact_completed_ids: [...contactCompleted],
+      contact_primary_results: Object.fromEntries(primaryResults),
       contact_stats: stats,
       stage10_duration_ms: Date.now() - stage10StartedAt,
       stage11_duration_ms: Date.now() - stage11StartedAt
@@ -6823,7 +6833,7 @@ ${JSON.stringify(gaps)}
 
   const contactPending = googleCompanies.filter((row) => {
     const id = checkpointRowId(row);
-    return !id || !contactCompleted.has(id);
+    return !id || (!contactCompleted.has(id) && !primaryResults.has(id));
   });
 
   console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
@@ -6883,19 +6893,20 @@ ${JSON.stringify(gaps)}
       }
 
       primaryProcessed++;
-      if (primaryProcessed % 10 === 0 || primaryProcessed === contactPending.length) {
+      if (primaryProcessed % 10 === 0 || primaryResults.size >= googleCompanies.length - contactCompleted.size) {
         statuses[10].detail =
-          `web-first контакты · ${primaryProcessed} / ${contactPending.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
+          `web-first контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
         await progress({
           phase: "google_ai",
           step: 11,
-          percent: 90 + Math.floor((primaryProcessed / Math.max(1, contactPending.length)) * 5),
+          percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
           contactCurrent: primaryProcessed,
           contactTotal: googleCompanies.length,
           contactCompany: "",
           contactStats: contactStatsSnapshot()
         });
       }
+      await contactCheckpointBatcher.request();
     }
   );
 
@@ -6918,13 +6929,19 @@ ${JSON.stringify(gaps)}
       addPhoneClaim(phone, row, "existing");
     }
   }
-  for (const row of contactPending) {
+  for (const row of googleCompanies) {
+    if (contactCompleted.has(checkpointRowId(row))) continue;
     const result = primaryResults.get(checkpointRowId(row));
     for (const phone of result?.phones || []) addPhoneClaim(phone, row, "web");
   }
 
   const conflictChecks = [];
-  for (const row of contactPending) {
+  const primaryRowsToApply = googleCompanies.filter((row) => {
+    const id = checkpointRowId(row);
+    return id && !contactCompleted.has(id) && primaryResults.has(id);
+  });
+
+  for (const row of primaryRowsToApply) {
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
@@ -6988,7 +7005,7 @@ ${JSON.stringify(gaps)}
     if (!phoneOwners.get(phone).includes(row)) phoneOwners.get(phone).push(row);
   }
 
-  for (const row of contactPending) {
+  for (const row of primaryRowsToApply) {
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
@@ -7010,7 +7027,7 @@ ${JSON.stringify(gaps)}
 
   // Google AI Mode is now a small fallback for unresolved A/B rows only.
   // It is never the primary path and never triggers a full automatic Sol retry.
-  const browserFallbackCandidates = contactPending.filter((row) => {
+  const browserFallbackCandidates = primaryRowsToApply.filter((row) => {
     if (!isPriorityAB(row)) return false;
     if (!needsGoogleResearch(row)) return false;
     return deadlineRemaining(stage11DeadlineAt) > 45000;
@@ -7162,7 +7179,7 @@ ${JSON.stringify(gaps)}
     }
   }
 
-  for (const row of contactPending) {
+  for (const row of primaryRowsToApply) {
     const rowId = checkpointRowId(row);
     if (!rowId) continue;
     if (!contactOutcomes.has(rowId)) {
@@ -7206,6 +7223,7 @@ ${JSON.stringify(gaps)}
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
+    contact_primary_results: {},
     contact_stats: contactStats,
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt
