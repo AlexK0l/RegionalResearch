@@ -7,6 +7,12 @@ import { buildWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
+  fileLoggingStatus,
+  initializeFileLogging,
+  jobLogPublicInfo,
+  runWithJobLog
+} from "./src/fileLogger.js";
+import {
   checkpointBackendStatus,
   checkpointSummary,
   findLatestCheckpoint,
@@ -17,6 +23,8 @@ import {
   saveCheckpoint,
   supersedeRegionCheckpoints
 } from "./src/checkpointStore.js";
+
+initializeFileLogging();
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +43,9 @@ const allowedOrigins = new Set(
   [
     process.env.CLIENT_ORIGIN,
     "https://regionalresearch-ui.onrender.com",
-    "http://localhost:3000"
+    "http://localhost:3000",
+    "http://localhost:10000",
+    "http://127.0.0.1:10000"
   ].filter(Boolean)
 );
 
@@ -57,7 +67,13 @@ app.get("/health", async (_req, res) => {
     ready: false,
     error: error?.message || String(error)
   }));
-  res.json({ ok: true, service: "sat-region-research", checkpoints });
+  res.json({
+    ok: true,
+    service: "sat-region-research",
+    checkpoints,
+    logging: fileLoggingStatus(),
+    runtime: process.env.RENDER ? "render" : "local"
+  });
 });
 
 app.get("/api/config", (_req, res) => {
@@ -186,27 +202,44 @@ const JOB_MODES = new Set([
 ]);
 
 async function executeJob(job, apiKey) {
-  job.state = "active";
-  try {
-    const output = await runResearchPipeline({ job, apiKey });
-    if (job.cancelled) throw new Error("JOB_CANCELLED");
-    job.result = output;
-    job.state = "completed";
-  } catch (error) {
-    if (
-      error?.message === "JOB_CANCELLED" ||
-      error?.name === "AbortError" ||
-      job.cancelled ||
-      job.abortController?.signal?.aborted
-    ) {
-      job.state = "cancelled";
-      job.error = "Остановлено пользователем";
-    } else {
-      job.state = "failed";
-      job.error = error?.message || "Ошибка выполнения";
-      console.error(error);
+  return runWithJobLog(job, async () => {
+    job.state = "active";
+    console.log("[JOB_START] " + JSON.stringify({
+      id: job.id,
+      region: job.region,
+      mode: job.mode,
+      created_at: new Date(job.createdAt).toISOString()
+    }));
+
+    try {
+      const output = await runResearchPipeline({ job, apiKey });
+      if (job.cancelled) throw new Error("JOB_CANCELLED");
+      job.result = output;
+      job.state = "completed";
+    } catch (error) {
+      if (
+        error?.message === "JOB_CANCELLED" ||
+        error?.name === "AbortError" ||
+        job.cancelled ||
+        job.abortController?.signal?.aborted
+      ) {
+        job.state = "cancelled";
+        job.error = "Остановлено пользователем";
+      } else {
+        job.state = "failed";
+        job.error = error?.message || "Ошибка выполнения";
+        console.error(error);
+      }
+    } finally {
+      console.log("[JOB_FINISH] " + JSON.stringify({
+        id: job.id,
+        region: job.region,
+        mode: job.mode,
+        state: job.state,
+        error: job.error || ""
+      }));
     }
-  }
+  });
 }
 
 function refreshFullQueuePositions() {
@@ -268,7 +301,7 @@ app.post("/api/jobs", async (req, res) => {
     data = { region, stage };
   }
 
-  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
+  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   if (mode === "replay" || mode === "dedupe_replay") {
     const sourceJobId = String(req.body?.sourceJobId || "").trim();
@@ -418,8 +451,26 @@ app.get("/api/jobs/:id", (req, res) => {
       : null,
     checkpoint: checkpointSummary(job.latestCheckpoint),
     resume_available: Boolean(job.latestCheckpoint),
+    log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
+});
+
+app.get("/api/jobs/:id/log", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (!job.logFile) return res.status(404).json({ error: "Лог задания ещё не создан" });
+
+  res.setHeader("Cache-Control", "no-store");
+  res.download(
+    job.logFile,
+    path.basename(job.logFile),
+    (error) => {
+      if (error && !res.headersSent) {
+        res.status(404).json({ error: "Файл лога недоступен" });
+      }
+    }
+  );
 });
 
 app.get("/api/jobs/:id/checkpoint", async (req, res) => {
@@ -436,7 +487,7 @@ app.get("/api/jobs/:id/checkpoint", async (req, res) => {
 
 app.post("/api/jobs/:id/resume", async (req, res) => {
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
-  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен на Render" });
+  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   const sourceJob = jobs.get(req.params.id);
   const checkpoint = normalizeCheckpoint(
