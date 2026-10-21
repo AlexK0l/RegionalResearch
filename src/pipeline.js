@@ -7,8 +7,7 @@ import {
   closeResearchSession,
   createResearchSession,
   enrichCompanyWithGoogleAI,
-  launchResearchBrowser,
-  verifyPhoneForCompanyWithGoogleAI
+  launchResearchBrowser
 } from "./googleAiAgent.js";
 
 const OPENAI_MAX_OUTPUT_TOKENS = Math.max(
