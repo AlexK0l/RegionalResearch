@@ -3937,7 +3937,25 @@ function budgetLimitForScope(budget, scope) {
   return Number(budget?.limits?.[scope] || 0);
 }
 
+function estimatedApiCostUsd(client) {
+  const usage = tokenUsageSnapshot(client);
+  const input = Math.max(0, usage.input_tokens - usage.cached_input_tokens);
+  const cached = usage.cached_input_tokens;
+  const output = usage.output_tokens;
+  return Number(((input * Number(process.env.OPENAI_ESTIMATE_INPUT_USD_PER_M || 0.2)
+    + cached * Number(process.env.OPENAI_ESTIMATE_CACHED_USD_PER_M || 0.02)
+    + output * Number(process.env.OPENAI_ESTIMATE_OUTPUT_USD_PER_M || 1.2)) / 1000000
+    + webUsageSnapshot(client) * OPENAI_WEB_SEARCH_COST_PER_CALL).toFixed(4));
+}
+
 function assertWebBudgetBeforeCall(client, diagnosticLabel) {
+  const costLimit = Math.max(1, Number(process.env.OPENAI_MAX_RESEARCH_COST_USD || 60));
+  const costSpent = estimatedApiCostUsd(client);
+  if (costSpent >= costLimit) {
+    const e = new WebBudgetStopError("estimated_cost_usd", costSpent, costLimit, webUsageSnapshot(client), Number(client?.__webBudget?.limits?.total || 0));
+    console.error("[RESEARCH_COST_GUARDRAIL] " + JSON.stringify({ estimated_usd: costSpent, limit_usd: costLimit }));
+    throw e;
+  }
   const budget = client?.__webBudget;
   if (!budget) return;
 
@@ -4352,6 +4370,7 @@ async function askJson(client, {
           ))
         : 0,
       cumulative_tokens: tokenUsageSnapshot(client),
+      estimated_api_cost_usd: estimatedApiCostUsd(client),
       tool_calls: toolCounts,
       web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
