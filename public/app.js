@@ -153,6 +153,8 @@ async function syncBrowserCheckpointFromBackend(jobId,summary=null){
 
 function headers(json=false){
   const h={};
+  const token=sessionStorage.getItem("regionalresearch_api_token")||"";
+  if(token)h["Authorization"]="Bearer "+token;
   if(json)h["Content-Type"]="application/json";
   return h;
 }
@@ -168,6 +170,10 @@ async function api(url,options={}){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok){
+    if(r.status===401){
+      const token=window.prompt("Доступ к исследованию: введите API_ACCESS_TOKEN");
+      if(token){sessionStorage.setItem("regionalresearch_api_token",token.trim()); return api(url,options);}
+    }
     const err=new Error(data.error||("HTTP "+r.status));
     err.status=r.status;
     err.code=data.code||"";
