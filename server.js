@@ -39,6 +39,23 @@ let activeFullJobs = 0;
 
 app.use(express.json({ limit: "32mb" }));
 
+// Set API_ACCESS_TOKEN in the deployment environment to protect paid jobs,
+// logs, checkpoints and downloads. Local development remains compatible.
+const API_ACCESS_TOKEN = String(process.env.API_ACCESS_TOKEN || "").trim();
+const PROTECT_API = Boolean(API_ACCESS_TOKEN);
+app.use("/api", (req, res, next) => {
+  if (req.path === "/config") return next();
+  if (!PROTECT_API) return next();
+  const authorization = String(req.get("authorization") || "");
+  const provided = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const expected = Buffer.from(API_ACCESS_TOKEN);
+  const received = Buffer.from(provided);
+  if (!provided || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    return res.status(401).json({ error: "Требуется API_ACCESS_TOKEN", code: "AUTH_REQUIRED" });
+  }
+  next();
+});
+
 const allowedOrigins = new Set(
   [
     process.env.CLIENT_ORIGIN,
@@ -54,7 +71,7 @@ app.use((req, res, next) => {
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
