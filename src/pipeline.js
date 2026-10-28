@@ -1946,7 +1946,7 @@ async function resolveCandidateIdentities({
     }
   }
 
-  const identityConcurrency = client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
+  const identityConcurrency = client?.__webBudget?.kind !== "full" && client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
   let identityBudgetStopped = false;
   for (let offset = 0; offset < webClusters.length; offset += identityConcurrency) {
     await assertNotCancelled();
@@ -2231,7 +2231,7 @@ async function resolveFinalMissingInns({
   let recovered = 0;
   let retried = 0;
   let completedBatches = 0;
-  const concurrency = client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
+  const concurrency = client?.__webBudget?.kind !== "full" && client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
 
   console.log("[FINAL_INN_PLAN] " + JSON.stringify({
     region,
@@ -2281,7 +2281,7 @@ async function resolveFinalMissingInns({
     });
   });
 
-  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]));
+  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]) && !completedIds.has(`retry:${checkpointRowId(row)}`));
   if (retryRows.length) {
     const retryBatches = [];
     for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
@@ -2304,6 +2304,7 @@ async function resolveFinalMissingInns({
       });
       retried += batch.length;
       recovered += applyFinalInnItems(rowsById, result);
+      for (const row of batch) completedIds.add(`retry:${checkpointRowId(row)}`);
       await onBatch({
         completedIds,
         attempted,
@@ -3872,6 +3873,11 @@ function webBudgetScope(label = "") {
   return "other";
 }
 
+function createFullWebBudget() {
+  const total = Math.max(100, Math.floor(Number(process.env.OPENAI_FULL_WEB_MAX_CALLS || 4500)));
+  return { limits: { total }, used: { stage1: 0, stage2: 0, identity: 0, geography: 0, other: 0, total: 0 }, warned: new Set(), stopped: new Set(), kind: "full" };
+}
+
 function createQualityWebBudget() {
   return {
     limits: {
@@ -5153,6 +5159,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     : Array.from({ length: researchStageLimit }, (_, index) => index);
   const diagnosticStep = mode === "stage_test" ? requestedStage : 2;
   if (mode === "quality") client.__webBudget = createQualityWebBudget();
+  else if (mode === "full" || mode === "resume") client.__webBudget = createFullWebBudget();
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
