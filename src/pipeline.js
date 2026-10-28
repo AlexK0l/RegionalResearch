@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority } from "./researchQuality.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
@@ -6864,6 +6865,36 @@ ${JSON.stringify(gaps)}
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = allResearchRows(finalResult);
+  if (String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "true").toLowerCase() !== "false") {
+    try {
+      const prior = await loadLatestCompletedResearch(region);
+      const byInn = new Map();
+      for (const historical of allResearchRows(prior || {})) {
+        const inn = normalizeInn(historical?.["ИНН"]);
+        const proof = historical?.__evidence?.contact_verification;
+        const age = Date.now() - Date.parse(String(proof?.verified_at || ""));
+        if (!inn || proof?.inn !== inn || !/^https?:\/\//i.test(String(proof?.source_url || "")) ||
+            !Number.isFinite(age) || age < 0 || age > 90 * 24 * 3600 * 1000) continue;
+        const phone = normalizePhoneDigits(proof?.phone);
+        if (phone && splitPhoneEntries(historical["Телефон"]).some((item) => normalizePhoneDigits(item) === phone)) {
+          byInn.set(inn, { phone, source_url: proof.source_url });
+        }
+      }
+      let recovered = 0;
+      for (const row of companies) {
+        if (hasConfirmedPhone(row)) continue;
+        const inn = normalizeInn(row["ИНН"]);
+        const priorPhone = byInn.get(inn);
+        if (!inn || !priorPhone) continue;
+        row["Телефон"] = priorPhone.phone;
+        recovered++;
+        row.__evidence = { ...(row.__evidence || {}), notes: [ ...(row.__evidence?.notes || []), `Контакт восстановлен по подтверждённому ИНН из исследования этого региона за последние 90 дней: ${priorPhone.source_url}` ] };
+      }
+      console.log("[PREVIOUS_CONTACT_CACHE] " + JSON.stringify({ recovered, eligible: byInn.size }));
+    } catch (error) {
+      console.warn("[PREVIOUS_CONTACT_CACHE_ERROR] " + JSON.stringify({ error: error?.message || String(error) }));
+    }
+  }
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
@@ -7142,6 +7173,16 @@ ${JSON.stringify(gaps)}
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
+    const verifiedSource = String(result.official_site || "").trim();
+    const inn = normalizeInn(row["ИНН"]);
+    if (inn && /^https?:\/\//i.test(verifiedSource)) {
+      const accepted = (result.phones || []).map(normalizePhoneDigits).filter(Boolean)
+        .find((phone) => splitPhoneEntries(row["Телефон"]).some((entry) => normalizePhoneDigits(entry) === phone));
+      if (accepted) row.__evidence = {
+        ...(row.__evidence || {}),
+        contact_verification: { inn, phone: accepted, source_url: verifiedSource, verified_at: new Date().toISOString() }
+      };
+    }
     const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
     const gainedLeader = Boolean(
       result.__needLeader &&
