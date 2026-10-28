@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority } from "./researchQuality.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -2088,6 +2089,9 @@ function applyFinalInnItems(rowsById, result) {
     const previousInn = normalizeInn(row["ИНН"]);
     row["ИНН"] = inn || "";
     if (inn && inn !== previousInn) recovered++;
+    if (inn && Array.isArray(item?.source_urls) && item.source_urls.some((url) => /^https?:\/\//i.test(String(url)))) {
+      row.__evidence = { ...(row.__evidence || {}), identity_verification: { inn, method: "final_inn_web", source_urls: item.source_urls } };
+    }
     const existing = row.__evidence || {};
     const urls = [
       ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
@@ -2202,6 +2206,17 @@ async function resolveFinalMissingInns({
   const rowsById = new Map(
     companies.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
   );
+
+  let evidenceVerified = 0;
+  for (const row of companies) {
+    const id = checkpointRowId(row);
+    if (!id || completedIds.has(id)) continue;
+    if (verifiedInnFromEvidence(row, normalizeInn)) {
+      completedIds.add(id);
+      evidenceVerified++;
+    }
+  }
+  console.log("[FINAL_INN_EVIDENCE_RECHECK] " + JSON.stringify({ evidence_verified: evidenceVerified }));
 
   const pending = companies.filter((row) => {
     const id = checkpointRowId(row);
@@ -3641,7 +3656,7 @@ function deterministicQualificationDecision(record) {
   } else if (aEvidence) {
     grade = "A";
     reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
-  } else if (target && heavy) {
+  } else if (target && heavy && independentBSignals(record.row).valid) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
   } else if (directRole && target && operatingProcess) {
@@ -3738,6 +3753,7 @@ function applyFinalQualification(records, decisions) {
     row.__a_evidence = decision.grade === "A" ? String(decision.aEvidence || "") : "";
     row.__a_rule = decision.grade === "A" ? String(decision.aRule || "") : "";
     row["Основание"] = `${decision.grade} — ${decision.reason}`;
+    populateCommercialActions(row, record.sheet, decision.grade);
     counts[decision.grade]++;
 
     result[record.sheet].push(row);
@@ -4411,6 +4427,9 @@ async function searchContactsWithWeb({
   region,
   deadlineAt
 }) {
+  if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
+    return { status: "ok", phones: [], leader: "", official_site: "", note: "Already confirmed" };
+  }
   const firstTimeout = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
     Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
@@ -4435,7 +4454,7 @@ async function searchContactsWithWeb({
   );
 
   let second = null;
-  if (!phones.size && deadlineRemaining(deadlineAt) > 7000) {
+  if (!phones.size && !hasConfirmedPhone(row) && deadlineRemaining(deadlineAt) > 7000) {
     const secondTimeout = Math.min(
       CONTACT_SEARCH_TIMEOUT_MS,
       Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
@@ -4639,6 +4658,7 @@ function missingResearchFields(row) {
 }
 
 function prioritizedResearchGaps(row) {
+  populateKnownEvidenceFields(row);
   return missingResearchFields(row);
 }
 
@@ -6578,7 +6598,8 @@ ${JSON.stringify(groupBatch)}`,
   });
 
   await assertNotCancelled();
-  const finalCompaniesForEnrichment = allResearchRows(finalResult);
+  const finalCompaniesForEnrichment = allResearchRows(finalResult)
+    .sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
   let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
   const enrichmentCompleted = new Set(
     Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
@@ -6851,6 +6872,7 @@ ${JSON.stringify(gaps)}
   };
   const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
 
+  googleCompanies.sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
   const contactPending = googleCompanies.filter((row) => {
     const id = checkpointRowId(row);
     return !id || (!contactCompleted.has(id) && !primaryResults.has(id));
