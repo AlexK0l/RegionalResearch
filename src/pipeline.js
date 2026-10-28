@@ -1879,7 +1879,10 @@ function applyIdentityResult(cluster, result) {
         data.__evidence = {
           ...existingEvidence,
           source_urls: [...new Set(sourceUrls)],
-          notes: [...new Set(notes)]
+          notes: [...new Set(notes)],
+          ...(inn && Array.isArray(entity?.source_urls) && entity.source_urls.some((url) => /^https?:\/\//i.test(String(url)))
+            ? { identity_verification: { inn, method: "identity_web", source_urls: entity.source_urls } }
+            : {})
         };
 
         resolved.push({ ...original, data });
