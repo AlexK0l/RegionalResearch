@@ -6768,7 +6768,9 @@ ${JSON.stringify(groupBatch)}`,
       }
 
       try {
-        const alreadyGrouped = groupedResults.get(rowId);
+        const candidateGrouped = groupedResults.get(rowId);
+        const alreadyGrouped = candidateGrouped && Object.values(candidateGrouped.fields || {}).some((value) => String(value ?? "").trim())
+          ? candidateGrouped : null;
         if (!alreadyGrouped) targetedSearches++;
         const timeoutMs = Math.min(
           ENRICHMENT_SEARCH_TIMEOUT_MS,
