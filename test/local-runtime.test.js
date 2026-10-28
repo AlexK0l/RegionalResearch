@@ -26,7 +26,7 @@ test("production UI contains no test controls", () => {
 });
 
 test("local UI uses same-origin backend outside the standalone Render UI", () => {
-  assert.match(app, /regionalresearch-ui\.onrender\.com/);
+  assert.match(app, /regionalresearch\.onrender\.com/);
   assert.match(app, /:\s*"";/);
 });
 
