@@ -85,6 +85,18 @@ function analyze(currentPath, referencePath) {
 
   const exactInnOverlap = setIntersectionSize(currentInns, referenceInns);
   const exactNameOverlap = setIntersectionSize(currentNames, referenceNames);
+  const referencePriority = referenceRows
+    .filter((row) => [1, 2].includes(Number(row["Цвет усл. форматирование"])));
+  const priorityIndex = new Map();
+  for (const row of referencePriority) {
+    const name = normalizeName(row["Организация"]);
+    const inn = normalizeInn(row["ИНН"]);
+    const key = inn || name;
+    if (key) priorityIndex.set(key, { name, inn });
+  }
+  const priorityMatched = [...priorityIndex.values()].filter(({ name, inn }) =>
+    (inn && currentInns.has(inn)) || (name && currentNames.has(name))
+  ).length;
 
   return {
     current_rows: currentRows.length,
@@ -96,6 +108,10 @@ function analyze(currentPath, referencePath) {
     current_unique_names: currentNames.size,
     reference_unique_names: referenceNames.size,
     exact_name_overlap: exactNameOverlap,
+    reference_priority_rows: referencePriority.length,
+    reference_priority_unique: priorityIndex.size,
+    reference_priority_overlap: priorityMatched,
+    reference_priority_recall_pct: pct(priorityMatched, priorityIndex.size),
     reference_name_recall_pct: pct(exactNameOverlap, referenceNames.size),
     duplicate_inn_groups: [...innCounts.values()].filter((count) => count > 1).length,
     government_or_budget_rows: currentRows.filter((row) => isGovernmentName(row["Организация"])).length,
@@ -117,6 +133,7 @@ function validate(metrics) {
   const minInn = threshold("BENCHMARK_MIN_INN_RECALL");
   const minName = threshold("BENCHMARK_MIN_NAME_RECALL");
   const maxDupes = threshold("BENCHMARK_MAX_DUPLICATE_INN");
+  const priorityRecall = threshold("BENCHMARK_MIN_PRIORITY_RECALL");
   const maxGovernment = threshold("BENCHMARK_MAX_GOVERNMENT");
 
   if (minInn !== null && metrics.reference_inn_recall_pct < minInn) {
@@ -124,6 +141,9 @@ function validate(metrics) {
   }
   if (minName !== null && metrics.reference_name_recall_pct < minName) {
     failures.push(`name recall ${metrics.reference_name_recall_pct}% < ${minName}%`);
+  }
+  if (priorityRecall !== null && metrics.reference_priority_recall_pct < priorityRecall) {
+    failures.push(`priority recall ${metrics.reference_priority_recall_pct}% < ${priorityRecall}%`);
   }
   if (maxDupes !== null && metrics.duplicate_inn_groups > maxDupes) {
     failures.push(`duplicate INN groups ${metrics.duplicate_inn_groups} > ${maxDupes}`);
