@@ -2496,8 +2496,10 @@ function canonicalizeCandidates(candidates, region = "") {
 function mergedEvidenceFromCanonical(canonical) {
   const sourceUrls = [];
   const notes = [];
+  let identityVerification = null;
   for (const evidenceItem of canonical?.evidence || []) {
     const ev = evidenceItem?.data?.__evidence || {};
+    if (!identityVerification && ev.identity_verification?.inn) identityVerification = ev.identity_verification;
     for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
       if (url) sourceUrls.push(String(url));
     }
@@ -2507,7 +2509,8 @@ function mergedEvidenceFromCanonical(canonical) {
   }
   return {
     source_urls: [...new Set(sourceUrls)],
-    notes: [...new Set(notes)]
+    notes: [...new Set(notes)],
+    ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 }
 
@@ -2941,6 +2944,7 @@ function mergeQaRecordRows(records) {
   const mergedRow = { ...(first?.row || {}) };
   const urls = [];
   const notes = [];
+  let identityVerification = null;
 
   for (const record of records) {
     const row = record?.row || {};
@@ -2957,6 +2961,7 @@ function mergeQaRecordRows(records) {
     if (segments.length) mergedRow["Техника/сегмент"] = [...new Set(segments)].join(" | ");
 
     const evidence = row.__evidence || {};
+    if (!identityVerification && evidence.identity_verification?.inn) identityVerification = evidence.identity_verification;
     for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
       if (url) urls.push(String(url));
     }
@@ -2967,7 +2972,8 @@ function mergeQaRecordRows(records) {
 
   mergedRow.__evidence = {
     source_urls: [...new Set(urls)],
-    notes: [...new Set(notes)]
+    notes: [...new Set(notes)],
+    ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 
   return {
