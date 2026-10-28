@@ -163,6 +163,20 @@ export async function findLatestCheckpoint(region, mode = "full") {
   return metadataFromRow(row);
 }
 
+// Previous completed runs are used only as an optional contact cache;
+// they never seed discovery or the frozen reference benchmark.
+export async function loadLatestCompletedResearch(region) {
+  const value = String(region || "").trim();
+  if (!value) return null;
+  const row = ensureDb().prepare(`
+    SELECT payload FROM research_checkpoints
+    WHERE region = ? AND mode = 'full' AND status = 'completed'
+    ORDER BY updated_at DESC LIMIT 1
+  `).get(value);
+  const checkpoint = rowToCheckpoint(row);
+  return checkpoint?.final_result || null;
+}
+
 export async function listRegionCheckpoints(region, mode = "full", limit = 10) {
   const normalizedRegion = String(region || "").trim();
   if (!normalizedRegion) return [];
