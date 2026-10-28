@@ -7141,7 +7141,9 @@ ${JSON.stringify(gaps)}
 
   // Google AI Mode is now a small fallback for unresolved A/B rows only.
   // It is never the primary path and never triggers a full automatic Sol retry.
-  const browserFallbackCandidates = primaryRowsToApply.filter((row) => {
+  // Disabled by default after repeated computer-turn-limit failures; explicit opt-in only.
+  const browserFallbackEnabled = String(process.env.GOOGLE_AI_FALLBACK_ENABLED || "false").toLowerCase() === "true";
+  const browserFallbackCandidates = (browserFallbackEnabled ? primaryRowsToApply : []).filter((row) => {
     if (!isPriorityAB(row)) return false;
     if (!needsGoogleResearch(row)) return false;
     return deadlineRemaining(stage11DeadlineAt) > 45000;
