@@ -611,6 +611,23 @@ const FINAL_INN_SCHEMA = {
   required: ["items"]
 };
 
+const ENRICHMENT_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.OPENAI_ENRICHMENT_BATCH_SIZE || 3)));
+const ENRICHMENT_BATCH_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: { items: { type: "array", items: {
+    type: "object", additionalProperties: false,
+    properties: {
+      id: { type: "string" },
+      fields: { type: "object", additionalProperties: false, properties: {
+        "Управляющая компания": { type: "string" },
+        "Выручка последнего подтвержденного года": { type: "string" },
+        "Численность": { type: "string" }
+      }, required: ["Управляющая компания", "Выручка последнего подтвержденного года", "Численность"] },
+      __comment: { type: "string" }
+    }, required: ["id", "fields", "__comment"]
+  } } }, required: ["items"]
+};
+
 const CONTACT_SEARCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -6690,11 +6707,46 @@ ${JSON.stringify(groupBatch)}`,
     stage_deadline_ms: STAGE10_MAX_MS
   }));
 
+  const enrichmentGroups = [];
+  for (let i = 0; i < enrichmentPending.length; i += ENRICHMENT_BATCH_SIZE) {
+    enrichmentGroups.push(enrichmentPending.slice(i, i + ENRICHMENT_BATCH_SIZE));
+  }
+
   await mapWithConcurrency(
-    enrichmentPending,
+    enrichmentGroups,
     ENRICHMENT_CONCURRENCY,
-    async (row) => {
+    async (batch) => {
       await assertNotCancelled();
+      let groupedResults = new Map();
+      if (batch.length > 1 && deadlineRemaining(stage10DeadlineAt) > 9000) {
+        const targets = batch.map((row) => ({
+          ...compactEnrichmentTarget(row), missing: prioritizedResearchGaps(row)
+        })).filter((row) => row.missing.length);
+        if (targets.length > 1) {
+          try {
+            targetedSearches++;
+            const result = await askJson(client, {
+              input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников) и __comment. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица; пустые значения оставляй пустыми. Используй web_search и верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
+              model: TARGETED_SEARCH_MODEL,
+              maxOutputTokens: Math.max(TARGETED_SEARCH_MAX_OUTPUT_TOKENS, 4000),
+              webSearch: true,
+              responseSchema: ENRICHMENT_BATCH_SCHEMA,
+              schemaName: "batch_company_enrichment",
+              maxToolCalls: Math.min(5, targets.length + 1),
+              diagnosticLabel: `enrichment batch | ${targets.length} companies`,
+              timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
+              allowJsonRepair: false
+            });
+            const valid = new Set(targets.map((item) => item.id));
+            groupedResults = new Map((result?.items || []).filter((item) => valid.has(String(item?.id || ""))).map((item) => [String(item.id), item]));
+            console.log("[ENRICHMENT_BATCH_RESULT] " + JSON.stringify({ requested: targets.length, returned: groupedResults.size }));
+          } catch (error) {
+            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({ size: targets.length, error: error?.message || String(error) }));
+          }
+        }
+      }
+      for (const row of batch) {
       const rowId = checkpointRowId(row);
       const gaps = prioritizedResearchGaps(row);
       if (!gaps.length) {
@@ -6715,13 +6767,14 @@ ${JSON.stringify(groupBatch)}`,
         return;
       }
 
-      targetedSearches++;
       try {
+        const alreadyGrouped = groupedResults.get(rowId);
+        if (!alreadyGrouped) targetedSearches++;
         const timeoutMs = Math.min(
           ENRICHMENT_SEARCH_TIMEOUT_MS,
           Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)
         );
-        const enriched = await askTargetedSearch(
+        const enriched = alreadyGrouped || await askTargetedSearch(
           client,
           targetedSearchContract() +
             `\n\nРЕГИОН: ${region}
@@ -6752,6 +6805,7 @@ ${JSON.stringify(gaps)}
         await progress({ phase: "dedupe", step: 10, percent: 89 });
       }
       await enrichmentCheckpointBatcher.request();
+      }
     }
   );
   await enrichmentCheckpointBatcher.flush();
