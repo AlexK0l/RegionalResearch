@@ -6,6 +6,7 @@ import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
+import { stagedRetentionReview } from "./stagedRetention.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -6802,6 +6803,20 @@ ${JSON.stringify(groupBatch)}`,
       Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : []
     )
   };
+  // Discovery candidates may be lost during identity or global dedupe even
+  // when the eventual A/B/C qualifier is correct. Never silently drop sourced
+  // transport leads; preserve the ORIGINAL evidence in the checkpoint only.
+  const stagedRetention = stagedRetentionReview(stagedResult, finalResult, {
+    isActionable: actionableUnqualifiedLead,
+    isExcluded: (row) => commercialEligibility(row).blocked
+  });
+  finalResult.qualification_review = mergedQualificationReviews(
+    finalResult.qualification_review, stagedRetention.rows
+  );
+  console.log("[FINAL_STAGED_RETENTION_AUDIT] " + JSON.stringify({
+    ...stagedRetention.diagnostics,
+    total_review: finalResult.qualification_review.length
+  }));
   if (finalResult.qualification_review.length) {
     console.log("[FINAL_UNQUALIFIED_REVIEW_PRESERVED] " + JSON.stringify({
       count: finalResult.qualification_review.length,
