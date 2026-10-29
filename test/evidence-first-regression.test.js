@@ -226,3 +226,11 @@ test("Smolensk checkpoint: explicit owned dump trucks still count despite unconf
   ]);
   assert.equal(independentBSignals(value).valid, true);
 });
+
+test("Smolensk checkpoint: projected trailer demand is not evidence of own road fleet", () => {
+  const value = row([
+    "ООО Агритек производит рапсовое масло и шрот и отгружает сырьё.",
+    "Потребность в зерновозах/самосвальных полуприцепах вытекает из входящего потока масличного сырья и вывоза продуктов переработки; собственный парк не подтверждён."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
