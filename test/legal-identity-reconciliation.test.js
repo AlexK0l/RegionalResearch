@@ -60,6 +60,10 @@ test("СпецАТХ and Спецавтохозяйство merge on attested sh
   const merged = postInnDedupe(final, "Смоленская область");
   assert.equal(merged.records.length, 1);
   assert.equal(merged.records[0].row["ИНН"], inn);
+  const aliasAudit = merged.records[0].row.__evidence.legal_identity_merges;
+  assert.equal(aliasAudit.length, 1);
+  assert.equal(aliasAudit[0].decision, "sourced_explicit_alias");
+  assert.ok(aliasAudit[0].identity_source_urls.includes(shared));
   assert.equal(duplicateInnConflictGroups(merged.qualified.result).length, 0);
 });
 
