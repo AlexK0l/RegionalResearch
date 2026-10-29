@@ -18,14 +18,21 @@ function normalizeInn(value) {
 }
 
 function normalizeName(value) {
-  return String(value || "")
+  // JS word boundaries (\\b) do not treat Cyrillic letters as word characters.
+  // Strip legal-form prefixes explicitly, keeping initials/other words intact.
+  let name = String(value || "")
     .toLowerCase()
     .replace(/ё/g, "е")
-    .replace(/[«»"'“”„]/g, " ")
-    .replace(/\b(ооо|оао|ао|пао|зао|ип|нп|спк|кфх|гк|гуп|муп|фгуп)\b/g, " ")
     .replace(/[^a-zа-я0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  const legalPrefix = /^(?:(?:общество с ограниченной ответственностью|публичное акционерное общество|открытое акционерное общество|закрытое акционерное общество|акционерное общество|индивидуальный предприниматель)|(?:ооо|оао|ао|пао|зао|ип))(?=\s|$)\s*/u;
+  let prior = "";
+  while (name && prior !== name) {
+    prior = name;
+    name = name.replace(legalPrefix, "").trim();
+  }
+  return name;
 }
 
 function normalizePhone(value) {
@@ -62,6 +69,56 @@ function pct(numerator, denominator) {
   return denominator ? Number(((numerator / denominator) * 100).toFixed(1)) : 0;
 }
 
+
+// Benchmark reference is an offline evaluation set, NEVER a production search
+// seed. Identical names with DIFFERENT verified INNs are NOT the same entity.
+function priorityRecallDetails(currentRows, referenceRows) {
+  const byInn = new Map(), byName = new Map();
+  for (const row of currentRows) {
+    const inn = normalizeInn(row["ИНН"]), name = normalizeName(row["Организация"]);
+    if (inn) { if (!byInn.has(inn)) byInn.set(inn, []); byInn.get(inn).push(row); }
+    if (name) { if (!byName.has(name)) byName.set(name, []); byName.get(name).push(row); }
+  }
+  const priority = referenceRows.filter((row) =>
+    [1, 2].includes(Number(row["Цвет усл. форматирование"])));
+  const unique = new Map();
+  for (const row of priority) {
+    const inn = normalizeInn(row["ИНН"]), name = normalizeName(row["Организация"]);
+    const key = inn ? "inn:" + inn : "name:" + name;
+    if (!name || key === "name:") continue;
+    if (!unique.has(key)) unique.set(key, { inn, name, color: Number(row["Цвет усл. форматирование"]) });
+  }
+  const summary = {
+    matched: 0, matched_inn: 0, matched_name: 0, identity_conflicts: 0,
+    unmatched: 0, legal_name_ambiguities: 0,
+    green_total: 0, yellow_total: 0, green_found: 0, yellow_found: 0
+  };
+  for (const item of unique.values()) {
+    const color = item.color;
+    if (color === 1) summary.green_total++; else summary.yellow_total++;
+    let status = "missing";
+    const innMatches = item.inn ? (byInn.get(item.inn) || []) : [];
+    if (innMatches.length) status = "inn";
+    else {
+      const nameMatches = byName.get(item.name) || [];
+      const distinct = new Set(nameMatches.map((row) => normalizeInn(row["ИНН"])).filter(Boolean));
+      const conflicting = [...distinct].some((inn) => item.inn && item.inn !== inn);
+      if (conflicting || distinct.size > 1) status = "conflict";
+      else if (nameMatches.length) {
+        status = "name";
+        if (nameMatches.length > 1) summary.legal_name_ambiguities++;
+      }
+    }
+    if (status === "inn" || status === "name") {
+      summary.matched++;
+      summary["matched_" + status]++;
+      if (color === 1) summary.green_found++; else summary.yellow_found++;
+    } else if (status === "conflict") summary.identity_conflicts++;
+    else summary.unmatched++;
+  }
+  return { priority_rows: priority.length, unique: unique.size, ...summary };
+}
+
 function analyze(currentPath, referencePath) {
   const current = XLSX.readFile(currentPath, { cellDates: false });
   const reference = XLSX.readFile(referencePath, { cellDates: false });
@@ -85,18 +142,8 @@ function analyze(currentPath, referencePath) {
 
   const exactInnOverlap = setIntersectionSize(currentInns, referenceInns);
   const exactNameOverlap = setIntersectionSize(currentNames, referenceNames);
-  const referencePriority = referenceRows
-    .filter((row) => [1, 2].includes(Number(row["Цвет усл. форматирование"])));
-  const priorityIndex = new Map();
-  for (const row of referencePriority) {
-    const name = normalizeName(row["Организация"]);
-    const inn = normalizeInn(row["ИНН"]);
-    const key = inn || name;
-    if (key) priorityIndex.set(key, { name, inn });
-  }
-  const priorityMatched = [...priorityIndex.values()].filter(({ name, inn }) =>
-    (inn && currentInns.has(inn)) || (name && currentNames.has(name))
-  ).length;
+  const priority = priorityRecallDetails(currentRows, referenceRows);
+  const priorityMatched = priority.matched;
 
   return {
     current_rows: currentRows.length,
@@ -108,10 +155,19 @@ function analyze(currentPath, referencePath) {
     current_unique_names: currentNames.size,
     reference_unique_names: referenceNames.size,
     exact_name_overlap: exactNameOverlap,
-    reference_priority_rows: referencePriority.length,
-    reference_priority_unique: priorityIndex.size,
+    reference_priority_rows: priority.priority_rows,
+    reference_priority_unique: priority.unique,
     reference_priority_overlap: priorityMatched,
-    reference_priority_recall_pct: pct(priorityMatched, priorityIndex.size),
+    reference_priority_recall_pct: pct(priorityMatched, priority.unique),
+    reference_priority_matched_by_inn: priority.matched_inn,
+    reference_priority_matched_by_name: priority.matched_name,
+    reference_priority_identity_conflicts: priority.identity_conflicts,
+    reference_priority_missing: priority.unmatched,
+    reference_priority_legal_name_ambiguities: priority.legal_name_ambiguities,
+    reference_priority_green_total: priority.green_total,
+    reference_priority_yellow_total: priority.yellow_total,
+    reference_priority_green_found: priority.green_found,
+    reference_priority_yellow_found: priority.yellow_found,
     reference_name_recall_pct: pct(exactNameOverlap, referenceNames.size),
     duplicate_inn_groups: [...innCounts.values()].filter((count) => count > 1).length,
     government_or_budget_rows: currentRows.filter((row) => isGovernmentName(row["Организация"])).length,
