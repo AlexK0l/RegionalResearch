@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const source = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8").replace(/\r\n?/g, "\n");
 
 test("discovery and identity web search have hard tool-call caps", () => {
   assert.match(source, /max_tool_calls = Math\.floor\(Number\(maxToolCalls\)\)/);
