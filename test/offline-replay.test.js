@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 test("saved research diagnostics can be replayed offline without OpenAI", () => {
@@ -35,7 +36,7 @@ test("saved research diagnostics can be replayed offline without OpenAI", () => 
     ).join("\n"), "utf8");
     const output = execFileSync(
       process.execPath,
-      [new URL("../scripts/replay-qualification-offline.js", import.meta.url).pathname, file],
+      [fileURLToPath(new URL("../scripts/replay-qualification-offline.js", import.meta.url)), file],
       { encoding: "utf8" }
     );
     const data = JSON.parse(output);
