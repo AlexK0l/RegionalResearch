@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import XLSX from "xlsx";
 import { restoreAliasesOffline } from "../src/offlineIdentityRestoration.js";
+import { projectRecoveredTemplateSheet } from "../src/offlineWorkbookTemplate.js";
 
 const [, , databaseFile = "data/checkpoints.sqlite", ...args] = process.argv;
 const outputArg = args.find((x) => x.startsWith("--out="))?.slice("--out=".length) || "exports";
@@ -60,29 +61,45 @@ const sheetNames = {
   leasing: "Лизинг"
 };
 let workbook = templateArg ? XLSX.readFile(path.resolve(templateArg)) : XLSX.utils.book_new();
-const sourceHeaders = new Map();
-if (templateArg) {
-  for (const s of ["Прямые покупатели", "Посредники", "Лизинг"]) {
-    const tab = workbook.Sheets[s];
-    if (!tab) throw new Error("Missing template sheet: " + s);
-    const header = XLSX.utils.sheet_to_json(tab, { header: 1, defval: "" })[0] || [];
-    sourceHeaders.set(s, header);
-  }
-}
+const templateColumns = [];
+audit.crm_field_transfers = [];
+audit.crm_field_conflicts = [];
 for (const [key, name] of Object.entries(sheetNames)) {
   const selected = recovered[key];
-  const header = sourceHeaders.get(name) || columns;
-  // Header order mirrors the source workbook when a template is provided.
-  // CRM-only fields not found in final_result remain empty in this derived copy;
-  // source workbook and any external CRM notes are never overwritten.
-  const cells = [header, ...selected.map((row) => header.map((field) => clean(row[field], field)))];
-  const tab = XLSX.utils.aoa_to_sheet(cells);
-  tab["!cols"] = header.map((h) => ({ wch: h === "Организация" ? 45 :
-    h === "Основание" || h === "Техника/сегмент" ? 66 :
-    h === "ИНН" ? 19 : h === "Телефон" ? 25 : 26 }));
+  let tab;
+  if (templateArg) {
+    const sourceTab = workbook.Sheets[name];
+    if (!sourceTab) throw new Error("Missing template sheet: " + name);
+    const original = input.final_result[key];
+    const projected = projectRecoveredTemplateSheet(XLSX, sourceTab, original, selected, {
+      sheetName: name
+    });
+    tab = projected.sheet;
+    audit.crm_field_transfers.push(...projected.crmTransfers);
+    audit.crm_field_conflicts.push(...projected.crmConflicts);
+    templateColumns.push({
+      sheet: name,
+      source_columns: projected.original_columns,
+      recovered_columns: projected.output_columns,
+      recovered_rows: selected.length
+    });
+  } else {
+    const header = columns;
+    const cells = [header, ...selected.map((row) => header.map((field) => clean(row[field], field)))];
+    tab = XLSX.utils.aoa_to_sheet(cells);
+    tab["!cols"] = header.map((h) => ({ wch: h === "Организация" ? 45 :
+      h === "Основание" || h === "Техника/сегмент" ? 66 :
+      h === "ИНН" ? 19 : h === "Телефон" ? 25 : 26 }));
+  }
   if (workbook.Sheets[name]) workbook.Sheets[name] = tab;
   else XLSX.utils.book_append_sheet(workbook, tab, name);
 }
+audit.template_projection = templateArg ? {
+  source_workbook: path.resolve(templateArg),
+  validation: "Source organization names and original checkpoint rows must match exactly by position",
+  columns: templateColumns,
+  note: "Source CRM cells are retained. Relative-reference formulas cannot be safely moved. Workbook style fidelity is not guaranteed by SheetJS."
+} : null;
 if (!workbook.Sheets["Статистика"] && Array.isArray(recovered.statistics)) {
   const stats = recovered.statistics;
   const h = [...new Set(stats.flatMap((r) => Object.keys(r)))];
@@ -103,12 +120,13 @@ function addSheet(name, header, records) {
 }
 addSheet("Офлайн восстановление", [
   "ИНН", "Основное наименование", "Объединённые алиасы", "Причина",
-  "Исходные ID", "Сохранённый класс", "URL источников"
+  "Исходные ID", "Сохранённый класс", "Проверка класса", "URL источников"
 ], audit.restored_groups.map((g) => ({
   "ИНН": g.inn, "Основное наименование": g.winner_name,
   "Объединённые алиасы": g.absorbed_names,
   "Причина": g.reason, "Исходные ID": g.original_canonical_ids,
   "Сохранённый класс": g.preserved_grade,
+  "Проверка класса": g.qualification_review || "",
   "URL источников": g.source_urls
 })));
 addSheet("Ручная проверка ИНН", [
@@ -132,6 +150,29 @@ addSheet("Конфликты полей", ["ИНН", "Организация", "
     "ИНН": r.inn, "Организация": r.company, "Поле": r.field,
     "Сохранённые значения": r.values
   })));
+addSheet("Проверка A-B-C", [
+  "ИНН", "Основное наименование", "Сохранённый класс", "Классы из исходных записей",
+  "Основания исходных классов", "Статус"
+], (audit.qualification_conflicts || []).map((r) => ({
+  "ИНН": r.inn,
+  "Основное наименование": r.winner_name,
+  "Сохранённый класс": r.selected_grade,
+  "Классы из исходных записей": r.source_grades.map((x) => x.organization + ": " + x.grade),
+  "Основания исходных классов": r.source_grades.map((x) => x.organization + ": " + x.basis),
+  "Статус": r.status
+})));
+addSheet("CRM перенос и расхождения", [
+  "Организация", "Поле CRM", "Статус", "Значения", "Исходные ID"
+], [
+  ...audit.crm_field_transfers.map((r) => ({
+    "Организация": r.organization, "Поле CRM": r.field, "Статус": "transferred",
+    "Значения": r.value, "Исходные ID": r.original_ids
+  })),
+  ...audit.crm_field_conflicts.map((r) => ({
+    "Организация": r.organization, "Поле CRM": r.field, "Статус": "manual_review_required",
+    "Значения": r.values, "Исходные ID": r.original_ids
+  }))
+]);
 addSheet("Методика офлайн", ["Параметр", "Значение"], [
   { Параметр: "Исходный checkpoint", Значение: chosen.id },
   { Параметр: "Регион", Значение: chosen.region },
@@ -143,7 +184,10 @@ addSheet("Методика офлайн", ["Параметр", "Значение
   { Параметр: "Проверка", Значение: "Только сохранённые свидетельства. Без сетевого доступа, OpenAI и новых API-запросов." },
   { Параметр: "Статус", Значение: "Отдельная производная копия. Не обновляет checkpoint и не заменяет первичный исследовательский отчёт." },
   { Параметр: "Подразделения", Значение: "Не объединяются с головным юрлицом, ИНН в строке подразделения не восстанавливается." },
-  { Параметр: "A/B/C", Значение: "Квалификация сохранена из исходной строки; новый класс не рассчитывался." },
+  { Параметр: "A/B/C", Значение: "Выбранный класс не пересчитывался; расхождения исходных классов отдельно помечены на листе Проверка A-B-C." },
+  { Параметр: "Проверить A/B/C", Значение: (audit.qualification_conflicts || []).length },
+  { Параметр: "CRM-переносов", Значение: audit.crm_field_transfers.length },
+  { Параметр: "CRM-конфликтов", Значение: audit.crm_field_conflicts.length },
   { Параметр: "CRM-данные", Значение: "Исходный Excel не модифицирован, аналитические вкладки — только для проверки." }
 ]);
 
@@ -182,6 +226,8 @@ console.log(JSON.stringify({
   before_companies: audit.input_rows, after_companies: audit.output_rows,
   alias_merges: audit.merged_away_rows, restored_unique_inns: audit.restored_inns,
   unresolved: audit.unresolved.length, divisions_preserved: audit.divisions.length,
+  qualification_conflicts: (audit.qualification_conflicts || []).length,
+  template_mode: Boolean(templateArg), crm_field_conflicts: audit.crm_field_conflicts.length,
   outputs: { xlsx: names[0], json: names[1], audit: names[2] },
   original_database_modified: false, openai_calls: 0
 }, null, 2));
