@@ -7115,6 +7115,7 @@ ${JSON.stringify(groupBatch)}`,
   let enrichmentBatchBlank = 0;
   let enrichmentFallbackCalls = 0;
   let enrichmentBatchDeferred = 0;
+  let enrichmentBudgetDeferred = 0;
   let enrichmentSingleCalls = 0;
 
   for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
@@ -7164,7 +7165,8 @@ ${JSON.stringify(groupBatch)}`,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted],
       enrichment_errors: enrichmentErrors,
-      enrichment_deadline_skipped: enrichmentDeadlineSkipped
+      enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+      enrichment_budget_deferred: enrichmentBudgetDeferred
     });
   });
 
@@ -7198,6 +7200,7 @@ ${JSON.stringify(groupBatch)}`,
 
       let groupedResults = new Map();
       let batchAttempted = false;
+      let batchBudgetStopped = false;
       let batchFallbackRemaining = ENRICHMENT_MAX_FALLBACKS_PER_BATCH;
       if (targets.length > 1 && deadlineRemaining(stage10DeadlineAt) > 9000) {
         batchAttempted = true;
@@ -7229,6 +7232,7 @@ ${JSON.stringify(groupBatch)}`,
           }));
         } catch (error) {
           if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          batchBudgetStopped = isWebBudgetStop(error);
           console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
             size: targets.length,
             error: error?.message || String(error)
@@ -7255,6 +7259,18 @@ ${JSON.stringify(groupBatch)}`,
             id: rowId,
             organization: row?.["Организация"] || "",
             gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
+
+        if (batchBudgetStopped) {
+          // Budget exhaustion is NOT negative evidence. Preserve the row in
+          // the checkpoint's pending enrichment set for a controlled resume.
+          enrichmentBudgetDeferred++;
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_COST_DEFERRED] " + JSON.stringify({
+            id: rowId, organization: row["Организация"], gaps
           }));
           await enrichmentCheckpointBatcher.request();
           continue;
@@ -7323,7 +7339,8 @@ ${JSON.stringify(gaps)}
           if (rowId) enrichmentCompleted.add(rowId);
         } catch (error) {
           if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-          enrichmentErrors++;
+          if (isWebBudgetStop(error)) enrichmentBudgetDeferred++;
+          else enrichmentErrors++;
           console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
             id: rowId,
             organization: row?.["Организация"] || "",
@@ -7348,6 +7365,7 @@ ${JSON.stringify(gaps)}
     individual_searches: enrichmentSingleCalls,
     structural_fallback_searches: enrichmentFallbackCalls,
     batch_omissions_deferred: enrichmentBatchDeferred,
+    budget_deferred: enrichmentBudgetDeferred,
     errors: enrichmentErrors,
     targeted_model_calls: targetedSearches
   }));
@@ -7377,6 +7395,7 @@ ${JSON.stringify(gaps)}
     enrichment_completed_ids: [...enrichmentCompleted],
     enrichment_errors: enrichmentErrors,
     enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+    enrichment_budget_deferred: enrichmentBudgetDeferred,
     stage10_duration_ms: Date.now() - stage10StartedAt
   });
 
