@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
-import { confirmedInnAliasDecision, identityOgrns } from "./legalIdentity.js";
+import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
@@ -3204,6 +3204,8 @@ function safeAliasIdentityCompatible(a, b, region = "") {
   const aName = String(a?.row?.["Организация"] || "").trim();
   const bName = String(b?.row?.["Организация"] || "").trim();
   if (!aName || !bName) return false;
+  if (legalEvidenceConflict(a, b)) return false;
+  if (legalNameKey(aName) === legalNameKey(bName)) return true;
 
   // Compound fields are handled structurally rather than by a blanket slash rule.
   // If a row names several materially different variants, every non-trivial
@@ -3429,8 +3431,27 @@ function deterministicGlobalDedupe(records, diagnostics = null, region = "") {
 
   output.push(...singles);
   for (const [key, group] of grouped.entries()) {
-    if (group.length > 1) recordDedupeMerge(diagnostics, "normalized_name", group, key);
-    output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
+    // A cleared or missing INN is not permission to merge distinct legal
+    // entities. Partition same-name candidates by OGRN and branch/group role.
+    const compatible = [];
+    for (const record of group) {
+      const target = compatible.find((partition) =>
+        partition.every((prior) => unresolvedNameCompatible(prior, record))
+      );
+      if (target) target.push(record);
+      else compatible.push([record]);
+    }
+    if (compatible.length > 1) {
+      console.log("[DEDUPE_NAME_LEGAL_CONFLICT] " + JSON.stringify({
+        key, organizations: group.map((record) =>
+          String(record?.row?.["Организация"] || "")),
+        ogrns: group.map((record) => identityOgrns(record?.row || {}))
+      }));
+    }
+    for (const partition of compatible) {
+      if (partition.length > 1) recordDedupeMerge(diagnostics, "normalized_name", partition, key);
+      output.push(partition.length === 1 ? partition[0] : mergeQaRecordRows(partition));
+    }
   }
 
   const aliasPass = conservativeAliasDedupe(output, diagnostics, region);
