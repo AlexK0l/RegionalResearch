@@ -7353,6 +7353,11 @@ ${JSON.stringify(gaps)}
     contactCheckpointVersion >= 2
       ? Number(resumedContactStats.primaryProcessed || primaryResults.size || 0)
       : 0;
+  // Initialized here because contactStatsSnapshot closes over these values
+  // and may be called before the first batch starts.
+  let contactBatchCalls = 0, contactBatchMatched = 0, contactFallbackCalls = 0;
+  let contactBatchOmissions = 0, contactBudgetDeferred = 0;
+  const phoneRetryBudget = { remaining: CONTACT_BATCH_SETTINGS.phoneRetries };
 
   const contactStatsSnapshot = () => ({
     version: 2,
@@ -7371,6 +7376,13 @@ ${JSON.stringify(gaps)}
     phoneVerified,
     deadlineSkipped,
     primaryProcessed,
+    // Batch metrics may be populated after the plan is constructed.
+    batchModelCalls: contactBatchCalls,
+    batchMatchedCompanies: contactBatchMatched,
+    individualFallbacks: contactFallbackCalls,
+    phoneRetriesUsed: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    batchOmissions: contactBatchOmissions,
+    budgetDeferred: contactBudgetDeferred,
     browserCircuitOpen: false
   });
 
@@ -7414,70 +7426,137 @@ ${JSON.stringify(gaps)}
     stage_deadline_ms: STAGE11_MAX_MS
   }));
 
+  const contactGroups = [];
+  for (let i = 0; i < contactPending.length; i += CONTACT_BATCH_SETTINGS.batchSize) {
+    contactGroups.push(contactPending.slice(i, i + CONTACT_BATCH_SETTINGS.batchSize));
+  }
+  const contactFallbackBudget = { remaining: CONTACT_BATCH_SETTINGS.individualFallbacks };
+  const contactUnsearched = new Set();
+
+  console.log("[CONTACT_BATCH_PLAN] " + JSON.stringify({
+    pending: contactPending.length,
+    batches: contactGroups.length,
+    batch_size: CONTACT_BATCH_SETTINGS.batchSize,
+    max_web_tools_per_batch: CONTACT_BATCH_SETTINGS.batchWebCalls,
+    max_single_fallbacks: CONTACT_BATCH_SETTINGS.individualFallbacks,
+    max_phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries
+  }));
+
   await mapWithConcurrency(
-    contactPending,
-    CONTACT_CONCURRENCY,
-    async (row) => {
+    contactGroups,
+    Math.min(CONTACT_CONCURRENCY, 6),
+    async (batch) => {
       await assertNotCancelled();
-      const rowId = checkpointRowId(row);
-      if (deadlineRemaining(stage11DeadlineAt) <= 6000) {
-        deadlineSkipped++;
-        webUnavailable++;
-        if (rowId) {
-          contactOutcomes.set(rowId, "unavailable");
-          contactCompleted.add(rowId);
+      let answers = new Map();
+      let budgetStop = false;
+      let batchError = "";
+      if (deadlineRemaining(stage11DeadlineAt) > 8000) {
+        try {
+          if (batch.length === 1) {
+            // Avoid an expensive batch request for the final singleton.
+            const row = batch[0];
+            const result = await searchContactsWithWeb({
+              client, row, region, deadlineAt: stage11DeadlineAt,
+              phoneRetryBudget
+            });
+            answers.set(checkpointRowId(row), result);
+          } else {
+            contactBatchCalls++;
+            const results = await searchContactBatchWithWeb({
+              client, rows: batch, region, deadlineAt: stage11DeadlineAt
+            });
+            for (const item of results) {
+              if (item.result) {
+                answers.set(item.id, item.result);
+                contactBatchMatched++;
+              }
+            }
+          }
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          budgetStop = isWebBudgetStop(error);
+          batchError = String(error?.message || error);
+          console.log("[CONTACT_BATCH_UNAVAILABLE] " + JSON.stringify({
+            size: batch.length, budget_stop: budgetStop, message: batchError
+          }));
+        }
+      } else batchError = "contact deadline reached";
+
+      for (const row of batch) {
+        await assertNotCancelled();
+        const rowId = checkpointRowId(row);
+        let result = answers.get(rowId) || null;
+        const priority = safeSearchPriority(row);
+        const mayFallback = !budgetStop && !result && priority >= 2 &&
+          contactFallbackBudget.remaining > 0 &&
+          deadlineRemaining(stage11DeadlineAt) > 8000;
+        if (mayFallback) {
+          // Structural batch omission only: a valid, empty researched answer
+          // does NOT trigger another paid query.
+          contactFallbackBudget.remaining--;
+          contactFallbackCalls++;
+          try {
+            result = await searchContactsWithWeb({
+              client, row, region, deadlineAt: stage11DeadlineAt,
+              phoneRetryBudget
+            });
+          } catch (error) {
+            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            if (isWebBudgetStop(error)) budgetStop = true;
+            batchError = String(error?.message || error);
+          }
+        }
+        if (result) {
+          primaryResults.set(rowId, {
+            ...result,
+            __needPhone: !hasConfirmedPhone(row),
+            __needLeader: !hasConfirmedLeader(row)
+          });
+          if (result.status === "ok") webOk++;
+          else webNotFound++;
+          if (Array.isArray(result.source_urls) && result.source_urls.length) {
+            const ev = row.__evidence || {};
+            row.__evidence = { ...ev,
+              source_urls: [...new Set([...(ev.source_urls || []), ...result.source_urls])] };
+          }
+        } else {
+          // Never mark a company "contact checked" after a missing batch
+          // response or exhausted budget. Preserve it for checkpoint resume.
+          contactUnsearched.add(rowId);
+          contactBatchOmissions++;
+          webUnavailable++;
+          if (budgetStop) contactBudgetDeferred++;
+          if (deadlineRemaining(stage11DeadlineAt) <= 8000) deadlineSkipped++;
+          console.log("[CONTACT_NOT_RESEARCHED_DEFERRED] " + JSON.stringify({
+            id: rowId, grade: row.__final_grade || "",
+            cause: budgetStop ? "web_budget" : batchError || "batch_omission"
+          }));
         }
         primaryProcessed++;
+        if (primaryProcessed % 10 === 0 || primaryProcessed === googleCompanies.length) {
+          statuses[10].detail =
+            `пакетные контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · отложено: ${contactUnsearched.size}`;
+          await progress({
+            phase: "google_ai", step: 11,
+            percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
+            contactCurrent: primaryProcessed,
+            contactTotal: googleCompanies.length,
+            contactCompany: "",
+            contactStats: contactStatsSnapshot()
+          });
+        }
         await contactCheckpointBatcher.request();
-        return;
       }
-
-      try {
-        const needPhoneBefore = !hasConfirmedPhone(row);
-        const needLeaderBefore = !hasConfirmedLeader(row);
-        const result = await searchContactsWithWeb({
-          client,
-          row,
-          region,
-          deadlineAt: stage11DeadlineAt
-        });
-        primaryResults.set(rowId, {
-          ...result,
-          __needPhone: needPhoneBefore,
-          __needLeader: needLeaderBefore
-        });
-        if (result.status === "ok") webOk++;
-        else webNotFound++;
-      } catch (error) {
-        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-        webUnavailable++;
-        primaryResults.set(rowId, {
-          status: "unavailable",
-          phones: [],
-          leader: "",
-          note: error?.message || "contact web search unavailable",
-          __needPhone: !hasConfirmedPhone(row),
-          __needLeader: !hasConfirmedLeader(row)
-        });
-      }
-
-      primaryProcessed++;
-      if (primaryProcessed % 10 === 0 || primaryResults.size >= googleCompanies.length - contactCompleted.size) {
-        statuses[10].detail =
-          `web-first контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
-          contactCurrent: primaryProcessed,
-          contactTotal: googleCompanies.length,
-          contactCompany: "",
-          contactStats: contactStatsSnapshot()
-        });
-      }
-      await contactCheckpointBatcher.request();
     }
   );
+  console.log("[CONTACT_BATCH_EFFICIENCY] " + JSON.stringify({
+    batch_model_calls: contactBatchCalls,
+    batch_matched_companies: contactBatchMatched,
+    individual_fallbacks: contactFallbackCalls,
+    phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    companies_deferred: contactUnsearched.size,
+    budget_deferred: contactBudgetDeferred
+  }));
 
   // Build a global claim map BEFORE accepting newly found phones. This catches
   // both conflicts with existing cells and the same new phone returned for
@@ -7782,7 +7861,7 @@ ${JSON.stringify(gaps)}
 
   finishStep(statuses[10]);
   statuses[10].detail =
-    `выполнен · web-first проверено ${googleCompanies.length} · browser fallback ${browserFallbacks} · conflicts ${phoneConflicts}`;
+    `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · conflicts: ${phoneConflicts}`;
   await progress({
     phase: "completed",
     step: 11,
@@ -7806,6 +7885,7 @@ ${JSON.stringify(gaps)}
     contact_completed_ids: [...contactCompleted],
     contact_primary_results: {},
     contact_stats: contactStats,
+    contact_unsearched_ids: [...contactUnsearched],
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt
   });
