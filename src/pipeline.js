@@ -2441,10 +2441,12 @@ function postInnDedupe(finalResult, region, diagnostics = null) {
     diagnostics,
     region
   );
-  return {
-    records,
-    qualified: deterministicRequalification(records)
-  };
+  const qualified = deterministicRequalification(records);
+  qualified.result.qualification_review = mergedQualificationReviews(
+    Array.isArray(finalResult?.qualification_review) ? finalResult.qualification_review : [],
+    qualified.result.qualification_review
+  );
+  return { records, qualified };
 }
 
 function enforceFinalInnRequirement(finalResult) {
@@ -3882,12 +3884,45 @@ async function runFinalQualification({
   return decisions;
 }
 
+// Candidate inventory is intentionally NOT a CRM sheet. Strong transport
+// candidates with insufficient A/B/C evidence stay recoverable in checkpoint.
+function actionableUnqualifiedLead(record) {
+  const row = record?.row || {};
+  const eligibility = commercialEligibility(row);
+  if (eligibility.blocked || identityRegionMismatchFromNotes(qualificationEvidenceNotes(record))) return false;
+  const ev = row.__evidence || {};
+  const notes = (Array.isArray(ev.notes) ? ev.notes : [])
+    .filter((note) => !/^(?:final inn:|identity:|подтвержденный инн:)/i.test(String(note).trim()));
+  const urls = Array.isArray(ev.source_urls) ? ev.source_urls : [];
+  if (!notes.length || !urls.some((url) => /^https?:\/\//i.test(String(url)))) return false;
+  const claim = [row["Техника/сегмент"], ...notes].join(" ").toLowerCase().replace(/ё/g, "е");
+  // Evidence of a real carrier, fleet, freight process or operations department.
+  return /(грузоперевоз|грузов.{0,25}транспорт|транспортн.{0,20}компани|седельн.{0,20}тягач|полуприцеп|автопарк|автологистик|категори.{0,10}(?:ce|cе|е|e)|водител.{0,35}рейс|фулфилмент|механик.{0,25}транспорт|лизинг.{0,25}тягач|тентованн.{0,25}транспорт|междугородн.{0,30}перевоз|международн.{0,30}перевоз)/i.test(claim);
+}
+
+function reviewQueueKey(row) {
+  return String(row?.__canonical_id || "") ||
+    [normalizeOrgKey(row?.["Организация"]), normalizeInn(row?.["ИНН"])].join("|");
+}
+
+function mergedQualificationReviews(existing = [], newly = []) {
+  const merged = new Map();
+  for (const row of [...existing, ...newly]) {
+    if (!row || !String(row["Организация"] || "").trim()) continue;
+    if (commercialEligibility(row).blocked) continue;
+    const key = reviewQueueKey(row);
+    if (!merged.has(key)) merged.set(key, row);
+  }
+  return [...merged.values()];
+}
+
 function applyFinalQualification(records, decisions) {
   const result = {
     direct_buyers: [],
     intermediaries: [],
     leasing: [],
-    statistics: []
+    statistics: [],
+    qualification_review: []
   };
   const counts = { A: 0, B: 0, C: 0, excluded: 0 };
 
@@ -3895,6 +3930,20 @@ function applyFinalQualification(records, decisions) {
     const decision = decisions.get(record.id);
     if (!decision || decision.decision !== "include" || !decision.grade) {
       counts.excluded++;
+      if (actionableUnqualifiedLead(record)) {
+        const row = { ...record.row };
+        row.__decision = "manual_review";
+        row.__final_grade = "";
+        row.__a_evidence = "";
+        row.__a_rule = "";
+        row.__qualification_origin_sheet = record.sheet;
+        row.__decision_reason = String(decision?.reason || "Недостаточно подтверждённой квалификации.");
+        row.__evidence = {
+          ...(row.__evidence || {}),
+          commercial_eligibility: commercialEligibility(row)
+        };
+        result.qualification_review.push(row);
+      }
       continue;
     }
 
@@ -6746,7 +6795,24 @@ ${JSON.stringify(groupBatch)}`,
       else eligibleSheets[sheet].push(row);
     }
   }
-  finalResult = { ...finalResult, ...eligibleSheets };
+  finalResult = {
+    ...finalResult,
+    ...eligibleSheets,
+    qualification_review: mergedQualificationReviews(
+      Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : []
+    )
+  };
+  if (finalResult.qualification_review.length) {
+    console.log("[FINAL_UNQUALIFIED_REVIEW_PRESERVED] " + JSON.stringify({
+      count: finalResult.qualification_review.length,
+      candidates: finalResult.qualification_review.map((row) => ({
+        canonical_id: row.__canonical_id || "",
+        organization: row["Организация"],
+        inn: row["ИНН"] || "",
+        origin_sheet: row.__qualification_origin_sheet || ""
+      }))
+    }));
+  }
   qualifiedFinal.result = finalResult;
   qualifiedFinal.counts = {
     ...qualifiedFinal.counts,
