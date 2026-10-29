@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
+const costPolicy = readFileSync(new URL("../src/researchCostPolicy.js", import.meta.url), "utf8");
 const server = readFileSync(new URL("../server.js", import.meta.url), "utf8");
 const ui = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const checkpoints = readFileSync(new URL("../src/checkpointStore.js", import.meta.url), "utf8");
 const benchmark = readFileSync(new URL("../scripts/benchmark-reference.js", import.meta.url), "utf8");
 
 test("full research has both web-call and cost guardrails", () => {
-  assert.match(pipeline, /OPENAI_FULL_WEB_MAX_CALLS/);
-  assert.match(pipeline, /OPENAI_MAX_RESEARCH_COST_USD/);
+  assert.match(costPolicy, /OPENAI_FULL_WEB_MAX_CALLS/);
+  assert.match(costPolicy, /OPENAI_MAX_RESEARCH_COST_USD/);
+  assert.match(pipeline, /reserveWebBudgetBeforeCall/);
   assert.match(pipeline, /estimated_api_cost_usd/);
 });
 
