@@ -161,6 +161,13 @@ const THIRD_PARTY_OWNERSHIP_A = /(?:полуприцеп.{0,100}принадле
 const POSITIVE_OWNERSHIP_A = /(?:собственн.{0,45}(?:парк|тягач|полуприцеп|прицеп)|подтвержд.{0,50}(?:собственник|владельц)|(?:(?:полуприцеп|прицеп).{0,40}(?:на балансе|в собственности|эксплуатируется))|(?:приобрел|приобрела|приобрели|купил|куплено).{0,55}(?:прицеп|полуприцеп|тонар)|(?:лизингополучател|лизингодател).{0,80}полуприцеп)/;
 const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комплектован|замен).{0,60}прицеп|лизинг\s+седельн.{0,30}тягач)/;
 
+// Small/utility trailers, unsigned repair estimates and financial lessors do
+// not establish heavy road-trailer operation by a DIRECT buyer.
+const LIGHT_TRAILER_ONLY_A = /(?:легков.{0,35}прицеп|прицеп.{0,45}(?:мзса|дгу|дизель.{0,15}генератор)|мзса.{0,30}прицеп|прицеп.{0,45}цистерн.{0,20}1150)/;
+const HEAVY_TRAILER_PROOF_A = /(?:полуприцеп|тонар[ -]?[0-9]{3,5}|schmitz|krone|kogel|wielton|grunwald|пстб[- ]?\d)/;
+const UNCOMPLETED_SERVICE_A = /(?:предварител.{0,35}заказ.{0,10}наряд|предварител.{0,35}расчет.{0,50}ремонт|смет.{0,40}ремонт|предварител.{0,35}стоимост.{0,30}восстанов)/;
+const ACTUAL_COMPLETED_SERVICE_A = /(?:выполн.{0,25}ремонт|фактическ.{0,30}отремонтирован|акт.{0,20}выполненн.{0,30}работ)/;
+
 /** Return a diagnostic reason to reject a false A evidence note, or "". */
 export function rejectUnsafeAEvidence(record, note) {
   // Preserve the colon in provenance prefixes (Final INN:, Identity:).
@@ -169,6 +176,18 @@ export function rejectUnsafeAEvidence(record, note) {
     return "identity_metadata_not_trailer_proof";
   }
   if (EXTRA_NEGATIVE_A.test(s)) return "negative_or_inferred_trailer_event";
+  if (LIGHT_TRAILER_ONLY_A.test(s) && !HEAVY_TRAILER_PROOF_A.test(s)) {
+    return "light_utility_trailer_not_target_heavy_freight";
+  }
+  if (record?.sheet === "direct_buyers" &&
+      /(?:лизингодатель|арендодатель).{0,110}(?:полуприцеп|прицеп)|(?:полуприцеп|прицеп).{0,110}(?:лизингодатель|арендодатель)/.test(s) &&
+      !/(?:собственн.{0,40}эксплуатац|самостоятельн.{0,40}перевоз)/.test(s)) {
+    return "lessor_role_not_direct_buyer";
+  }
+  if (record?.sheet === "intermediaries" &&
+      UNCOMPLETED_SERVICE_A.test(s) && !ACTUAL_COMPLETED_SERVICE_A.test(s)) {
+    return "preliminary_quote_not_completed_repair";
+  }
   if (DIRECT_NEGATIVE_A.test(s)) {
     // Confirmed ownership is A even when an individual trip is unobserved.
     const owned = POSITIVE_OWNERSHIP_A.test(s);
