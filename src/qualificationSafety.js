@@ -163,7 +163,8 @@ const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комп
 
 /** Return a diagnostic reason to reject a false A evidence note, or "". */
 export function rejectUnsafeAEvidence(record, note) {
-  const s = normalized(note);
+  // Preserve the colon in provenance prefixes (Final INN:, Identity:).
+  const s = String(note || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
   if (/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/.test(s)) {
     return "identity_metadata_not_trailer_proof";
   }
