@@ -86,13 +86,14 @@ function aliasNote(rowA, rowB, aName, bName, inn) {
   const notes = [...(rowA?.__evidence?.notes || []), ...(rowB?.__evidence?.notes || [])];
   for (const raw of notes) {
     const note = String(raw || "").trim();
-    if (!/^(?:Identity:|Final INN:)/i.test(note) || !ALIAS_TERMS.test(note)) continue;
+    const normalizedNote = note.toLowerCase().replace(/ё/g, "е");
+    if (!/^(?:Identity:|Final INN:)/i.test(note) || !ALIAS_TERMS.test(normalizedNote)) continue;
     const text = " " + comparableText(note) + " ";
     if (!text.includes(" " + aKey + " ") || !text.includes(" " + bKey + " ")) continue;
     if (!text.includes(String(inn))) {
       if (!confirmedIdentityProof(rowA, inn) || !confirmedIdentityProof(rowB, inn)) continue;
     }
-    return { renamed: RENAMING_TERMS.test(note) };
+    return { renamed: RENAMING_TERMS.test(normalizedNote) };
   }
   return null;
 }
