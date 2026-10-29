@@ -80,6 +80,22 @@ function sameRole(a, b) {
   const x = roleSignature(a), y = roleSignature(b);
   return x.branch === y.branch && x.group === y.group;
 }
+// Reused after an INN was cleared. A blank INN must never disable OGRN
+// conflict checks and permit the same records to merge by name alone.
+export function legalEvidenceConflict(recordA, recordB) {
+  const a = recordA?.row || recordA || {};
+  const b = recordB?.row || recordB || {};
+  const ogA = identityOgrns(a), ogB = identityOgrns(b);
+  if (ogA.length > 1 || ogB.length > 1) return "conflicting_ogrns_in_one_record";
+  if (ogA.length && ogB.length && ogA[0] !== ogB[0]) return "different_ogrns";
+  if (!sameRole(a["Организация"], b["Организация"])) return "different_legal_roles";
+  return "";
+}
+
+export function unresolvedNameCompatible(recordA, recordB) {
+  return !legalEvidenceConflict(recordA, recordB);
+}
+
 function aliasNote(rowA, rowB, aName, bName, inn) {
   const aKey = legalNameKey(aName), bKey = legalNameKey(bName);
   if (!aKey || !bKey || aKey.length < 3 || bKey.length < 3) return null;
