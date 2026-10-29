@@ -65,9 +65,8 @@ test("noncited phones and leaders from contact batch are discarded", () => {
   const untrusted = validBatchContactItem({
     ...validContact, source_urls: [], official_site: "https://carrier.example.org/contacts"
   }, row(), "k1");
-  assert.deepEqual(untrusted.phones, []);
-  assert.equal(untrusted.leader, "");
-  assert.equal(untrusted.status, "not_found");
+  assert.equal(untrusted, null,
+    "No cited page means the company was not actually verified in this batch");
 });
 test("only A with a sourced website and remaining quota can retry missing phone", () => {
   const a = row(), answer = { phones: [], official_site: "https://carrier.example.org/contacts",
