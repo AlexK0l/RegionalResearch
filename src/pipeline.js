@@ -6746,100 +6746,167 @@ ${JSON.stringify(groupBatch)}`,
     ENRICHMENT_CONCURRENCY,
     async (batch) => {
       await assertNotCancelled();
+      const targets = batch.map((row) => ({
+        ...compactEnrichmentTarget(row),
+        missing: prioritizedResearchGaps(row)
+      })).filter((row) => row.missing.length > 0);
+
       let groupedResults = new Map();
-      if (batch.length > 1 && deadlineRemaining(stage10DeadlineAt) > 9000) {
-        const targets = batch.map((row) => ({
-          ...compactEnrichmentTarget(row), missing: prioritizedResearchGaps(row)
-        })).filter((row) => row.missing.length);
-        if (targets.length > 1) {
-          try {
-            targetedSearches++;
-            const result = await askJson(client, {
-              input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников) и __comment. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица; пустые значения оставляй пустыми. Используй web_search и верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
-              model: TARGETED_SEARCH_MODEL,
-              maxOutputTokens: Math.max(TARGETED_SEARCH_MAX_OUTPUT_TOKENS, 4000),
-              webSearch: true,
-              responseSchema: ENRICHMENT_BATCH_SCHEMA,
-              schemaName: "batch_company_enrichment",
-              maxToolCalls: Math.min(5, targets.length + 1),
-              diagnosticLabel: `enrichment batch | ${targets.length} companies`,
-              timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
-              allowJsonRepair: false
-            });
-            const valid = new Set(targets.map((item) => item.id));
-            groupedResults = new Map((result?.items || []).filter((item) => valid.has(String(item?.id || ""))).map((item) => [String(item.id), item]));
-            console.log("[ENRICHMENT_BATCH_RESULT] " + JSON.stringify({ requested: targets.length, returned: groupedResults.size }));
-          } catch (error) {
-            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-            console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({ size: targets.length, error: error?.message || String(error) }));
-          }
+      let batchAttempted = false;
+      let batchFallbackRemaining = ENRICHMENT_MAX_FALLBACKS_PER_BATCH;
+      if (targets.length > 1 && deadlineRemaining(stage10DeadlineAt) > 9000) {
+        batchAttempted = true;
+        try {
+          targetedSearches++;
+          const result = await askJson(client, {
+            input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников) и __comment. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица. Если достоверное значение НЕ найдено, оставь его пустым: это завершённая проверка, а не ошибка, и повторного поиска не будет. Выполни не более ${ENRICHMENT_BATCH_MAX_TOOL_CALLS} web_search на весь пакет, верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
+            model: TARGETED_SEARCH_MODEL,
+            maxOutputTokens: Math.max(TARGETED_SEARCH_MAX_OUTPUT_TOKENS, 4000),
+            webSearch: true,
+            responseSchema: ENRICHMENT_BATCH_SCHEMA,
+            schemaName: "batch_company_enrichment",
+            maxToolCalls: ENRICHMENT_BATCH_MAX_TOOL_CALLS,
+            diagnosticLabel: `enrichment batch | ${targets.length} companies`,
+            timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
+            allowJsonRepair: false
+          });
+          const valid = new Set(targets.map((item) => String(item.id || "")));
+          groupedResults = new Map(
+            (Array.isArray(result?.items) ? result.items : [])
+              .filter((item) => valid.has(String(item?.id || "")))
+              .map((item) => [String(item.id), item])
+          );
+          console.log("[ENRICHMENT_BATCH_RESULT] " + JSON.stringify({
+            requested: targets.length,
+            returned: groupedResults.size,
+            missing: targets.length - groupedResults.size,
+            max_tool_calls: ENRICHMENT_BATCH_MAX_TOOL_CALLS
+          }));
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
+            size: targets.length,
+            error: error?.message || String(error)
+          }));
         }
       }
+
       for (const row of batch) {
-      const rowId = checkpointRowId(row);
-      const gaps = prioritizedResearchGaps(row);
-      if (!gaps.length) {
-        if (rowId) enrichmentCompleted.add(rowId);
-        enrichmentProcessed++;
-        await enrichmentCheckpointBatcher.request();
-        return;
-      }
+        await assertNotCancelled();
+        const rowId = checkpointRowId(row);
+        const gaps = prioritizedResearchGaps(row);
+        if (!gaps.length) {
+          if (rowId) enrichmentCompleted.add(rowId);
+          enrichmentProcessed++;
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
 
-      if (deadlineRemaining(stage10DeadlineAt) <= 7000) {
-        enrichmentDeadlineSkipped++;
-        enrichmentProcessed++;
-        console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
-          id: rowId,
-          organization: row?.["Организация"] || "",
-          gaps
-        }));
-        return;
-      }
+        const remaining = deadlineRemaining(stage10DeadlineAt);
+        if (remaining <= 7000) {
+          enrichmentDeadlineSkipped++;
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
+            id: rowId,
+            organization: row?.["Организация"] || "",
+            gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
 
-      try {
-        const candidateGrouped = groupedResults.get(rowId);
-        const alreadyGrouped = candidateGrouped && Object.values(candidateGrouped.fields || {}).some((value) => String(value ?? "").trim())
-          ? candidateGrouped : null;
-        if (!alreadyGrouped) targetedSearches++;
-        const timeoutMs = Math.min(
-          ENRICHMENT_SEARCH_TIMEOUT_MS,
-          Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)
-        );
-        const enriched = alreadyGrouped || await askTargetedSearch(
-          client,
-          targetedSearchContract() +
-            `\n\nРЕГИОН: ${region}
+        const action = decideEnrichmentAction({
+          batchAttempted,
+          batchItem: groupedResults.get(rowId),
+          rowId,
+          priority: safeSearchPriority(row),
+          globalFallbackRemaining: ENRICHMENT_MAX_FALLBACKS_TOTAL - enrichmentFallbackCalls,
+          batchFallbackRemaining,
+          deadlineRemainingMs: remaining
+        });
+
+        if (action.action === "defer") {
+          // A missing ROW is a technical omission, not an excuse for an
+          // unlimited second paid search across low-priority C companies.
+          enrichmentBatchDeferred++;
+          if (rowId) enrichmentCompleted.add(rowId);
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_BATCH_DEFERRED] " + JSON.stringify({
+            id: rowId, grade: row.__final_grade || "", reason: action.reason, gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
+
+        if (action.consumesFallback) {
+          batchFallbackRemaining--;
+          enrichmentFallbackCalls++;
+          console.log("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
+            id: rowId, reason: action.reason,
+            fallback_used: enrichmentFallbackCalls,
+            fallback_limit: ENRICHMENT_MAX_FALLBACKS_TOTAL
+          }));
+        }
+
+        try {
+          let enriched;
+          if (action.action === "use_batch") {
+            enriched = groupedResults.get(rowId);
+            enrichmentBatchAccepted++;
+            if (!Object.values(enriched.fields || {}).some((value) => String(value ?? "").trim()) &&
+                !String(enriched.__comment || "").trim()) enrichmentBatchBlank++;
+          } else {
+            // Individual lookup is for single-item groups or one bounded
+            // structural recovery, NEVER because a researched value is blank.
+            targetedSearches++;
+            if (action.action === "single") enrichmentSingleCalls++;
+            enriched = await askTargetedSearch(
+              client,
+              targetedSearchContract() +
+                `\n\nРЕГИОН: ${region}
 КОМПАНИЯ:
 ${JSON.stringify(compactEnrichmentTarget(row))}
 НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
 ${JSON.stringify(gaps)}
 Компания уже прошла identity, global dedupe, финальную A/B/C qualification и отдельную проверку ИНН.
-Сделай один точечный web_search только по этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля без необходимости.`,
-          timeoutMs
-        );
-        applyTargetedPatch(row, enriched);
-        if (rowId) enrichmentCompleted.add(rowId);
-      } catch (error) {
-        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-        enrichmentErrors++;
-        console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
-          id: rowId,
-          organization: row?.["Организация"] || "",
-          error: error?.message || String(error)
-        }));
-      }
+Используй web_search только для этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля. Пустой результат допустим.`,
+              Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS, Math.max(5000, remaining - 3000)),
+              action.action === "fallback" ? 1 : 2
+            );
+          }
+          applyTargetedPatch(row, enriched);
+          if (rowId) enrichmentCompleted.add(rowId);
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          enrichmentErrors++;
+          console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
+            id: rowId,
+            organization: row?.["Организация"] || "",
+            error: error?.message || String(error)
+          }));
+        }
 
-      enrichmentProcessed++;
-      if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
-        statuses[9].detail =
-          `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
-        await progress({ phase: "dedupe", step: 10, percent: 89 });
-      }
-      await enrichmentCheckpointBatcher.request();
+        enrichmentProcessed++;
+        if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
+          statuses[9].detail =
+            `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
+          await progress({ phase: "dedupe", step: 10, percent: 89 });
+        }
+        await enrichmentCheckpointBatcher.request();
       }
     }
   );
-  await enrichmentCheckpointBatcher.flush();
+  console.log("[ENRICHMENT_EFFICIENCY] " + JSON.stringify({
+    planned_companies: enrichmentPending.length,
+    batch_answered: enrichmentBatchAccepted,
+    batch_empty_answers: enrichmentBatchBlank,
+    individual_searches: enrichmentSingleCalls,
+    structural_fallback_searches: enrichmentFallbackCalls,
+    batch_omissions_deferred: enrichmentBatchDeferred,
+    errors: enrichmentErrors,
+    targeted_model_calls: targetedSearches
+  }));
+    await enrichmentCheckpointBatcher.flush();
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
