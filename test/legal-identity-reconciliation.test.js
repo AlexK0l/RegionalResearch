@@ -182,3 +182,36 @@ test("an irreconcilable same-INN conflict is recorded and cleared without droppi
     assert.equal(row["ИНН"], "");
   }
 });
+
+
+test("cleared INN never permits same-name merge across conflicting OGRNs", () => {
+  const a = make("ООО «Смолвторсырьё»", "", {
+    notes: ["Final INN: ООО «Смолвторсырьё» зарегистрировано с ОГРН 1166733053079."]
+  });
+  const b = make("ООО «Смолвторсырьё»", "", {
+    notes: ["Final INN: ООО «Смолвторсырьё» зарегистрировано с ОГРН 1166733058557."]
+  });
+  const final = { direct_buyers: [a, b], intermediaries: [], leasing: [] };
+  const deduped = postInnDedupe(final, "Смоленская область");
+  assert.equal(deduped.records.length, 2);
+});
+
+test("after INN clear, compatible same-name evidence can still be deduplicated", () => {
+  const a = make("ООО «Гнездово»", "", { notes: ["Производство нерудных материалов."] });
+  const b = make("ООО «Гнездово»", "", { notes: ["Действующий карьер и отгрузка песка."] });
+  const final = { direct_buyers: [a, b], intermediaries: [], leasing: [] };
+  const deduped = postInnDedupe(final, "Смоленская область");
+  assert.equal(deduped.records.length, 1);
+});
+
+test("conflicting OGRN prevents even one-sided-INN fuzzy alias merge", () => {
+  const a = make("ООО «Транспортная компания Сокол»", "6731069440", {
+    notes: ["Final INN: ОГРН 1166733053079."]
+  });
+  const b = make("ООО «Транспортная компания Сокол»", "", {
+    notes: ["Final INN: ОГРН 1166733058557."]
+  });
+  const final = { direct_buyers: [a, b], intermediaries: [], leasing: [] };
+  const deduped = postInnDedupe(final, "Смоленская область");
+  assert.equal(deduped.records.length, 2);
+});
