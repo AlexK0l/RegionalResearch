@@ -169,4 +169,12 @@ test("an irreconcilable same-INN conflict is recorded and cleared without droppi
   const cleared = clearUnresolvedInnConflicts(merged.qualified.result);
   assert.equal(cleared.clearedRows, 2);
   assert.equal(merged.qualified.result.direct_buyers.length, 2);
+  for (const row of merged.qualified.result.direct_buyers) {
+    const audit = row.__evidence.legal_identity_conflicts;
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].contested_inn, inn);
+    assert.equal(audit[0].status, "manual_review_required");
+    assert.equal(audit[0].conflicting_organizations.length, 2);
+    assert.equal(row["ИНН"], "");
+  }
 });
