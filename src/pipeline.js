@@ -3,6 +3,7 @@ import path from "node:path";
 import OpenAI from "openai";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority } from "./researchQuality.js";
+import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -613,6 +614,9 @@ const FINAL_INN_SCHEMA = {
 };
 
 const ENRICHMENT_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.OPENAI_ENRICHMENT_BATCH_SIZE || 3)));
+const ENRICHMENT_BATCH_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_BATCH_MAX_TOOL_CALLS || 2)));
+const ENRICHMENT_MAX_FALLBACKS_TOTAL = Math.max(0, Math.min(200, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_TOTAL ?? 40)));
+const ENRICHMENT_MAX_FALLBACKS_PER_BATCH = Math.max(0, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_PER_BATCH ?? 1)));
 const ENRICHMENT_BATCH_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: { items: { type: "array", items: {
@@ -3684,7 +3688,7 @@ function deterministicQualificationDecision(record) {
   } else if (aEvidence) {
     grade = "A";
     reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
-  } else if (target && heavy && independentBSignals(record.row).valid) {
+  } else if (target && independentBSignals(record.row).valid) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
   } else if (directRole && target && operatingProcess) {
@@ -4439,13 +4443,13 @@ function askWithoutSearch(client, input, model, maxOutputTokens) {
   });
 }
 
-function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS) {
+function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS, maxToolCalls = 2) {
   return askJson(client, {
     input,
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true,
-    maxToolCalls: 2,
+    maxToolCalls,
     timeoutMs
   });
 }
@@ -4751,7 +4755,7 @@ function applyTargetedPatch(row, result) {
     if (value === undefined || value === null || String(value).trim() === "") continue;
     if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
       const numeric = strictResearchNumber(value);
-      if (numeric !== "") row[key] = numeric;
+      if (numeric !== "" && isMissingText(row[key])) row[key] = numeric;
     } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
       row[key] = value;
     }
@@ -6662,6 +6666,11 @@ ${JSON.stringify(groupBatch)}`,
   let enrichmentProcessed = 0;
   let enrichmentErrors = 0;
   let enrichmentDeadlineSkipped = 0;
+  let enrichmentBatchAccepted = 0;
+  let enrichmentBatchBlank = 0;
+  let enrichmentFallbackCalls = 0;
+  let enrichmentBatchDeferred = 0;
+  let enrichmentSingleCalls = 0;
 
   for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
 
