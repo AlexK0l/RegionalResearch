@@ -60,3 +60,86 @@ test("commercial actions are populated without claiming an invented trigger", ()
   assert.match(value["Почему им нужно звонить \/ потенциальный интерес к САТ"], /зерна/);
   assert.equal(safeSearchPriority({ "Основание": "A — ..." }), 3);
 });
+
+
+test("Smolensk: СпецАТХ has independent waste flow and vehicle-use evidence", () => {
+  const value = row([
+    "Официальный сайт подтверждает регулярное транспортирование и захоронение ТКО и строительного мусора, а также наличие специализированной техники.",
+    "Вакансия подтверждает эксплуатацию мусоровоза и набор водителей под регулярный отходный поток."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("Smolensk: bulk goods produced and delivered by own transport qualifies B", () => {
+  const value = row([
+    "Сайт указывает производство бетона, доставку песка и щебня собственным транспортом.",
+    "Заявлена работа по Вяземскому и соседним районам."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("Smolensk: independent own dump-truck fleet and quarry shipments qualify B", () => {
+  const value = row([
+    "Сайт связывает НЕРУД-СМ с поставками песка, щебня, ПГС и грунта по Смоленску и области.",
+    "Указаны собственный автопарк и доставка самосвалами."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("Smolensk: source caveat does not erase an affirmative fleet statement", () => {
+  const value = row([
+    "Организация производит щебень; эксплуатирует собственные самосвалы; конкретные полуприцепы не подтверждены."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("Smolensk: regular contracted TKO collection plus transport licence qualify B", () => {
+  const value = row([
+    "Официальный муниципальный договор подтверждает регулярный вывоз ТКО не реже одного раза в неделю.",
+    "Лицензионные сведения подтверждают право на транспортирование отходов I–IV классов."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("Smolensk: crop area and grain harvesters alone are not heavy-road-logistics proof", () => {
+  const value = row([
+    "Описаны зернохранилище и комплекс приёмки, очистки и сушки зерна.",
+    "Подтверждены посевные площади и намерение приобрести зерноуборочные комбайны."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk: quarry and inferred transport need remain C", () => {
+  const value = row([
+    "Недропользователь осуществляет добычу песчано-гравийной смеси на карьере.",
+    "Карьерная логистика экономически требует самосвалов; собственный парк техники не подтверждён."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk: source-confirmed cargo with missing fleet evidence remains C", () => {
+  const value = row([
+    "ООО ГЛАВМЕТ указано как оператор пунктов приёма металлолома.",
+    "Для уровня B требуется дополнительное подтверждение контрактов на вывоз или тяжёлого парка."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("A single claim 'transporting grain by truck' is not two independent facts", () => {
+  assert.equal(independentBSignals(row(["Компания перевозит зерно на КамАЗ"])).valid, false);
+});
+
+test("Explicitly negative fleet evidence cannot be used as a positive signal", () => {
+  assert.equal(independentBSignals(row([
+    "Компания добывает щебень.",
+    "Собственные грузовые самосвалы отсутствуют."
+  ])).valid, false);
+});
+
+test("Same independence_group does not count as two independent structured facts", () => {
+  const value = row([], [
+    { fact_type: "cargo_process", independence_group: "one", source_url: "https://example.org/a", statement: "Компания производит бетон" },
+    { fact_type: "heavy_transport", independence_group: "one", source_url: "https://example.org/b", statement: "Компания эксплуатирует самосвалы" }
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
