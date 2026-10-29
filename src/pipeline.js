@@ -7,6 +7,8 @@ import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
+import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -611,9 +613,21 @@ const FINAL_INN_SCHEMA = {
           legal_status: { type: "string", enum: ["active", "liquidated", "ceased", "unknown"] },
           legal_status_ogrn: { type: "string" },
           legal_status_source_url: { type: "string" },
-          legal_status_evidence: { type: "string" }
+          legal_status_evidence: { type: "string" },
+          observed_facts: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                field: { type: "string", enum: ["Телефон", "Руководитель / ЛПР", "Управляющая компания", "Выручка последнего подтвержденного года", "Численность", "Email"] },
+                value: { type: "string" },
+                source_url: { type: "string" },
+                evidence_excerpt: { type: "string" }
+              }, required: ["field", "value", "source_url", "evidence_excerpt"]
+            }
+          }
         },
-        required: ["id", "confirmed_inn", "source_urls", "note", "legal_status", "legal_status_ogrn", "legal_status_source_url", "legal_status_evidence"]
+        required: ["id", "confirmed_inn", "source_urls", "note", "legal_status", "legal_status_ogrn", "legal_status_source_url", "legal_status_evidence", "observed_facts"]
       }
     }
   },
@@ -2088,7 +2102,10 @@ function finalInnLookupContract() {
   return `\n\nФИНАЛЬНАЯ ПОВТОРНАЯ ПРОВЕРКА ИНН — верни ТОЛЬКО JSON по заданной схеме.
 На входе только компании, уже прошедшие dedupe и финальную A/B/C qualification.
 Для КАЖДОГО id обязательно заново проверь ИНН 10 или 12 цифр, даже если existing_inn уже заполнен.
-Ищи только ИНН и юридическую идентичность, необходимую для его проверки. Не ищи телефон, директора, email, выручку, холдинг и другие поля.
+Ищи только ИНН и юридическую идентичность, необходимую для его проверки. НЕ делай дополнительных web_search ради телефона, директора, email, выручки, холдинга и прочих полей.
+Если эти сведения УЖЕ непосредственно видны в источнике, открытом для проверки ИНН, запиши их в observed_facts; иначе верни [].
+Каждый observed_fact: field, value, source_url (ОБЯЗАТЕЛЬНО один из source_urls ответа), evidence_excerpt (дословная выдержка с ЭТИМ ИНН и данным значением).
+Не приписывай сведения холдинга дочернему юрлицу, не переноси телефоны подрядчика, не угадывай и не интерпретируй единицы выручки; выручка строго целое число рублей.
 Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
 Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай. Если надёжно подтверждён другой ИНН того же юрлица, верни подтверждённый корректный ИНН.
 source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
@@ -2144,6 +2161,11 @@ function applyFinalInnItems(rowsById, result) {
         inn ? `Подтверждённый ИНН: ${inn}` : ""
       ].filter(Boolean)
     };
+    const reused = reuseIdentityObservedFacts(row, item);
+    if (reused.length) console.log("[FINAL_INN_REUSED_SOURCE_FACTS] " + JSON.stringify({
+      canonical_id: checkpointRowId(row), inn,
+      fields: reused.map((fact) => fact.field)
+    }));
   }
   return recovered;
 }
