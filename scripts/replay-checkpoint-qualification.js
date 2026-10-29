@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import XLSX from "xlsx";
-import { deterministicQualificationDecision } from "../src/pipeline.js";
+import { deterministicQualificationDecision, actionableUnqualifiedLead } from "../src/pipeline.js";
 import { commercialEligibility } from "../src/qualificationSafety.js";
 
 const args = process.argv.slice(2);
@@ -47,6 +47,7 @@ const counts = {
   input: records.length, archived: { A: 0, B: 0, C: 0, excluded: 0 },
   replay: { A: 0, B: 0, C: 0, excluded: 0 },
   legal_exclusions: 0, changed_grades: 0, a_demotions: 0,
+  review_queue_candidates: 0,
   kept_without_inn: 0, missing_source_urls: 0
 };
 for (const record of records) {
@@ -55,6 +56,8 @@ for (const record of records) {
   const decision = deterministicQualificationDecision(record);
   const eligibility = commercialEligibility(row);
   const current = decision.grade || "";
+  const reviewCandidate = !current && actionableUnqualifiedLead(record);
+  if (reviewCandidate) counts.review_queue_candidates++;
   counts.archived[previous || "excluded"] = (counts.archived[previous || "excluded"] || 0) + 1;
   counts.replay[current || "excluded"] = (counts.replay[current || "excluded"] || 0) + 1;
   if (previous !== current) counts.changed_grades++;
@@ -72,6 +75,7 @@ for (const record of records) {
     archived_grade: previous,
     replay_grade: current,
     changed: previous !== current,
+    review_queue_candidate: reviewCandidate,
     a_rule: decision.aRule || "",
     a_evidence: decision.aEvidence || "",
     archived_a_evidence: String(row.__a_evidence || ""),
@@ -114,6 +118,7 @@ XLSX.utils.book_append_sheet(wb, table(["Показатель", "Значени�
   ["Пересчёт B", counts.replay.B], ["Пересчёт C", counts.replay.C],
   ["Исключено", counts.replay.excluded], ["Изменено классов", counts.changed_grades],
   ["Снято A", counts.a_demotions], ["Исключено по юридической форме/статусу", counts.legal_exclusions],
+  ["Сохранено в очереди проверки", counts.review_queue_candidates],
   ["OpenAI", 0], ["Web search", 0],
   ["Метод", report.caution]
 ], (x) => x), "Итоги");
@@ -122,13 +127,14 @@ const headers = [
   "Причина", "Критерий A", "Сохранённое A-доказательство",
   "Новая A-цитата", "Юридическое исключение", "Роль/статус",
   "Причина исключения", "URL источника статуса", "URL прочих источников",
-  "Число структурированных фактов"
+  "Число структурированных фактов", "Очередь проверки"
 ];
 const map = (r) => [
   r.canonical_id, r.organization, r.sheet, r.inn, r.archived_grade,
   r.replay_grade || "ИСКЛЮЧЕНО", r.why, r.a_rule,
   r.archived_a_evidence, r.a_evidence, r.legal_blocked ? "ДА" : "",
-  r.legal_kind, r.legal_reason, r.legal_url, r.source_urls.join("\n"), r.fact_count
+  r.legal_kind, r.legal_reason, r.legal_url, r.source_urls.join("\n"), r.fact_count,
+  r.review_queue_candidate ? "ДА" : ""
 ];
 XLSX.utils.book_append_sheet(wb, table(headers, rows, map), "Все компании");
 XLSX.utils.book_append_sheet(wb, table(headers, rows.filter((r) => r.changed), map), "Изменения");
@@ -136,6 +142,8 @@ XLSX.utils.book_append_sheet(wb, table(headers, rows.filter((r) => r.archived_gr
 XLSX.utils.book_append_sheet(wb, table(headers, rows.filter((r) => r.legal_blocked), map), "Юридические исключения");
 XLSX.utils.book_append_sheet(wb, table(headers,
   rows.filter((r) => !r.replay_grade && !r.legal_blocked), map), "Не исключать без проверки");
+XLSX.utils.book_append_sheet(wb, table(headers,
+  rows.filter((r) => r.review_queue_candidate), map), "Очередь сохранения");
 for (const name of wb.SheetNames) {
   wb.Sheets[name]["!cols"] = name === "Итоги"
     ? [{ wch: 42 }, { wch: 75 }]
