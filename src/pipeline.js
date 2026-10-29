@@ -5834,7 +5834,10 @@ ${JSON.stringify(compactCourtArchive)}
       ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
       : allBranches;
     let stageBudgetStopped = false;
-    const branchDiagnostics = [];
+    const branchDiagnostics = resumePartialStage &&
+      Array.isArray(resumeCheckpoint?.discovery_partial_branch_diagnostics)
+        ? cloneJson(resumeCheckpoint.discovery_partial_branch_diagnostics)
+        : [];
     for (let branchIndex = Math.min(resumePartialBranch, branches.length); branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
@@ -5878,6 +5881,7 @@ ${JSON.stringify(compactCourtArchive)}
             completed_stage: i,
             discovery_partial_stage: i + 1,
             discovery_partial_branch: branchIndex,
+            discovery_partial_branch_diagnostics: branchDiagnostics,
             parts,
             research_scopes: researchScopes,
             discovery_budget_stop: {
@@ -6236,6 +6240,7 @@ ${JSON.stringify(compactCourtArchive)}
               completed_stage: i,
               discovery_partial_stage: i + 1,
               discovery_partial_branch: branches.length,
+              discovery_partial_branch_diagnostics: branchDiagnostics,
               parts,
               research_scopes: researchScopes,
               discovery_budget_stop: {
