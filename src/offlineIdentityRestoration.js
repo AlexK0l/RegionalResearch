@@ -1,6 +1,6 @@
 // Offline restoration of aliases in a COPY of completed research results.
 // Does not call OpenAI, mutate SQLite, or silently repair questionable INNs.
-import { confirmedInnAliasDecision, identityOgrns } from "./legalIdentity.js";
+import { confirmedInnAliasDecision, identityOgrns, legalNameKey } from "./legalIdentity.js";
 
 const SHEETS = ["direct_buyers", "intermediaries", "leasing"];
 const CONFLICT_REGEX = /Final INN conflict:\s*ИНН\s*(\d{10}|\d{12})/i;
@@ -43,8 +43,25 @@ function survivorScore(entry) {
   const shortened = /(^|\s)(?:кхп|стинд|спецатх)(\s|$)/i.test(name) ? -20 : 0;
   return formal + newForm + oldForm + shortened + Math.min(len, 90);
 }
+function explicitCurrentNameScore(entry, partition) {
+  const key = legalNameKey(rowName(entry));
+  if (key.length < 5) return 0;
+  const notes = partition.flatMap((item) =>
+    Array.isArray(item.row?.__evidence?.notes) ? item.row.__evidence.notes : []);
+  for (const raw of notes) {
+    const note = String(raw || "").toLowerCase().replace(/ё/g, "е")
+      .replace(/[^a-zа-я0-9]+/g, " ").replace(/\s+/g, " ").trim();
+    const marker = note.match(/(?:переименован[а-я]* в|актуальное юридическое наименование|ныне зарегистрирован[а-я]* как)\s*/);
+    if (!marker) continue;
+    const tail = note.slice(marker.index + marker[0].length).trim();
+    if (tail.includes(key)) return 150;
+  }
+  return 0;
+}
 function chooseSurvivor(partition) {
-  return [...partition].sort((a, b) => survivorScore(b) - survivorScore(a) ||
+  return [...partition].sort((a, b) =>
+    (survivorScore(b) + explicitCurrentNameScore(b, partition)) -
+    (survivorScore(a) + explicitCurrentNameScore(a, partition)) ||
     rowName(a).localeCompare(rowName(b), "ru"))[0];
 }
 function partitionCompatible(entries, inn) {
