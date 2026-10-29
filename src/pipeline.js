@@ -5777,7 +5777,10 @@ export async function runResearchPipeline({ job, apiKey }) {
     const stageTokenStart = tokenUsageSnapshot(client);
     const stageWebStart = webUsageSnapshot(client);
 
-    const combined = emptyResearchResult();
+    const resumePartialStage = Number(resumeCheckpoint?.discovery_partial_stage || 0) === i + 1;
+    const resumePartialBranch = resumePartialStage ? Math.max(0,
+      Number(resumeCheckpoint?.discovery_partial_branch || 0)) : 0;
+    const combined = resumePartialStage && parts[i] ? cloneJson(parts[i]) : emptyResearchResult();
 
     const compactCourtArchiveContext =
       i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length
@@ -5787,7 +5790,7 @@ ${JSON.stringify(compactCourtArchive)}
 Не добавляй организацию только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
         : "";
 
-    if (i === 6 && COURT_VECTOR_STORE_ID) {
+    if (i === 6 && COURT_VECTOR_STORE_ID && !resumePartialStage) {
       const archiveThemes = [
         "превышение массы и осевой нагрузки, автоматический весогабаритный контроль, ущерб дорогам, статья 12.21.1 КоАП",
         "тягачи, полуприцепы и прицепы, VIN, госномера, собственник, перевозчик, фактический эксплуатант",
@@ -5832,7 +5835,7 @@ ${JSON.stringify(compactCourtArchive)}
       : allBranches;
     let stageBudgetStopped = false;
     const branchDiagnostics = [];
-    for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
+    for (let branchIndex = Math.min(resumePartialBranch, branches.length); branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
       statuses[i].detail =
@@ -5868,6 +5871,26 @@ ${JSON.stringify(compactCourtArchive)}
         });
       } catch (error) {
         if (!isWebBudgetStop(error)) throw error;
+        if (executionMode === "full") {
+          parts[i] = combined;
+          statuses[i].detail = "лимит бюджета — исследование не завершено; результаты сохранены";
+          await persistCheckpoint("discovery", {
+            completed_stage: i,
+            discovery_partial_stage: i + 1,
+            discovery_partial_branch: branchIndex,
+            parts,
+            research_scopes: researchScopes,
+            discovery_budget_stop: {
+              scope: error.scope, used: error.used,
+              limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
+            }
+          });
+          console.error("[DISCOVERY_BUDGET_CHECKPOINT_SAVED] " + JSON.stringify({
+            stage: i + 1, branch: branchIndex + 1,
+            saved_unique: uniqueResearchCount(combined)
+          }));
+          throw error; // Never claim a full nine-stage discovery is complete.
+        }
         stageBudgetStopped = true;
         statuses[i].detail =
           `web budget достигнут · ${uniqueResearchCount(combined)} уникальных · переходим дальше`;
@@ -6207,6 +6230,20 @@ ${JSON.stringify(compactCourtArchive)}
             }
           }
         } catch (error) {
+          if (isWebBudgetStop(error) && executionMode === "full") {
+            parts[i] = combined;
+            await persistCheckpoint("discovery", {
+              completed_stage: i,
+              discovery_partial_stage: i + 1,
+              discovery_partial_branch: branches.length,
+              parts,
+              research_scopes: researchScopes,
+              discovery_budget_stop: {
+                scope: error.scope, used: error.used,
+                limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
+              }
+            });
+          }
           if (isWebBudgetStop(error)) throw error;
           console.error("[DISCOVERY_RECOVERY_SCOPE_ERROR] " + JSON.stringify({
             stage: i + 1,
