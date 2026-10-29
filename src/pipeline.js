@@ -5,6 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
+import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn } from "./qualificationSafety.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -605,9 +606,13 @@ const FINAL_INN_SCHEMA = {
           id: { type: "string" },
           confirmed_inn: { type: "string" },
           source_urls: { type: "array", items: { type: "string" } },
-          note: { type: "string" }
+          note: { type: "string" },
+          legal_status: { type: "string", enum: ["active", "liquidated", "ceased", "unknown"] },
+          legal_status_ogrn: { type: "string" },
+          legal_status_source_url: { type: "string" },
+          legal_status_evidence: { type: "string" }
         },
-        required: ["id", "confirmed_inn", "source_urls", "note"]
+        required: ["id", "confirmed_inn", "source_urls", "note", "legal_status", "legal_status_ogrn", "legal_status_source_url", "legal_status_evidence"]
       }
     }
   },
@@ -2086,6 +2091,8 @@ function finalInnLookupContract() {
 Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
 Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай. Если надёжно подтверждён другой ИНН того же юрлица, верни подтверждённый корректный ИНН.
 source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
+legal_status: active/liquidated/ceased/unknown; при отсутствии однозначного источника unknown.
+Для liquidated/ceased укажи legal_status_ogrn, legal_status_source_url (официальная ФНС) и legal_status_evidence (точная выдержка с ИНН и прекращением деятельности). Если первичный источник недоступен, статус unknown.
 Каждый входной id должен встретиться ровно один раз.`;
 }
 
@@ -2098,6 +2105,7 @@ function compactFinalInnTarget(row) {
     existing_inn: normalizeInn(row?.["ИНН"]),
     evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .map(String).filter(Boolean).slice(0, 3),
+    legal_ogrns: identityOgrns(row).slice(0, 2),
     evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
       .map(String).filter(Boolean)
       .filter((note) => /адрес|огрн|суд|закуп|договор|официал|сайт|домен|реестр|инн/i.test(note))
@@ -2112,6 +2120,7 @@ function applyFinalInnItems(rowsById, result) {
     const row = rowsById.get(String(item?.id || ""));
     if (!row) continue;
     const inn = normalizeInn(item?.confirmed_inn);
+    const legalStatus = statusProofFromFinalInn(item, inn);
     const previousInn = normalizeInn(row["ИНН"]);
     row["ИНН"] = inn || "";
     if (inn && inn !== previousInn) recovered++;
@@ -2126,6 +2135,7 @@ function applyFinalInnItems(rowsById, result) {
     const note = String(item?.note || "").trim();
     row.__evidence = {
       ...existing,
+      ...(legalStatus ? { legal_status_verification: legalStatus } : {}),
       source_urls: [...new Set(urls)],
       notes: [
         ...(Array.isArray(existing.notes) ? existing.notes : []),
@@ -3595,6 +3605,8 @@ const PUBLIC_OPERATOR_PATTERN =
   /(^|\s)(фгуп|гуп|муп)(\s|$)/;
 
 function classifyEntityType(row) {
+  const documented = classifyCommercialEntity(row);
+  if (documented !== "commercial") return documented;
   const name = normalizeOrgKey(row?.["Организация"] || "");
   if (!name) return "commercial";
   if (GOVERNMENT_ENTITY_PATTERNS.some((pattern) => pattern.test(name))) {
@@ -3636,6 +3648,7 @@ function deterministicQualificationDecision(record) {
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
   const operatingProcess = hasAnyPattern(text, QUAL_OPERATING_PROCESS_PATTERNS);
   const entityType = classifyEntityType(record?.row || {});
+  const eligibility = commercialEligibility(record?.row || {});
 
   const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|экономическ.{0,30}рациональн|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
@@ -3669,6 +3682,9 @@ function deterministicQualificationDecision(record) {
 
   for (const note of notes) {
     if (speculative.test(note) || negativeAEvidence.test(note)) continue;
+    // Ownership/lease/procurement of someone else's trailer is not direct A.
+    if (/(?:сторонн|треть[еёи]го|чуж|подрядчик).{0,80}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,80}(?:сторонн|треть[еёи]го|чуж|подрядчик)/.test(note) &&
+        !/(?:собственн.{0,30}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,30}в собственности|на балансе|собственн.{0,20}парк)/.test(note)) continue;
 
     const cargoTrailerMention =
       /(полуприцеп|прицеп[- ]?(зерновоз|самосвал)|самосвальн.{0,20}прицеп|тонар|kogel|krone|schmitz|wielton|grunwald|пс[- ]?\d|пст[- ]?\d|пптс[- ]?\d)/i.test(note);
@@ -3774,7 +3790,9 @@ function deterministicQualificationDecision(record) {
   let grade = "";
   let reason = "";
 
-  if (entityTypeExcluded(entityType)) {
+  if (eligibility.blocked) {
+    reason = eligibility.reason;
+  } else if (entityTypeExcluded(entityType)) {
     reason = entityType === "government_body"
       ? "Орган власти исключён из коммерческого списка независимо от факта закупки техники."
       : entityType === "budget_institution"
@@ -3814,6 +3832,7 @@ function deterministicQualificationDecision(record) {
       transport,
       operatingProcess,
       entityType,
+      legalEligibility: eligibility.method,
       aEvidence: Boolean(aEvidence),
       identityRegionMismatch
     }
@@ -3882,6 +3901,7 @@ function applyFinalQualification(records, decisions) {
     row.__a_evidence = decision.grade === "A" ? String(decision.aEvidence || "") : "";
     row.__a_rule = decision.grade === "A" ? String(decision.aRule || "") : "";
     row["Основание"] = `${decision.grade} — ${decision.reason}`;
+    row.__evidence = { ...(row.__evidence || {}), commercial_eligibility: commercialEligibility(row) };
     populateCommercialActions(row, record.sheet, decision.grade);
     counts[decision.grade]++;
 
@@ -6707,6 +6727,31 @@ ${JSON.stringify(groupBatch)}`,
     innConflictGroups = duplicateInnConflictGroups(finalResult);
   }
 
+  // Legal status may become known only after final identity search.
+  const eligibleSheets = { direct_buyers: [], intermediaries: [], leasing: [] };
+  const excludedLegal = [];
+  for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+    for (const row of finalResult[sheet] || []) {
+      const eligibility = commercialEligibility(row);
+      row.__evidence = { ...(row.__evidence || {}), commercial_eligibility: eligibility };
+      if (eligibility.blocked) excludedLegal.push({
+        canonical_id: row.__canonical_id, organization: row["Организация"],
+        inn: row["ИНН"], kind: eligibility.kind, reason: eligibility.reason,
+        source_url: eligibility.source_url
+      });
+      else eligibleSheets[sheet].push(row);
+    }
+  }
+  finalResult = { ...finalResult, ...eligibleSheets };
+  qualifiedFinal.result = finalResult;
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    A: allResearchRows(finalResult).filter((row) => row.__final_grade === "A").length,
+    B: allResearchRows(finalResult).filter((row) => row.__final_grade === "B").length,
+    C: allResearchRows(finalResult).filter((row) => row.__final_grade === "C").length,
+    excluded: Number(qualifiedFinal.counts?.excluded || 0) + excludedLegal.length
+  };
+  if (excludedLegal.length) console.log("[FINAL_LEGAL_EXCLUSIONS] " + JSON.stringify(excludedLegal));
   for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
 
   finalInnStats.missing = allResearchRows(finalResult)
