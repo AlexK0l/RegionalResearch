@@ -5,7 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
-import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn } from "./qualificationSafety.js";
+import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -3778,6 +3778,10 @@ function deterministicQualificationDecision(record) {
     // offer is supporting context only. It cannot independently promote a row
     // to A without a role-appropriate concrete event or operating signal.
     if (matchedRule) {
+      // A negative, identity-only or hypothetical mention is not positive
+      // trailer ownership/operation, even if it contains all regex keywords.
+      const aExclusion = rejectUnsafeAEvidence(record, note);
+      if (aExclusion) continue;
       aEvidence = note;
       aRule = matchedRule;
       break;
