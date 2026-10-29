@@ -634,9 +634,9 @@ const FINAL_INN_SCHEMA = {
   required: ["items"]
 };
 
-const ENRICHMENT_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.OPENAI_ENRICHMENT_BATCH_SIZE || 3)));
-const ENRICHMENT_BATCH_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_BATCH_MAX_TOOL_CALLS || 2)));
-const ENRICHMENT_MAX_FALLBACKS_TOTAL = Math.max(0, Math.min(200, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_TOTAL ?? 40)));
+const ENRICHMENT_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.OPENAI_ENRICHMENT_BATCH_SIZE || 4)));
+const ENRICHMENT_BATCH_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_BATCH_MAX_TOOL_CALLS || 1)));
+const ENRICHMENT_MAX_FALLBACKS_TOTAL = Math.max(0, Math.min(200, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_TOTAL ?? 20)));
 const ENRICHMENT_MAX_FALLBACKS_PER_BATCH = Math.max(0, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_PER_BATCH ?? 1)));
 const ENRICHMENT_BATCH_SCHEMA = {
   type: "object", additionalProperties: false,
@@ -7316,7 +7316,7 @@ ${JSON.stringify(gaps)}
 Компания уже прошла identity, global dedupe, финальную A/B/C qualification и отдельную проверку ИНН.
 Используй web_search только для этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля. Пустой результат допустим.`,
               Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS, Math.max(5000, remaining - 3000)),
-              action.action === "fallback" ? 1 : 2
+              1 // budgeted 1 web call even for an exceptional single query
             );
           }
           applyTargetedPatch(row, enriched);
