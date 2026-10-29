@@ -5514,6 +5514,40 @@ export async function runResearchPipeline({ job, apiKey }) {
   const diagnosticStep = mode === "stage_test" ? requestedStage : 2;
   if (mode === "quality") client.__webBudget = createQualityWebBudget();
   else if (mode === "full" || mode === "resume") client.__webBudget = createFullWebBudget();
+  // A resume must not quietly reset spending to $0. Both the source run and
+  // its continuation share the SAME estimated budget.
+  const previousUsage = resumeCheckpoint?.api_usage || null;
+  if (previousUsage?.token_usage) {
+    for (const key of Object.keys(client.__tokenUsage)) {
+      client.__tokenUsage[key] = Math.max(0, Number(previousUsage.token_usage[key] || 0));
+    }
+  }
+  const previousWeb = previousUsage?.web_usage;
+  if (previousWeb) {
+    client.__webUsage = {
+      total: Math.max(0, Number(previousWeb.total || 0)),
+      by_scope: { ...(previousWeb.by_scope || {}) }
+    };
+  } else if (resumeCheckpoint && Number(resumeCheckpoint.web_usage_total || 0) > 0) {
+    // Legacy checkpoints lack phase attribution and token counts. This
+    // fallback prevents double-spending a large known web budget.
+    client.__webUsage.total = Number(resumeCheckpoint.web_usage_total);
+    client.__webUsage.by_scope = { unknown: client.__webUsage.total };
+  }
+  if (resumeCheckpoint && client.__webBudget) {
+    const previousUsed = previousUsage?.web_budget_used;
+    for (const key of Object.keys(client.__webBudget.used)) {
+      const fallback = key === "total" ? client.__webUsage.total : 0;
+      client.__webBudget.used[key] = Math.max(0,
+        Number(previousUsed?.[key] ?? client.__webUsage.by_scope?.[key] ?? fallback));
+    }
+    console.log("[RESUME_COST_BUDGET] " + JSON.stringify({
+      web_calls_restored: client.__webUsage.total,
+      estimated_cost_usd: estimatedApiCostUsd(client),
+      scopes: client.__webBudget.used,
+      legacy_checkpoint: !previousUsage
+    }));
+  }
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -5544,6 +5578,14 @@ export async function runResearchPipeline({ job, apiKey }) {
       updated_at: new Date().toISOString()
     });
     if (!checkpointState.created_at) checkpointState.created_at = checkpointState.updated_at;
+    checkpointState.api_usage = {
+      estimated_cost_usd: estimatedApiCostUsd(client),
+      token_usage: tokenUsageSnapshot(client),
+      web_usage: { total: client.__webUsage?.total || 0, by_scope: { ...(client.__webUsage?.by_scope || {}) } },
+      web_budget_used: { ...(client.__webBudget?.used || {}) },
+      web_budget_limits: { ...(client.__webBudget?.limits || {}) },
+      target_cost_usd: costEnvLimitUsd()
+    };
     if (typeof job.updateCheckpoint === "function") {
       await job.updateCheckpoint(checkpointState);
     }
