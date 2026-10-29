@@ -161,3 +161,36 @@ test("quoted source notes alone cannot promote B without any URL", () => {
   value.__evidence.source_urls = [];
   assert.equal(independentBSignals(value).valid, false);
 });
+
+
+test("Smolensk: hypothetical delivery requirements cannot independently justify B", () => {
+  const value = row([
+    "Официальный сайт подтверждает производство бетона, строительных растворов, ЖБИ и кирпича.",
+    "Это регулярный поток тяжелых строительных грузов, требующий автомобильной доставки."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk: bulk supply contract plus inferred haulage demand remains C", () => {
+  const value = row([
+    "ООО АБЗ Мастер выполняло добычные работы на карьере и сортировало ПГС на песок и щебень.",
+    "Подтвержден крупный договор поставки ПГС объемом 8 490 м³, что создает устойчивую потребность в вывозной логистике."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk: supply catalog does not prove operator owns trailers", () => {
+  const value = row([
+    "В описаниях указана перевозка строительных и сельскохозяйственных грузов, зерна и органических удобрений.",
+    "В каталоге по Смоленску поставщиком нескольких моделей полуприцепов указан АгроТехЛизинг."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk: explicit need for further transport proof is not an operating signal", () => {
+  const value = row([
+    "Экологический документ указывает ГЛАВМЕТ как лицензиата по сбору и транспортированию отходов III–IV классов.",
+    "Для уровня B требуется дополнительное подтверждение транспортирования, парка или контрактов на вывоз."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
