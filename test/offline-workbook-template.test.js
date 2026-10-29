@@ -61,7 +61,7 @@ test("37 original CRM columns remain, including notes from absorbed alias", () =
   assert.equal(rows[1][h.indexOf("Ответственный")], "Менеджер 1");
   assert.equal(rows[1][h.indexOf("Проверка A/B/C")], "ПРОВЕРИТЬ: разные классы у объединённых алиасов");
   assert.equal(rows[2][h.indexOf("Этап")], "В работе");
-  assert.equal(x.crmTransfers.length, 2); // Ответственный is duplicated in template
+  assert.equal(x.crmTransfers.length, 3); // Телефон (старые) and two Ответственный columns
   assert.equal(x.crmConflicts.length, 1);
   assert.equal(x.crmConflicts[0].field, "Как прошел звонок");
 });
