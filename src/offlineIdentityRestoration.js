@@ -53,7 +53,9 @@ function partitionCompatible(entries, inn) {
   for (const entry of entries) {
     let target = null;
     for (const group of clusters) {
-      const pairs = group.map((other) => confirmedInnAliasDecision(entry.row, other.row, inn));
+      const pairs = group.map((other) => confirmedInnAliasDecision(
+        { ...entry.row, "ИНН": inn }, { ...other.row, "ИНН": inn }, inn
+      ));
       decisions.push(...pairs.map((p) => ({
         left: rowName(entry), right: group.map(rowName).join(" | "), accepted: p.merge,
         reason: p.reason, ogrns_left: p.ogrnsA, ogrns_right: p.ogrnsB
@@ -196,7 +198,9 @@ export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
       const other = cluster.filter((item) => item !== survivor);
       // The partition was already checked pairwise, not only against a
       // representative. This handles mixed OGRN, branch and group evidence.
-      const directReasons = other.map((item) => confirmedInnAliasDecision(survivor.row, item.row, inn));
+      const directReasons = other.map((item) => confirmedInnAliasDecision(
+        { ...survivor.row, "ИНН": inn }, { ...item.row, "ИНН": inn }, inn
+      ));
       if (!directReasons.every((x) => x.merge)) {
         review.push({ inn, status: "pairwise_incompatibility", names: cluster.map(rowName), decisions });
         continue;
