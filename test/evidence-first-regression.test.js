@@ -143,3 +143,21 @@ test("Same independence_group does not count as two independent structured facts
   ]);
   assert.equal(independentBSignals(value).valid, false);
 });
+
+
+test("positive transport assertion survives comma + negative trailer caveat", () => {
+  const value = row([
+    "Предприятие перерабатывает щебень.",
+    "В собственности предприятия самосвалы, конкретная марка полуприцепа не подтверждена."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
+
+test("quoted source notes alone cannot promote B without any URL", () => {
+  const value = row([
+    "Компания производит зерно.",
+    "Предприятие эксплуатирует самосвалы."
+  ]);
+  value.__evidence.source_urls = [];
+  assert.equal(independentBSignals(value).valid, false);
+});
