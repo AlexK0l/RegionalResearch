@@ -7,6 +7,7 @@ import path from "node:path";
 import XLSX from "xlsx";
 import { restoreAliasesOffline } from "../src/offlineIdentityRestoration.js";
 import { projectRecoveredTemplateSheet } from "../src/offlineWorkbookTemplate.js";
+import { refreshColorStatistics } from "../src/offlineColorStatistics.js";
 
 const [, , databaseFile = "data/checkpoints.sqlite", ...args] = process.argv;
 const outputArg = args.find((x) => x.startsWith("--out="))?.slice("--out=".length) || "exports";
@@ -194,6 +195,7 @@ addSheet("Методика офлайн", ["Параметр", "Значение
   { Параметр: "CRM-данные", Значение: "Исходный Excel не модифицирован, аналитические вкладки — только для проверки." }
 ]);
 
+audit.color_statistics = refreshColorStatistics(XLSX, workbook);
 const outfile = path.resolve(outputArg);
 fs.mkdirSync(outfile, { recursive: true });
 const prefix = "identity_recovery_" + chosen.id.slice(0, 8);
@@ -232,6 +234,7 @@ console.log(JSON.stringify({
   qualification_conflicts: (audit.qualification_conflicts || []).length,
   template_mode: Boolean(templateArg), crm_field_conflicts: audit.crm_field_conflicts.length,
   template_comments_remapped: templateCommentsRemapped,
+  color_statistics: audit.color_statistics,
   outputs: { xlsx: names[0], json: names[1], audit: names[2] },
   original_database_modified: false, openai_calls: 0
 }, null, 2));
