@@ -43,7 +43,11 @@ function sourceSheet() {
       "Основание": "B — старый", "Как прошел звонок": "Написали" }),
     withFields({ "Организация": "ООО «Без изменения»", "Этап": "В работе" })
   ];
-  return XLSX.utils.aoa_to_sheet(rows);
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet["B2"].c = [{ a: "Pipeline", t: "ИНН: не подтверждено — СпецАТХ" }];
+  sheet["B3"].c = [{ a: "Pipeline", t: "ИНН: не подтверждено — Спецавтохозяйство" }];
+  sheet["B4"].c = [{ a: "Pipeline", t: "ИНН: 6706005273 — Без изменения" }];
+  return sheet;
 }
 
 test("37 original CRM columns remain, including notes from absorbed alias", () => {
@@ -64,6 +68,10 @@ test("37 original CRM columns remain, including notes from absorbed alias", () =
   assert.equal(x.crmTransfers.length, 3); // Телефон (старые) and two Ответственный columns
   assert.equal(x.crmConflicts.length, 1);
   assert.equal(x.crmConflicts[0].field, "Как прошел звонок");
+  assert.equal(x.commentsRemapped, 2);
+  assert.equal(x.sheet["B2"].c[0].t, corrected[0].__comment);
+  assert.equal(x.sheet["B3"].c[0].t, corrected[1].__comment);
+  assert.equal(x.sheet["B2"].c[0].a, "Pipeline");
 });
 
 test("template source row mismatch fails rather than misassigning CRM notes", () => {
