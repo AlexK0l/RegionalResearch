@@ -142,3 +142,44 @@ test("historical Гагаринский фанерный завод resolves to 
   assert.equal(out.final_result.direct_buyers[0]["ИНН"], relatedInn);
   assert.ok(out.final_result.direct_buyers[0].__evidence.notes.some((x) => x.includes(olderName)));
 });
+
+
+test("restored INN updates public comment and marks A/B disagreement without inventing a grade", () => {
+  const shortName = make("АО «СпецАТХ»", {
+    grade: "A",
+    notes: ["Final INN: АО «СпецАТХ» является сокращённым наименованием АО «Спецавтохозяйство» с ИНН 6731069440."]
+  });
+  shortName.__comment = "Сайт/источник: https://example.org/old\nИНН: не подтверждено\nДеятельность: отходы";
+  const fullName = make("АО «Спецавтохозяйство»", { grade: "B" });
+  fullName.__comment = "Сайт/источник: https://example.org/new\nИНН: не подтверждено\nДеятельность: отходы";
+  const input = result(shortName, fullName);
+  const before = JSON.stringify(input);
+  const out = restoreAliasesOffline(input, { checkpointId: "grades" });
+  assert.equal(out.audit.restored_inns, 1);
+  assert.equal(out.audit.qualification_conflicts.length, 1);
+  const conflict = out.audit.qualification_conflicts[0];
+  assert.deepEqual(conflict.source_grades.map((x) => x.grade).sort(), ["A", "B"]);
+  assert.equal(conflict.selected_grade, "B");
+  assert.equal(conflict.status, "manual_review_required");
+  const row = out.final_result.direct_buyers[0];
+  assert.match(row.__comment, /ИНН: 6731069440 \(восстановлен офлайн/);
+  assert.doesNotMatch(row.__comment, /ИНН: не подтверждено/);
+  assert.match(row.__comment, /\[ПРОВЕРКА A\/B\/C\]/);
+  assert.equal(row["Основание"].slice(0, 1), "B");
+  assert.equal(row.__final_grade, undefined);
+  assert.equal(row.__evidence.qualification_review.source_grades.length, 2);
+  assert.deepEqual(row.__evidence.original_comments.map((x) => x.value), [
+    fullName.__comment, shortName.__comment
+  ]);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test("same initial grade does not create a false conflict", () => {
+  const shortName = make("АО «СпецАТХ»", { grade: "B", notes: [
+    "Final INN: АО «СпецАТХ» является сокращённым наименованием АО «Спецавтохозяйство» с ИНН 6731069440."
+  ]});
+  const fullName = make("АО «Спецавтохозяйство»", { grade: "B" });
+  const out = restoreAliasesOffline(result(shortName, fullName), { checkpointId: "same-grade" });
+  assert.equal(out.audit.qualification_conflicts.length, 0);
+  assert.equal(out.final_result.direct_buyers[0].__evidence.qualification_review, undefined);
+});
