@@ -63,7 +63,7 @@ test("СпецАТХ and Спецавтохозяйство merge on attested sh
   const aliasAudit = merged.records[0].row.__evidence.legal_identity_merges;
   assert.equal(aliasAudit.length, 1);
   assert.equal(aliasAudit[0].decision, "sourced_explicit_alias");
-  assert.ok(aliasAudit[0].identity_source_urls.includes(shared));
+  assert.ok(aliasAudit[0].identity_source_urls.includes(urls[0]));
   assert.equal(duplicateInnConflictGroups(merged.qualified.result).length, 0);
 });
 
