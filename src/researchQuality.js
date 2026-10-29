@@ -1,8 +1,13 @@
-// Evidence-first helpers. The evidence source, not the generated lead description,
-// determines whether a claim is strong enough to qualify a company.
-const CARGO = /зерн|рапс|масличн|пшениц|ячмен|кукуруз|комбикорм|кормов|щеб|песок|пгс|грави|карьер|неруд|торф|лесоматериал|пиломатериал|древес|щеп|опил|пеллет|лом|металлолом|вторсыр|отход|тко|цемент|бетон|асфальт|сыпуч|навалоч|гранулирован|порошкообразн|удобрен|сырь[ея]/i;
-const TRANSPORT = /седельн.{0,20}тягач|тягач|полуприцеп|прицеп[- ]?(?:зерновоз|самосвал)|самосвал|собственн.{0,30}(?:автопарк|грузов|транспорт)|лизинг.{0,40}(?:тягач|грузов)|грузов.{0,20}автопарк|категори.{0,12}(?:ce|cе|е)|водител.{0,30}(?:ce|cе|категори)|контракт.{0,40}перевоз|договор.{0,40}перевоз|автопоезд|парк.{0,25}(?:камаз|маз|howo|sitrak|shacman)/i;
-const NEGATIVE = /не подтвержд|не найден|не обнаружен|не раскрыт|не указан|нет данных|нет сведений|нет доказательств|потенциальн|вероятн|предполож|экономически рациональн|может потреб|могут использ|не принадлеж|не собственник|чуж.{0,20}(?:парк|техник)|лишь предполага/i;
+// Evidence-first helpers: qualification is derived from attributable source
+// claims, never from an LLM's preliminary A/B/C label or its segment synopsis.
+const CARGO = /зерн|рапс|масличн|пшениц|ячмен|кукуруз|комбикорм|кормов|щеб|песок|пгс|пгм|грави|карьер|неруд|торф|лесоматериал|пиломатериал|древес|щеп|опил|пеллет|лом|металлолом|вторсыр|отход|тко|цемент|бетон|асфальт|жби|строительн.{0,20}материал|сыпуч|навалоч|гранулирован|порошкообразн|удобрен|сырь[ея]/i;
+const CARGO_ACTIVITY = /производ|добыч|добыва|выращ|отгруз|переработ|заготов|реализ|поставк|поставля|перевоз|достав|вывоз|приемк|прием |приём |хранен|закуп|элеватор|комбикормов.{0,12}(?:завод|комплекс)|карьер|комплекс.{0,20}(?:производ|переработ)/i;
+const HEAVY_EQUIPMENT = /самосвал|тягач|полуприцеп|автопоезд|зерновоз|щеповоз|ломовоз|мусоровоз|большегруз|фур[аы]|камаз|белаз|shacman|howo|sitrak|тонар|грузов.{0,20}(?:автомоб|транспорт|машин|автопарк)|специализированн.{0,20}(?:автомоб|грузов|техник)/i;
+const OPERATION = /собственн|имеет|эксплуат|использует|арендует|лизинг|на балансе|автопарк|водител|ваканси|нанима|набор|набирает|выполняет|осуществля|достав|перевоз|вывоз|обслужив|работа.{0,15}(?:в карьере|на самосвал)|рейс|парк.{0,25}(?:машин|техник)/i;
+const TRUCK_CONTRACT = /договор.{0,70}(?:грузов.{0,20}перевоз|транспортирован|вывоз)|контракт.{0,70}(?:грузов.{0,20}перевоз|транспортирован|вывоз)|транспортн.{0,30}(?:контракт|оператор)|специализир.{0,30}(?:автомобильн|грузов).{0,40}перевоз/i;
+const SPECIAL_TRANSPORT = /водител.{0,40}категори.{0,15}(?:се|ce|сe|cе|е|e)\b|категори.{0,12}(?:се|ce|сe|cе|е|e).{0,45}водител|собственн.{0,35}(?:грузов.{0,20}транспорт|автопарк|самосвал|перевоз|автомобил)|специализированн.{0,30}(?:автопарк|перевоз|транспортирован)|(?:автомобильн|грузов).{0,25}перевоз.{0,30}(?:тонн|тко|отход|зерн|неруд)/i;
+const NEGATIVE = /не подтвержд|не найден|не обнаружен|не раскрыт|не указан|нет данных|нет сведений|нет доказательств|потенциальн|вероятн|предполож|экономически рациональн|может потреб|могут использ|не принадлеж|не собственник|чуж.{0,20}(?:парк|техник)|лишь предполага|требует дополнительн|теоретическ|логистически вероятн|физически необходим|не доказан|не установл/i;
+const MACHINE_COUNT = /\b(?:[1-9]\d{1,4}\s*(?:машин|грузов.{0,15}автомобил|рейс)|(?:ежедневно|ежемесячно|в месяц|в сутки).{0,50}\b(?:машин|автомобил|рейс))\b/i;
 
 function normalizeText(value) {
   return String(value || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
@@ -14,33 +19,87 @@ function sourceNotes(row) {
     .filter((x) => !/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/i.test(normalizeText(x)));
 }
 
+function usableSourceUrl(value) {
+  return /^https?:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i.test(String(value || "").trim());
+}
+
+function isCargoClaim(text) {
+  return CARGO.test(text) && CARGO_ACTIVITY.test(text);
+}
+
+function isTransportClaim(text) {
+  // Operating a documented heavy vehicle is sufficient; a generic promise
+  // of "automotive delivery" or a classifier's inferred need is not.
+  if (HEAVY_EQUIPMENT.test(text) && OPERATION.test(text)) return true;
+  if (TRUCK_CONTRACT.test(text)) return true;
+  if (SPECIAL_TRANSPORT.test(text)) return true;
+  if (MACHINE_COUNT.test(text) && /автомобил|машин|рейс/i.test(text)) return true;
+  return false;
+}
+
+function splitClaims(value) {
+  // Remove source URL markup but retain the source itself in __evidence.
+  const cleaned = String(value || "")
+    .replace(/\[[^\]]+\]\(https?:\/\/[^)]+\)/gi, "")
+    .replace(/https?:\/\/\S+/gi, "");
+  return cleaned.split(/(?:;\s*|\.\s+(?=[А-ЯЁA-Z])|[\r\n]+|,\s*(?:но|однако|при этом)\s+|\s+(?:но|однако)\s+)/i)
+    .map(normalizeText).filter(Boolean);
+}
+
+function legacyClaims(row) {
+  const urls = (Array.isArray(row?.__evidence?.source_urls) ? row.__evidence.source_urls : [])
+    .filter(usableSourceUrl);
+  if (!urls.length && !sourceNotes(row).some((x) => /https?:\/\//i.test(x))) return [];
+  return sourceNotes(row).flatMap((note, noteIndex) =>
+    splitClaims(note).map((text, clauseIndex) => ({
+      text, noteIndex, clauseIndex, origin: "legacy_notes"
+    })).filter(({ text }) => !NEGATIVE.test(text))
+  );
+}
+
+function independentClaimPair(claims) {
+  const cargo = claims.filter(({ text }) => isCargoClaim(text));
+  const transport = claims.filter(({ text }) => isTransportClaim(text));
+  for (const c of cargo) {
+    for (const t of transport) {
+      if (c === t || c.text === t.text) {
+        // Two separately stated factual predicates in the same clause can
+        // represent independent SEMANTIC evidence (e.g. produces cement AND
+        // operates its own dump trucks). "Перевозка зерна" alone cannot.
+        const production = /производ|добыч|выращ|переработ|заготов|элеватор|карьер|выпуск/i.test(c.text);
+        const operation = /(?:собственн.{0,35}(?:самосвал|автопарк|тягач|грузов|транспорт)|эксплуат.{0,35}(?:самосвал|тягач|автопоезд)|водител.{0,35}(?:самосвал|тягач)|имеет.{0,35}(?:самосвал|тягач|автопарк))/i.test(t.text);
+        if (!(production && operation)) continue;
+      }
+      if (c.independenceGroup && t.independenceGroup && c.independenceGroup === t.independenceGroup) continue;
+      return { valid: true, method: c.origin === "structured_facts" && t.origin === "structured_facts"
+        ? "structured_facts" : "independent_claims", cargo: c.text, transport: t.text };
+    }
+  }
+  return {
+    valid: false,
+    method: "insufficient_independent_evidence",
+    cargo: cargo[0]?.text || "",
+    transport: transport[0]?.text || ""
+  };
+}
+
 export function independentBSignals(row) {
   const facts = Array.isArray(row?.__evidence?.facts) ? row.__evidence.facts : [];
-  const accepted = facts.filter((x) => x && x.source_url && /^https?:\/\//i.test(String(x.source_url)) &&
-    !NEGATIVE.test(normalizeText(x.statement)));
-  const cargoFact = accepted.find((x) => x.fact_type === "cargo_process" && CARGO.test(normalizeText(x.statement)));
-  const transportFact = accepted.find((x) => x.fact_type === "heavy_transport" && TRANSPORT.test(normalizeText(x.statement)));
-  if (cargoFact && transportFact &&
-      normalizeText(cargoFact.statement) !== normalizeText(transportFact.statement)) {
-    return { valid: true, method: "structured_facts", cargo: cargoFact.statement, transport: transportFact.statement };
+  const explicit = facts
+    .filter((f) => f && usableSourceUrl(f.source_url) && !NEGATIVE.test(normalizeText(f.statement)))
+    .map((f) => ({
+      text: normalizeText(f.statement),
+      type: f.fact_type,
+      independenceGroup: String(f.independence_group || ""),
+      origin: "structured_facts"
+    }));
+  const structuredCargo = explicit.filter((f) => f.type === "cargo_process" && isCargoClaim(f.text));
+  const structuredTransport = explicit.filter((f) => f.type === "heavy_transport" && isTransportClaim(f.text));
+  if (structuredCargo.length && structuredTransport.length) {
+    const pair = independentClaimPair([...structuredCargo, ...structuredTransport]);
+    if (pair.valid) return pair;
   }
-
-  // Backward-compatible legacy evidence. A single broad description that says
-  // "перевозит зерно" must NOT be counted as two independent strong signals.
-  const notes = sourceNotes(row)
-    .map((text) => ({ text, normalized: normalizeText(text) }))
-    .filter((note) => !NEGATIVE.test(note.normalized));
-  const cargo = notes.find((x) => CARGO.test(x.normalized));
-  const transport = notes.find((x) => TRANSPORT.test(x.normalized));
-  if (cargo && transport && cargo !== transport) {
-    return { valid: true, method: "independent_notes", cargo: cargo.text, transport: transport.text };
-  }
-  if (cargo && transport && cargo === transport &&
-      /[;.]\s+|(?:\sи\s+(?:имеет|владеет|эксплуатирует|заключил|использует))/.test(cargo.normalized) &&
-      /(?:производ|добыв|выращив|отгруж|перерабат|перевозит|перевозк)/.test(cargo.normalized)) {
-    return { valid: true, method: "separate_explicit_claims", cargo: cargo.text, transport: transport.text };
-  }
-  return { valid: false, method: "insufficient_independent_evidence", cargo: cargo?.text || "", transport: transport?.text || "" };
+  return independentClaimPair([...explicit, ...legacyClaims(row)]);
 }
 
 export function verifiedInnFromEvidence(row, normalizeInn) {
