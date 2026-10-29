@@ -4112,18 +4112,16 @@ class WebBudgetStopError extends Error {
   }
 }
 
-function webBudgetScope(label = "") {
-  const value = String(label || "").toLowerCase();
-  if (value.startsWith("этап 1 |")) return "stage1";
-  if (value.startsWith("этап 2 |")) return "stage2";
-  if (value.startsWith("identity |")) return "identity";
-  if (value.startsWith("география региона |")) return "geography";
-  return "other";
+function webBudgetScope(label = "", client = null) {
+  return researchWebScope(label, client?.__webBudget?.kind || "quality");
 }
-
 function createFullWebBudget() {
-  const total = Math.max(100, Math.floor(Number(process.env.OPENAI_FULL_WEB_MAX_CALLS || 4500)));
-  return { limits: { total }, used: { stage1: 0, stage2: 0, identity: 0, geography: 0, other: 0, total: 0 }, warned: new Set(), stopped: new Set(), kind: "full" };
+  const limits = fullWebLimits();
+  const used = Object.fromEntries(Object.keys(limits).map((key) => [key, 0]));
+  return {
+    limits, used, reserved: { ...used },
+    warned: new Set(), stopped: new Set(), kind: "full"
+  };
 }
 
 function createQualityWebBudget() {
@@ -4143,7 +4141,9 @@ function createQualityWebBudget() {
       total: 0
     },
     warned: new Set(),
-    stopped: new Set()
+    stopped: new Set(),
+    reserved: { stage1: 0, stage2: 0, identity: 0, geography: 0, other: 0, total: 0 },
+    kind: "quality"
   };
 }
 
@@ -4151,7 +4151,8 @@ function publicWebBudgetState(budget) {
   if (!budget) return null;
   return {
     limits: { ...budget.limits },
-    used: { ...budget.used }
+    used: { ...budget.used },
+    reserved: { ...(budget.reserved || {}) }
   };
 }
 
@@ -4170,34 +4171,59 @@ function estimatedApiCostUsd(client) {
     + webUsageSnapshot(client) * OPENAI_WEB_SEARCH_COST_PER_CALL).toFixed(4));
 }
 
-function assertWebBudgetBeforeCall(client, diagnosticLabel) {
-  const costLimit = Math.max(1, Number(process.env.OPENAI_MAX_RESEARCH_COST_USD || 60));
-  const costSpent = estimatedApiCostUsd(client);
-  if (costSpent >= costLimit) {
-    const e = new WebBudgetStopError("estimated_cost_usd", costSpent, costLimit, webUsageSnapshot(client), Number(client?.__webBudget?.limits?.total || 0));
-    console.error("[RESEARCH_COST_GUARDRAIL] " + JSON.stringify({ estimated_usd: costSpent, limit_usd: costLimit }));
-    throw e;
-  }
+// Reservations happen synchronously BEFORE each concurrent API request.
+// Actual tool calls are still taken from the Responses API usage diagnostics.
+function reserveWebBudgetBeforeCall(client, diagnosticLabel, requestedTools = 2) {
+  const limitUsd = costEnvLimitUsd();
+  const price = OPENAI_WEB_SEARCH_COST_PER_CALL || 0.01;
+  const spent = estimatedApiCostUsd(client);
   const budget = client?.__webBudget;
-  if (!budget) return;
-
-  const scope = webBudgetScope(diagnosticLabel);
-  const scopeLimit = budgetLimitForScope(budget, scope);
-  const totalLimit = Number(budget.limits.total || 0);
-  const scopeUsed = Number(budget.used[scope] || 0);
-  const totalUsed = Number(budget.used.total || 0);
-
-  const scopeExceeded = Boolean(scopeLimit && scopeUsed >= scopeLimit);
-  const totalExceeded = Boolean(totalLimit && totalUsed >= totalLimit);
-  if (scopeExceeded || totalExceeded) {
+  const scope = webBudgetScope(diagnosticLabel, client);
+  const requested = Math.max(1, Math.min(8, Math.floor(Number(requestedTools || 2))));
+  const reservedTotal = Number(budget?.reserved?.total || 0);
+  // A small concurrency margin prevents concurrent requests exhausting token
+  // budget just before their outputs are returned; it is not a price guarantee.
+  const cashAvailable = Math.floor(Math.max(0,
+    limitUsd - spent - reservedTotal * price - 0.15) / price);
+  const limitAvailable = (key) => {
+    if (!budget || !Object.prototype.hasOwnProperty.call(budget.limits, key)) {
+      return Infinity;
+    }
+    return Number(budget.limits[key]) -
+      Number(budget.used[key] || 0) - Number(budget.reserved?.[key] || 0);
+  };
+  const free = Math.min(requested, cashAvailable,
+    limitAvailable("total"), limitAvailable(scope));
+  if (free < 1) {
+    const exhausted = cashAvailable < 1 ? "estimated_cost_usd" :
+      limitAvailable("total") < 1 ? "total" : scope;
+    console.error("[RESEARCH_WEB_BUDGET_DEFER] " + JSON.stringify({
+      scope, reason: exhausted, cost_usd: spent, cost_cap_usd: limitUsd,
+      used: budget?.used || {}, reserved: budget?.reserved || {}
+    }));
     throw new WebBudgetStopError(
-      totalExceeded && !scopeExceeded ? "total" : scope,
-      totalExceeded && !scopeExceeded ? totalUsed : scopeUsed,
-      totalExceeded && !scopeExceeded ? totalLimit : scopeLimit,
-      totalUsed,
-      totalLimit
+      exhausted, exhausted === "estimated_cost_usd" ? spent :
+        Number(budget?.used?.[exhausted] || 0),
+      exhausted === "estimated_cost_usd" ? limitUsd :
+        Number(budget?.limits?.[exhausted] || 0),
+      Number(budget?.used?.total || 0),
+      Number(budget?.limits?.total || 0)
     );
   }
+  const calls = Math.floor(free);
+  if (budget) {
+    if (!budget.reserved) budget.reserved = {};
+    budget.reserved[scope] = Number(budget.reserved[scope] || 0) + calls;
+    budget.reserved.total = Number(budget.reserved.total || 0) + calls;
+  }
+  return { scope, calls, budget };
+}
+
+function releaseWebBudgetReservation(reservation) {
+  if (!reservation?.budget) return;
+  const { budget, scope, calls } = reservation;
+  budget.reserved[scope] = Math.max(0, Number(budget.reserved[scope] || 0) - calls);
+  budget.reserved.total = Math.max(0, Number(budget.reserved.total || 0) - calls);
 }
 
 function recordWebUsage(client, diagnosticLabel, calls) {
@@ -4206,7 +4232,7 @@ function recordWebUsage(client, diagnosticLabel, calls) {
   if (!client.__webUsage) {
     client.__webUsage = { total: 0, by_scope: {} };
   }
-  const scope = webBudgetScope(diagnosticLabel);
+  const scope = webBudgetScope(diagnosticLabel, client);
   client.__webUsage.total = Number(client.__webUsage.total || 0) + amount;
   client.__webUsage.by_scope[scope] =
     Number(client.__webUsage.by_scope[scope] || 0) + amount;
@@ -4245,7 +4271,7 @@ function recordWebBudgetUsage(client, diagnosticLabel, calls) {
   const amount = Math.max(0, Number(calls || 0));
   if (!budget || !amount) return;
 
-  const scope = webBudgetScope(diagnosticLabel);
+  const scope = webBudgetScope(diagnosticLabel, client);
   budget.used[scope] = Number(budget.used[scope] || 0) + amount;
   budget.used.total = Number(budget.used.total || 0) + amount;
 
@@ -4474,7 +4500,10 @@ async function askJson(client, {
   const startedAt = Date.now();
   const query = compactDiagnosticQuery(input, diagnosticLabel);
 
-  if (webSearch) assertWebBudgetBeforeCall(client, diagnosticLabel);
+  const webReservation = webSearch
+    ? reserveWebBudgetBeforeCall(client, diagnosticLabel, maxToolCalls || 4)
+    : null;
+  if (webReservation) request.max_tool_calls = webReservation.calls;
 
   try {
     const response = await client.responses.create(request, requestOptions);
@@ -4629,6 +4658,8 @@ async function askJson(client, {
       error: error?.message || String(error)
     }));
     throw error;
+  } finally {
+    releaseWebBudgetReservation(webReservation);
   }
 }
 
