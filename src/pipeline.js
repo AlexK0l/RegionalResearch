@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
-import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority } from "./researchQuality.js";
+import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
@@ -2518,9 +2518,11 @@ function canonicalizeCandidates(candidates, region = "") {
 function mergedEvidenceFromCanonical(canonical) {
   const sourceUrls = [];
   const notes = [];
+  const facts = [];
   let identityVerification = null;
   for (const evidenceItem of canonical?.evidence || []) {
     const ev = evidenceItem?.data?.__evidence || {};
+    for (const fact of Array.isArray(ev.facts) ? ev.facts : []) facts.push(fact);
     if (!identityVerification && ev.identity_verification?.inn) identityVerification = ev.identity_verification;
     for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
       if (url) sourceUrls.push(String(url));
@@ -2532,6 +2534,7 @@ function mergedEvidenceFromCanonical(canonical) {
   return {
     source_urls: [...new Set(sourceUrls)],
     notes: [...new Set(notes)],
+    facts: distinctSourceFacts({ __evidence: { facts } }),
     ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 }
@@ -2966,6 +2969,7 @@ function mergeQaRecordRows(records) {
   const mergedRow = { ...(first?.row || {}) };
   const urls = [];
   const notes = [];
+  const facts = [];
   let identityVerification = null;
 
   for (const record of records) {
@@ -2983,6 +2987,7 @@ function mergeQaRecordRows(records) {
     if (segments.length) mergedRow["Техника/сегмент"] = [...new Set(segments)].join(" | ");
 
     const evidence = row.__evidence || {};
+    for (const fact of Array.isArray(evidence.facts) ? evidence.facts : []) facts.push(fact);
     if (!identityVerification && evidence.identity_verification?.inn) identityVerification = evidence.identity_verification;
     for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
       if (url) urls.push(String(url));
@@ -2995,6 +3000,7 @@ function mergeQaRecordRows(records) {
   mergedRow.__evidence = {
     source_urls: [...new Set(urls)],
     notes: [...new Set(notes)],
+    facts: distinctSourceFacts({ __evidence: { facts } }),
     ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 
