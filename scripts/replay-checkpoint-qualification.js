@@ -43,6 +43,7 @@ const records = roleSheets.flatMap((sheet) =>
   }))
 );
 const rows = [];
+const reviewCandidates = [];
 const counts = {
   input: records.length, archived: { A: 0, B: 0, C: 0, excluded: 0 },
   replay: { A: 0, B: 0, C: 0, excluded: 0 },
@@ -57,7 +58,17 @@ for (const record of records) {
   const eligibility = commercialEligibility(row);
   const current = decision.grade || "";
   const reviewCandidate = !current && actionableUnqualifiedLead(record);
-  if (reviewCandidate) counts.review_queue_candidates++;
+  if (reviewCandidate) {
+    counts.review_queue_candidates++;
+    // Preserve the full untouched source row, not just CRM summary fields.
+    // The original SQLite remains read-only; this is a standalone report.
+    reviewCandidates.push({
+      sheet: record.sheet,
+      canonical_id: record.canonical_id,
+      qualification_reason: decision.reason,
+      row: structuredClone(row)
+    });
+  }
   counts.archived[previous || "excluded"] = (counts.archived[previous || "excluded"] || 0) + 1;
   counts.replay[current || "excluded"] = (counts.replay[current || "excluded"] || 0) + 1;
   if (previous !== current) counts.changed_grades++;
@@ -96,7 +107,8 @@ const report = {
   source_sqlite_readonly: true,
   openai_calls: 0, web_search_calls: 0,
   caution: "Re-evaluation on completed final_result, not a full research rerun; post-enrichment evidence may differ from original qualification-time evidence.",
-  counts, rows
+  counts, rows,
+  review_queue: reviewCandidates
 };
 const safePath = path.resolve(outputDir);
 fs.mkdirSync(safePath, { recursive: true });
