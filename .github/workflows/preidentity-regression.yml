@@ -14,6 +14,7 @@ on:
       - 'main'
       - 'audit/preidentity-review-20261009'
       - 'audit/qualification-a-hardening-20261012'
+      - 'feature/evidence-first-cost-quality-20261028'
 
 jobs:
   verify:
