@@ -80,6 +80,10 @@ export function validBatchContactItem(item, row, expectedId) {
       normalizedName(item.organization) !== name)) return null;
   const sources = Array.isArray(item.source_urls)
     ? [...new Set(item.source_urls.filter(validHttpUrl))].slice(0, 4) : [];
+  // Without a specific cited page we cannot know whether a particular
+  // company was actually examined within a shared multi-entity search.
+  // Do not mark unsourced "not_found" as a completed investigation.
+  if (!sources.length) return null;
   const phones = sources.length
     ? [...new Set((Array.isArray(item.phones) ? item.phones : [])
       .map(normalizeRussianPhone).filter(Boolean))] : [];
