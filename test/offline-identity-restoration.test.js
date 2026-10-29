@@ -169,7 +169,7 @@ test("restored INN updates public comment and marks A/B disagreement without inv
   assert.equal(row.__final_grade, undefined);
   assert.equal(row.__evidence.qualification_review.source_grades.length, 2);
   assert.deepEqual(row.__evidence.original_comments.map((x) => x.value), [
-    fullName.__comment, shortName.__comment
+    shortName.__comment, fullName.__comment
   ]);
   assert.equal(JSON.stringify(input), before);
 });
