@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { confirmedInnAliasDecision, identityOgrns } from "./legalIdentity.js";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
@@ -3262,21 +3263,44 @@ function conservativeAliasDedupe(records, diagnostics = null, region = "") {
 
 function splitInnGroupByCompatibleIdentity(records, inn, region = "") {
   const groups = [];
+  const aliasReasons = new Map();
+  const conflictReasons = new Map();
 
   for (const record of records) {
-    const name = String(record?.row?.["Организация"] || "").trim();
     let target = null;
 
     for (const group of groups) {
-      const representative = String(group[0]?.row?.["Организация"] || "").trim();
-      if (organizationNamesCompatible(name, representative, region)) {
+      // Pairwise compatibility avoids a transitive "bridge" merge of
+      // unrelated companies with one repeated or hallucinated INN.
+      const decisions = group.map((existing) =>
+        confirmedInnAliasDecision(record, existing, inn,
+          (a, b) => organizationNamesCompatible(a, b, region))
+      );
+      if (decisions.every((item) => item.merge)) {
         target = group;
+        for (const item of decisions) {
+          aliasReasons.set(item.reason, (aliasReasons.get(item.reason) || 0) + 1);
+        }
         break;
       }
+      for (const item of decisions.filter((decision) => !decision.merge)) {
+        conflictReasons.set(item.reason, (conflictReasons.get(item.reason) || 0) + 1);
+      }
     }
-
     if (target) target.push(record);
     else groups.push([record]);
+  }
+
+  if (records.length > 1 && (groups.length > 1 || groups.some((g) => g.length > 1))) {
+    console.log("[DEDUPE_INN_ALIAS_DECISIONS] " + JSON.stringify({
+      inn,
+      before: records.length,
+      after: groups.length,
+      accepted: Object.fromEntries(aliasReasons),
+      rejected: Object.fromEntries(conflictReasons),
+      groups: groups.map((group) => group.map((record) =>
+        String(record?.row?.["Организация"] || "").trim()))
+    }));
   }
 
   if (groups.length > 1) {
