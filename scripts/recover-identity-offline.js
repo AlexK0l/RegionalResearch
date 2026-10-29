@@ -62,6 +62,7 @@ const sheetNames = {
 };
 let workbook = templateArg ? XLSX.readFile(path.resolve(templateArg)) : XLSX.utils.book_new();
 const templateColumns = [];
+let templateCommentsRemapped = 0;
 audit.crm_field_transfers = [];
 audit.crm_field_conflicts = [];
 for (const [key, name] of Object.entries(sheetNames)) {
@@ -75,6 +76,7 @@ for (const [key, name] of Object.entries(sheetNames)) {
       sheetName: name
     });
     tab = projected.sheet;
+    templateCommentsRemapped += projected.commentsRemapped;
     audit.crm_field_transfers.push(...projected.crmTransfers);
     audit.crm_field_conflicts.push(...projected.crmConflicts);
     templateColumns.push({
@@ -98,6 +100,7 @@ audit.template_projection = templateArg ? {
   source_workbook: path.resolve(templateArg),
   validation: "Source organization names and original checkpoint rows must match exactly by position",
   columns: templateColumns,
+  company_comments_rebound_by_canonical_id: templateCommentsRemapped,
   note: "Source CRM cells are retained. Relative-reference formulas cannot be safely moved. Workbook style fidelity is not guaranteed by SheetJS."
 } : null;
 if (!workbook.Sheets["Статистика"] && Array.isArray(recovered.statistics)) {
@@ -228,6 +231,7 @@ console.log(JSON.stringify({
   unresolved: audit.unresolved.length, divisions_preserved: audit.divisions.length,
   qualification_conflicts: (audit.qualification_conflicts || []).length,
   template_mode: Boolean(templateArg), crm_field_conflicts: audit.crm_field_conflicts.length,
+  template_comments_remapped: templateCommentsRemapped,
   outputs: { xlsx: names[0], json: names[1], audit: names[2] },
   original_database_modified: false, openai_calls: 0
 }, null, 2));
