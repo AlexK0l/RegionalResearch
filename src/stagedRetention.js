@@ -23,22 +23,27 @@ function sourceUrls(row) {
 function buildIndex(finalResult) {
   const rows = [...SHEETS.flatMap((sheet) => finalResult?.[sheet] || []),
     ...(finalResult?.qualification_review || [])];
-  const canon = new Set(), byInn = new Map(), byName = new Map();
+  const byCanon = new Map(), byInn = new Map(), byName = new Map();
   for (const row of rows) {
     const id = String(row?.__canonical_id || "").trim();
     const inn = normalizedInn(row?.["ИНН"]);
     const name = normalizedLegalName(row?.["Организация"]);
-    if (id) canon.add(id);
+    if (id) { if (!byCanon.has(id)) byCanon.set(id, []); byCanon.get(id).push(row); }
     if (inn) { if (!byInn.has(inn)) byInn.set(inn, []); byInn.get(inn).push(row); }
     if (name) { if (!byName.has(name)) byName.set(name, []); byName.get(name).push(row); }
   }
-  return { canon, byInn, byName };
+  return { byCanon, byInn, byName };
 }
 function sameEntityInIndex(row, index) {
   const cid = String(row?.__canonical_id || "").trim();
-  if (cid && index.canon.has(cid)) return true;
   const name = normalizedLegalName(row?.["Организация"]);
   const inn = normalizedInn(row?.["ИНН"]);
+  if (cid && (index.byCanon.get(cid) || []).some((candidate) => {
+    const finalInn = normalizedInn(candidate["ИНН"]);
+    // Even an inherited canonical ID must not disguise two different
+    // confirmed INNs. Such collisions remain visible in the review queue.
+    return !inn || !finalInn || inn === finalInn;
+  })) return true;
   // A shared INN with a completely different legal name is NOT sufficient
   // proof of alias identity: keep it for manual inspection.
   if (inn && (index.byInn.get(inn) || []).some((candidate) =>
@@ -46,6 +51,9 @@ function sameEntityInIndex(row, index) {
   // When both rows have a confirmed but DIFFERENT INN, never merge by name.
   if (name && (index.byName.get(name) || []).some((candidate) => {
     const candidateInn = normalizedInn(candidate["ИНН"]);
+    // A missing source INN and a populated FINAL INN with matching name
+    // is not proof that the entities are identical. Keep a review trace.
+    if (!inn && candidateInn) return false;
     return !inn || !candidateInn || inn === candidateInn;
   })) return true;
   return false;
