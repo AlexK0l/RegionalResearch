@@ -115,3 +115,30 @@ test("unconfirmed single contested record never gets an INN", () => {
   assert.equal(r.audit.unresolved.length, 1);
   assert.equal(r.final_result.direct_buyers[0]["ИНН"], "");
 });
+
+
+test("historical Гагаринский фанерный завод resolves to current ЭГГЕР name", () => {
+  const olderName = "ООО «Гагаринский фанерный завод»";
+  const currentName = "ООО «ЭГГЕР ДРЕВПРОДУКТ ГАГАРИН»";
+  const relatedInn = "6723019741";
+  const proof = ["https://www.admin-smolensk.ru/novosti/news/news_13441-html/"];
+  const makeAlias = (name, note) => ({
+    "Организация": name, "ИНН": "", "Основание": "C — производство",
+    __canonical_id: "k" + name.length,
+    __evidence: {
+      source_urls: proof,
+      notes: [note,
+        "Final INN conflict: ИНН " + relatedInn + " встретился у несовместимых сущностей и очищен до однозначного подтверждения."],
+      identity_verification: { inn: relatedInn, method: "final_inn_web", source_urls: proof }
+    }
+  });
+  const a = makeAlias(olderName,
+    "Final INN: ООО «Гагаринский фанерный завод» позднее переименованного в ООО «ЭГГЕР ДРЕВПРОДУКТ ГАГАРИН».");
+  const b = makeAlias(currentName,
+    "Final INN: ИНН подтверждён для ООО «ЭГГЕР ДРЕВПРОДУКТ ГАГАРИН».");
+  const out = restoreAliasesOffline(result(a, b), { checkpointId: "renamed" });
+  assert.equal(out.audit.merged_away_rows, 1);
+  assert.equal(out.final_result.direct_buyers[0]["Организация"], currentName);
+  assert.equal(out.final_result.direct_buyers[0]["ИНН"], relatedInn);
+  assert.ok(out.final_result.direct_buyers[0].__evidence.notes.some((x) => x.includes(olderName)));
+});
