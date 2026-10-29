@@ -1,8 +1,8 @@
-# Research-cost optimization (experimental PR #12)
+# Research-cost optimization (standalone local experimental branch)
 
 This branch is **NOT yet a validated $20–25 full-run configuration**.
 No OpenAI API billing was incurred by the implementation or offline tests.
-Keep the PR in draft until a paid pilot is explicitly approved.
+Use the standalone `feature/evidence-first-cost-quality-20261028` branch without an open pull request. Do not merge into `main` or run a paid pilot without explicit approval.
 
 ## Why the old full run was expensive
 
@@ -77,10 +77,7 @@ it MUST NOT claim successful nine-stage discovery. Resume can continue when
 the user explicitly raises the allowed budget. Optional contact/enrichment
 omissions are documented as deferred, not fabricated negatives.
 
-**Render note:** the live service deploys \`main\`; the above branch defaults
-will not affect it before merge. Existing Render environment variables
-override code defaults. Do not silently change production credentials or
-limits as part of testing this draft.
+**Local Windows operation:** Use GitHub Desktop to select the experimental branch, fetch/pull, and run `npm test` followed by `npm run local` in your local repository directory. No Render operations are needed. The local `.env` overrides application defaults and must be reviewed before paid research. Never commit `.env` or change the API key. Back up SQLite with the application stopped. PR #12 was closed without merge; it is not part of the ongoing workflow.
 
 ## Offline validation and remaining go/no-go gate
 
@@ -109,3 +106,15 @@ silently trade lost leads or contact quality for cheaper API usage.
 If the experimental research cannot complete within $25 without weakening
 core identity coverage, report the deficit and stop with a recoverable
 checkpoint. Do not fake completion or promote questionable leads to grade A.
+
+
+## GitHub Desktop — separate-branch workflow
+
+1. Open RegionalResearch in GitHub Desktop, then choose **Current Branch → feature/evidence-first-cost-quality-20261028** (not `main`).
+2. Choose **Fetch origin** / **Pull origin**. Do not merge into `main` and do not create a pull request.
+3. With the backend stopped, back up `data/checkpoints.sqlite` outside the repository. When the database is in use, the `-wal` and `-shm` files also matter.
+4. Compare the actual, untracked local `.env` with the updated `.env.example`. Remove stale duplicate keys. Editing `.env.example` does **not** update the local `.env`.
+5. Verify Node 22+, then execute `npm test`. Perform the private checkpoint qualification replay with a fresh `--out` directory; this replay makes no paid API calls.
+6. Only after explicit approval, execute `npm run local` and start the chosen region. Monitor cost, quality and checkpoint diagnostics.
+
+**Branch-only status:** PR #12 is closed without merge. All future changes in this project go to the named branch until the user explicitly directs otherwise.
