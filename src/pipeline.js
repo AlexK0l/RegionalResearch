@@ -654,6 +654,30 @@ const ENRICHMENT_BATCH_SCHEMA = {
   } } }, required: ["items"]
 };
 
+const CONTACT_BATCH_SETTINGS = contactLimits();
+const CONTACT_BATCH_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    items: {
+      type: "array", items: {
+        type: "object", additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          organization: { type: "string" },
+          inn: { type: "string" },
+          status: { type: "string", enum: ["ok", "not_found"] },
+          phones: { type: "array", items: { type: "string" } },
+          leader: { type: "string" },
+          official_site: { type: "string" },
+          source_urls: { type: "array", items: { type: "string" } },
+          note: { type: "string" }
+        },
+        required: ["id", "organization", "inn", "status", "phones", "leader", "official_site", "source_urls", "note"]
+      }
+    }
+  }, required: ["items"]
+};
+
 const CONTACT_SEARCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -4670,11 +4694,58 @@ function contactSearchPrompt(row, region, kind = "contacts") {
 Верни ТОЛЬКО JSON по схеме.`;
 }
 
+function compactContactBatchTarget(row) {
+  const evidence = row?.__evidence || {};
+  return {
+    id: checkpointRowId(row),
+    organization: String(row?.["Организация"] || "").slice(0, 170),
+    inn: normalizeInn(row?.["ИНН"]),
+    city: String(row?.["Город/район"] || "").slice(0, 110),
+    need_phone: !hasConfirmedPhone(row),
+    need_leader: !hasConfirmedLeader(row),
+    official_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
+      .filter((url) => /^https?:\/\//i.test(String(url))).slice(0, 2)
+  };
+}
+async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
+  const remaining = deadlineRemaining(deadlineAt);
+  if (remaining <= 8000) throw new Error("CONTACT_BATCH_DEADLINE");
+  // The model sees all five legal entities at once; it must not search
+  // for each one separately or infer phone ownership from group websites.
+  const response = await askJson(client, {
+    input: "ПАКЕТНЫЙ ПОИСК КОНТАКТОВ. РЕГИОН: " + region +
+      "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
+      "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
+      "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
+      "Для найденных контактов обязательны точные source_urls. Не подтверждены — оставь phones=[], leader='' и status='not_found'. " +
+      "Не выполняй отдельный web_search ради каждого телефона или директора. " +
+      "Верни JSON строго по схеме. Каждый id представь один раз.",
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: Math.max(CONTACT_SEARCH_MAX_OUTPUT_TOKENS, 3200),
+    webSearch: true,
+    responseSchema: CONTACT_BATCH_SCHEMA,
+    schemaName: "contact_batch_search",
+    maxToolCalls: CONTACT_BATCH_SETTINGS.batchWebCalls,
+    diagnosticLabel: "contact batch | " + rows.length + " companies",
+    timeoutMs: Math.min(CONTACT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, remaining - 3000)),
+    allowJsonRepair: false
+  });
+  const byId = new Map();
+  for (const item of Array.isArray(response?.items) ? response.items : []) {
+    const id = String(item?.id || "");
+    if (id && !byId.has(id)) byId.set(id, item);
+  }
+  return rows.map((row) => ({
+    id: checkpointRowId(row),
+    result: validBatchContactItem(byId.get(checkpointRowId(row)), row, checkpointRowId(row))
+  }));
+}
 async function searchContactsWithWeb({
   client,
   row,
   region,
-  deadlineAt
+  deadlineAt,
+  phoneRetryBudget = null
 }) {
   if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
     return { status: "ok", phones: [], leader: "", official_site: "", note: "Already confirmed" };
@@ -4703,7 +4774,16 @@ async function searchContactsWithWeb({
   );
 
   let second = null;
-  if (!phones.size && !hasConfirmedPhone(row) && deadlineRemaining(deadlineAt) > 7000) {
+  // Never retry merely because the first search found no phone (or found only
+  // a leader). A strict A + sourced official-site reason and global one-call
+  // reservation is required.
+  const retryAllowed = mayRetryContactPhone(
+    row, { phones: [...phones], official_site: first?.official_site,
+      source_urls: first?.source_urls },
+    Number(phoneRetryBudget?.remaining || 0), deadlineRemaining(deadlineAt)
+  );
+  if (retryAllowed && !hasConfirmedPhone(row)) {
+    phoneRetryBudget.remaining--;
     const secondTimeout = Math.min(
       CONTACT_SEARCH_TIMEOUT_MS,
       Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
@@ -4716,7 +4796,7 @@ async function searchContactsWithWeb({
       responseSchema: CONTACT_SEARCH_SCHEMA,
       schemaName: "contact_phone_search",
       diagnosticLabel: `contact phone retry | ${row?.["Организация"] || ""}`,
-      maxToolCalls: 2,
+      maxToolCalls: 1,
       timeoutMs: secondTimeout,
       allowJsonRepair: false
     });
