@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "benchmark:reference": "node scripts/benchmark-reference.js",
+    "replay:qualification": "node scripts/replay-qualification-offline.js",
     "local": "node --env-file=.env server.js",
     "browser:install": "playwright install chromium",
     "test": "node --test"
