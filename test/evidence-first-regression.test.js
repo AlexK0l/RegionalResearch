@@ -194,3 +194,35 @@ test("Smolensk: explicit need for further transport proof is not an operating si
   ]);
   assert.equal(independentBSignals(value).valid, false);
 });
+
+test("Smolensk checkpoint: negated shared fleet list never proves B", () => {
+  const value = row([
+    "АО НПП Измеритель включено в перечень предприятий, утилизирующих отходы I–V классов.",
+    "Собственные тягачи, полуприцепы либо конкретные транспортные события не найдены."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk checkpoint: фуражное зерно cannot be recognized as a фура", () => {
+  const value = row([
+    "ООО Агритек перерабатывает масличные культуры и отгружает шрот.",
+    "Региональный департамент сообщал о планах закупать продовольственное и фуражное зерно."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk checkpoint: economically relevant scrap-haulage idea is not fleet proof", () => {
+  const value = row([
+    "Компания занимается торговлей ломом и отходами.",
+    "Для вывоза лома экономически релевантны ломовозы и бункеровозы; собственный парк не подтверждён."
+  ]);
+  assert.equal(independentBSignals(value).valid, false);
+});
+
+test("Smolensk checkpoint: explicit owned dump trucks still count despite unconfirmed trailer model", () => {
+  const value = row([
+    "Организация производит щебень.",
+    "В собственности предприятия самосвалы, конкретная марка полуприцепа не подтверждена."
+  ]);
+  assert.equal(independentBSignals(value).valid, true);
+});
