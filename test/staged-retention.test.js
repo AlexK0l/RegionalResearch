@@ -79,3 +79,18 @@ test("staged retention applies to intermediaries and leasing, not just direct bu
   assert.equal(scan.rows.length, 2);
   assert.deepEqual(scan.rows.map((x) => x.__qualification_origin_sheet), ["intermediaries", "leasing"]);
 });
+
+test("inherited canonical ID never conceals conflicting confirmed INNs", () => {
+  const staged = row("ООО «Промлес»", "7733850330", "k-identical");
+  const final = row("ООО «Промлес»", "6723011580", "k-identical");
+  const scan = stagedRetentionReview(result([staged]), result([final]), filters);
+  assert.equal(scan.rows.length, 1);
+  assert.equal(scan.rows[0]["ИНН"], "7733850330");
+});
+
+test("same name with source INN missing but final INN known remains a review case", () => {
+  const staged = row("ООО «Промлес»", "", "src01");
+  const final = row("ООО «Промлес»", "6723011580", "other02");
+  const scan = stagedRetentionReview(result([staged]), result([final]), filters);
+  assert.equal(scan.rows.length, 1);
+});
