@@ -147,3 +147,49 @@ export function statusProofFromFinalInn(item, inn) {
   };
   return claim;
 }
+
+
+// Qualification A must come from a positive, role-appropriate trailer claim.
+// A legacy note that merely names trailers while denying ownership or stating
+// a hypothetical need must never be interpreted as evidence of their use.
+// JS \b word boundaries are ASCII-centric and unsafe on Cyrillic text.
+const DIRECT_NEGATIVE_A = /(?:не\s+(?:установ|доказ|подтвержд|назван|названн|раскры|найден|указ|выявлен|следует|позволя|принадлеж)|нет\s+(?:положительн|независим|достаточн|прям|конкретн|сведен|данн|подтвержд)|отсутств|без\s+(?:независим|подтвержден|доказател)|не\s+дает\s+основан|нельзя|не\s+использован\s+как\s+основан|не\s+является\s+подтвержден)/;
+const INFERRED_TRAILER_A = /(?:необходимост.{0,70}(?:прицеп|полуприцеп|комплектован|замен)|сигнал\s+эксплуатаци.{0,40}прицеп|вытекает\s+из|формиру.{0,60}грузопоток|созда.{0,60}(?:потребность|грузопоток|поток\s+поставок)|только\s+роль\s+(?:поставщик|победител)|положительн.{0,25}evidence.{0,30}нет)/;
+const INFRASTRUCTURE_NOT_TRAILER_A = /(?:вес[ыо].{0,35}тонар|тонар.{0,35}вес[ыо]|упоминани.{0,45}тонар|тентованн\w*\s+транспорт|прицепн.{0,25}состав.{0,30}(?:предполага|сигнал|вероятн))/;
+const EXTRA_NEGATIVE_A = /(?:не\s+(?:собственн|конкретн|положительн|самостоятельн)|требуется\s+отдельн.{0,40}подтвержден|для\s+повышения\s+уровн|положительн.{0,150}нет|повод\s+для\s+(?:обновлени|приобретени).{0,65}(?:прицеп|полуприцеп)|нуждается\s+в\s+(?:проверке|доказательстве))/;
+const THIRD_PARTY_OWNERSHIP_A = /(?:полуприцеп.{0,100}принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн)|принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн).{0,100}полуприцеп|треть.{0,20}сторон.{0,100}полуприцеп)/;
+const POSITIVE_OWNERSHIP_A = /(?:собственн.{0,45}(?:парк|тягач|полуприцеп|прицеп)|подтвержд.{0,50}(?:собственник|владельц)|(?:(?:полуприцеп|прицеп).{0,40}(?:на балансе|в собственности|эксплуатируется))|(?:приобрел|приобрела|приобрели|купил|куплено).{0,55}(?:прицеп|полуприцеп|тонар)|(?:лизингополучател|лизингодател).{0,80}полуприцеп)/;
+const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комплектован|замен).{0,60}прицеп|лизинг\s+седельн.{0,30}тягач)/;
+
+/** Return a diagnostic reason to reject a false A evidence note, or "". */
+export function rejectUnsafeAEvidence(record, note) {
+  const s = normalized(note);
+  if (/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/.test(s)) {
+    return "identity_metadata_not_trailer_proof";
+  }
+  if (EXTRA_NEGATIVE_A.test(s)) return "negative_or_inferred_trailer_event";
+  if (DIRECT_NEGATIVE_A.test(s)) {
+    // Confirmed ownership is A even when an individual trip is unobserved.
+    const owned = POSITIVE_OWNERSHIP_A.test(s);
+    const operationUnobserved = /(?:фактическ.{0,30}эксплуатаци.{0,35}не\s+установл|эксплуатаци.{0,35}не\s+подтвержд)/.test(s);
+    if (!(owned && operationUnobserved)) return "negative_or_unknown_trailer_claim";
+  }
+  if (INFERRED_TRAILER_A.test(s) && !POSITIVE_OWNERSHIP_A.test(s)) {
+    return "inferred_not_actual_trailer_event";
+  }
+  if (INFRASTRUCTURE_NOT_TRAILER_A.test(s) && !POSITIVE_OWNERSHIP_A.test(s)) {
+    return "infrastructure_or_trailer_inference_only";
+  }
+  if (TRACTOR_ONLY_A.test(s) && !POSITIVE_OWNERSHIP_A.test(s)) {
+    return "tractor_only_not_trailer";
+  }
+  if (record?.sheet === "direct_buyers") {
+    const notes = Array.isArray(record?.row?.__evidence?.notes)
+      ? record.row.__evidence.notes.map(normalized) : [];
+    if (notes.some((other) => THIRD_PARTY_OWNERSHIP_A.test(other)) &&
+        !notes.some((other) => POSITIVE_OWNERSHIP_A.test(other))) {
+      return "third_party_trailer_not_own";
+    }
+  }
+  return "";
+}
