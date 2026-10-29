@@ -52,7 +52,7 @@ export function projectRecoveredTemplateSheet(XLSX, sheet, originalRows, recover
   const outputHeader = [...header, ...reviewColumns];
   const rows = [outputHeader];
   const crmTransfers = [], crmConflicts = [];
-  const sourcePositions = [];
+  const sourcePositions = [], cellOrigins = [], reviewerComments = [];
 
   for (const rec of recoveredRows) {
     const mainId = STR(rec.__canonical_id);
@@ -67,6 +67,7 @@ export function projectRecoveredTemplateSheet(XLSX, sheet, originalRows, recover
     });
     const primary = related.find((r) => r.id === mainId);
     const out = [...primary.values];
+    const origins = header.map(() => primary.index);
     for (let c = 0; c < header.length; c++) {
       const field = header[c];
       if (typeof field !== "string" || !field) continue;
@@ -78,7 +79,9 @@ export function projectRecoveredTemplateSheet(XLSX, sheet, originalRows, recover
           crmConflicts.push({ organization: STR(rec["Организация"]), field,
             values: variants, original_ids: relatedIds });
         } else if (variants.length === 1 && !STR(out[c])) {
-          out[c] = related.find((r) => STR(r.values[c])).values[c];
+          const donor = related.find((r) => STR(r.values[c]));
+          out[c] = donor.values[c];
+          origins[c] = donor.index;
           crmTransfers.push({ organization: STR(rec["Организация"]), field,
             value: variants[0], original_ids: relatedIds });
         }
@@ -93,6 +96,8 @@ export function projectRecoveredTemplateSheet(XLSX, sheet, originalRows, recover
     }
     rows.push(out);
     sourcePositions.push(primary.index);
+    cellOrigins.push(origins);
+    reviewerComments.push(STR(rec.__comment));
   }
 
   const projected = XLSX.utils.aoa_to_sheet(rows);
@@ -101,27 +106,43 @@ export function projectRecoveredTemplateSheet(XLSX, sheet, originalRows, recover
       h === "Основание" || h === "Техника/сегмент" ? 60 :
       h === "__comment" ? 75 : 25 });
 
-  // Retain formulas and cached values from manual-only source cells when the
-  // primary source row is selected. Output row numbers change, so such cells
-  // are kept only if their formula has no relative cell references; otherwise
-  // fail rather than leaving a misleading broken CRM formula.
+  // Carry each original Excel comment along with its legal entity, rather
+  // than retaining the old row number after 20 aliases become 10.
+  // In the organization cell, the current offline __comment supersedes the
+  // archived stale "ИНН: не подтверждено" text.
+  let commentsRemapped = 0;
   for (let i = 0; i < recoveredRows.length; i++) {
-    const srcIndex = sourcePositions[i] + 1;
     for (let c = 0; c < header.length; c++) {
-      const h = header[c];
-      if (!MANUAL_FIELD(h)) continue;
-      const oldCell = sheet[XLSX.utils.encode_cell({ r: srcIndex, c })];
-      if (!oldCell?.f) continue;
-      if (/\$?[A-Z]{1,3}\$?\d+/i.test(oldCell.f)) {
-        throw new Error("Cannot safely carry relative CRM formula through dedupe: " +
-          sheetName + "!" + XLSX.utils.encode_cell({ r: srcIndex, c }));
+      const oldIndex = cellOrigins[i][c];
+      const oldAddress = XLSX.utils.encode_cell({ r: oldIndex + 1, c });
+      const newAddress = XLSX.utils.encode_cell({ r: i + 1, c });
+      const oldCell = sheet[oldAddress];
+      const formula = oldCell?.f;
+      if (formula && MANUAL_FIELD(header[c])) {
+        // A row relocation would change cell-relative references. Refuse it.
+        if (/\$?[A-Z]{1,3}\$?\d+/i.test(formula)) {
+          throw new Error("Cannot safely carry relative CRM formula through dedupe: " +
+            sheetName + "!" + oldAddress);
+        }
+        projected[newAddress] = { ...oldCell, ...projected[newAddress] };
       }
-      projected[XLSX.utils.encode_cell({ r: i + 1, c })] = { ...oldCell };
+      const originalComments = oldCell?.c;
+      let comments = Array.isArray(originalComments) ?
+        originalComments.map((comment) => ({ ...comment })) : [];
+      if (c === nameCol && reviewerComments[i]) {
+        comments = [{ a: comments[0]?.a || "RegionalResearch", t: reviewerComments[i] }];
+      }
+      if (comments.length) {
+        const target = projected[newAddress] || { t: "z" };
+        target.c = comments;
+        projected[newAddress] = target;
+        commentsRemapped++;
+      }
     }
   }
-  projected["!autofilter"] = sheet["!autofilter"] ? { ...sheet["!autofilter"],
+    projected["!autofilter"] = sheet["!autofilter"] ? { ...sheet["!autofilter"],
     ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 },
       e: { r: recoveredRows.length, c: outputHeader.length - 1 } }) } : undefined;
-  return { sheet: projected, crmTransfers, crmConflicts, original_columns: header.length,
-    output_columns: outputHeader.length };
+  return { sheet: projected, crmTransfers, crmConflicts, commentsRemapped,
+    original_columns: header.length, output_columns: outputHeader.length };
 }
