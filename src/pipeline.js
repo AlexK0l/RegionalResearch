@@ -4794,7 +4794,7 @@ async function searchContactsWithWeb({
     responseSchema: CONTACT_SEARCH_SCHEMA,
     schemaName: "contact_search",
     diagnosticLabel: `contact web | ${row?.["Организация"] || ""}`,
-    maxToolCalls: 2,
+    maxToolCalls: 1,
     timeoutMs: firstTimeout,
     allowJsonRepair: false
   });
@@ -7520,6 +7520,7 @@ ${JSON.stringify(gaps)}
       enrichment_completed_ids: [...enrichmentCompleted],
       contact_completed_ids: [...contactCompleted],
       contact_primary_results: Object.fromEntries(primaryResults),
+      contact_unsearched_ids: [...contactUnsearched],
       contact_stats: stats,
       stage10_duration_ms: Date.now() - stage10StartedAt,
       stage11_duration_ms: Date.now() - stage11StartedAt
@@ -7543,8 +7544,10 @@ ${JSON.stringify(gaps)}
   }));
 
   const contactGroups = [];
-  for (let i = 0; i < contactPending.length; i += CONTACT_BATCH_SETTINGS.batchSize) {
-    contactGroups.push(contactPending.slice(i, i + CONTACT_BATCH_SETTINGS.batchSize));
+  const batchEnabled = String(process.env.OPENAI_CONTACT_BATCH_ENABLED || "true").toLowerCase() !== "false";
+  const groupSize = batchEnabled ? CONTACT_BATCH_SETTINGS.batchSize : 1;
+  for (let i = 0; i < contactPending.length; i += groupSize) {
+    contactGroups.push(contactPending.slice(i, i + groupSize));
   }
   const contactFallbackBudget = { remaining: CONTACT_BATCH_SETTINGS.individualFallbacks };
   const contactUnsearched = new Set();
@@ -7552,7 +7555,8 @@ ${JSON.stringify(gaps)}
   console.log("[CONTACT_BATCH_PLAN] " + JSON.stringify({
     pending: contactPending.length,
     batches: contactGroups.length,
-    batch_size: CONTACT_BATCH_SETTINGS.batchSize,
+    batch_enabled: batchEnabled,
+    batch_size: groupSize,
     max_web_tools_per_batch: CONTACT_BATCH_SETTINGS.batchWebCalls,
     max_single_fallbacks: CONTACT_BATCH_SETTINGS.individualFallbacks,
     max_phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries
