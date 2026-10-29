@@ -2991,6 +2991,7 @@ function mergeQaRecordRows(records) {
   const notes = [];
   const facts = [];
   const legalIdentityConflicts = [];
+  const legalIdentityMerges = [];
   let identityVerification = null;
 
   for (const record of records) {
@@ -3010,6 +3011,7 @@ function mergeQaRecordRows(records) {
     const evidence = row.__evidence || {};
     for (const fact of Array.isArray(evidence.facts) ? evidence.facts : []) facts.push(fact);
     for (const conflict of Array.isArray(evidence.legal_identity_conflicts) ? evidence.legal_identity_conflicts : []) legalIdentityConflicts.push(conflict);
+    for (const merge of Array.isArray(evidence.legal_identity_merges) ? evidence.legal_identity_merges : []) legalIdentityMerges.push(merge);
     if (!identityVerification && evidence.identity_verification?.inn) identityVerification = evidence.identity_verification;
     for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
       if (url) urls.push(String(url));
@@ -3019,11 +3021,33 @@ function mergeQaRecordRows(records) {
     }
   }
 
+  const mergedInns = [...new Set(records.map((record) =>
+    normalizeInn(record?.row?.["ИНН"])).filter(Boolean))];
+  if (mergedInns.length === 1 && records.length > 1) {
+    const anchor = records[0];
+    for (const record of records.slice(1)) {
+      const decision = confirmedInnAliasDecision(anchor, record, mergedInns[0],
+        (a, b) => organizationNamesCompatible(a, b));
+      if (!decision.merge) continue;
+      legalIdentityMerges.push({
+        confirmed_inn: mergedInns[0],
+        survivor_name: String(anchor?.row?.["Организация"] || ""),
+        merged_name: String(record?.row?.["Организация"] || ""),
+        decision: decision.reason,
+        ogrns: [...new Set([...decision.ogrnsA, ...decision.ogrnsB])],
+        identity_source_urls: [...new Set([
+          ...(anchor?.row?.__evidence?.identity_verification?.source_urls || []),
+          ...(record?.row?.__evidence?.identity_verification?.source_urls || [])
+        ])].slice(0, 4)
+      });
+    }
+  }
   mergedRow.__evidence = {
     source_urls: [...new Set(urls)],
     notes: [...new Set(notes)],
     facts: distinctSourceFacts({ __evidence: { facts } }),
     ...(legalIdentityConflicts.length ? { legal_identity_conflicts: legalIdentityConflicts } : {}),
+    ...(legalIdentityMerges.length ? { legal_identity_merges: legalIdentityMerges } : {}),
     ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 
