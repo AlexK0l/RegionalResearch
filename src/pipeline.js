@@ -4698,6 +4698,7 @@ function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true,
     maxToolCalls,
+    diagnosticLabel: "targeted enrichment | single",
     timeoutMs
   });
 }
@@ -8006,5 +8007,11 @@ export {
   postInnDedupe,
   duplicateInnConflictGroups,
   clearUnresolvedInnConflicts,
-  actionableUnqualifiedLead
+  actionableUnqualifiedLead,
+  createFullWebBudget,
+  reserveWebBudgetBeforeCall,
+  releaseWebBudgetReservation,
+  recordWebUsage,
+  recordWebBudgetUsage,
+  estimatedApiCostUsd
 };
