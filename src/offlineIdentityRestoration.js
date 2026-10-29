@@ -94,6 +94,16 @@ function mergeSourceEvidence(survivor, partition, inn, reason, checkpointId, fie
     .map((s) => JSON.parse(s));
   const priorIds = uniq(rows.map((r) => asText(r.__canonical_id)));
   const changes = [];
+  const sourceGrades = rows.map((r) => ({
+    organization: asText(r["Организация"]),
+    grade: gradeOf(r),
+    basis: asText(r["Основание"])
+  }));
+  const distinctGrades = uniq(sourceGrades.map((item) => item.grade));
+  const gradeConflict = distinctGrades.length > 1;
+  const originalComments = rows.map((r) => ({
+    organization: asText(r["Организация"]), value: asText(r.__comment)
+  }));
   for (const key of Object.keys(row)) {
     if (key.startsWith("__") || key === "ИНН" || key === "Организация") continue;
     const values = uniq(rows.map((item) => asText(item[key])));
@@ -134,10 +144,26 @@ function mergeSourceEvidence(survivor, partition, inn, reason, checkpointId, fie
         source_urls: mergedSources
       }
     ],
-    previous_conflict_status: "resolved_alias_in_offline_copy"
+    previous_conflict_status: "resolved_alias_in_offline_copy",
+    original_comments: originalComments,
+    ...(gradeConflict ? { qualification_review: {
+      status: "manual_review_required",
+      reason: "merged_aliases_with_different_abc_grades",
+      selected_grade: gradeOf(row),
+      source_grades: sourceGrades,
+      note: "Офлайн-слияние не подтверждает повышение или понижение класса. Требуется проверка evidence."
+    }} : {})
   };
+  const originalComment = asText(row.__comment);
+  const innLine = `ИНН: ${inn} (восстановлен офлайн из сохранённых подтверждений)`;
+  row.__comment = /^ИНН\s*:/m.test(originalComment)
+    ? originalComment.replace(/^ИНН\s*:[^\r\n]*/m, innLine)
+    : [originalComment, innLine].filter(Boolean).join("\n");
+  if (gradeConflict) {
+    row.__comment += `\n[ПРОВЕРКА A/B/C] Для алиасов обнаружены классы ${distinctGrades.join(", ")}; оставлен класс ${gradeOf(row)} без переквалификации.`;
+  }
   row.__merged_canonical_ids = priorIds;
-  return { changes, priorIds, source_urls: mergedSources };
+  return { changes, priorIds, source_urls: mergedSources, gradeConflict, sourceGrades };
 }
 export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
   if (!payload || typeof payload !== "object" || !payload.final_result) {
@@ -180,7 +206,7 @@ export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
   }
 
   const removals = new Set();
-  const merges = [], review = [], fieldDisagreements = [], divisions = [];
+  const merges = [], review = [], fieldDisagreements = [], divisions = [], qualificationConflicts = [];
   let restored = 0;
   for (const [inn, items] of groups) {
     const conflictOwners = alreadyOwned.get(inn) || [];
@@ -230,6 +256,10 @@ export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
       const merged = mergeSourceEvidence(survivor, cluster, inn,
         directReasons.map((x) => x.reason).join(" + "), checkpointId, fieldDisagreements);
       restored++;
+      if (merged.gradeConflict) qualificationConflicts.push({
+        inn, winner_name: rowName(survivor), selected_grade: gradeOf(survivor.row),
+        source_grades: merged.sourceGrades, status: "manual_review_required"
+      });
       for (const member of other) removals.add(member);
       merges.push({
         inn, winner_name: rowName(survivor), absorbed_names: originalNames.filter((n) => n !== rowName(survivor)),
@@ -238,7 +268,8 @@ export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
         reason: directReasons.map((x) => x.reason).join(" + "),
         source_urls: merged.source_urls, filled_fields: merged.changes,
         source_row_fields: fieldValues,
-        preserved_grade: gradeOf(survivor.row)
+        preserved_grade: gradeOf(survivor.row),
+        qualification_review: merged.gradeConflict ? "manual_review_required" : ""
       });
     }
   }
@@ -268,7 +299,8 @@ export function restoreAliasesOffline(payload, { checkpointId = "" } = {}) {
       divisions,
       untrusted_or_unmatched: skipped,
       conflicting_field_values: fieldDisagreements,
-      note: "Offline copy only. Source references were preserved, not independently downloaded or revalidated. Existing A/B/C grades were not recalculated."
+      qualification_conflicts: qualificationConflicts,
+      note: "Offline copy only. Source references were preserved, not independently downloaded or revalidated. Existing A/B/C grades were not recalculated; differences are marked for manual review."
     }
   };
 }
