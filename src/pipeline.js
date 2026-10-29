@@ -2373,12 +2373,31 @@ function clearUnresolvedInnConflicts(finalResult) {
   const groups = duplicateInnConflictGroups(finalResult);
   let clearedRows = 0;
   for (const group of groups) {
+    const organizations = [...new Set(group.rows.map((row) =>
+      String(row["Организация"] || "").trim()).filter(Boolean)
+    )];
+    const competingOgrns = [...new Set(group.rows.flatMap((row) => identityOgrns(row)))];
     for (const row of group.rows) {
+      // Clear only the field asserting an unresolved identity. Do not erase
+      // supporting notes, OGRN candidates or the underlying legal entity.
       row["ИНН"] = "";
       const evidence = row.__evidence || { source_urls: [], notes: [] };
+      const conflicts = Array.isArray(evidence.legal_identity_conflicts)
+        ? evidence.legal_identity_conflicts : [];
       row.__evidence = {
         ...evidence,
         source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
+        legal_identity_conflicts: [
+          ...conflicts,
+          {
+            contested_inn: group.inn,
+            status: "manual_review_required",
+            conflicting_organizations: organizations,
+            competing_ogrns: competingOgrns,
+            own_ogrns: identityOgrns(row),
+            recorded_at_stage: "final_inn_conflict"
+          }
+        ],
         notes: [
           ...(Array.isArray(evidence.notes) ? evidence.notes : []),
           `Final INN conflict: ИНН ${group.inn} встретился у несовместимых сущностей и очищен до однозначного подтверждения.`
@@ -2971,6 +2990,7 @@ function mergeQaRecordRows(records) {
   const urls = [];
   const notes = [];
   const facts = [];
+  const legalIdentityConflicts = [];
   let identityVerification = null;
 
   for (const record of records) {
@@ -2989,6 +3009,7 @@ function mergeQaRecordRows(records) {
 
     const evidence = row.__evidence || {};
     for (const fact of Array.isArray(evidence.facts) ? evidence.facts : []) facts.push(fact);
+    for (const conflict of Array.isArray(evidence.legal_identity_conflicts) ? evidence.legal_identity_conflicts : []) legalIdentityConflicts.push(conflict);
     if (!identityVerification && evidence.identity_verification?.inn) identityVerification = evidence.identity_verification;
     for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
       if (url) urls.push(String(url));
@@ -3002,6 +3023,7 @@ function mergeQaRecordRows(records) {
     source_urls: [...new Set(urls)],
     notes: [...new Set(notes)],
     facts: distinctSourceFacts({ __evidence: { facts } }),
+    ...(legalIdentityConflicts.length ? { legal_identity_conflicts: legalIdentityConflicts } : {}),
     ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 
