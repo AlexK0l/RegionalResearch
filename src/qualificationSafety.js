@@ -172,6 +172,13 @@ const UNSPECIFIED_TRAILER_MODELS_A =
 const AFFIRMED_OWN_TRAILERS_A =
   /(?:собственн(?:(?!,\s*но\s|;\s*но\s).){0,75}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,45}(?:на балансе|в собственности|эксплуатируется|подтвержден))/i;
 
+// An A-class fleet claim must not be inferred from a request to check the
+// trailer types, a statement that public proof is absent, or a predicted
+// need for trailers. These negative / speculative notes are assessed one by
+// one: a separate, positively documented acquisition or own trailer fleet
+// may still qualify as A.
+const ADDITIONAL_UNSUPPORTED_A = /(?:парк.{0,60}(?:прицепн|полуприцеп).{0,70}требу.{0,35}проверк|(?:прицепн|полуприцеп).{0,45}(?:парк|техник).{0,45}требу.{0,35}проверк|публичн.{0,25}подтвержден.{0,100}(?:парк|лизинг|эксплуатаци).{0,100}(?:прицеп|полуприцеп).{0,90}нет|(?:склад|автопарк).{0,110}потребност.{0,75}(?:прицеп|полуприцеп))/i;
+const CONCRETE_POSITIVE_TRAILER_A = /(?:собственн.{0,55}(?:полуприцеп|прицеп)|(?:прицеп|полуприцеп).{0,45}(?:в собственности|на балансе|эксплуат)|(?:купил|куплен|приобрел|приобрела|приобрели|закупк).{0,65}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,65}(?:купил|приобрел|закупк))/i;
 const THIRD_PARTY_OWNERSHIP_A = /(?:полуприцеп.{0,100}принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн)|принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн).{0,100}полуприцеп|треть.{0,20}сторон.{0,100}полуприцеп)/;
 const POSITIVE_OWNERSHIP_A = /(?:собственн.{0,45}(?:парк|тягач|полуприцеп|прицеп)|подтвержд.{0,50}(?:собственник|владельц)|(?:(?:полуприцеп|прицеп).{0,40}(?:на балансе|в собственности|эксплуатируется))|(?:приобрел|приобрела|приобрели|купил|куплено).{0,55}(?:прицеп|полуприцеп|тонар)|(?:лизингополучател|лизингодател).{0,80}полуприцеп)/;
 const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комплектован|замен).{0,60}прицеп|лизинг\s+седельн.{0,30}тягач)/;
@@ -196,6 +203,9 @@ export function rejectUnsafeAEvidence(record, note) {
     return "trailer_or_own_fleet_not_substantiated";
   }
   if (EXTRA_NEGATIVE_A.test(s)) return "negative_or_inferred_trailer_event";
+  if (ADDITIONAL_UNSUPPORTED_A.test(s) && !CONCRETE_POSITIVE_TRAILER_A.test(s)) {
+    return "unsubstantiated_trailer_fleet_or_inferred_need";
+  }
   if (LIGHT_TRAILER_ONLY_A.test(s) && !HEAVY_TRAILER_PROOF_A.test(s)) {
     return "light_utility_trailer_not_target_heavy_freight";
   }

@@ -138,3 +138,32 @@ test("later independent positive source overrides an older unproved-fleet note",
   ]);
   assert.equal(d.grade, "A");
 });
+
+ 
+// Remaining false A from the second replay of the 492-company checkpoint.
+const additionalRealNegatives = [
+  ["ООО «Трансавто»", "Парк и типы прицепной техники требуют отдельной проверки."],
+  ["ООО «ТЦ «Тюменские аккумуляторы»", "Публичных подтверждений собственного парка, лизинга либо эксплуатации полуприцепов в найденной ветке нет."],
+  ["ООО «Сафоновский завод ЖБИ»", "Склад и автопарк указывают на регулярный оборот готовых ЖБИ и потребность в дополнительной прицепной технике."]
+];
+for (const [name, note] of additionalRealNegatives) {
+  test("492-company v2 false positive A prevented: " + name, () => {
+    const d = classify(name, [note], { segment: "Перевозки песка, щебня; прицепы и полуприцепы" });
+    assert.notEqual(d.grade, "A");
+    assert.equal(d.aEvidence, "");
+  });
+}
+
+test("confirmed own semitrailer fleet remains A even if remaining park needs review", () => {
+  const d = classify("ООО «Проверенный перевозчик»", [
+    "Компания эксплуатирует собственный парк тягачей и полуприцепов Schmitz; остальной парк требует отдельной проверки."
+  ]);
+  assert.equal(d.grade, "A");
+});
+
+test("verified procurement remains A despite incomplete information on the remaining fleet", () => {
+  const d = classify("ООО «Закупка полуприцепа»", [
+    "Компания приобрела полуприцеп Schmitz для перевозок; остальные типы прицепной техники требуют отдельной проверки."
+  ]);
+  assert.equal(d.grade, "A");
+});
