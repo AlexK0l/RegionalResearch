@@ -96,7 +96,7 @@ for (const [key, name] of Object.entries(sheetNames)) {
       const note = String(row.__comment || "").trim();
       if (!note) return;
       const cell = tab[XLSX.utils.encode_cell({ r: index + 1, c: 0 })];
-      if (cell) XLSX.utils.cell_add_comment(cell, [{ a: "RegionalResearch", t: note }]);
+      if (cell) XLSX.utils.cell_add_comment(cell, note, "RegionalResearch");
     });
     tab["!cols"] = header.map((h) => ({ wch: h === "Организация" ? 45 :
       h === "Основание" || h === "Техника/сегмент" ? 66 :
