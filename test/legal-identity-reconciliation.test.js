@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { confirmedInnAliasDecision, identityOgrns, legalNameKey, normalizedOgrn } from "../src/legalIdentity.js";
-import { postInnDedupe, duplicateInnConflictGroups, clearUnresolvedInnConflicts } from "../src/pipeline.js";
+import { postInnDedupe, duplicateInnConflictGroups, clearUnresolvedInnConflicts, canonicalizeCandidates } from "../src/pipeline.js";
 
 const make = (name, inn, {
   notes = [], proofUrls = ["https://registry.example.org/verified"],
@@ -234,4 +234,32 @@ test("historic joint-stock variants retain the same legal-form family", () => {
   const a = make("ЗАО «Вязьмадор»", inn);
   const b = make("АО «Вязьмадор»", inn);
   assert.equal(decision(a,b,inn).merge,true);
+});
+
+test("discovery-time same-INN merge also refuses mismatched LLC/JSC legal forms", () => {
+  const inn = "7718725461";
+  const makeCandidate = (id, name) => ({
+    candidate_id:id,source_step:1,source_sheet:"direct_buyers",
+    data:make(name,inn)
+  });
+  const rows = [
+    makeCandidate("1","АО «ЖелДорЭкспедиция»"),
+    makeCandidate("2","ООО «ЖелДорЭкспедиция»")
+  ];
+  const result=canonicalizeCandidates(rows,"Смоленская область");
+  assert.equal(result.length,2, "different legal forms must remain separate");
+  assert.deepEqual(result.flatMap(x=>x.candidate_ids).sort(),["1","2"]);
+});
+
+test("discovery-time same name and same legal family still merge when identity is compatible", () => {
+  const inn = "6722009927";
+  const makeCandidate = (id, name) => ({
+    candidate_id:id,source_step:1,source_sheet:"direct_buyers",
+    data:make(name,inn)
+  });
+  const result=canonicalizeCandidates([
+    makeCandidate("1","ЗАО «Вязьмадор»"),
+    makeCandidate("2","АО «Вязьмадор»")
+  ],"Смоленская область");
+  assert.equal(result.length,1);
 });

@@ -2564,7 +2564,7 @@ function enforceFinalInnRequirement(finalResult) {
   // не является причиной удалять релевантную компанию.
   return [];
 }
-function canonicalizeCandidates(candidates, region = "") {
+export function canonicalizeCandidates(candidates, region = "") {
   const parent = candidates.map((_, i) => i);
   const rank = candidates.map(() => 0);
 
@@ -2597,7 +2597,12 @@ function canonicalizeCandidates(candidates, region = "") {
 
       for (const ownerIndex of owners) {
         const ownerName = String(candidates[ownerIndex]?.data?.["Организация"] || "").trim();
-        if (organizationNamesCompatible(name, ownerName, region)) {
+        // Early discovery dedupe must obey the SAME legal-identity guard
+        // as post-INN dedupe; compatible trade names alone are insufficient
+        // across distinct ООО/АО/IP forms, OGRNs or parent/branch roles.
+        const ownerRow = candidates[ownerIndex]?.data || {};
+        if (organizationNamesCompatible(name, ownerName, region) &&
+            !legalEvidenceConflict(row, ownerRow)) {
           compatibleOwner = ownerIndex;
           break;
         }
