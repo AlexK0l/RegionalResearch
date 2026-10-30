@@ -7,6 +7,7 @@ import {
   COLOR_STAT_COLS,
   LEGEND_COLS
 } from "./constants.js";
+import { refreshColorStatistics } from "./offlineColorStatistics.js";
 
 const DIRECT_MAP = [
   null,
@@ -224,6 +225,13 @@ export function buildWorkbookBuffer(result) {
   XLSX.utils.book_append_sheet(wb, buildStatisticsSheet(result.statistics || []), "Статистика");
   XLSX.utils.book_append_sheet(wb, buildColorStatisticsSheet(), "Статистика по цветам");
   XLSX.utils.book_append_sheet(wb, buildLegendSheet(), "Легенда");
+
+  // Recalculate cached statistics BEFORE exporting. Formula cells otherwise
+  // carry placeholder zeros in viewers that do not evaluate Excel formulas.
+  // This also counts blank CRM color codes once (white/unprocessed).
+  refreshColorStatistics(XLSX, wb);
+  wb.Workbook ??= {};
+  wb.Workbook.CalcPr = { ...(wb.Workbook.CalcPr || {}), fullCalcOnLoad: true };
 
   return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
 }
