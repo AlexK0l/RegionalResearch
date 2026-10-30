@@ -32,15 +32,23 @@ export function priorityRecoveryGaps(row) {
 export function eligiblePriorityRecoveryRows(rows, completed, idOf, maximum = 60) {
   const done = new Set([...completed].map(String));
   const limit = Math.max(0, Math.min(600, Number(maximum) || 0));
-  const rank = { A: 0, B: 1 };
-  return (rows || []).filter((row) => {
+  const candidates = (rows || []).filter((row) => {
     const id = String(idOf(row) || "");
     return Boolean(id) && !done.has(id) && priorityRecoveryGaps(row).length > 0;
-  }).sort((a, b) =>
-    (rank[a.__final_grade] ?? 9) - (rank[b.__final_grade] ?? 9) ||
+  });
+  const byUrgency = (a, b) =>
     priorityRecoveryGaps(b).length - priorityRecoveryGaps(a).length ||
-    String(a["Организация"] || "").localeCompare(String(b["Организация"] || ""), "ru")
-  ).slice(0, limit);
+    String(a["Организация"] || "").localeCompare(String(b["Организация"] || ""), "ru");
+  const gradeA = candidates.filter((row) => row.__final_grade === "A").sort(byUrgency);
+  const gradeB = candidates.filter((row) => row.__final_grade === "B").sort(byUrgency);
+  // Reserve roughly 1/3 of the limited searches for B: otherwise the first
+  // 60 entries could all be A and important B buyers never get checked.
+  const reservedB = Math.min(Math.floor(limit / 3), gradeB.length);
+  const firstA = gradeA.slice(0, limit - reservedB);
+  const firstB = gradeB.slice(0, reservedB);
+  const restA = gradeA.slice(firstA.length);
+  const restB = gradeB.slice(firstB.length);
+  return [...firstA, ...firstB, ...restA, ...restB].slice(0, limit);
 }
 
 export function validPriorityBatchItem(item, row, expectedId) {
