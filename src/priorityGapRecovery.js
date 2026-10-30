@@ -74,8 +74,9 @@ function validatedFact(fact, row) {
     if (u.protocol !== "https:" || !u.hostname.includes(".")) return null;
   } catch { return null; }
   const inn = digits(row?.["ИНН"]);
-  // A source excerpt must itself identify the legal entity (same INN).
-  if (!inn || !digits(excerpt).includes(inn)) return null;
+  // The quoted page must LABEL the company's INN: a random 10-digit
+  // substring, URL number or unrelated company is not proof.
+  if (!inn || !new RegExp("инн\\D{0,12}" + inn + "(?!\\d)", "i").test(excerpt)) return null;
   if (field === "Руководитель / ЛПР") {
     const person = normalized(value);
     if (person.length < 5 || /\d/.test(person) ||
@@ -89,7 +90,9 @@ function validatedFact(fact, row) {
   if (!Number.isSafeInteger(number) || number <= 0) return null;
   if (field === "Численность" && number > 5000000) return null;
   if (field === "Выручка последнего подтвержденного года" && number > 1000000000000000) return null;
-  if (!digits(excerpt).includes(value)) return null;
+  // A number embedded in an INN, another amount or a longer ID is not
+  // evidence of the specific revenue/headcount claim.
+  if (!new RegExp("(?:^|\\D)" + value + "(?=\\D|$)").test(excerpt)) return null;
   const year = String(fact.year || "").trim();
   if (field === "Выручка последнего подтвержденного года") {
     const n = Number(year);
