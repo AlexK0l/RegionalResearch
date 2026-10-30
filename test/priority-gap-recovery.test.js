@@ -90,3 +90,17 @@ test("valid empty cited batch answer counts as researched but does not invent da
   assert.deepEqual(result.applied, []);
   assert.equal(row["Выручка последнего подтвержденного года"], "");
 });
+
+
+test("bounded recovery fairly covers B even when most A companies need data", () => {
+  const all = [
+    ...Array.from({ length: 80 }, (_, n) =>
+      makeRow({ __canonical_id: "A"+n, __final_grade: "A", "Организация": "ООО «А» " + n })),
+    ...Array.from({ length: 40 }, (_, n) =>
+      makeRow({ __canonical_id: "B"+n, __final_grade: "B", "Организация": "ООО «Б» " + n }))
+  ];
+  const selected = eligiblePriorityRecoveryRows(all, new Set(), (r) => r.__canonical_id, 60);
+  assert.equal(selected.length, 60);
+  assert.equal(selected.filter((r) => r.__final_grade === "A").length, 40);
+  assert.equal(selected.filter((r) => r.__final_grade === "B").length, 20);
+});
