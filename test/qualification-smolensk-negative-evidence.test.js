@@ -83,3 +83,27 @@ test("clear own fleet remains A even with a separate unrelated third-party note"
   ]);
   assert.equal(d.grade, "A");
 });
+
+
+// Recorded failures from the 2026-10-30 finished Smolensk checkpoint.
+// A note that says NO own fleet/transaction cannot establish a concrete A event.
+const actualFalseA = [
+  ["АО «ПСКОВВТОРМЕТ»", "Подтвержден целевой груз — лом черных и цветных металлов; сведений о собственном автопарке и прицепах в источнике нет."],
+  ["АО «Стройиндустрия»", "Наличие карьерного ассортимента подтверждено, но источник не связывает компанию с конкретными тонарными полуприцепами, закупкой техники или собственным автопарком."],
+  ["Общество с ограниченной ответственностью «РУФ»", "Источник не содержит сведений о собственном автопарке или конкретных прицепах."]
+];
+for (const [name, note] of actualFalseA) {
+  test("2026-10-30 real negative A note: " + name, () => {
+    const d = classify(name, [note], { segment: "Лом, щебень, древесные отходы; тонарные полуприцепы" });
+    assert.notEqual(d.grade, "A");
+    assert.equal(d.aEvidence, "");
+  });
+}
+
+test("independent positive ownership note can still establish A after a negative source", () => {
+  const d = classify("ООО «Свой подтверждённый парк»", [
+    "Источник не содержит сведений о собственном автопарке или конкретных прицепах.",
+    "Позднее в акте подтверждён собственный парк тягачей и полуприцепов Schmitz, эксплуатируется на перевозках."
+  ]);
+  assert.equal(d.grade, "A");
+});
