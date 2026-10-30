@@ -107,3 +107,34 @@ test("independent positive ownership note can still establish A after a negative
   ]);
   assert.equal(d.grade, "A");
 });
+
+ 
+// Actual false-positive A evidence from the completed 492-company replay.
+const newlyDetectedFalseA = [
+  ["Карьер «Плоское»", "Собственный автопарк прямо указан, но конкретные модели прицепов или полуприцепов не приведены."],
+  ["ООО «СКСплюсА»", "Источники не дают достаточных сведений о собственном парке, тягачах или полуприцепах."],
+  ["ООО «СПЕЦПРАЙМ»", "Источник подтверждает эксплуатацию самосвальной техники, но не полуприцепную технику."],
+  ["ООО «Форест Групп»", "Связь с веткой установлена через отраслевой лесопромышленный профиль; наличие конкретного полуприцепа не заявлено, поэтому уровень ограничен B."]
+];
+for (const [name, note] of newlyDetectedFalseA) {
+  test("492-company saved evidence does not invent A: " + name, () => {
+    const d = classify(name, [note], {segment: "Карьер, лес, металлолом; тяжелый транспорт"});
+    assert.notEqual(d.grade, "A");
+    assert.equal(d.aEvidence, "");
+  });
+}
+
+test("own trailer fleet stays A when only model is unknown", () => {
+  const d = classify("ООО «Собственные полуприцепы»", [
+    "Компания эксплуатирует собственный парк тягачей и полуприцепов, хотя конкретные модели не приведены."
+  ]);
+  assert.equal(d.grade, "A");
+});
+
+test("later independent positive source overrides an older unproved-fleet note", () => {
+  const d = classify("АО «ПСКОВВТОРМЕТ»", [
+    "Сведений о собственном автопарке и прицепах в старой странице нет.",
+    "На официальной странице автотранспорта указан собственный автопарк с КамАЗами и полуприцепами типа опентоп, используемый для вывоза металлолома."
+  ]);
+  assert.equal(d.grade, "A");
+});

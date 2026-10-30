@@ -162,6 +162,16 @@ const EXTRA_NEGATIVE_A = /(?:не\s+(?:собственн|конкретн|по�
 // Keep this check per evidence note: an independent positive note is still
 // eligible for A and must not be invalidated by an unrelated missing detail.
 const DENIED_TRAILER_A = /(?:источник.{0,65}не\s+(?:содерж|связыва|подтвержда|раскрыв|указыва).{0,165}(?:полуприцеп|прицеп|парк|техник|закуп|приобрет)|сведен.{0,120}(?:полуприцеп|прицеп|автопарк|парк|закуп|техник).{0,85}(?:нет|отсутств|не\s+(?:найден|подтвержд))|(?:полуприцеп|прицеп|парк|автопарк).{0,85}(?:не\s+(?:связан|подтвержд|доказан)|сведени.{0,40}нет)|собственн.{0,50}(?:парк|прицеп|полуприцеп).{0,100}не\s+подтвержд)/;
+// Historical notes may name "trailers" while explicitly denying their proof.
+// These are not ownership evidence even if a keyword-based fleet rule matches.
+// An affirmative trailer fleet remains eligible when only its *model* is unknown.
+const UNSUPPORTED_TRAILER_NOTE_A =
+  /(?:не\s+да(?:ет|ют)\s+достаточн.{0,95}(?:парк|тягач|прицеп|полуприцеп)|но\s+не\s+(?:полуприцепн|прицепн).{0,22}техник|(?:наличи|эксплуатаци).{0,85}(?:полуприцеп|прицеп).{0,50}не\s+заявлен|(?:уровен|класс).{0,30}(?:ограничен|оставлен|не\s+выше).{0,18}[bc])/i;
+const UNSPECIFIED_TRAILER_MODELS_A =
+  /(?:модел|тип|марк).{0,65}(?:прицеп|полуприцеп).{0,55}не\s+(?:приведен|указан|назван)|(?:прицеп|полуприцеп).{0,70}(?:модел|тип|марк).{0,55}не\s+(?:приведен|указан|назван)/i;
+const AFFIRMED_OWN_TRAILERS_A =
+  /(?:собственн(?:(?!,\s*но\s|;\s*но\s).){0,75}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,45}(?:на балансе|в собственности|эксплуатируется|подтвержден))/i;
+
 const THIRD_PARTY_OWNERSHIP_A = /(?:полуприцеп.{0,100}принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн)|принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн).{0,100}полуприцеп|треть.{0,20}сторон.{0,100}полуприцеп)/;
 const POSITIVE_OWNERSHIP_A = /(?:собственн.{0,45}(?:парк|тягач|полуприцеп|прицеп)|подтвержд.{0,50}(?:собственник|владельц)|(?:(?:полуприцеп|прицеп).{0,40}(?:на балансе|в собственности|эксплуатируется))|(?:приобрел|приобрела|приобрели|купил|куплено).{0,55}(?:прицеп|полуприцеп|тонар)|(?:лизингополучател|лизингодател).{0,80}полуприцеп)/;
 const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комплектован|замен).{0,60}прицеп|лизинг\s+седельн.{0,30}тягач)/;
@@ -181,6 +191,10 @@ export function rejectUnsafeAEvidence(record, note) {
     return "identity_metadata_not_trailer_proof";
   }
   if (DENIED_TRAILER_A.test(s)) return "explicit_denial_of_own_trailer_evidence";
+  if (UNSUPPORTED_TRAILER_NOTE_A.test(s) ||
+      (UNSPECIFIED_TRAILER_MODELS_A.test(s) && !AFFIRMED_OWN_TRAILERS_A.test(s))) {
+    return "trailer_or_own_fleet_not_substantiated";
+  }
   if (EXTRA_NEGATIVE_A.test(s)) return "negative_or_inferred_trailer_event";
   if (LIGHT_TRAILER_ONLY_A.test(s) && !HEAVY_TRAILER_PROOF_A.test(s)) {
     return "light_utility_trailer_not_target_heavy_freight";
