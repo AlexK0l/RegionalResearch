@@ -5,6 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
+import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
@@ -7518,7 +7519,8 @@ ${JSON.stringify(gaps)}
     phoneRetriesUsed: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
     batchOmissions: contactBatchOmissions,
     budgetDeferred: contactBudgetDeferred,
-    browserCircuitOpen: false
+    browserCircuitOpen: false,
+    unsearched: contactUnsearched.size
   });
 
   let browserCircuitOpen = false;
@@ -7548,10 +7550,7 @@ ${JSON.stringify(gaps)}
   const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
 
   googleCompanies.sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
-  const contactPending = googleCompanies.filter((row) => {
-    const id = checkpointRowId(row);
-    return !id || (!contactCompleted.has(id) && !primaryResults.has(id));
-  });
+  const contactPending = pendingContactRows(googleCompanies, contactCompleted, primaryResults, checkpointRowId);
 
   console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
     total_companies: companies.length,
@@ -7569,7 +7568,11 @@ ${JSON.stringify(gaps)}
     contactGroups.push(contactPending.slice(i, i + groupSize));
   }
   const contactFallbackBudget = { remaining: CONTACT_BATCH_SETTINGS.individualFallbacks };
-  const contactUnsearched = new Set();
+  const contactUnsearched = restoredDeferredContactIds(
+    resumeCheckpoint,
+    googleCompanies.map(checkpointRowId),
+    contactCompleted
+  );
 
   console.log("[CONTACT_BATCH_PLAN] " + JSON.stringify({
     pending: contactPending.length,
@@ -7646,6 +7649,7 @@ ${JSON.stringify(gaps)}
           }
         }
         if (result) {
+          recordContactAttempt(rowId, true, contactCompleted, contactUnsearched);
           primaryResults.set(rowId, {
             ...result,
             __needPhone: !hasConfirmedPhone(row),
@@ -7661,7 +7665,7 @@ ${JSON.stringify(gaps)}
         } else {
           // Never mark a company "contact checked" after a missing batch
           // response or exhausted budget. Preserve it for checkpoint resume.
-          contactUnsearched.add(rowId);
+          recordContactAttempt(rowId, false, contactCompleted, contactUnsearched);
           contactBatchOmissions++;
           webUnavailable++;
           if (budgetStop) contactBudgetDeferred++;
@@ -7994,6 +7998,7 @@ ${JSON.stringify(gaps)}
 
   const contactStats = contactStatsSnapshot();
   contactStats.browserCircuitOpen = browserCircuitOpen;
+  contactStats.unsearched = contactUnsearched.size;
   const ok = contactStats.ok;
   const unavailable = contactStats.unavailable;
   const notFound = contactStats.notFound;
