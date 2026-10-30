@@ -255,6 +255,10 @@ export function checkpointSummary(value) {
       ? value.enrichment_completed_ids.length : 0,
     contacts_completed: Array.isArray(value.contact_completed_ids)
       ? value.contact_completed_ids.length : 0,
+    contacts_deferred: Array.isArray(value.contact_unsearched_ids)
+      ? value.contact_unsearched_ids.length : 0,
+    continuation_available: Array.isArray(value.contact_unsearched_ids) &&
+      value.contact_unsearched_ids.length > 0,
     pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };
