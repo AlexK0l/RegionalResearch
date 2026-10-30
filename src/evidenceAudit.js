@@ -31,7 +31,7 @@ export function auditReplayEvidence(data) {
       else unlinked.push(note);
     }
     const candidates = unique(notes.flatMap(note=>
-      [...note.matchAll(/подтвержденн(?:ый|ого)\s+инн\s*:\s*(\d{10}|\d{12})/gi)]
+      [...normalized(note).matchAll(/подтвержденн(?:ый|ого)\s+инн\s*:\s*(\d{10}|\d{12})/gi)]
         .map(m=>m[1]))).filter(validInn);
     const legal = [];
     if (!row.inn) {

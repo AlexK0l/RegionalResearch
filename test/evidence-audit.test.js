@@ -21,3 +21,22 @@ test("note without inline URL is not fabricated into fact",()=>{
  assert.equal(r.summary.fact_records_with_explicit_inline_urls,0);
  assert.equal(r.records[0].notes_without_inline_urls,1);
 });
+
+test("both Russian spellings of confirmed INN are recognized without changing the row", () => {
+ const input={checkpoint:"spellings",rows:[{
+   canonical_id:"x",organization:"Candidate",inn:"",replay_grade:"B",
+   evidence_notes:[
+     "Подтверждённый ИНН: 6731069440",
+     "Подтвержденный ИНН: 6731069440",
+     "Подтвержденного ИНН: 6731069440"
+   ]
+ }]};
+ const snapshot=JSON.stringify(input);
+ const report=auditReplayEvidence(input);
+ assert.equal(report.records[0].candidate_inns_for_review.length,1);
+ assert.equal(report.records[0].candidate_inns_for_review[0].inn,"6731069440");
+ assert.equal(report.records[0].candidate_inns_for_review[0].status,"candidate_requires_legal_verification");
+ assert.equal(report.summary.inn_candidates_for_manual_review,1);
+ assert.equal(input.rows[0].inn,"");
+ assert.equal(JSON.stringify(input),snapshot);
+});
