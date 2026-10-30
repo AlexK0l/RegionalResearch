@@ -55,5 +55,12 @@ test("exports synchronized reference workbook layout", () => {
   assert.equal(direct[1][21], 42);
   assert.equal(intermediary[1][2], "ООО Посредник");
   assert.equal(leasing[1][2], "ООО Лизинг");
-  assert.equal(wb.Sheets["Статистика по цветам"].D2.f, "COUNTIF('Прямые покупатели'!B:B,\"<>\")-1");
+  const colors = wb.Sheets["Статистика по цветам"];
+  assert.match(colors.D2.f, /COUNTIF/);
+  assert.equal(colors.D2.v, 1, "cached total must be correct without a formula engine");
+  assert.equal(colors.D4.v, 1, "blank CRM color code is unprocessed/white");
+  for (const cell of ["D5", "D6", "D7", "D8", "D9"]) {
+    assert.equal(colors[cell].v, 0, cell + " counts only explicit CRM color values");
+  }
+  assert.match(colors.D4.f, /SUMPRODUCT/, "white formula counts blank and zero once");
 });
