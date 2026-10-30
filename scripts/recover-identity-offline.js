@@ -48,7 +48,7 @@ const columns = [
   "Организация", "Управляющая компания", "ИНН", "Город/район",
   "Техника/сегмент", "Основание", "Телефон", "Следующее действие",
   "Почему им нужно звонить / потенциальный интерес к САТ", "Руководитель / ЛПР",
-  "Выручка последнего подтвержденного года", "Численность", "__comment"
+  "Выручка последнего подтвержденного года", "Численность"
 ];
 const clean = (v, key) => {
   if (v === undefined || v === null) return "";
@@ -90,6 +90,14 @@ for (const [key, name] of Object.entries(sheetNames)) {
     const header = columns;
     const cells = [header, ...selected.map((row) => header.map((field) => clean(row[field], field)))];
     tab = XLSX.utils.aoa_to_sheet(cells);
+    // The research note belongs to the company cell, not to a visible
+    // __comment column. Original JSON and template-mode projection stay intact.
+    selected.forEach((row, index) => {
+      const note = String(row.__comment || "").trim();
+      if (!note) return;
+      const cell = tab[XLSX.utils.encode_cell({ r: index + 1, c: 0 })];
+      if (cell) XLSX.utils.cell_add_comment(cell, [{ a: "RegionalResearch", t: note }]);
+    });
     tab["!cols"] = header.map((h) => ({ wch: h === "Организация" ? 45 :
       h === "Основание" || h === "Техника/сегмент" ? 66 :
       h === "ИНН" ? 19 : h === "Телефон" ? 25 : 26 }));
@@ -141,6 +149,17 @@ addSheet("Ручная проверка ИНН", [
   "Обоснования": g.decisions?.map((x) => x.reason) || g.outside_owners || [],
   "ОГРН": g.ogrns || [],
   "Источники": g.identity_sources || []
+})));
+addSheet("Конфликты готовых ИНН", [
+  "ИНН-кандидат из заметки", "Организация", "Лист", "Причина остановки",
+  "ИНН в основном поле", "Решение"
+], (audit.untrusted_or_unmatched || []).map((r) => ({
+  "ИНН-кандидат из заметки": r.inn,
+  "Организация": r.company,
+  "Лист": r.sheet,
+  "Причина остановки": r.reason,
+  "ИНН в основном поле": r.existingInn || "",
+  "Решение": "Ручная проверка по юридическому лицу; не заменять существующий ИНН автоматически."
 })));
 addSheet("Подразделения", ["ИНН головного (кандидат)", "Подразделение",
   "Исходный ID", "Возможная головная организация", "Решение"],

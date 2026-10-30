@@ -74,6 +74,8 @@ test("offline identity recovery exports copies and leaves SQLite untouched, with
     assert.equal(String(rows[0]["ИНН"]), inn);
     assert.ok(workbook.Sheets["Офлайн восстановление"]);
     assert.ok(workbook.Sheets["Ручная проверка ИНН"]);
+    assert.ok(workbook.Sheets["Конфликты готовых ИНН"]);
+    assert.equal(rows[0]["__comment"], undefined, "visible comments column is not allowed in standalone export");
     assert.throws(() => execFileSync(process.execPath, args, { encoding: "utf8" }));
     assert.equal(hash(dataFile), checksum);
   } finally {
@@ -149,5 +151,31 @@ test("template mode preserves SAT CRM columns and unrelated workbook tabs", () =
   } finally {
     try { db.close(); } catch {}
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("standalone offline recovery stores company memo as an Excel first-cell comment",()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"regionalresearch-comment-"));
+  const database=path.join(dir,"saved.sqlite");
+  const db=new DatabaseSync(database);
+  try {
+    const person=company("АО «Выгрузка»");
+    person.__comment="Сайт/источник: https://example.org\nИНН: не подтверждено";
+    const payload={final_result:{direct_buyers:[person],intermediaries:[],leasing:[],statistics:[]}};
+    db.exec("CREATE TABLE research_checkpoints (id TEXT, region TEXT, mode TEXT, status TEXT, updated_at TEXT, payload TEXT)");
+    db.prepare("INSERT INTO research_checkpoints VALUES (?, ?, ?, ?, ?, ?)").run(
+      "comment-test","Смоленская область","full","completed","2026-10-30T08:30:00Z",JSON.stringify(payload)
+    );
+    db.close();
+    const script=fileURLToPath(new URL("../scripts/recover-identity-offline.js",import.meta.url));
+    const output=JSON.parse(execFileSync(process.execPath,[script,database,"--out="+dir+"/out"],{encoding:"utf8"}));
+    const exported=XLSX.readFile(output.outputs.xlsx,{cellStyles:true});
+    const tab=exported.Sheets["Прямые покупатели"];
+    const headers=XLSX.utils.sheet_to_json(tab,{header:1})[0];
+    assert.ok(!headers.includes("__comment"));
+    assert.match(tab.A2.c[0].t,/Сайт\/источник: https:\/\/example.org/);
+  } finally {
+    try{db.close()}catch{}
+    rmSync(dir,{recursive:true,force:true});
   }
 });
