@@ -103,7 +103,9 @@ function browserCheckpointForRegion(region){
     updated_at:checkpoint.updated_at||record.saved_at||null,
     compatible:!config?.pipelineVersion||!pipelineVersion||pipelineVersion===Number(config.pipelineVersion),
     source:"browser",
-    browser_checkpoint:checkpoint
+    browser_checkpoint:checkpoint,
+    contacts_deferred:Array.isArray(checkpoint.contact_unsearched_ids)?checkpoint.contact_unsearched_ids.length:0,
+    continuation_available:Array.isArray(checkpoint.contact_unsearched_ids)&&checkpoint.contact_unsearched_ids.length>0
   };
 }
 
@@ -202,6 +204,7 @@ function formatCheckpointPhase(phase){
 
 function renderRegionCheckpoint(checkpoint){
   regionCheckpoint=checkpoint||null;
+  if(checkpoint&&checkpoint.status==="completed"&&!checkpoint.continuation_available)checkpoint=null;
   if(!checkpoint){
     e.regionCheckpointBox.hidden=true;
     e.regionResume.disabled=true;
@@ -215,7 +218,9 @@ function renderRegionCheckpoint(checkpoint){
   const batch=Number(checkpoint.completed_final_batches||0);
   const sourceText=checkpoint.source==="browser"?"браузер":"backend / SQLite";
   e.regionCheckpointText.textContent=
-    "Есть незавершённое исследование · "+formatCheckpointPhase(checkpoint.phase)+
+    (checkpoint.status==="completed"
+      ?"Исследование завершено, но "+Number(checkpoint.contacts_deferred||0)+" компаний осталось без проверки контактов · "
+      :"Есть незавершённое исследование · ")+formatCheckpointPhase(checkpoint.phase)+
     " · завершено discovery-этапов: "+Number(checkpoint.completed_stage||0)+
     (batch?" · final batches: "+batch:"")+
     " · сохранено: "+updated+
@@ -224,6 +229,7 @@ function renderRegionCheckpoint(checkpoint){
   e.regionCheckpointBox.hidden=false;
   e.regionResume.disabled=checkpoint.compatible===false;
   e.start.textContent="Начать новое исследование";
+  e.regionResume.textContent=checkpoint.status==="completed"?"Продолжить недоисследованные контакты":"Продолжить с checkpoint";
 }
 
 async function refreshRegionCheckpoint(){
@@ -380,8 +386,9 @@ async function poll(restoring=false){
     if(d.state==="completed"){
       if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
       setControlsRunning(false);
-      e.resume.hidden=true;
-      e.resume.disabled=true;
+      e.resume.hidden=!d.continuation_available;
+      e.resume.disabled=!d.continuation_available;
+      e.resume.textContent=d.continuation_available?"Продолжить недоисследованные контакты":"Продолжить с checkpoint";
       e.checkpoint.hidden=!d.resume_available;
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
@@ -393,7 +400,11 @@ async function poll(restoring=false){
         ", посредники: "+(c.intermediaries||0)+
         ", лизинг: "+(c.leasing||0)+
         ". Проверено компаний: "+(g.total||0)+
-        ", контакты подтверждены для "+(g.ok||0)+".";
+        ", контакты подтверждены для "+(g.ok||0)+"."+
+        (d.continuation_available
+          ?" Отложено без поиска: "+Number(d.checkpoint?.contacts_deferred||0)+
+            ". Доступно продолжение с checkpoint в пределах оставшегося бюджета."
+          :"");
       return;
     }
 
