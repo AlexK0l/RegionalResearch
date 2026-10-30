@@ -180,6 +180,20 @@ const AFFIRMED_OWN_TRAILERS_A =
 const ADDITIONAL_DIRECT_NEGATIVE_A = /публичн.{0,25}подтвержден.{0,100}(?:парк|лизинг|эксплуатаци).{0,100}(?:прицеп|полуприцеп).{0,90}нет/i;
 const ADDITIONAL_UNSUPPORTED_A = /(?:парк.{0,60}(?:прицепн|полуприцеп).{0,70}требу.{0,35}проверк|(?:прицепн|полуприцеп).{0,45}(?:парк|техник).{0,45}требу.{0,35}проверк|(?:склад|автопарк).{0,110}потребност.{0,75}(?:прицеп|полуприцеп))/i;
 const CONCRETE_POSITIVE_TRAILER_A = /(?:собственн.{0,55}(?:полуприцеп|прицеп)|(?:прицеп|полуприцеп).{0,45}(?:в собственности|на балансе|эксплуат)|(?:купил|куплен|приобрел|приобрела|приобрели|закупк).{0,65}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,65}(?:купил|приобрел|закупк))/i;
+// Do not mistake editorial warnings, inferred cargo demand, aggregator
+// snippets or a shared GROUP fleet for fleet ownership by an individual LLC.
+// All checks use one claim at a time except the explicitly unresolved
+// group-fleet attribution, which is checked across the saved notes.
+const EXPLICIT_CLASS_REJECTION_A =
+  /(?:не\s+повышат.{0,18}до\s*a\s*\/\s*b|не\s+присваиват.{0,25}(?:уровен|класс)\s*a|без\s+отдельн.{0,50}доказательств.{0,60}(?:прицеп|полуприцеп))/i;
+const INFERRED_JOB_AND_TRAILER_A =
+  /(?:сочетани.{0,130}(?:категори.{0,10}(?:e|е|ce|се)).{0,100}делает\s+релевантн.{0,90}(?:прицеп|полуприцеп)|(?:агрегированн.{0,25}карточк).{0,140}типов.{0,35}рол.{0,110}(?:прицеп|полуприцеп))/i;
+const GROUP_FLEET_UNATTRIBUTED_A =
+  /(?:распределени.{0,130}(?:между.{0,100})?не\s+раскрыт|не\s+раскрыт.{0,100}распределени.{0,90}(?:парк|техник|единиц))/i;
+const ENTITY_SPECIFIC_TRAILER_EVENT_A =
+  /(?:лизингополучател.{0,90}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,90}лизингополучател|(?:купил|купила|куплено|приобрел|приобрела|приобрели).{0,70}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,70}(?:купил|приобрел|приобрела)|(?:в собственности|на балансе|собственник).{0,70}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,70}(?:в собственности|на балансе|собственник))/i;
+const GROUP_FLEET_WORDS_A = /(?:групп|общ.{0,30}парк|предприяти.{0,30}компани)/i;
+
 const THIRD_PARTY_OWNERSHIP_A = /(?:полуприцеп.{0,100}принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн)|принадлеж.{0,60}(?:перевозчик|подрядчик|сторонн).{0,100}полуприцеп|треть.{0,20}сторон.{0,100}полуприцеп)/;
 const POSITIVE_OWNERSHIP_A = /(?:собственн.{0,45}(?:парк|тягач|полуприцеп|прицеп)|подтвержд.{0,50}(?:собственник|владельц)|(?:(?:полуприцеп|прицеп).{0,40}(?:на балансе|в собственности|эксплуатируется))|(?:приобрел|приобрела|приобрели|купил|куплено).{0,55}(?:прицеп|полуприцеп|тонар)|(?:лизингополучател|лизингодател).{0,80}полуприцеп)/;
 const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комплектован|замен).{0,60}прицеп|лизинг\s+седельн.{0,30}тягач)/;
@@ -204,6 +218,24 @@ export function rejectUnsafeAEvidence(record, note) {
     return "trailer_or_own_fleet_not_substantiated";
   }
   if (EXTRA_NEGATIVE_A.test(s)) return "negative_or_inferred_trailer_event";
+  if (EXPLICIT_CLASS_REJECTION_A.test(s)) return "explicit_no_a_or_b_without_new_evidence";
+  if (INFERRED_JOB_AND_TRAILER_A.test(s)) return "aggregated_or_inferred_driver_claim_not_a";
+  if (record?.sheet === "direct_buyers") {
+    const originalNotes = Array.isArray(record?.row?.__evidence?.notes)
+      ? record.row.__evidence.notes.map((text) => String(text || "").toLowerCase().replace(/ё/g, "е"))
+      : [];
+    const groupFleetUndivided = originalNotes.some((other) => GROUP_FLEET_UNATTRIBUTED_A.test(other));
+    // If a later independently stated company-specific purchase/lease/ownership
+    // exists, it can still qualify; group membership alone cannot.
+    const directProof = originalNotes.some((other) =>
+      ENTITY_SPECIFIC_TRAILER_EVENT_A.test(other) &&
+      !GROUP_FLEET_WORDS_A.test(other) &&
+      !GROUP_FLEET_UNATTRIBUTED_A.test(other)
+    );
+    if (groupFleetUndivided && !directProof) {
+      return "shared_group_fleet_not_attributed_to_entity";
+    }
+  }
   if (ADDITIONAL_DIRECT_NEGATIVE_A.test(s) ||
       (ADDITIONAL_UNSUPPORTED_A.test(s) && !CONCRETE_POSITIVE_TRAILER_A.test(s))) {
     return "unsubstantiated_trailer_fleet_or_inferred_need";
