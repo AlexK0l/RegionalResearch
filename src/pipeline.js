@@ -7417,6 +7417,129 @@ ${JSON.stringify(gaps)}
   }));
     await enrichmentCheckpointBatcher.flush();
 
+  // A/B gap recovery is bounded and shares the original $25 and web limits.
+  // This does NOT change discovery and does not invent missing financial data.
+  const abRecoveredIds = new Set(
+    Array.isArray(resumeCheckpoint?.ab_recovery_completed_ids)
+      ? resumeCheckpoint.ab_recovery_completed_ids.map(String) : []
+  );
+  let abRecoveryBatches = 0;
+  let abRecoveryApplied = 0;
+  let abRecoveryDeferred = 0;
+  let abRecoveryFailed = 0;
+  if (AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
+    const abCandidates = eligiblePriorityRecoveryRows(
+      finalCompaniesForEnrichment, abRecoveredIds, checkpointRowId,
+      AB_RECOVERY_MAX_BATCHES * AB_RECOVERY_BATCH_SIZE
+    );
+    const abGroups = [];
+    for (let index = 0; index < abCandidates.length; index += AB_RECOVERY_BATCH_SIZE) {
+      abGroups.push(abCandidates.slice(index, index + AB_RECOVERY_BATCH_SIZE));
+    }
+    console.log("[AB_GAP_RECOVERY_PLAN] " + JSON.stringify({
+      eligible: abCandidates.length,
+      batches: abGroups.length,
+      max_web_per_batch: AB_RECOVERY_MAX_TOOL_CALLS,
+      spent_cost_usd: estimatedApiCostUsd(client)
+    }));
+    for (const batch of abGroups) {
+      await assertNotCancelled();
+      if (deadlineRemaining(stage10DeadlineAt) <= 8000) {
+        abRecoveryDeferred += batch.length;
+        console.log("[AB_GAP_RECOVERY_DEFERRED] " + JSON.stringify({
+          reason: "deadline", count: batch.length
+        }));
+        break;
+      }
+      const targets = batch.map((row) => ({
+        id: checkpointRowId(row),
+        organization: row["Организация"],
+        inn: normalizeInn(row["ИНН"]),
+        city: row["Город/район"],
+        gaps: priorityRecoveryGaps(row),
+        evidence_urls: (row.__evidence?.source_urls || []).slice(0, 2)
+      }));
+      try {
+        const answer = await askJson(client, {
+          input: [
+            "ДОЗАПОЛНЕНИЕ ТОЛЬКО ПОДТВЕРЖДЕННЫХ A/B КОМПАНИЙ.",
+            "РЕГИОН: " + region,
+            "Для каждого id верни ровно указанные организацию и ИНН и массив facts.",
+            "Ищи только отсутствующие поля: Руководитель / ЛПР, Выручка последнего подтвержденного года (целое число рублей и год), Численность (целое число).",
+            "Каждый факт подтверждай конкретной HTTPS-страницей о ТОМ ЖЕ юридическом лице.",
+            "evidence_excerpt для каждого факта должен ДОСЛОВНО содержать ИНН и значение; для выручки также год. Иначе не возвращай факт.",
+            "Не переноси выручку/численность/руководителя с холдинга на дочернюю компанию или с другого одноимённого ООО.",
+            "Не ищи новые компании, телефон, ИНН или прицепы. Не меняй ранее подтверждённые значения.",
+            "Нечего подтвердить — верни facts:[]; это исследованный пустой результат.",
+            "КОМПАНИИ: " + JSON.stringify(targets)
+          ].join("\n"),
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: Math.max(4000, TARGETED_SEARCH_MAX_OUTPUT_TOKENS),
+          webSearch: true,
+          responseSchema: AB_RECOVERY_SCHEMA,
+          schemaName: "ab_verified_gap_recovery",
+          maxToolCalls: AB_RECOVERY_MAX_TOOL_CALLS,
+          diagnosticLabel: "enrichment priority | " + batch.length + " verified A/B entities",
+          timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2,
+            Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
+          allowJsonRepair: false
+        });
+        abRecoveryBatches++;
+        const answers = new Map(
+          (Array.isArray(answer?.items) ? answer.items : [])
+            .filter((item) => item && typeof item.id === "string")
+            .map((item) => [String(item.id), item])
+        );
+        for (const row of batch) {
+          const id = checkpointRowId(row);
+          const applied = applyPriorityRecoveryItem(row, answers.get(id), id);
+          if (applied.researched) {
+            abRecoveredIds.add(id);
+            abRecoveryApplied += applied.applied.length;
+            if (applied.applied.length) mergeResearchComment(
+              row, "Сайт/источник: " + applied.applied[0].source_url
+            );
+          } else {
+            abRecoveryDeferred++;
+          }
+        }
+        console.log("[AB_GAP_RECOVERY_RESULT] " + JSON.stringify({
+          batch: abRecoveryBatches,
+          requested: batch.length,
+          completed: batch.filter((r) => abRecoveredIds.has(checkpointRowId(r))).length,
+          new_verified_facts: abRecoveryApplied
+        }));
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        abRecoveryFailed++;
+        abRecoveryDeferred += batch.length;
+        console.warn("[AB_GAP_RECOVERY_ERROR] " + JSON.stringify({
+          error: error?.message || String(error), budget_stop: isWebBudgetStop(error)
+        }));
+        if (isWebBudgetStop(error)) break;
+      }
+      // Accepted facts and completed IDs are saved in the same checkpoint.
+      if (abRecoveryBatches % 4 === 0 || abRecoveryFailed > 0) {
+        await persistCheckpoint("enrichment", {
+          final_result: finalResult,
+          ab_recovery_completed_ids: [...abRecoveredIds]
+        });
+      }
+    }
+    await persistCheckpoint("enrichment", {
+      final_result: finalResult,
+      ab_recovery_completed_ids: [...abRecoveredIds],
+      ab_recovery_stats: {
+        batches: abRecoveryBatches, accepted_facts: abRecoveryApplied,
+        deferred: abRecoveryDeferred, errors: abRecoveryFailed
+      }
+    });
+    console.log("[AB_GAP_RECOVERY_SUMMARY] " + JSON.stringify({
+      batches: abRecoveryBatches, new_verified_facts: abRecoveryApplied,
+      deferred: abRecoveryDeferred, errors: abRecoveryFailed
+    }));
+  }
+
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
   finalResult.statistics = await statisticsPromise;
