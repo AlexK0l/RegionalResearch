@@ -7653,10 +7653,9 @@ ${JSON.stringify(gaps)}
   const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
   const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
   const resumedNotFound = contactCheckpointVersion >= 2 ? Number(resumedContactStats.notFound || 0) : 0;
-  let primaryProcessed =
-    contactCheckpointVersion >= 2
-      ? Number(resumedContactStats.primaryProcessed || primaryResults.size || 0)
-      : 0;
+  // Previous primaryProcessed included deferred omissions. Resume progress
+  // from actually completed/received results, not prior attempts.
+  let primaryProcessed = 0;
   // Initialized here because contactStatsSnapshot closes over these values
   // and may be called before the first batch starts.
   let contactBatchCalls = 0, contactBatchMatched = 0, contactFallbackCalls = 0;
@@ -7719,6 +7718,7 @@ ${JSON.stringify(gaps)}
 
   googleCompanies.sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
   const contactPending = pendingContactRows(googleCompanies, contactCompleted, primaryResults, checkpointRowId);
+  primaryProcessed = Math.max(0, googleCompanies.length - contactPending.length);
 
   console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
     total_companies: companies.length,
