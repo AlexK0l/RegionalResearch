@@ -3,7 +3,7 @@
 import { confirmedInnAliasDecision, identityOgrns, legalNameKey } from "./legalIdentity.js";
 
 const SHEETS = ["direct_buyers", "intermediaries", "leasing"];
-const CONFLICT_REGEX = /Final INN conflict:\s*ИНН\s*(\d{10}|\d{12})/i;
+const CONFLICT_REGEX = /Final INN conflict:\s*ИНН\s*(\d{12}|\d{10})(?!\d)/i;
 const EMPTY = (value) => value == null || String(value).trim() === "";
 const asText = (value) => String(value ?? "").trim();
 const uniq = (values) => [...new Set(values.filter((item) => item != null && String(item).trim() !== ""))];

@@ -263,3 +263,17 @@ test("early discovery keeps possible AO/ZAO aliases for source-backed dedupe lat
   ],"Смоленская область");
   assert.equal(result.length,2, "early discovery keeps unresolved variants; verified alias dedupe happens later");
 });
+
+test("official source short-name phrasing is an explicit alias, not a same-INN guess", () => {
+  const inn = "6731069440";
+  const official = "https://sah67.ru/wp-content/uploads/2022/04/informaczionnaya-kartochka.pdf";
+  const a = make("АО «Спецавтохозяйство»", inn, {
+    proofUrls:[official], notes:[
+      "Final INN: ИНН 6731069440 подтверждён для АО «Спецавтохозяйство», также использующего краткое наименование АО «СпецАТХ»."
+    ]
+  });
+  const b = make("АО «СпецАТХ»", inn, {proofUrls:[official]});
+  assert.equal(decision(a,b,inn).reason, "sourced_explicit_alias");
+  const unrelated = make("АО «Не связанный перевозчик»", inn, {proofUrls:[official]});
+  assert.equal(decision(a,unrelated,inn).merge, false);
+});

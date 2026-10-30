@@ -84,3 +84,12 @@ test("shared group domain is reported only with two shared exact URLs, not as a 
  assert.equal(result.shared_source_pairs[0].shared_urls.length,2);
  assert.equal(result.shared_source_pairs[0].status,"source_overlap_not_an_identity_or_ownership_proof");
 });
+
+test("12-digit individual INN candidates are not silently truncated or dropped",()=>{
+ const inn="673100277725";
+ const data={rows:[{canonical_id:"ip",organization:"ИП Колошева",inn:"",
+   evidence_notes:["Подтверждённый ИНН: "+inn]}]};
+ const result=auditReplayEvidence(data);
+ assert.equal(result.summary.inn_candidates_for_manual_review,1);
+ assert.equal(result.records[0].candidate_inns_for_review[0].inn,inn);
+});

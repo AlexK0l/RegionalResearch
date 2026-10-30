@@ -183,3 +183,33 @@ test("same initial grade does not create a false conflict", () => {
   assert.equal(out.audit.qualification_conflicts.length, 0);
   assert.equal(out.final_result.direct_buyers[0].__evidence.qualification_review, undefined);
 });
+
+test("completed-checkpoint abbreviated joint stock name restores from the saved explicit short-name note",()=>{
+  const source="https://sah67.ru/wp-content/uploads/2022/04/informaczionnaya-kartochka.pdf";
+  const full=make("АО «Спецавтохозяйство»",{URLs:[source],notes:[
+    "Final INN: ИНН 6731069440 подтверждён для АО «Спецавтохозяйство», также использующего краткое наименование АО «СпецАТХ»."
+  ]});
+  const short=make("АО «СпецАТХ»",{URLs:[source]});
+  const input=result(full,short);
+  const before=JSON.stringify(input);
+  const out=restoreAliasesOffline(input,{checkpointId:"test-short-name"});
+  assert.equal(out.audit.restored_inns,1);
+  assert.equal(out.final_result.direct_buyers.length,1);
+  assert.equal(out.final_result.direct_buyers[0]["ИНН"],"6731069440");
+  assert.equal(JSON.stringify(input),before);
+});
+test("full 12-digit individual INN is never truncated to a 10-digit prefix",()=>{
+  const value="673100277725",source="https://identity.example.org/673100277725";
+  const makeIP=(name)=>({
+    "Организация":name,"ИНН":"","Основание":"C — Перевозки",
+    __evidence:{
+      notes:["Final INN conflict: ИНН "+value+" встретился у несовместимых сущностей и очищен до однозначного подтверждения."],
+      source_urls:[source],
+      identity_verification:{inn:value,method:"final_inn_web",source_urls:[source]}
+    }
+  });
+  const a=makeIP("ИП Колошева В.И."),b=makeIP("Индивидуальный предприниматель Колошева В.И.");
+  const recovered=restoreAliasesOffline(result(a,b),{checkpointId:"ip"});
+  assert.equal(recovered.audit.restored_inns,1);
+  assert.equal(recovered.final_result.direct_buyers[0]["ИНН"],value);
+});
