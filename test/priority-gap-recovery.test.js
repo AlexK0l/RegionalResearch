@@ -104,3 +104,22 @@ test("bounded recovery fairly covers B even when most A companies need data", ()
   assert.equal(selected.filter((r) => r.__final_grade === "A").length, 40);
   assert.equal(selected.filter((r) => r.__final_grade === "B").length, 20);
 });
+
+
+test("numbers embedded in INN or another large number are not standalone facts", () => {
+  const row = makeRow();
+  const result = applyPriorityRecoveryItem(row, item([
+    fact("Численность", "1114", "ИНН 6732001114. Численность не указана."),
+    fact("Выручка последнего подтвержденного года", "2024", "ИНН 6732001114, отчётность 2024 года. Выручка не указана.", "2024")
+  ]), "q0001");
+  assert.equal(result.applied.length, 1, "the year is a standalone number, but the embedded INN substring must be rejected");
+  assert.equal(row["Численность"], "");
+});
+
+test("unlabeled numeric sequence is not sufficient legal-entity proof", () => {
+  const row = makeRow();
+  const result = applyPriorityRecoveryItem(row, item([
+    fact("Численность", "46", "6732001114, сотрудников: 46")
+  ]), "q0001");
+  assert.equal(result.applied.length, 0);
+});
