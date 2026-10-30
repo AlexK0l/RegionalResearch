@@ -68,7 +68,10 @@ test("offline checkpoint replay preserves full unqualified leads, without sqlite
     assert.equal(audit.openai_calls, 0);
     assert.equal(audit.counts.input, 4);
     assert.equal(audit.counts.review_queue_candidates, 1);
+    assert.equal(audit.counts.excluded_without_review, 2);
     assert.equal(audit.review_queue.length, 1);
+    assert.equal(audit.rows.find((r) => r.organization === "ООО «Русавлогистик»").qualification_status, "REVIEW");
+    assert.equal(audit.rows.find((r) => r.organization === "ФГБУК «Хмелита»").qualification_status, "EXCLUDED");
     const original = audit.review_queue[0];
     assert.equal(original.row["Организация"], "ООО «Русавлогистик»");
     assert.equal(original.row["ИНН"], "6732040299");
@@ -78,6 +81,9 @@ test("offline checkpoint replay preserves full unqualified leads, without sqlite
     assert.equal(audit.rows.some((r) => r.organization.includes("Неизвестное объявление") && r.review_queue_candidate), false);
     const workbook = XLSX.readFile(path.join(outDir, prefix + ".xlsx"));
     assert.ok(workbook.SheetNames.includes("Очередь сохранения"));
+    const all = XLSX.utils.sheet_to_json(workbook.Sheets["Все компании"]);
+    assert.equal(all.find((r) => r["Организация"] === "ООО «Русавлогистик»")["Новый класс"], "REVIEW");
+    assert.equal(all.find((r) => r["Организация"] === "ФГБУК «Хмелита»")["Новый класс"], "ИСКЛЮЧЕНО");
     const saved = XLSX.utils.sheet_to_json(workbook.Sheets["Очередь сохранения"]);
     assert.equal(saved.length, 1);
     assert.equal(saved[0]["Организация"], "ООО «Русавлогистик»");

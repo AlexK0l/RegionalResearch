@@ -49,6 +49,7 @@ const counts = {
   replay: { A: 0, B: 0, C: 0, excluded: 0 },
   legal_exclusions: 0, changed_grades: 0, a_demotions: 0,
   review_queue_candidates: 0,
+  excluded_without_review: 0,
   kept_without_inn: 0, missing_source_urls: 0
 };
 for (const record of records) {
@@ -69,6 +70,7 @@ for (const record of records) {
       row: structuredClone(row)
     });
   }
+  if (!current && !reviewCandidate) counts.excluded_without_review++;
   counts.archived[previous || "excluded"] = (counts.archived[previous || "excluded"] || 0) + 1;
   counts.replay[current || "excluded"] = (counts.replay[current || "excluded"] || 0) + 1;
   if (previous !== current) counts.changed_grades++;
@@ -85,6 +87,9 @@ for (const record of records) {
     inn: String(row["ИНН"] || ""),
     archived_grade: previous,
     replay_grade: current,
+    // The grade remains empty for REVIEW, but the human-facing status must
+    // not conflate a recoverable lead with an actual exclusion.
+    qualification_status: current || (reviewCandidate ? "REVIEW" : "EXCLUDED"),
     changed: previous !== current,
     review_queue_candidate: reviewCandidate,
     a_rule: decision.aRule || "",
@@ -128,7 +133,10 @@ XLSX.utils.book_append_sheet(wb, table(["Показатель", "Значени�
   ["Архив A", counts.archived.A], ["Архив B", counts.archived.B],
   ["Архив C", counts.archived.C], ["Пересчёт A", counts.replay.A],
   ["Пересчёт B", counts.replay.B], ["Пересчёт C", counts.replay.C],
-  ["Исключено", counts.replay.excluded], ["Изменено классов", counts.changed_grades],
+  ["Вне классов A/B/C (включая REVIEW)", counts.replay.excluded],
+  ["Из них сохранено в REVIEW", counts.review_queue_candidates],
+  ["Исключено без сохранения в REVIEW", counts.excluded_without_review],
+  ["Изменено классов", counts.changed_grades],
   ["Снято A", counts.a_demotions], ["Исключено по юридической форме/статусу", counts.legal_exclusions],
   ["Сохранено в очереди проверки", counts.review_queue_candidates],
   ["OpenAI", 0], ["Web search", 0],
@@ -143,7 +151,7 @@ const headers = [
 ];
 const map = (r) => [
   r.canonical_id, r.organization, r.sheet, r.inn, r.archived_grade,
-  r.replay_grade || "ИСКЛЮЧЕНО", r.why, r.a_rule,
+  r.replay_grade || (r.review_queue_candidate ? "REVIEW" : "ИСКЛЮЧЕНО"), r.why, r.a_rule,
   r.archived_a_evidence, r.a_evidence, r.legal_blocked ? "ДА" : "",
   r.legal_kind, r.legal_reason, r.legal_url, r.source_urls.join("\n"), r.fact_count,
   r.review_queue_candidate ? "ДА" : ""
