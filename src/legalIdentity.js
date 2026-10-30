@@ -80,6 +80,21 @@ function sameRole(a, b) {
   const x = roleSignature(a), y = roleSignature(b);
   return x.branch === y.branch && x.group === y.group;
 }
+// Distinguish LLC, joint-stock and sole-proprietor records even if their
+// commercial names and a disputed INN happen to match. Historical
+// AO/OAO/ZAO/PAO notation is one family; LLC <-> AO is never an automatic
+// name-only merge. Verified reorganization must be reviewed separately.
+function legalFormFamily(name) {
+  const s = comparableText(name);
+  if (/^(?:ооо |общество с ограниченной ответственностью )/u.test(s)) return "llc";
+  if (/^(?:ао |оао |зао |пао |акционерное общество |открытое акционерное общество |закрытое акционерное общество |публичное акционерное общество )/u.test(s)) return "joint_stock";
+  if (/^(?:ип |индивидуальный предприниматель )/u.test(s)) return "individual";
+  return "";
+}
+function legalFormConflict(nameA, nameB) {
+  const a = legalFormFamily(nameA), b = legalFormFamily(nameB);
+  return Boolean(a && b && a !== b);
+}
 // Reused after an INN was cleared. A blank INN must never disable OGRN
 // conflict checks and permit the same records to merge by name alone.
 export function legalEvidenceConflict(recordA, recordB) {
@@ -89,6 +104,7 @@ export function legalEvidenceConflict(recordA, recordB) {
   if (ogA.length > 1 || ogB.length > 1) return "conflicting_ogrns_in_one_record";
   if (ogA.length && ogB.length && ogA[0] !== ogB[0]) return "different_ogrns";
   if (!sameRole(a["Организация"], b["Организация"])) return "different_legal_roles";
+  if (legalFormConflict(a["Организация"], b["Организация"])) return "different_legal_forms";
   return "";
 }
 
@@ -142,6 +158,7 @@ export function confirmedInnAliasDecision(recordA, recordB, inn, compatibleNames
     return { ...base, merge: false, reason: "different_ogrns" };
   }
   if (!sameRole(nameA, nameB)) return { ...base, merge: false, reason: "different_legal_roles" };
+  if (legalFormConflict(nameA, nameB)) return { ...base, merge: false, reason: "different_legal_forms" };
   if (legalNameKey(nameA) === legalNameKey(nameB)) {
     return { ...base, merge: true, reason: "same_normalized_legal_name" };
   }

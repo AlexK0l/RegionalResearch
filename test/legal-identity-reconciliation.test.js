@@ -215,3 +215,23 @@ test("conflicting OGRN prevents even one-sided-INN fuzzy alias merge", () => {
   const deduped = postInnDedupe(final, "Смоленская область");
   assert.equal(deduped.records.length, 2);
 });
+
+test("incorrect LLC/JSC identity is not silently merged even with same INN and business name", () => {
+  const inn = "7718725461";
+  const listed = make("АО «ЖелДорЭкспедиция»", inn, {
+    notes: ["Final INN: В исходном названии указана некорректная организационно-правовая форма."]
+  });
+  const legal = make("ООО «ЖелДорЭкспедиция»", inn);
+  const decisionResult = decision(listed, legal, inn);
+  assert.equal(decisionResult.merge, false);
+  assert.equal(decisionResult.reason, "different_legal_forms");
+  const deduped = postInnDedupe({direct_buyers:[listed,legal],intermediaries:[],leasing:[]}, "Смоленская область");
+  assert.equal(deduped.records.length, 2);
+});
+
+test("historic joint-stock variants retain the same legal-form family", () => {
+  const inn = "6722009927";
+  const a = make("ЗАО «Вязьмадор»", inn);
+  const b = make("АО «Вязьмадор»", inn);
+  assert.equal(decision(a,b,inn).merge,true);
+});
