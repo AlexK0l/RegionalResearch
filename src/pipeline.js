@@ -5,6 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
+import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
@@ -655,7 +656,51 @@ const ENRICHMENT_BATCH_SCHEMA = {
   } } }, required: ["items"]
 };
 
+
+// Bounded cited A/B fact recovery. Every call consumes normal global/phase
+// web calls and the same estimated USD cost limit.
+const AB_RECOVERY_ENABLED =
+  String(process.env.OPENAI_AB_RECOVERY_ENABLED ?? "true").toLowerCase() === "true";
+const AB_RECOVERY_BATCH_SIZE = Math.max(
+  1, Math.min(4, Number(process.env.OPENAI_AB_RECOVERY_BATCH_SIZE || 3))
+);
+const AB_RECOVERY_MAX_BATCHES = Math.max(
+  0, Math.min(60, Number(process.env.OPENAI_AB_RECOVERY_MAX_BATCHES ?? 20))
+);
+const AB_RECOVERY_MAX_TOOL_CALLS = Math.max(
+  1, Math.min(3, Number(process.env.OPENAI_AB_RECOVERY_BATCH_MAX_TOOL_CALLS || 2))
+);
+
 const CONTACT_BATCH_SETTINGS = contactLimits();
+
+const AB_RECOVERY_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: { items: {
+    type: "array", items: {
+      type: "object", additionalProperties: false,
+      properties: {
+        id: { type: "string" },
+        organization: { type: "string" },
+        inn: { type: "string" },
+        facts: { type: "array", items: {
+          type: "object", additionalProperties: false,
+          properties: {
+            field: { type: "string", enum: [
+              "Руководитель / ЛПР",
+              "Выручка последнего подтвержденного года",
+              "Численность"
+            ] },
+            value: { type: "string" },
+            year: { type: "string" },
+            source_url: { type: "string" },
+            evidence_excerpt: { type: "string" }
+          }, required: ["field", "value", "year", "source_url", "evidence_excerpt"]
+        } }
+      }, required: ["id", "organization", "inn", "facts"]
+    }
+  } }, required: ["items"]
+};
+
 const CONTACT_BATCH_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: {
