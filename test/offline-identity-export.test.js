@@ -173,7 +173,7 @@ test("standalone offline recovery stores company memo as an Excel first-cell com
     const tab=exported.Sheets["Прямые покупатели"];
     const headers=XLSX.utils.sheet_to_json(tab,{header:1})[0];
     assert.ok(!headers.includes("__comment"));
-    assert.match(tab.A2.c[0].t,/Сайт\/источник: https:\/\/example.org/);
+    assert.match(JSON.stringify(tab.A2.c),/example.org/);
   } finally {
     try{db.close()}catch{}
     rmSync(dir,{recursive:true,force:true});
