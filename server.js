@@ -103,12 +103,26 @@ app.get("/api/checkpoints", async (req, res) => {
     const mode = String(req.query.mode || "full").trim() || "full";
     if (!region) return res.status(400).json({ error: "Регион обязателен" });
 
-    const checkpoint = await findLatestCheckpoint(region, mode);
+    const history = await listRegionCheckpoints(region, mode, 5);
+    let checkpoint = await findLatestCheckpoint(region, mode);
+    if (!checkpoint) {
+      // A completed study may still contain genuinely unresearched contacts.
+      // Offer continuation from SQLite even after a browser/app restart.
+      const recent = history.find((item) => item.status === "completed");
+      if (recent) {
+        const saved = await loadCheckpoint(recent.id);
+        if (Array.isArray(saved?.contact_unsearched_ids) &&
+            saved.contact_unsearched_ids.length > 0) {
+          checkpoint = { ...checkpointSummary(saved),
+            id: recent.id, mode, status: "completed" };
+        }
+      }
+    }
     res.setHeader("Cache-Control", "no-store");
     res.json({
       exists: Boolean(checkpoint),
       checkpoint,
-      history: await listRegionCheckpoints(region, mode, 5)
+      history
     });
   } catch (error) {
     res.status(500).json({ error: error?.message || "Не удалось прочитать checkpoints" });
@@ -468,6 +482,8 @@ app.get("/api/jobs/:id", (req, res) => {
       : null,
     checkpoint: checkpointSummary(job.latestCheckpoint),
     resume_available: Boolean(job.latestCheckpoint),
+    continuation_available: Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
+      job.latestCheckpoint.contact_unsearched_ids.length > 0,
     log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
