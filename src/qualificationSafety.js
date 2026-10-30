@@ -227,11 +227,15 @@ export function rejectUnsafeAEvidence(record, note) {
     const groupFleetUndivided = originalNotes.some((other) => GROUP_FLEET_UNATTRIBUTED_A.test(other));
     // If a later independently stated company-specific purchase/lease/ownership
     // exists, it can still qualify; group membership alone cannot.
-    const directProof = originalNotes.some((other) =>
-      ENTITY_SPECIFIC_TRAILER_EVENT_A.test(other) &&
-      !GROUP_FLEET_WORDS_A.test(other) &&
-      !GROUP_FLEET_UNATTRIBUTED_A.test(other)
-    );
+    const entityName = normalized(record?.row?.["Организация"] || "");
+    const directProof = originalNotes.some((other) => {
+      const noteNamesThisEntity = Boolean(entityName) && normalized(other).includes(entityName);
+      return ENTITY_SPECIFIC_TRAILER_EVENT_A.test(other) &&
+        !GROUP_FLEET_UNATTRIBUTED_A.test(other) &&
+        // "ФАНТОМ ГРУПП" is a legal name, not automatically a GROUP-fleet
+        // attribution. A separate contract naming that exact entity wins.
+        (!GROUP_FLEET_WORDS_A.test(other) || noteNamesThisEntity);
+    });
     if (groupFleetUndivided && !directProof) {
       return "shared_group_fleet_not_attributed_to_entity";
     }
