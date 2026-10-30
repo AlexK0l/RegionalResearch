@@ -251,7 +251,7 @@ test("discovery-time same-INN merge also refuses mismatched LLC/JSC legal forms"
   assert.deepEqual(result.flatMap(x=>x.candidate_ids).sort(),["1","2"]);
 });
 
-test("discovery-time same name and same legal family still merge when identity is compatible", () => {
+test("early discovery keeps possible AO/ZAO aliases for source-backed dedupe later", () => {
   const inn = "6722009927";
   const makeCandidate = (id, name) => ({
     candidate_id:id,source_step:1,source_sheet:"direct_buyers",
@@ -261,5 +261,5 @@ test("discovery-time same name and same legal family still merge when identity i
     makeCandidate("1","ЗАО «Вязьмадор»"),
     makeCandidate("2","АО «Вязьмадор»")
   ],"Смоленская область");
-  assert.equal(result.length,1);
+  assert.equal(result.length,2, "early discovery keeps unresolved variants; verified alias dedupe happens later");
 });
