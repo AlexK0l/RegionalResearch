@@ -112,7 +112,7 @@ test("numbers embedded in INN or another large number are not standalone facts",
     fact("Численность", "1114", "ИНН 6732001114. Численность не указана."),
     fact("Выручка последнего подтвержденного года", "2024", "ИНН 6732001114, отчётность 2024 года. Выручка не указана.", "2024")
   ]), "q0001");
-  assert.equal(result.applied.length, 1, "the year is a standalone number, but the embedded INN substring must be rejected");
+  assert.equal(result.applied.length, 0, "an INN substring or a financial year cannot be treated as the claimed number");
   assert.equal(row["Численность"], "");
 });
 
