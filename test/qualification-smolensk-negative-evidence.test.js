@@ -167,3 +167,12 @@ test("verified procurement remains A despite incomplete information on the remai
   ]);
   assert.equal(d.grade, "A");
 });
+
+
+test("negative public-proof note does not mask a later affirmative fleet source", () => {
+  const d = classify("ООО «Собственник парка»", [
+    "Публичных подтверждений собственного парка, лизинга либо эксплуатации полуприцепов в найденной ветке нет.",
+    "Позднее опубликован официальный акт: компания эксплуатирует собственный парк полуприцепов Schmitz на перевозках."
+  ]);
+  assert.equal(d.grade, "A");
+});
