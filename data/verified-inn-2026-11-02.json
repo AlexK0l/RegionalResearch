@@ -1,0 +1,61 @@
+{
+  "checkpoint_id": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "reviewed_on": "2026-11-02",
+  "verified_inns": [
+    {
+      "canonical_id": "k000340",
+      "organization": "ООО ПО «Энергоресурс»",
+      "inn": "6732191851",
+      "ogrn": "1206700002376",
+      "source_class": "first_party",
+      "source_url": "https://er67.ru/contact/",
+      "secondary_url": "https://xfirm.ru/company/6732191851",
+      "checked_on": "2026-11-02",
+      "notes": "Реквизиты собственного сайта ПО Энергоресурс. Не переносить номер в ООО Теллура."
+    },
+    {
+      "canonical_id": "k000523",
+      "organization": "ООО «Грин Лайн»",
+      "inn": "6713005690",
+      "ogrn": "1046745602221",
+      "source_class": "government_and_registry",
+      "source_url": "https://smolensk-gov.ru/doc/120340",
+      "secondary_url": "https://firmoteka.ru/6713005690",
+      "checked_on": "2026-11-02",
+      "notes": "Точный ИНН ООО Грин Лайн; группа компаний не идентифицирована как это юридическое лицо."
+    },
+    {
+      "canonical_id": "k000338",
+      "organization": "ООО «СмолВторСталь»",
+      "inn": "6732124140",
+      "ogrn": "1166733058557",
+      "source_class": "current_registry_crosscheck",
+      "source_url": "https://firmoteka.ru/6732124140",
+      "secondary_url": "https://check.tochka.com/company/1166733058557/",
+      "checked_on": "2026-11-02",
+      "notes": "Точная реестровая идентичность СмолВторСталь; имя СмолВторСырье в других источниках требует отдельной проверки."
+    },
+    {
+      "canonical_id": "k000333",
+      "organization": "ООО «СИТИМАТИК»",
+      "inn": "6732054083",
+      "ogrn": "1136733001140",
+      "source_class": "current_registry_crosscheck",
+      "source_url": "https://www.tbank.ru/business/contractor/legal/1136733001140/",
+      "secondary_url": "https://check.tochka.com/company/1136733001140/",
+      "checked_on": "2026-11-02",
+      "notes": "Реквизиты ООО Ситиматик. Смоленский филиал следует сохранить отдельно как региональную площадку."
+    },
+    {
+      "canonical_id": "k000193",
+      "organization": "ООО «Агрофирма-Катынь»",
+      "inn": "6714049860",
+      "ogrn": "1196733017690",
+      "source_class": "first_party",
+      "source_url": "https://olaks.ru/kontakty-agrofirmy/",
+      "secondary_url": "https://industrials.ru/proizvoditel/22307-agrofirma-katyn",
+      "checked_on": "2026-11-02",
+      "notes": "Реквизиты с официальной страницы Агрофирма-Катынь. Нельзя подставлять этот ИНН в КВВ-АГРО."
+    }
+  ]
+}

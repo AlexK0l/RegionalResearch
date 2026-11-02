@@ -12,7 +12,8 @@
     "local": "node --env-file=.env server.js",
     "browser:install": "playwright install chromium",
     "test": "node --test",
-    "compose:offline": "node scripts/compose-offline-crm.js"
+    "compose:offline": "node scripts/compose-offline-crm.js",
+    "verify:inn:offline": "node scripts/apply-verified-inn-offline.js"
   },
   "engines": {
     "node": ">=22"

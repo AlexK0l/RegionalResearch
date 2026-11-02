@@ -1,0 +1,150 @@
+#!/usr/bin/env node
+// Read-only offline correction of five individually reviewed legal identities.
+// No paid API, web request, database mutation or automatic alias merges.
+import fs from 'node:fs';
+import path from 'node:path';
+import XLSX from 'xlsx';
+
+const args=process.argv.slice(2);
+const input=args.find(a=>!a.startsWith('--'));
+const flag=k=>args.find(a=>a.startsWith('--'+k+'='))?.slice(k.length+3);
+const manifestFile=flag('manifest');
+const outputDirectory=flag('out');
+const workbookFile=flag('base-xlsx');
+if(!input||!manifestFile||!outputDirectory){
+  console.error('Usage: node scripts/apply-verified-inn-offline.js <full.json> --manifest=<reviewed.json> --out=<new-dir> [--base-xlsx=<combined.xlsx>]');
+  process.exit(2);
+}
+const baseline=JSON.parse(fs.readFileSync(path.resolve(input),'utf8'));
+const manifest=JSON.parse(fs.readFileSync(path.resolve(manifestFile),'utf8'));
+if(manifest.checkpoint_id!==baseline.checkpoint_id)throw Error('Checkpoint mismatch');
+if(!Array.isArray(manifest.verified_inns)||!baseline.final_result)throw Error('Invalid manifest or full JSON');
+if(!Array.isArray(baseline.rows))throw Error('Full JSON must contain the compact rows index');
+const data=structuredClone(baseline);
+const sheetMap={direct_buyers:'Прямые покупатели',intermediaries:'Посредники',leasing:'Лизинг'};
+const records=new Map(),inns=new Map(),compact=new Map();
+for(const section of Object.keys(sheetMap)){
+ const arr=data.final_result[section];
+ if(!Array.isArray(arr))throw Error('Missing section '+section);
+ for(const row of arr){
+  const id=row.__canonical_id;
+  if(!id||records.has(id))throw Error('Duplicate or missing canonical ID: '+id);
+  records.set(id,{section,row});
+  const inn=String(row['ИНН']||'').trim();
+  if(inn){
+   if(inns.has(inn))throw Error('Already duplicated filled INN in input: '+inn);
+   inns.set(inn,id);
+  }
+ }
+}
+for(const row of data.rows){
+ const id=row.canonical_id;
+ if(!id||compact.has(id))throw Error('Bad compact canonical_id: '+id);
+ compact.set(id,row);
+}
+if(compact.size!==records.size||![...records.keys()].every(id=>compact.has(id)))throw Error('Full/compact record mismatch');
+function checkInn(inn){
+ if(!/^\d{10}(?:\d{2})?$/.test(inn))return false;
+ const digits=[...inn].map(Number);
+ const check=(n,weights)=>weights.reduce((v,w,i)=>v+digits[i]*w,0)%11%10===digits[n];
+ return inn.length===10?check(9,[2,4,10,3,5,9,4,6,8]):
+  check(10,[7,2,4,10,3,5,9,4,6,8])&&check(11,[3,7,2,4,10,3,5,9,4,6,8]);
+}
+const changes=[],seenIds=new Set(),seenNewInns=new Set();
+for(const patch of manifest.verified_inns){
+ const {canonical_id,organization,inn,ogrn,source_url,source_class,checked_on}=patch;
+ if(!canonical_id||!organization||!inn||!ogrn||!source_url||!checked_on)throw Error('Incomplete verification item');
+ if(seenIds.has(canonical_id)||seenNewInns.has(inn))throw Error('Duplicate verification item');
+ if(!checkInn(inn)||!/^\d{13}$/.test(ogrn))throw Error('Invalid INN/OGRN: '+canonical_id);
+ if(!/^https:\/\//.test(source_url)||!['first_party','government_and_registry','current_registry_crosscheck'].includes(source_class))throw Error('Bad verification provenance');
+ const target=records.get(canonical_id);
+ if(!target||target.row['Организация']!==organization)throw Error('Unknown ID or legal name mismatch: '+canonical_id);
+ if(String(target.row['ИНН']||'').trim())throw Error('Refusing to overwrite filled INN: '+canonical_id);
+ if(inns.has(inn))throw Error('INN already assigned to another row: '+inn);
+ if(!compact.get(canonical_id))throw Error('Compact row missing: '+canonical_id);
+ seenIds.add(canonical_id);seenNewInns.add(inn);inns.set(inn,canonical_id);
+ changes.push({canonical_id,organization,inn,ogrn,source_url,source_class,checked_on,section:target.section,
+  notes:patch.notes||'',secondary_url:patch.secondary_url||''});
+}
+// Validate every patch before touching even a detached copy of baseline rows.
+for(const patch of changes){
+ const row=records.get(patch.canonical_id).row;
+ row['ИНН']=patch.inn;
+ row.__evidence ||= {};
+ row.__evidence.source_urls ||= [];
+ for(const url of [patch.source_url,patch.secondary_url].filter(Boolean)){
+  if(!row.__evidence.source_urls.includes(url))row.__evidence.source_urls.push(url);
+ }
+ row.__evidence.notes ||= [];
+ const note='Проверено '+patch.checked_on+': ИНН '+patch.inn+'; ОГРН '+patch.ogrn+'. '+patch.notes+' Источник: '+patch.source_url;
+ row.__evidence.notes.push(note);
+ row.__comment=(row.__comment?row.__comment+'\n\n':'')+'[Проверка ИНН] '+note;
+ row.__verified_identity={inn:patch.inn,ogrn:patch.ogrn,source_url:patch.source_url,
+  source_class:patch.source_class,checked_on:patch.checked_on};
+ compact.get(patch.canonical_id).inn=patch.inn;
+}
+const total=records.size;
+const countInns=[...records.values()].filter(({row})=>String(row['ИНН']||'').trim()).length;
+const grades=[...records.values()].reduce((acc,{row})=>{
+ const g=row.__replay_v5?.status;
+ if(g)acc[g]=(acc[g]||0)+1;
+ return acc;
+},{});
+const expectedGrades=baseline.summary?.grades||{};
+if(Object.keys(expectedGrades).some(k=>(grades[k]||0)!==expectedGrades[k]) ||
+ Object.keys(grades).some(k=>!(k in expectedGrades)))throw Error('Grade mismatch');
+const countSources=[...records.values()].reduce((n,{row})=>n+(row.__evidence?.source_urls?.length||0),0);
+data.summary.with_inn=countInns;
+data.summary.without_inn=total-countInns;
+data.summary.stored_evidence_source_urls=countSources;
+data.summary.manually_verified_inns_added=changes.length;
+data.summary.verified_inn_manifest_date=manifest.reviewed_on;
+data.identity_verification_audit={reviewed_on:manifest.reviewed_on,changes,
+ grades_unchanged:true,auto_merged:0,originals_untouched:true};
+const outDir=path.resolve(outputDirectory);
+fs.mkdirSync(outDir,{recursive:true});
+const prefix='verified_inn_'+data.checkpoint_id.slice(0,8);
+const outputs={json:path.join(outDir,prefix+'.json'),audit:path.join(outDir,prefix+'_audit.json')};
+let wb=null;
+if(workbookFile){
+ wb=XLSX.readFile(path.resolve(workbookFile),{cellComments:true});
+ for(const patch of changes){
+  const section=sheetMap[patch.section],ws=wb.Sheets[section];
+  if(!ws)throw Error('Missing source workbook sheet: '+section);
+  const items=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  const idx=[];
+  for(let i=1;i<items.length;i++)if(items[i][0]===patch.organization)idx.push(i);
+  if(idx.length!==1)throw Error('Workbook name ambiguity: '+patch.organization);
+  const rowNumber=idx[0]+1;
+  const location='C'+rowNumber;
+  if(ws[location]?.v)throw Error('Workbook INN already filled: '+patch.organization);
+  ws[location]={t:'s',v:patch.inn,z:'@'};
+  const titleCell=ws['A'+rowNumber];
+  if(!titleCell)throw Error('Workbook org cell missing');
+  const note='[Проверка '+patch.checked_on+'] ИНН '+patch.inn+'; ОГРН '+patch.ogrn+'. Источник: '+patch.source_url;
+  XLSX.utils.cell_add_comment(titleCell,note,'RegionalResearch');
+ }
+ const headers=['ID','Компания','ИНН','ОГРН','Дата проверки','Тип источника','Источник','Примечание'];
+ const exportRows=changes.map(x=>[x.canonical_id,x.organization,x.inn,x.ogrn,x.checked_on,x.source_class,x.source_url,x.notes]);
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headers,...exportRows]),'ИНН проверены');
+ outputs.xlsx=path.join(outDir,prefix+'.xlsx');
+}
+if(Object.values(outputs).some(fs.existsSync))throw Error('Output exists: use a new --out directory');
+const outputContents={
+ [outputs.json]:Buffer.from(JSON.stringify(data,null,2)),
+ [outputs.audit]:Buffer.from(JSON.stringify({checkpoint_id:data.checkpoint_id,changes,
+  after:{total,with_inn:countInns,without_inn:total-countInns,grades},without_openai_calls:true},null,2))
+};
+if(wb)outputContents[outputs.xlsx]=XLSX.write(wb,{type:'buffer',bookType:'xlsx'});
+const written=[];
+try{
+ for(const [file,content] of Object.entries(outputContents)){
+  fs.writeFileSync(file,content,{flag:'wx'});
+  written.push(file);
+ }
+}catch(error){
+ for(const file of written)try{fs.unlinkSync(file)}catch{}
+ throw error;
+}
+console.log(JSON.stringify({checkpoint_id:data.checkpoint_id,total,with_inn:countInns,without_inn:total-countInns,
+ grades,verified:changes.length,outputs,openai_calls:0,web_search_calls:0},null,2));
