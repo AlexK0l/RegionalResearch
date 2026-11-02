@@ -1,0 +1,89 @@
+{
+  "checkpoint_id": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "reviewed_on": "2026-11-02",
+  "verified_alias_groups": [
+    {
+      "survivor_id": "k000374",
+      "survivor_name": "АО «Агропромышленная фирма «Наша Житница»",
+      "survivor_sheet": "direct_buyers",
+      "absorbed_id": "k000188",
+      "absorbed_name": "АО «АПФ «Наша Житница»",
+      "absorbed_sheet": "direct_buyers",
+      "inn": "6229026994",
+      "ogrn": "1026201086735",
+      "primary_url": "https://agrogi.ru/legal/",
+      "secondary_url": "https://www.tbank.ru/business/contractor/legal/1026201086735/",
+      "justification": "Полное и краткое наименования относятся к одному юридическому лицу по официальной странице и реестру.",
+      "reviewed_role": "direct_buyers"
+    },
+    {
+      "survivor_id": "k000398",
+      "survivor_name": "АО «Кардымовский молочноконсервный комбинат»",
+      "survivor_sheet": "direct_buyers",
+      "absorbed_id": "k000579",
+      "absorbed_name": "АО «Кардымовский МКК»",
+      "absorbed_sheet": "direct_buyers",
+      "inn": "6708000520",
+      "ogrn": "1026700975707",
+      "primary_url": "https://www.tbank.ru/business/contractor/legal/1026700975707/",
+      "secondary_url": "https://econ-kard.admin-smolensk.ru/files/288/zao-mkk.pdf",
+      "justification": "Реестровые сведения и документ администрации подтверждают одно юридическое лицо и краткое название.",
+      "reviewed_role": "direct_buyers"
+    },
+    {
+      "survivor_id": "k000221",
+      "survivor_name": "ООО «ТК БЕЛАТОРГ»",
+      "survivor_sheet": "intermediaries",
+      "absorbed_id": "k000260",
+      "absorbed_name": "ООО «Торговая компания БЕЛАТОРГ»",
+      "absorbed_sheet": "direct_buyers",
+      "inn": "6732102259",
+      "ogrn": "1156733002876",
+      "primary_url": "https://belatorg.ru/rekvizity/",
+      "secondary_url": "https://check.tochka.com/company/1156733002876/",
+      "justification": "Официальные реквизиты содержат оба названия. Роль посредника сохранена по деятельности продавца техники.",
+      "reviewed_role": "intermediaries"
+    }
+  ],
+  "legal_status_findings": [
+    {
+      "canonical_id": "k000526",
+      "name": "ООО «ГАГАРИНАВТОГРУЗ»",
+      "inn": "6722029257",
+      "ogrn": "1156733012424",
+      "status": "LIQUIDATED_REPORTED",
+      "event_date": "2025-01-29",
+      "source_urls": [
+        "https://base.garant.ru/66956404/",
+        "https://synapsenet.ru/organizacii/1156733012424-ooo-gagarinavtogruz"
+      ],
+      "note": "По судебному акту от 27.07.2026 запись о ликвидации не отменена; отказ в оспаривании связан с пропуском процессуального срока. Проверить текущую выписку ЕГРЮЛ."
+    },
+    {
+      "canonical_id": "k000455",
+      "name": "ООО «Экотрейд — Смоленск»",
+      "inn": "6731079470",
+      "ogrn": "1106731001156",
+      "status": "LIQUIDATED_REPORTED",
+      "event_date": "2021-03-05",
+      "source_urls": [
+        "https://check.tochka.com/company/1106731001156/",
+        "https://b2b.house/company/OOO-EKOTREJD-SMOLENSK_ebd6985a-9cc0-46a2-8374-79af89f1c84e/"
+      ],
+      "note": "В двух реестровых карточках сообщается о ликвидации. Для юридического решения нужна свежая выписка ЕГРЮЛ."
+    },
+    {
+      "canonical_id": "k000002",
+      "name": "МУП ЖКХ «НАДЕЖДА»",
+      "inn": "6714035433",
+      "ogrn": "1146733013448",
+      "status": "BANKRUPTCY_REPORTED_REQUIRES_EGRUL",
+      "event_date": "2021-07-10",
+      "source_urls": [
+        "https://injust.pro/proverka/6714035433",
+        "https://bankrotbaza.ru/bankrot/inn-6714035433-mup-zhkh-nadezhda"
+      ],
+      "note": "По реестровым карточкам фигурирует конкурсное производство. Ликвидационный статус трактуется неодинаково; проверить ЕГРЮЛ/Федресурс. Историческая продажа прицепа не доказывает актуальный спрос."
+    }
+  ]
+}
