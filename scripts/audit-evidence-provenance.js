@@ -158,10 +158,15 @@ function tab(name,headers,records,fn){
  XLSX.utils.book_append_sheet(book,ws,name);
 }
 tab('Источники итоги v1',['Метрика','Значение'],Object.entries(report.summary),x=>x);
+tab('Ручные ИНН v1',['ID','Организация','Класс','ИНН','ОГРН','Источник','Тип источника','Дата'],reviewed,x=>
+ [x.id,x.name,x.grade,x.inn,x.ogrn,x.url,x.source_class,x.reviewed_on]);
 tab('Факты URL v1',['ID','Организация','Класс','Факт','Значение','ОГРН','Статус','URL'],facts,x=>
  [x.id,x.name,x.grade,x.kind,x.value,x.ogrn,x.level,x.urls.join('; ')]);
 tab('Очередь ИНН v1',['Приоритет','ID','Организация','Класс','Кандидаты','Занято','Противоречия','Источник','Действие'],missing,x=>
  [x.priority,x.id,x.name,x.grade,x.candidates.join('; '),x.occupied,x.conflicts,x.first_url,x.action]);
+tab('Приоритет AB REVIEW v1',['Приоритет','ID','Организация','Класс','Кандидат','Занято','Источник','Действие'],
+ missing.filter(x=>x.priority==='P0'||x.priority==='P1'),x=>
+ [x.priority,x.id,x.name,x.grade,x.candidates.join('; '),x.occupied,x.first_url,x.action]);
 tab('Заявления ИНН v1',['ID','Организация','ИНН','Метод','Ссылки','Уровень'],claims,x=>
  [x.id,x.name,x.inn,x.method,x.urls.join('; '),x.level]);
 tab('Заявления связи v1',['ID','Организация','Текущий ИНН','Контактный ИНН','Телефон','URL','Уровень'],contacts,x=>
@@ -174,6 +179,13 @@ tab('Статусы ЮЛ v1',['ID','Организация','ИНН','Класс
  [x.id,x.name,x.inn,x.grade,x.status,x.event_date,x.urls.join('; '),'НЕ ПОЛУЧЕНА']);
 tab('REVIEW компании v1',['ID','Организация','ИНН','Статус ЮЛ','Причина','URL'],review,x=>
  [x.id,x.name,x.inn,x.legal_status,x.reason,x.url]);
+tab('Методика фактов v1',['Правило'],[
+ 'Only prior manually reviewed INNs are carried into structured facts, with provenance and verified-on date.',
+ 'Saved identity and contact claims are NOT newly confirmed. Their web pages must be checked separately.',
+ 'Phone or INN from another entity must never be auto-assigned to a brand or branch.',
+ 'Three reported legal statuses require current signed FNS EGRUL extracts.',
+ 'No changes to company count, original A/B/C, company notes, existing INNs or source URLs.'
+],x=>[x]);
 if(book.Sheets['Факт и источник']&&reviewed.length){
  XLSX.utils.sheet_add_aoa(book.Sheets['Факт и источник'],reviewed.map(x=>
  [x.id,x.name,'legal_identity',x.inn,x.ogrn,x.url,'']),{origin:-1});
