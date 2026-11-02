@@ -106,10 +106,29 @@ const countSources=[...records.values()].reduce((n,{row})=>n+(row.__evidence?.so
 data.summary.with_inn=countInns;
 data.summary.without_inn=total-countInns;
 data.summary.stored_evidence_source_urls=countSources;
-data.summary.manually_verified_inns_added=changes.length;
+// The input may already contain a prior verified-INN pass. Every pass must
+// retain earlier proven identities and their audit trail.
+const previousAudit=baseline.identity_verification_audit;
+const previousChanges=previousAudit?.changes||[];
+if(!Array.isArray(previousChanges))throw Error('Malformed prior identity_verification_audit.changes');
+const priorIds=new Set(),priorInns=new Set();
+for(const prior of previousChanges){
+ if(!prior.canonical_id||!prior.inn||priorIds.has(prior.canonical_id)||priorInns.has(prior.inn))
+  throw Error('Duplicate or malformed prior INN correction audit');
+ priorIds.add(prior.canonical_id);priorInns.add(prior.inn);
+}
+if(changes.some(c=>priorIds.has(c.canonical_id)||priorInns.has(c.inn)))
+ throw Error('Verification already recorded in previous audit');
+const allChanges=[...previousChanges,...changes];
+data.summary.manually_verified_inns_added=allChanges.length;
 data.summary.verified_inn_manifest_date=manifest.reviewed_on;
-data.identity_verification_audit={reviewed_on:manifest.reviewed_on,changes,
- grades_unchanged:true,auto_merged:0,originals_untouched:true};
+data.identity_verification_audit={
+ reviewed_on:manifest.reviewed_on,
+ changes:allChanges,
+ latest_changes:changes,
+ previous_verification_count:previousChanges.length,
+ grades_unchanged:true,auto_merged:0,originals_untouched:true
+};
 const outDir=path.resolve(outputDirectory);
 fs.mkdirSync(outDir,{recursive:true});
 const prefix='verified_inn_'+data.checkpoint_id.slice(0,8);
@@ -161,13 +180,32 @@ if(workbookFile){
  }
  const headers=['ID','Компания','ИНН','ОГРН','Дата проверки','Тип источника','Источник','Примечание'];
  const exportRows=changes.map(x=>[x.canonical_id,x.organization,x.inn,x.ogrn,x.checked_on,x.source_class,x.source_url,x.notes]);
- XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headers,...exportRows]),'ИНН проверены');
+ const auditSheet=wb.Sheets['ИНН проверены'];
+ if(auditSheet){
+  const previousRows=XLSX.utils.sheet_to_json(auditSheet,{header:1,defval:''});
+  if(JSON.stringify(previousRows[0])!==JSON.stringify(headers))
+   throw Error('Existing ИНН проверены sheet has an incompatible header');
+  const oldIds=new Set(),oldInns=new Set();
+  for(const row of previousRows.slice(1)){
+   const id=String(row[0]||'').trim(),inn=String(row[2]||'').trim();
+   if(!id||!inn||oldIds.has(id)||oldInns.has(inn))
+    throw Error('Existing ИНН проверены sheet contains invalid or repeated records');
+   oldIds.add(id);oldInns.add(inn);
+  }
+  if(changes.some(c=>oldIds.has(c.canonical_id)||oldInns.has(c.inn)))
+   throw Error('Verified INN already exists in Excel audit');
+  // Append new verification rows; never recreate or overwrite prior rows.
+  XLSX.utils.sheet_add_aoa(auditSheet,exportRows,{origin:-1});
+ }else{
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headers,...exportRows]),'ИНН проверены');
+ }
  outputs.xlsx=path.join(outDir,prefix+'.xlsx');
 }
 if(Object.values(outputs).some(fs.existsSync))throw Error('Output exists: use a new --out directory');
 const outputContents={
  [outputs.json]:Buffer.from(JSON.stringify(data,null,2)),
  [outputs.audit]:Buffer.from(JSON.stringify({checkpoint_id:data.checkpoint_id,changes,
+  cumulative_changes:allChanges,
   after:{total,with_inn:countInns,without_inn:total-countInns,grades},without_openai_calls:true},null,2))
 };
 if(wb)outputContents[outputs.xlsx]=XLSX.write(wb,{type:'buffer',bookType:'xlsx'});

@@ -119,3 +119,59 @@ test('standalone workbook with no legacy summary receives a current verification
   assert.equal(values.get('Сохранённых ссылок на источники'),3);
  }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
 });
+
+test('two successive manifests append to existing verification sheet and preserve both audit histories',()=>{
+ const x=trial();
+ try{
+  const first=x.run();
+  assert.equal(first.status,0,first.stderr);
+  const firstResult=JSON.parse(first.stdout);
+  const firstXlsx=firstResult.outputs.xlsx;
+  const beforeFirst=fs.readFileSync(firstXlsx);
+  const secondManifest=path.join(x.temp,'verified-second.json');
+  const secondOutput=path.join(x.temp,'verified-second');
+  fs.writeFileSync(secondManifest,JSON.stringify({
+   checkpoint_id:'test',reviewed_on:'2026-11-02',
+   verified_inns:[{canonical_id:'k2',organization:'Другая фирма',
+    inn:'6713005690',ogrn:'1046745602221',
+    source_class:'government_and_registry',
+    source_url:'https://smolensk-gov.ru/doc/120340',
+    checked_on:'2026-11-02',notes:'Second verified source'}]
+  }));
+  const second=spawnSync(process.execPath,[script,firstResult.outputs.json,
+   '--manifest='+secondManifest,'--base-xlsx='+firstXlsx,'--out='+secondOutput],
+   {encoding:'utf8',timeout:40000});
+  assert.equal(second.status,0,second.stderr);
+  assert.deepEqual(fs.readFileSync(firstXlsx),beforeFirst,'Prior Excel must stay untouched');
+  const next=JSON.parse(second.stdout);
+  assert.equal(next.with_inn,2);
+  assert.equal(next.without_inn,0);
+  assert.deepEqual(next.grades,{A:2});
+  const full=JSON.parse(fs.readFileSync(next.outputs.json));
+  assert.equal(full.summary.manually_verified_inns_added,2);
+  assert.equal(full.summary.stored_evidence_source_urls,4);
+  assert.equal(full.identity_verification_audit.changes.length,2);
+  assert.deepEqual(full.identity_verification_audit.changes.map(c=>c.canonical_id),['k1','k2']);
+  assert.equal(full.identity_verification_audit.latest_changes.length,1);
+  assert.equal(full.identity_verification_audit.previous_verification_count,1);
+  assert.equal(full.rows.find(r=>r.canonical_id==='k1').inn,'6732191851');
+  assert.equal(full.rows.find(r=>r.canonical_id==='k2').inn,'6713005690');
+  const audit=JSON.parse(fs.readFileSync(next.outputs.audit));
+  assert.equal(audit.changes.length,1);
+  assert.equal(audit.cumulative_changes.length,2);
+  const workbook=XLSX.readFile(next.outputs.xlsx,{cellComments:true});
+  const records=XLSX.utils.sheet_to_json(workbook.Sheets['ИНН проверены']);
+  assert.equal(records.length,2);
+  assert.deepEqual(records.map(r=>r.ID),['k1','k2']);
+  const metrics=new Map(XLSX.utils.sheet_to_json(workbook.Sheets['Сводка v5'],{header:1}).slice(1));
+  assert.equal(metrics.get('Заполнено ИНН'),2);
+  assert.equal(metrics.get('Нет ИНН'),0);
+  assert.equal(metrics.get('Сохранённых ссылок на источники'),4);
+  assert.match(JSON.stringify(workbook.Sheets['Прямые покупатели'].A2.c),/er67.ru/);
+  assert.match(JSON.stringify(workbook.Sheets['Прямые покупатели'].A3.c),/smolensk-gov.ru/);
+  const rerun=spawnSync(process.execPath,[script,next.outputs.json,
+   '--manifest='+secondManifest,'--base-xlsx='+next.outputs.xlsx,
+   '--out='+path.join(x.temp,'duplicate-attempt')],{encoding:'utf8',timeout:40000});
+  assert.notEqual(rerun.status,0,'Repeated INN must never be applied twice');
+ }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
+});
