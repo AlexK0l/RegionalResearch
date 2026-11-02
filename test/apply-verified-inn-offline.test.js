@@ -75,3 +75,20 @@ test('refuses checkpoint mismatch',()=>{
   assert.ok(!fs.existsSync(path.join(x.out,'verified_inn_test.json')));
  }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
 });
+
+test('fails with actionable message for a legacy compact combined JSON',()=>{
+ const x=trial();
+ try{
+  const compact=JSON.parse(fs.readFileSync(x.input,'utf8'));
+  delete compact.final_result;
+  fs.writeFileSync(x.input,JSON.stringify(compact));
+  const before=fs.readFileSync(x.input);
+  const p=x.run();
+  assert.notEqual(p.status,0);
+  assert.match(p.stderr,/final_result is missing/);
+  assert.match(p.stderr,/compose:offline/);
+  assert.match(p.stderr,/--out=<NEW-directory>/);
+  assert.deepEqual(fs.readFileSync(x.input),before);
+  assert.ok(!fs.existsSync(x.out));
+ }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
+});
