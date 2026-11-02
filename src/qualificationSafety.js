@@ -37,6 +37,8 @@ const BUDGET_ACRONYM = /(?:^| )(?:фгбу(?:к)?|фку|фгку|гбу|гку|
 const BUDGET_FULL = /(?:федеральн|государственн|областн|муниципальн).{0,80}(?:бюджетн|казенн|автономн).{0,35}учрежден|(?:бюджетн|казенн|автономн).{0,25}учрежден.{0,80}(?:областн|муниципальн|федеральн|государственн)/;
 const PUBLIC_OPERATOR = /(?:^| )(?:фгуп|гуп|муп)(?: |$)/;
 const BRANCH = /^(?:обособленн.{0,20}подразделени[ея]|филиал|представительств)(?: |$)/;
+const SOURCE_ONLY_NAME = /^(?:журнал|отраслевой справочник|отраслевой каталог)(?: |$)/;
+const SOURCE_ONLY_ROLE = /(?:информационн.{0,30}(?:источник|канал)|discovery.{0,15}канал|не\s+(?:является|относится).{0,35}(?:покупател|перевозчик)|источник\s+(?:поиска|сведений))/i;
 
 function normalized(value) {
   return String(value || "").toLowerCase().replace(/ё/g, "е")
@@ -53,6 +55,11 @@ export function classifyCommercialEntity(row) {
   const name = legalName(row);
   if (!name) return "commercial";
   if (BRANCH.test(name)) return "branch";
+  // Source publications stay in discovery evidence, never a buyer CRM sheet.
+  // Both the publisher name and a source-only role note must be present.
+  if (SOURCE_ONLY_NAME.test(name) &&
+      (Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [])
+        .some((note) => SOURCE_ONLY_ROLE.test(normalized(note)))) return "source_channel";
   if (GOVERNMENT.some((p) => p.test(name))) return "government_body";
   if (BUDGET_ACRONYM.test(name) || BUDGET_FULL.test(name)) return "budget_institution";
   if (PUBLIC_OPERATOR.test(name)) return "public_operator";
@@ -104,6 +111,11 @@ export function commercialEligibility(row) {
   if (reviewed) {
     return { blocked: true, kind: reviewed.kind, reason: reviewed.reason,
       source_url: reviewed.source_url, method: "audited_entity", inn };
+  }
+  if (byName === "source_channel") {
+    return { blocked: true, kind: byName,
+      reason: "Информационный/отраслевой источник не является самостоятельным покупателем прицепной техники.",
+      source_url: "", method: "source_role", inn };
   }
   if (byName === "branch") {
     return { blocked: true, kind: byName,
@@ -200,6 +212,10 @@ const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комп
 
 // Small/utility trailers, unsigned repair estimates and financial lessors do
 // not establish heavy road-trailer operation by a DIRECT buyer.
+// Auctioning an asset in liquidation/bankruptcy does not prove a current
+// purchase/operation need. A separate current, entity-specific source can
+// still qualify as A; this check concerns only the disposal note.
+const BANKRUPTCY_DISPOSAL_A = /(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг|распродаж.{0,30}имуществ).{0,170}(?:продаж|реализац|отчужд|торг|прицеп|полуприцеп)|(?:ранее\s+находивш.{0,40}баланс|реализованн.{0,25}с\s+торгов).{0,100}(?:прицеп|полуприцеп)/i;
 const LIGHT_TRAILER_ONLY_A = /(?:легков.{0,35}прицеп|прицеп.{0,45}(?:мзса|дгу|дизель.{0,15}генератор)|мзса.{0,30}прицеп|прицеп.{0,45}цистерн.{0,20}1150)/;
 const HEAVY_TRAILER_PROOF_A = /(?:полуприцеп|тонар[ -]?[0-9]{3,5}|schmitz|krone|kogel|wielton|grunwald|пстб[- ]?\d)/;
 const UNCOMPLETED_SERVICE_A = /(?:предварител.{0,35}заказ.{0,10}наряд|предварител.{0,35}расчет.{0,50}ремонт|смет.{0,40}ремонт|предварител.{0,35}стоимост.{0,30}восстанов)/;
@@ -212,6 +228,8 @@ export function rejectUnsafeAEvidence(record, note) {
   if (/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/.test(s)) {
     return "identity_metadata_not_trailer_proof";
   }
+  if (record?.sheet === "direct_buyers" && BANKRUPTCY_DISPOSAL_A.test(s) &&
+      /(?:прицеп|полуприцеп)/.test(s)) return "bankruptcy_disposal_not_buyer_event";
   if (DENIED_TRAILER_A.test(s)) return "explicit_denial_of_own_trailer_evidence";
   if (UNSUPPORTED_TRAILER_NOTE_A.test(s) ||
       (UNSPECIFIED_TRAILER_MODELS_A.test(s) && !AFFIRMED_OWN_TRAILERS_A.test(s))) {

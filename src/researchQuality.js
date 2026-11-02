@@ -10,8 +10,13 @@ const NEGATIVE = /не подтвержд|не найден|не обнаруж�
 // Hypothetical transport demand and seller catalogues are not evidence that
 // the named organization actually operates a heavy-vehicle fleet.
 const INFERRED_TRANSPORT = /требующ.{0,65}(?:перевоз|достав|автомоб)|требует.{0,65}(?:перевоз|достав|транспорт)|созда.{0,65}(?:потребн|необходим).{0,55}(?:перевоз|вывоз|достав|логист|автомоб)|потребност.{0,65}(?:перевоз|вывоз|достав|логист|автомоб)|необходим.{0,60}(?:автомоб|достав|перевоз)|предполага.{0,45}(?:логист|транспорт|перевоз)|экономическ.{0,45}(?:оправдан|целесообразн|релевантн)|логистическ.{0,55}(?:потребн|обоснован)|создает.{0,65}спрос|потребност.{0,110}(?:зерновоз|самосвал|полуприцеп|тягач)|вытекает из.{0,80}(?:грузопоток|поток|поставк|производств)/i;
+// A proposed trailer type is not a real fleet or haulage event.
+const HYPOTHETICAL_TRAILER_FIT = /(?:для\s+(?:перевоз|достав|вывоз).{0,135}подход|подходя.{0,100}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,75}(?:рекоменд|целесообразн)|(?:подход|рекоменд).{0,75}(?:прицеп|полуприцеп))/i;
 const MARKETPLACE_ONLY = /каталог|карточк.{0,50}(?:полуприцеп|прицеп)|поставщик.{0,80}(?:полуприцеп|прицеп)|(?:продавец|дилер).{0,70}(?:прицеп|полуприцеп)|прода.{0,50}(?:прицеп|полуприцеп)/i;
-const EXPLICIT_OWN_OPERATION = /эксплуатир|на балансе|в собственности|собственн.{0,35}(?:парк|самосвал|тягач|автопоезд|полуприцеп)|осуществля.{0,45}перевоз/i;
+const EXPLICIT_OWN_OPERATION = /эксплуатир|на балансе|в собственности|собственн.{0,35}(?:парк|самосвал|тягач|автопоезд|полуприцеп|транспорт)|осуществля.{0,45}перевоз/i;
+// A named entity's own road-log movement is stronger than a hypothetical need.
+// Require the forest carrier and the company's own vehicles in the SAME claim.
+const FOREST_OWN_DELIVERY = /(?:достав|перевоз|вывоз).{0,100}лесовоз.{0,80}собственн.{0,25}транспорт|собственн.{0,25}транспорт.{0,90}лесовоз.{0,50}(?:достав|перевоз|вывоз)/i;
 const BULK_OWN_DELIVERY = /(?:достав|перевоз|вывоз).{0,60}(?:песок|щеб|пгс|бетон|грунт|зерн|корм|тко|отход).{0,50}собственн.{0,20}транспорт|собственн.{0,20}транспорт.{0,60}(?:песок|щеб|пгс|бетон|грунт|зерн|корм|тко|отход)/i;
 const MACHINE_COUNT = /(?:[1-9]\d{1,4}\s*(?:машин|грузов.{0,15}автомобил|рейс)|(?:ежедневно|ежемесячно|в месяц|в сутки).{0,50}(?:машин|автомобил|рейс))/i;
 
@@ -36,8 +41,10 @@ function isCargoClaim(text) {
 function isTransportClaim(text) {
   // Operating a documented heavy vehicle is sufficient; a generic promise
   // of "automotive delivery" or a classifier's inferred need is not.
-  if (INFERRED_TRANSPORT.test(text) && !EXPLICIT_OWN_OPERATION.test(text)) return false;
+  if ((INFERRED_TRANSPORT.test(text) || HYPOTHETICAL_TRAILER_FIT.test(text)) &&
+      !EXPLICIT_OWN_OPERATION.test(text)) return false;
   if (MARKETPLACE_ONLY.test(text) && !EXPLICIT_OWN_OPERATION.test(text)) return false;
+  if (FOREST_OWN_DELIVERY.test(text)) return true;
   if (HEAVY_EQUIPMENT.test(text) && OPERATION.test(text)) return true;
   if (TRUCK_CONTRACT.test(text)) return true;
   if (BULK_OWN_DELIVERY.test(text)) return true;
