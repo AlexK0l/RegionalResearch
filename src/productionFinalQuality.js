@@ -46,6 +46,9 @@ export function selectedAEvidenceSource(row, aEvidence) {
   const notes = Array.isArray(evidence.notes) ? evidence.notes : [];
   const matches = notes.flatMap((note, index) =>
     string(note) === claim ? [index] : []);
+  const rawClaimUrls = unique(matches.flatMap(index =>
+    [...string(notes[index]).matchAll(/https?:\\/\\/[^\\s<>\\])]+/gi)]
+      .map(match => match[0].replace(/[.,;!?]+$/g, ""))));
   const linked = Array.isArray(evidence.inline_note_provenance)
     ? evidence.inline_note_provenance : [];
   const cited = unique(linked.filter(item => matches.includes(item.note_index))
@@ -66,7 +69,7 @@ export function selectedAEvidenceSource(row, aEvidence) {
       source_url: factUrls[0], method: "matching_structured_fact_statement",
       note_indices: matches, sources_rechecked: false };
   }
-  return { status: cited.length > 1 || factUrls.length > 1 ||
+  return { status: rawClaimUrls.length > 1 || cited.length > 1 || factUrls.length > 1 ||
       (cited.length && factUrls.length && cited[0] !== factUrls[0])
       ? "ambiguous_claim_sources" : "missing_claim_source",
     source_url: "", method: "no_defensible_claim_to_url_mapping",
