@@ -49,6 +49,8 @@ const safe=(value,field="")=>{
 const workbook=XLSX.utils.book_new();
 const counts={A:0,B:0,C:0,REVIEW:0};
 const used=new Set(),changed=[],manual=[],active=[],archive=[];
+// Keep a self-contained copy of every company, its evidence, and historic review rows.
+const fullResult=structuredClone(identity.final_result);
 const stepFor=(status)=>{
   if(status==="REVIEW")return "РУЧНАЯ ПРОВЕРКА: уточнить юридическую идентичность, роль и транспортный факт до включения в продажи.";
   if(status==="B")return "Связаться с ответственным за транспорт; проверить закрепление парка за юрлицом, типы полуприцепов и планы закупок.";
@@ -123,6 +125,7 @@ for(const [section,sheetName] of sheets){
     active.push({canonical_id:row.__canonical_id,organization:row["Организация"],
       sheet:section,inn:row["ИНН"]||"",status:grade,archived_grade:prior,source_ids:ids});
   }
+  fullResult[section]=output;
   addSheet(sheetName,columns,output,true);
 }
 if(used.size!==replayById.size){
@@ -134,6 +137,11 @@ if(total!==Object.values(counts).reduce((sum,n)=>sum+n,0)){
   throw Error("Qualification total mismatch");
 }
 const withInn=active.filter((x)=>String(x.inn).trim()).length;
+const sourceUrlsStored=sheets.reduce((sum,[section])=>sum+
+  fullResult[section].reduce((n,row)=>n+(row.__evidence?.source_urls?.length||0),0),0);
+if(sheets.reduce((sum,[section])=>sum+fullResult[section].length,0)!==total){
+  throw Error("Full JSON export row count mismatch");
+}
 const qc=identity.final_result.qualification_review||[];
 if(!Array.isArray(qc))throw Error("Expected qualification_review array");
 archive.push(...qc.map((r)=>({
@@ -149,6 +157,7 @@ const summary={
  unresolved_alias_rows:identity.audit?.unresolved?.length||0,
  conflicting_preexisting_inns:identity.audit?.untrusted_or_unmatched?.length||0,
  no_automatic_merges:true,no_external_calls:true,
+ full_records_in_json:total,stored_evidence_source_urls:sourceUrlsStored,
  source_files_untouched:true,
  caution:"WORKING DRAFT: roles and EGRUL status were not reverified; 148 historical review rows are outside active company total."
 };
@@ -163,6 +172,8 @@ addSheet("Сводка v5",["Показатель","Значение"],Object.en
  "Конфликты заполненного ИНН":summary.conflicting_preexisting_inns,
  "Изменения относительно архива":changed.length,
  "Архив ручной проверки вне 491":qc.length,
+ "Полных записей в JSON":total,
+ "Сохранённых ссылок на источники":sourceUrlsStored,
  "Новые платные запросы":0
 }).map(([k,v])=>({"Показатель":k,"Значение":v})));
 addSheet("Изменения v5",
@@ -214,6 +225,7 @@ addSheet("Методика",["Правило","Описание"],[
  {"Правило":"Ручная проверка","Описание":"The 4 REVIEW candidates remain on their original tabs and are duplicated as references on the review tab."},
  {"Правило":"Старые 148","Описание":"Historical qualification_review rows are outside the active company count; listed on a separate tab."},
  {"Правило":"CRM и примечания","Описание":"The 12 main columns are kept; notes remain in comments to the first column."},
+ {"Правило":"Полный JSON","Описание":"final_result contains all 491 complete records, evidence, preserved archival fields, and 148 historic review entries; rows is an index only."},
  {"Правило":"Источники","Описание":"Stored links and notes were not downloaded or verified again; EGRUL status is not verified."},
  {"Правило":"Стоимость","Описание":"Zero OpenAI calls, zero web_search calls, no SQLite mutations or data rewriting."}
 ]);
@@ -229,7 +241,7 @@ if(Object.values(output).some((p)=>fs.existsSync(p))){
 }
 const combined={
  checkpoint_id:identity.checkpoint_id,region:identity.region,
- summary,rows:active,changed,review_queue:manual,
+ summary,rows:active,final_result:fullResult,changed,review_queue:manual,
  archived_review:archive,identity_audit:identity.audit,
  source_qualification_counts:replay.counts,
  openai_calls:0,web_search_calls:0,

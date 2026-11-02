@@ -14,7 +14,8 @@ function fixture(differentGrade=false){
   "Почему им нужно звонить / потенциальный интерес к САТ":"Есть тяжёлая логистика",
   "__canonical_id":"k1","__merged_canonical_ids":["k1","k2"],"__final_grade":"B",
   "__comment":"Сайт/источник: https://sah67.ru/\nИНН: 6731069440",
-  "__evidence":{"source_urls":["https://sah67.ru/"],"notes":[]}};
+  "__evidence":{"source_urls":["https://sah67.ru/","https://sah67.ru/vehicles/"],
+    "notes":["Own equipment; legacy record"],"facts":[{"kind":"fleet","source_url":"https://sah67.ru/vehicles/"}]}};
  const two={ "Организация":"ООО «Нужна проверка»","ИНН":"",
   "Основание":"A — архивный вывод","__canonical_id":"k3","__final_grade":"A",
   "__comment":"Сайт/источник: https://example.org/\nИНН: не подтверждено",
@@ -53,6 +54,21 @@ test("combines completed offline recovery and v5 by canonical ID, preserves comm
   assert.equal(data.summary.reclassified_rows,1);
   assert.equal(data.summary.historical_review_outside_active,1);
   assert.equal(data.summary.no_external_calls,true);
+  assert.equal(data.summary.full_records_in_json,2);
+  assert.equal(data.summary.stored_evidence_source_urls,3);
+  const complete=JSON.parse(fs.readFileSync(data.output.json,"utf8"));
+  assert.equal(complete.final_result.direct_buyers.length,2);
+  assert.equal(complete.final_result.qualification_review.length,1);
+  assert.equal(complete.final_result.direct_buyers[0].__merged_canonical_ids.length,2);
+  assert.equal(complete.final_result.direct_buyers[0].__evidence.source_urls.length,2);
+  assert.deepEqual(complete.final_result.direct_buyers[0].__evidence.facts,[{
+    kind:"fleet",source_url:"https://sah67.ru/vehicles/"
+  }]);
+  assert.equal(complete.final_result.direct_buyers[0].__replay_v5.status,"B");
+  assert.equal(complete.final_result.direct_buyers[1].__replay_v5.status,"REVIEW");
+  assert.match(complete.final_result.direct_buyers[1].__archived_qualification.archived_basis,/архивный/);
+  assert.ok(complete.final_result.direct_buyers[1].__comment.includes("example.org"));
+  assert.equal(complete.rows[0].__evidence,undefined,"compact index remains compact");
   const book=XLSX.readFile(data.output.xlsx);
   const tab=book.Sheets["Прямые покупатели"];
   const rows=XLSX.utils.sheet_to_json(tab,{header:1,defval:""});
@@ -78,6 +94,9 @@ test("a merged alias pair with incompatible replay grades is retained but requir
   assert.equal(data.summary.total,2);
   assert.equal(data.summary.manual_review_rows,2);
   assert.equal(data.summary.reclassified_rows,2);
+  const complete=JSON.parse(fs.readFileSync(data.output.json,"utf8"));
+  assert.ok(complete.final_result.direct_buyers.every((r)=>r.__replay_v5.status==="REVIEW"));
+  assert.ok(complete.final_result.direct_buyers[0].__archived_qualification);
  }finally{fs.rmSync(state.dir,{recursive:true,force:true});}
 });
 test("refuses mismatched checkpoint IDs without exporting any combined files",()=>{
