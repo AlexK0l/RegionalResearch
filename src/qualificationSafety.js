@@ -239,7 +239,7 @@ const DIRECT_TRAILER_PURCHASE_A =
 const TRACTOR_AGRI_TRAILER_A =
   /(?:тракторн.{0,75}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,75}тракторн|2птс\s*[- ]?\d|пркт\s*[- ]?\d|прт\s*[- ]?\d|(?:полуприцеп|прицеп).{0,45}(?:кормораздат|рулоновоз))/i;
 const ROAD_TRAILER_EVENT_IN_MIXED_A =
-  /(?:купил|приобрел|закупил|заключил.{0,20}договор).{0,75}(?:автомобильн.{0,20}полуприцеп|дорожн.{0,20}полуприцеп|полуприцеп.{0,25}(?:schmitz|kogel|krone|тонар))|(?:автомобильн|дорожн).{0,20}полуприцеп.{0,55}(?:приобретен|куплен|закуплен)/i;
+  /(?:купил|приобрел|закупил|закупк|заключил.{0,20}договор).{0,75}(?:автомобильн.{0,20}полуприцеп|дорожн.{0,20}полуприцеп|полуприцеп.{0,25}(?:schmitz|kogel|krone|тонар)|полуприцеп.{0,35}г\s*\/\s*п\s*(?:2[5-9]|[3-9][0-9])(?:[,.][0-9]+)?\s*т)|(?:автомобильн|дорожн).{0,20}полуприцеп.{0,55}(?:приобретен|куплен|закуплен)/i;
 const TRACTOR_UNIT_INFERENCE_A =
   /(?:лизинг|аренд).{0,55}седельн.{0,25}(?:тягач|самосвал).{0,130}(?:для.{0,35}эксплуатаци|комплектован|прицепн.{0,25}техник)|тягов.{0,30}единиц.{0,70}для.{0,30}эксплуатаци.{0,20}прицепн/i;
 const LIGHT_TRAILER_ONLY_A = /(?:легков.{0,35}прицеп|прицеп.{0,45}(?:мзса|дгу|дизель.{0,15}генератор)|мзса.{0,30}прицеп|прицеп.{0,45}цистерн.{0,20}1150)/;
@@ -260,8 +260,9 @@ export function rejectUnsafeAEvidence(record, note) {
   if (record?.sheet === "direct_buyers") {
     // A company buying a real trailer *at* an auction is different from the
     // bankrupt debtor selling its trailer. Buyer role must be explicit.
-    const actualAuctionBuyer = BANKRUPTCY_BUYER_EVENT_A.test(s) &&
-      !/(?:должник|собственник\s*\/\s*должник)/.test(s);
+    const identifiedDebtor = /(?:должник.{0,100}(?:полуприцеп|прицеп|лот|имуществ)|(?:полуприцеп|прицеп).{0,80}должник|собственник\s*\/\s*должник)/.test(s) &&
+      !/не\s+должник/.test(s);
+    const actualAuctionBuyer = BANKRUPTCY_BUYER_EVENT_A.test(s) && !identifiedDebtor;
     if (!actualAuctionBuyer && (insolvencyDisposal || DISPOSED_TRAILER_CONTEXT_A.test(s)) &&
         /(?:прицеп|полуприцеп|тонар|kogel|schmitz|krone)/.test(s)) {
       return "bankruptcy_or_collateral_asset_disposal_not_current_buyer";

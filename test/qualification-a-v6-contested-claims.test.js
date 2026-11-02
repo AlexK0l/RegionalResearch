@@ -59,6 +59,13 @@ test("PROMAGRO: 2PTS-6.5 tractor trailer tender is not a road semitrailer A", ()
   assert.notEqual(d.grade, "A");
 });
 
+test("mixed road payload semitrailer procurement remains A despite agricultural implements", () => {
+  const d = grade("АО «Авангард»", [
+    "Закупки: полуприцеп г/п 28,5 т, полуприцеп и тракторные прицепы для нужд предприятия."
+  ]);
+  assert.equal(d.grade, "A");
+});
+
 test("Smolenskoe: PRT-12 farm roll trailer alone must not promote to A", () => {
   const d = grade("АО «Смоленское» по племенной работе", [
     "Закупка зерновоза в лизинг — 2025 год.",
