@@ -15,7 +15,8 @@
     "compose:offline": "node scripts/compose-offline-crm.js",
     "verify:inn:offline": "node scripts/apply-verified-inn-offline.js",
     "audit:missing-inn": "node scripts/audit-missing-inn-offline.js",
-    "consolidate:aliases": "node scripts/consolidate-reviewed-aliases.js"
+    "consolidate:aliases": "node scripts/consolidate-reviewed-aliases.js",
+    "audit:evidence:offline": "node scripts/audit-evidence-provenance.js"
   },
   "engines": {
     "node": ">=22"
