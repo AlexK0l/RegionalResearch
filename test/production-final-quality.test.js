@@ -278,3 +278,71 @@ test("versioned queue ID with DIFFERENT contact or company cannot be silently co
  input.qualification_excluded_v8=[];
  assert.throws(()=>run(input),/conflicting commercial and current queue snapshot/);
 });
+
+
+test("synthetic full-scale 488 records, 492 source IDs, current vs historic queues and A-citation gaps",()=>{
+ // This test intentionally contains NO client records or private data:
+ // it checks full-volume production mechanics only, not per-company findings.
+ const input=empty();
+ const row=(i,grade)=>{
+   const id="s"+String(i).padStart(6,"0");
+   const aProof=i<=20;
+   const note=grade==="A"
+     ? noteA+(aProof?" ([case](https://official.example/"+id+"))":"")
+     : "Компания выращивает зерно и выполняет отгрузку сельхозпродукции.";
+   const result=make(id,"ООО «Синтетическая организация "+i+"»",[note],{
+      grade,inn:"",urls:["https://official.example/"+id]});
+   if(i===1)result.__merged_canonical_ids=[id,"s_absorbed1","s_absorbed2","s_absorbed3","s_absorbed4"];
+   return result;
+ };
+ for(let i=1;i<=479;i++) {
+   const grade=i<=64?"A":i<=135?"B":"C";
+   input.direct_buyers.push(row(i,grade));
+ }
+ const currentReview=Array.from({length:7},(_,i)=>{
+   const r=row(480+i,"");
+   r.__final_grade="";
+   r.__replay_v8={status:"REVIEW"};
+   r.__final_qualification_status="REVIEW";
+   return r;
+ });
+ const currentExcluded=Array.from({length:2},(_,i)=>{
+   const r=row(487+i,"");
+   r.__final_grade="";
+   r.__replay_v8={status:"EXCLUDED"};
+   r.__final_qualification_status="EXCLUDED";
+   return r;
+ });
+ input.direct_buyers.push(...structuredClone(currentReview),...structuredClone(currentExcluded));
+ input.qualification_review_v8=currentReview;
+ input.qualification_excluded_v8=currentExcluded;
+ input.qualification_review=Array.from({length:148},(_,i)=>
+   make("history"+i,"Исторический источник "+i,["Только старое исследование."],{grade:""}));
+ input.qualification_review_v5_archived=structuredClone(input.qualification_review);
+ const {result,report}=finalizeProductionResearch(input,{
+   qualify:({row})=>({
+     decision:"include",grade:row.__final_grade,
+     reason:"Verified synthetic fixture",
+     aEvidence:row.__final_grade==="A"?row.__evidence.notes[0]:"",
+     aRule:row.__final_grade==="A"?"direct_ownership_or_fleet":""
+   }),
+   isActionable:()=>false
+ });
+ assert.equal(report.input_commercial_array_rows,488);
+ assert.equal(report.duplicated_current_queue_rows_collapsed,9);
+ assert.equal(report.original_row_count,488);
+ assert.equal(report.active_commercial_records,479);
+ assert.equal(report.review_records,7);
+ assert.equal(report.excluded_records,2);
+ assert.equal(report.historical_review_records_preserved,148);
+ assert.equal(report.source_id_lineage_count,492);
+ assert.equal(report.a_claim_source_linked,20);
+ assert.equal(report.a_claim_source_missing,44);
+ assert.equal(report.a_claim_source_ambiguous,0);
+ assert.deepEqual(report.grades,{A:64,B:71,C:344});
+ assert.equal(report.originals_lost,0);
+ assert.equal(report.openai_calls,0);
+ assert.equal(report.web_search_calls,0);
+ assert.equal(result.direct_buyers.length,479);
+ assert.equal(result.qualification_review_v5_archived.length,148);
+});
