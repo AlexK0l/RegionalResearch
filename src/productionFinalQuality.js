@@ -6,7 +6,7 @@ import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { populateCommercialActions } from "./researchQuality.js";
 import { commercialEligibility } from "./qualificationSafety.js";
 
-export const FINAL_QUALITY_GATE_VERSION = "1";
+export const FINAL_QUALITY_GATE_VERSION = "2";
 const SECTIONS = ["direct_buyers", "intermediaries", "leasing"];
 const ALLOWED_GRADES = new Set(["A", "B", "C"]);
 const string = (v) => String(v ?? "").trim();
@@ -37,6 +37,42 @@ function factSourceCount(row) {
     (Array.isArray(f.sources) && f.sources.some(s => /^https?:\/\//i.test(string(s))))
   )).length;
 }
+// A selected positive claim may only cite a URL from the SAME evidence
+// note, or a structured source fact with exactly the same claim text. Merely
+// having one or more links in the company-wide source list proves nothing.
+export function selectedAEvidenceSource(row, aEvidence) {
+  const claim = string(aEvidence);
+  const evidence = row?.__evidence || {};
+  const notes = Array.isArray(evidence.notes) ? evidence.notes : [];
+  const matches = notes.flatMap((note, index) =>
+    string(note) === claim ? [index] : []);
+  const linked = Array.isArray(evidence.inline_note_provenance)
+    ? evidence.inline_note_provenance : [];
+  const cited = unique(linked.filter(item => matches.includes(item.note_index))
+    .map(item => string(item.source_url)).filter(Boolean));
+  const matchingFacts = Array.isArray(evidence.facts) ? evidence.facts.filter(
+    item => string(item?.statement) === claim) : [];
+  const factUrls = unique(matchingFacts.flatMap(item => [
+    item?.source_url,
+    ...(Array.isArray(item?.sources) ? item.sources : [])
+  ]).map(string).filter(url => /^https?:\/\//i.test(url)));
+  if (cited.length === 1 && factUrls.every(url => url === cited[0])) {
+    return { status: "inline_citation_only_not_live_verified",
+      source_url: cited[0], method: "exact_same_evidence_note",
+      note_indices: matches, sources_rechecked: false };
+  }
+  if (cited.length === 0 && factUrls.length === 1 && matches.length > 0) {
+    return { status: "exact_structured_claim_only_not_live_verified",
+      source_url: factUrls[0], method: "matching_structured_fact_statement",
+      note_indices: matches, sources_rechecked: false };
+  }
+  return { status: cited.length > 1 || factUrls.length > 1 ||
+      (cited.length && factUrls.length && cited[0] !== factUrls[0])
+      ? "ambiguous_claim_sources" : "missing_claim_source",
+    source_url: "", method: "no_defensible_claim_to_url_mapping",
+    note_indices: matches, sources_rechecked: false };
+}
+
 function rowId(row) { return string(row?.__canonical_id); }
 function gradeFromRow(row) {
   const grade = string(row?.__final_grade).toUpperCase();
@@ -91,10 +127,27 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   const data = structuredClone(source);
   const commercialBefore = SECTIONS.flatMap(sheet =>
     data[sheet].map(row => ({ sheet, row })));
-  const previousReview = Array.isArray(data.qualification_review) ?
-    data.qualification_review : [];
-  const previousExcluded = Array.isArray(data.qualification_excluded) ?
-    data.qualification_excluded : [];
+  // Full earlier reviewed JSONs may carry 148 HISTORICAL candidates in
+  // qualification_review and the actual seven current ones in a separate
+  // qualification_review_v8. Treat the latter as authoritative when present.
+  // Live production results have no qualification_review_v8 and keep the
+  // normal queue unchanged. Never turn 148 + 7 into 155 current REVIEW.
+  const versionedReview = Array.isArray(data.qualification_review_v8);
+  const historicalReview = versionedReview
+    ? (Array.isArray(data.qualification_review_v5_archived)
+      ? data.qualification_review_v5_archived
+      : Array.isArray(data.qualification_review) ? data.qualification_review : [])
+    : (Array.isArray(data.qualification_review_v5_archived)
+      ? data.qualification_review_v5_archived : []);
+  if (versionedReview) {
+    data.qualification_review_v5_archived = historicalReview;
+  }
+  const previousReview = versionedReview
+    ? data.qualification_review_v8
+    : Array.isArray(data.qualification_review) ? data.qualification_review : [];
+  const previousExcluded = versionedReview
+    ? (Array.isArray(data.qualification_excluded_v8) ? data.qualification_excluded_v8 : [])
+    : (Array.isArray(data.qualification_excluded) ? data.qualification_excluded : []);
   const originalRowCount = commercialBefore.length +
     previousReview.length + previousExcluded.length;
   const preservedFields = [
@@ -131,8 +184,11 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   const flags = [];
   let sourceUrlCount = 0, inlineLinked = 0, factLinked = 0;
   let noInn = 0, noInnPriority = 0, notesChecked = 0;
-  let existingReview = previousReview.length;
+  const existingReview = previousReview.length;
   let missingName = 0;
+  let selectedASourceLinked = 0, selectedASourceMissing = 0,
+    selectedASourceAmbiguous = 0;
+  const attributionWarnings = [];
 
   for (const [index, { sheet, row }] of commercialBefore.entries()) {
     const id = rowId(row);
@@ -164,6 +220,26 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (eligible && !inn && (grade === "A" || grade === "B")) noInnPriority++;
     const missingAEvidence = grade === "A" && !string(decision?.aEvidence);
     if (missingAEvidence) issues.push("A_without_specific_note");
+    // Citation failure is a DOCUMENTED soft warning: no fabricated source,
+    // no unsupported automatic A demotion. A real contract without a direct
+    // inline URL is still useful for human verification.
+    if (eligible && grade === "A" && !missingAEvidence) {
+      row.__evidence ||= {};
+      const attribution = selectedAEvidenceSource(row, decision.aEvidence);
+      row.__evidence.selected_a_provenance = attribution;
+      if (attribution.source_url) selectedASourceLinked++;
+      else {
+        if (attribution.status === "ambiguous_claim_sources")
+          selectedASourceAmbiguous++;
+        else selectedASourceMissing++;
+        attributionWarnings.push({
+          canonical_id: id, organization: string(row["Организация"]),
+          a_rule: string(decision.aRule), status: attribution.status,
+          selected_a_evidence: string(decision.aEvidence),
+          company_source_url_count: sourceCount
+        });
+      }
+    }
     const eligibility = commercialEligibility(row);
     if (eligibility.blocked) issues.push("noncommercial_entity");
 
@@ -264,6 +340,9 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     excluded_records: excluded.length,
     prior_review_records_preserved: existingReview,
     prior_excluded_records_preserved: previousExcluded.length,
+    review_queue_mode: versionedReview ? "explicit_replay_current_vs_historical" : "normal_production",
+    historical_review_records_preserved: historicalReview.length,
+    current_review_records_at_input: previousReview.length,
     grades,
     with_inn_commercial: presentInn,
     without_inn_commercial: visible.length - presentInn,
@@ -273,6 +352,11 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     evidence_notes_examined: notesChecked,
     source_urls_in_input_commercial_records: sourceUrlCount,
     already_structured_source_facts: factLinked,
+    a_claim_source_linked: selectedASourceLinked,
+    a_claim_source_missing: selectedASourceMissing,
+    a_claim_source_ambiguous: selectedASourceAmbiguous,
+    a_claim_attribution_review: attributionWarnings,
+    source_attribution_method: "same_note_or_exact_structured_fact_no_live_lookups",
     missing_organization_records: missingName,
     duplicated_canonical_id_records: contestedIds.size,
     shared_inn_conflict_records: contestedInn.size,

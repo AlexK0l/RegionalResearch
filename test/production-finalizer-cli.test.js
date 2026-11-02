@@ -58,3 +58,43 @@ test("offline finalizer refuses checkpoints which have no final classification",
   assert.match(p.stderr,/predates final INN/);
  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+
+test("offline CLI accepts fully reviewed legacy v8 JSON and reports only current REVIEW, not historical",()=>{
+ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"legacy-reviewed-v8-"));
+ const input=path.join(tmp,"verified.json"),out=path.join(tmp,"out");
+ try {
+  const createRow=(id,name)=>({
+   __canonical_id:id,"Организация":name,"ИНН":"",
+   "Основание":"C — действующий процесс",
+   "Город/район":"Смоленская область",
+   "Техника/сегмент":"зерно и отгрузка",
+   __final_grade:"C",
+   __evidence:{source_urls:["https://example.org/"+id],
+    notes:["Компания выращивает зерно и ведёт отгрузку продукции."]}
+  });
+  const legacy={
+   checkpoint_id:"f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+   final_result:{
+    direct_buyers:[createRow("main","ООО Производитель")],intermediaries:[],leasing:[],statistics:[],
+    qualification_review:Array.from({length:148},(_,i)=>createRow("old_"+i,"Старый "+i)),
+    qualification_review_v5_archived:Array.from({length:148},(_,i)=>createRow("old_"+i,"Старый "+i)),
+    qualification_review_v8:Array.from({length:7},(_,i)=>createRow("new_"+i,"Новый "+i)),
+    qualification_excluded_v8:Array.from({length:2},(_,i)=>createRow("ex_"+i,"Исключённый "+i))
+   }
+  };
+  fs.writeFileSync(input,JSON.stringify(legacy));
+  const p=spawnSync(process.execPath,[script,input,"--out="+out],
+    {encoding:"utf8",timeout:45000});
+  assert.equal(p.status,0,p.stderr);
+  const parsed=JSON.parse(p.stdout);
+  assert.equal(parsed.report.original_row_count,10);
+  assert.equal(parsed.report.review_records,7);
+  assert.equal(parsed.report.excluded_records,2);
+  assert.equal(parsed.report.historical_review_records_preserved,148);
+  const result=JSON.parse(fs.readFileSync(parsed.outputs.json));
+  assert.equal(result.final_result.qualification_review.length,7);
+  assert.equal(result.final_result.qualification_review_v5_archived.length,148);
+  assert.equal(result.final_quality_gate.originals_lost,0);
+ }finally {fs.rmSync(tmp,{recursive:true,force:true});}
+});

@@ -151,3 +151,88 @@ test("one canonical ID in two sections never results in two active CRM prospects
  assert.equal(report.duplicated_canonical_id_records,2);
  assert.equal(report.originals_lost,0);
 });
+
+
+test("v8 seven CURRENT review + 148 HISTORICAL reviews stay distinct, with two excluded",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k479","ООО Зерновая компания",[noteC],{grade:"C"}));
+ input.qualification_review=Array.from({length:148},(_,i)=>
+   make("historical"+i,"Исторический кандидат "+i,["Нет достаточных сведений."],{grade:""}));
+ input.qualification_review_v5_archived=structuredClone(input.qualification_review);
+ input.qualification_review_v8=Array.from({length:7},(_,i)=>
+   make("review_v8_"+i,"Текущий кандидат "+i,["Нет достаточных сведений."],{grade:""}));
+ input.qualification_excluded_v8=Array.from({length:2},(_,i)=>
+   make("excluded_v8_"+i,"Информационный канал "+i,["Лишь информационный канал."],{grade:""}));
+ const snapshot=structuredClone(input);
+ const {result,report}=run(input);
+ assert.equal(report.original_row_count,10);
+ assert.equal(report.historical_review_records_preserved,148);
+ assert.equal(report.current_review_records_at_input,7);
+ assert.equal(report.review_records,7);
+ assert.equal(report.excluded_records,2);
+ assert.equal(report.review_queue_mode,"explicit_replay_current_vs_historical");
+ assert.deepEqual(result.qualification_review.map(r=>r.__canonical_id),
+   input.qualification_review_v8.map(r=>r.__canonical_id));
+ assert.deepEqual(result.qualification_review_v5_archived,
+   input.qualification_review_v5_archived);
+ assert.equal(result.qualification_excluded.length,2);
+ assert.equal(report.originals_lost,0);
+ assert.deepEqual(input,snapshot);
+ const again=run(result);
+ assert.equal(again.report.review_records,7);
+ assert.equal(again.report.historical_review_records_preserved,148);
+});
+
+test("selected A note cites only its OWN inline URL, never a company-wide first URL",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k1","ООО Тягач",[
+   "ООО Тягач предлагает доставку грузов ([seller](https://seller.example/any)).",
+   noteA+" ([lease contract](https://court.example/contract1))"
+ ],{grade:"A",urls:["https://seller.example/any","https://court.example/contract1"]}));
+ const {result,report}=run(input);
+ assert.equal(report.a_claim_source_linked,1);
+ const row=result.direct_buyers[0];
+ assert.equal(row.__evidence.selected_a_provenance.source_url,"https://court.example/contract1");
+ assert.equal(row.__evidence.selected_a_provenance.method,"exact_same_evidence_note");
+ assert.equal(row.__evidence.selected_a_provenance.sources_rechecked,false);
+});
+
+test("unattributed A remains A with a visible soft-warning, NEVER borrow a company URL",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k1","ООО Тягач",[
+   "Сайт организации: https://seller.example/profile; подтверждает только адрес компании.",
+   noteA
+ ],{grade:"A",urls:["https://seller.example/profile"]}));
+ const {result,report}=run(input);
+ assert.equal(report.grades.A,1);
+ assert.equal(report.review_records,0);
+ assert.equal(report.a_claim_source_missing,1);
+ assert.equal(report.a_claim_attribution_review.length,1);
+ assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.source_url,"");
+ assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.status,"missing_claim_source");
+});
+
+test("two different URLs in the SAME positive note are flagged ambiguous, not assigned arbitrarily",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k1","ООО Тягач",[
+   noteA+" https://court.example/case1 and https://court.example/case2"
+ ],{grade:"A"}));
+ const {result,report}=run(input);
+ assert.equal(report.a_claim_source_ambiguous,1);
+ assert.equal(report.a_claim_source_linked,0);
+ assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.source_url,"");
+});
+
+test("A source can be attributed from an EXACT same-claim sourced fact, not a loose keyword match",()=>{
+ const input=empty();
+ const row=make("k1","ООО Тягач",[noteA],{grade:"A"});
+ row.__evidence.facts=[{statement:noteA,source_url:"https://example.org/verified-contract"},
+   {statement:"Another trailer transaction",source_url:"https://example.org/unrelated"}];
+ input.direct_buyers.push(row);
+ const {result,report}=run(input);
+ assert.equal(report.a_claim_source_linked,1);
+ assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.source_url,
+   "https://example.org/verified-contract");
+ assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.method,
+   "matching_structured_fact_statement");
+});
