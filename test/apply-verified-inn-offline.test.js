@@ -34,6 +34,15 @@ function trial(overrides={}){
  XLSX.utils.book_append_sheet(wb,ws,'Прямые покупатели');
  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([['Организация','ИНН']]),'Посредники');
  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([['Организация','ИНН']]),'Лизинг');
+ if(!overrides.noSummary){
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+   ['Показатель','Значение'],
+   ['Заполнено ИНН',overrides.filledInn?1:0],
+   ['Нет ИНН',overrides.filledInn?1:2],
+   ['Сохранённых ссылок на источники',2]
+  ]),'Сводка v5');
+ }
+
  XLSX.writeFile(wb,workbook);
  const before=[fs.readFileSync(input),fs.readFileSync(manifest),fs.readFileSync(workbook)];
  const run=()=>spawnSync(process.execPath,[script,input,'--manifest='+manifest,'--out='+out,'--base-xlsx='+workbook],
@@ -58,6 +67,11 @@ test('verified exact legal identity adds INN and source without changing origina
   assert.equal(w.Sheets['Прямые покупатели'].C2.v,'6732191851');
   assert.match(JSON.stringify(w.Sheets['Прямые покупатели'].A2.c),/er67.ru/);
   assert.ok(w.Sheets['ИНН проверены']);
+  const stats=XLSX.utils.sheet_to_json(w.Sheets['Сводка v5'],{header:1});
+  const values=new Map(stats.slice(1));
+  assert.equal(values.get('Заполнено ИНН'),1);
+  assert.equal(values.get('Нет ИНН'),1);
+  assert.equal(values.get('Сохранённых ссылок на источники'),3);
   assert.notEqual(x.run().status,0,'Refuse overwrite');
  }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
 });
@@ -90,5 +104,18 @@ test('fails with actionable message for a legacy compact combined JSON',()=>{
   assert.match(p.stderr,/--out=<NEW-directory>/);
   assert.deepEqual(fs.readFileSync(x.input),before);
   assert.ok(!fs.existsSync(x.out));
+ }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
+});
+
+test('standalone workbook with no legacy summary receives a current verification summary',()=>{
+ const x=trial({noSummary:true});
+ try{
+  const p=x.run();assert.equal(p.status,0,p.stderr);
+  const out=JSON.parse(p.stdout);
+  const wb=XLSX.readFile(out.outputs.xlsx);
+  const values=new Map(XLSX.utils.sheet_to_json(wb.Sheets['Сводка после ИНН'],{header:1}).slice(1));
+  assert.equal(values.get('Заполнено ИНН'),1);
+  assert.equal(values.get('Нет ИНН'),1);
+  assert.equal(values.get('Сохранённых ссылок на источники'),3);
  }finally{fs.rmSync(x.temp,{recursive:true,force:true});}
 });

@@ -133,6 +133,32 @@ if(workbookFile){
   const note='[Проверка '+patch.checked_on+'] ИНН '+patch.inn+'; ОГРН '+patch.ogrn+'. Источник: '+patch.source_url;
   XLSX.utils.cell_add_comment(titleCell,note,'RegionalResearch');
  }
+ // The Excel summary must reflect the same figures as the full JSON.
+ // Keep historical qualification classes unchanged; refresh only enrichment metrics.
+ const summaryMetrics=new Map([
+  ['Заполнено ИНН',countInns],
+  ['Нет ИНН',total-countInns],
+  ['Сохранённых ссылок на источники',countSources]
+ ]);
+ const summarySheet=wb.Sheets['Сводка v5'];
+ if(summarySheet){
+  const rows=XLSX.utils.sheet_to_json(summarySheet,{header:1,defval:''});
+  const updated=new Set();
+  for(let i=1;i<rows.length;i++){
+   const name=String(rows[i]?.[0]||'').trim();
+   if(!summaryMetrics.has(name))continue;
+   const address=XLSX.utils.encode_cell({r:i,c:1});
+   summarySheet[address]={...(summarySheet[address]||{}),t:'n',v:summaryMetrics.get(name)};
+   updated.add(name);
+  }
+  if(updated.size!==summaryMetrics.size){
+   throw Error('Incomplete Сводка v5: cannot sync verified INN and source counts');
+  }
+ }else{
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+   ['Показатель','Значение'],...summaryMetrics.entries()
+  ]),'Сводка после ИНН');
+ }
  const headers=['ID','Компания','ИНН','ОГРН','Дата проверки','Тип источника','Источник','Примечание'];
  const exportRows=changes.map(x=>[x.canonical_id,x.organization,x.inn,x.ogrn,x.checked_on,x.source_class,x.source_url,x.notes]);
  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headers,...exportRows]),'ИНН проверены');
