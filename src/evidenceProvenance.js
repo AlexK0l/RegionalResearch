@@ -2,7 +2,7 @@
 // a shared URL list, and this audit NEVER promotes qualifications or asserts
 // that an external URL has been rechecked.
 const METADATA_NOTE = /^(?:identity:|final inn:|подтвержд[её]нный инн:|identity без нового web-search:|контакт восстановлен по подтвержд[её]нному инн)/i;
-const URL = /https?:\/\/[^\s<>\])]+/gi;
+const INLINE_URL_PATTERN = /https?:\/\/[^\s<>\])]+/gi;
 const MARKDOWN_LINK = /\[([^\]]{1,220})\]\((https?:\/\/[^)\s]+)\)/gi;
 
 function usableUrl(s) {
@@ -13,7 +13,7 @@ function usableUrl(s) {
 }
 
 function extractInlineUrls(note) {
-  const found = [...String(note).matchAll(URL)]
+  const found = [...String(note).matchAll(INLINE_URL_PATTERN)]
     .map((m) => m[0].replace(/[.,;!?]+$/g, ""))
     .filter(usableUrl);
   return [...new Set(found)];
@@ -39,7 +39,7 @@ export function attachInlineNoteProvenance(row) {
       else audit.unlinked++;
       continue;
     }
-    const statement = raw.replace(MARKDOWN_LINK, "$1").replace(URL, "")
+    const statement = raw.replace(MARKDOWN_LINK, "$1").replace(INLINE_URL_PATTERN, "")
       .replace(/\s+/g, " ").trim();
     if (statement.length < 25) { audit.unlinked++; continue; }
     citations.push({
