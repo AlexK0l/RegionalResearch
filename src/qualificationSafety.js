@@ -228,7 +228,10 @@ export function rejectUnsafeAEvidence(record, note) {
   if (/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/.test(s)) {
     return "identity_metadata_not_trailer_proof";
   }
-  if (record?.sheet === "direct_buyers" && BANKRUPTCY_DISPOSAL_A.test(s) &&
+  const insolvencyDisposal = BANKRUPTCY_DISPOSAL_A.test(s) ||
+    (/(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг)/.test(s) &&
+     /(?:продаж|реализац|отчужд|торг)/.test(s));
+  if (record?.sheet === "direct_buyers" && insolvencyDisposal &&
       /(?:прицеп|полуприцеп)/.test(s)) return "bankruptcy_disposal_not_buyer_event";
   if (DENIED_TRAILER_A.test(s)) return "explicit_denial_of_own_trailer_evidence";
   if (UNSUPPORTED_TRAILER_NOTE_A.test(s) ||
