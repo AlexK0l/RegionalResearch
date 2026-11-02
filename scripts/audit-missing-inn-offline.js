@@ -57,13 +57,19 @@ for(const [id,{section,row}] of indexed){
  if(!grades.includes(grade))throw Error('Unknown qualification: '+grade);
  const notes=row.__evidence?.notes||[];
  const urls=row.__evidence?.source_urls||[];
- const observed=[...new Set(notes.flatMap(n=>[...norm(n).matchAll(re)].map(x=>x[1])))];
+ const inNotes=[...new Set(notes.flatMap(n=>[...norm(n).matchAll(re)].map(x=>x[1])))];
+ const embedded=String(row.__evidence?.identity_verification?.inn||'').trim();
+ const observed=[...new Set([...inNotes,...(/^\d{10}(?:\d{2})?$/.test(embedded)?[embedded]:[])])];
+ // A saved claim and a later explicit denial may coexist in the checkpoint.
+ // The denial must remain visible rather than turning the claim into an INN.
+ const contradictory=notes.some(n=>/инн\s*\d{10,12}.{0,90}не\s+подтвержден/.test(norm(n)));
  const occupied=observed.flatMap(inn=>(owners.get(inn)||[]).map(o=>({inn,...o})));
  const a=annotations.get(id);
  rows.push({canonical_id:id,organization:row['Организация'],sheet:section,grade,
-  inn_candidate_notes:observed,inn_already_used_in_records:occupied,
+  inn_candidate_notes:observed,inn_candidate_embedded:embedded,conflicting_identity_note:contradictory,
+  inn_already_used_in_records:occupied,
   source_url:urls[0]||'',all_source_count:urls.length,note_count:notes.length,
-  review_status:a?.review_status||(occupied.length?'POSSIBLE_DUPLICATE_REVIEW':'UNVERIFIED_MISSING_INN'),
+  review_status:a?.review_status||(contradictory?'CONTRADICTORY_IDENTITY_NOTES':occupied.length?'POSSIBLE_DUPLICATE_REVIEW':'UNVERIFIED_MISSING_INN'),
   candidate_inn_from_research:a?.candidate_inn||'',legal_entity:a?.legal_entity||'',
   reason_no_fill:a?.reason_no_fill||'',
   next_action:a?.action||'Проверить юридическое лицо, ИНН/ОГРН и источник. Не переносить ИНН из заметки без подтверждения.',
@@ -76,6 +82,8 @@ const summary={checkpoint_id:data.checkpoint_id,original_company_count:indexed.s
  missing_by_grade:Object.fromEntries(grades.map(g=>[g,byGrade[g].length])),
  human_research_annotations:annotations.size,
  candidate_mentions_in_notes:rows.filter(r=>r.inn_candidate_notes.length).length,
+ embedded_identity_candidates:rows.filter(r=>r.inn_candidate_embedded).length,
+ contradictory_identity_notes:rows.filter(r=>r.conflicting_identity_note).length,
  candidate_inn_already_used_in_another_row:rows.filter(r=>r.inn_already_used_in_records.length).length,
  auto_filled_inns:0,auto_merged_companies:0,openai_calls:0,web_search_calls:0,
  source_input_sha256:crypto.createHash('sha256').update(source).digest('hex'),

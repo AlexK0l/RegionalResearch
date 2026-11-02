@@ -73,3 +73,24 @@ test('duplicate canonical IDs are rejected without writing output',()=>{
   assert.match(p.stderr,/duplicate canonical ID/);
  }finally{fs.rmSync(x.dir,{recursive:true,force:true});}
 });
+
+test('embedded identity is a candidate only; later denial blocks even if INN belongs to another row',()=>{
+ const x=fixture(d=>{
+  const row=d.final_result.direct_buyers[3];
+  row.__evidence.identity_verification={inn:'6732191851',method:'final_inn_web'};
+  row.__evidence.notes=['Final INN: ИНН 6732191851 не подтверждён для ООО Неизвестное.'];
+ });
+ try{
+  const p=x.run();assert.equal(p.status,0,p.stderr);
+  const r=JSON.parse(p.stdout);
+  assert.equal(r.summary.embedded_identity_candidates,1);
+  assert.equal(r.summary.contradictory_identity_notes,1);
+  const output=JSON.parse(fs.readFileSync(r.outputs.json));
+  const row=output.rows.find(v=>v.canonical_id==='e');
+  assert.equal(row.inn_candidate_embedded,'6732191851');
+  assert.equal(row.conflicting_identity_note,true);
+  assert.equal(row.review_status,'CONTRADICTORY_IDENTITY_NOTES');
+  assert.equal(row.inn_already_used_in_records[0].canonical_id,'a');
+  assert.equal(r.summary.auto_filled_inns,0);
+ }finally{fs.rmSync(x.dir,{recursive:true,force:true});}
+});
