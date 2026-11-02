@@ -31,6 +31,13 @@ function run(bad=false){
  XLSX.utils.cell_add_comment(ws.A2,'Old comment k1','RegionalResearch');
  XLSX.utils.book_append_sheet(w,ws,'Прямые покупатели');
  XLSX.utils.book_append_sheet(w,XLSX.utils.aoa_to_sheet([['ID','Организация','Факт','Значение','ОГРН','Источник 1','Источник 2'],['k3','ООО Проверка','legal_status','LIQUIDATED_REPORTED','','https://base.garant.ru/66956404/','']]),'Факт и источник');
+ XLSX.utils.book_append_sheet(w,XLSX.utils.aoa_to_sheet([
+  ['Показатель','Значение'],['Остались спорные ИНН',18],
+  ['Архив ручной проверки вне 491',148]
+ ]),'Сводка v5');
+ XLSX.utils.book_append_sheet(w,XLSX.utils.aoa_to_sheet([
+  ['Правило','Описание'],['Полный JSON','final_result contains all 491 complete records']
+ ]),'Методика');
  XLSX.writeFile(w,xlsx);
  const before=[fs.readFileSync(input),fs.readFileSync(xlsx)];
  const call=(source=input,destination=out)=>spawnSync(process.execPath,[script,source,'--out='+destination,'--base-xlsx='+xlsx],{encoding:'utf8',timeout:40000});
@@ -49,6 +56,9 @@ test('promotes only earlier reviewed INN fact, not a conflicting brand INN or ph
   assert.equal(summary.contact_identity_mismatch,1);
   assert.deepEqual(summary.missing_inn_priority,{P0:1,P1:0,P2:0,P3:0});
   const data=JSON.parse(fs.readFileSync(response.outputs.json));
+  assert.equal(data.summary.unresolved_alias_rows,1);
+  assert.equal(data.summary.unresolved_alias_rows_before_consolidation,1);
+  assert.equal(data.summary.resolved_alias_review_rows,0);
   assert.equal(data.final_result.direct_buyers[0].__evidence.facts[0].value,'6732191851');
   assert.equal(data.final_result.direct_buyers[1]['ИНН'],'');
   assert.equal(data.final_result.direct_buyers[1].__evidence.facts.length,0);
@@ -59,6 +69,11 @@ test('promotes only earlier reviewed INN fact, not a conflicting brand INN or ph
   const wb=XLSX.readFile(response.outputs.xlsx,{cellComments:true});
   assert.match(JSON.stringify(wb.Sheets['Прямые покупатели'].A2.c),/Old comment/);
   assert.equal(XLSX.utils.sheet_to_json(wb.Sheets['Факт и источник']).length,2);
+  const stats=new Map(XLSX.utils.sheet_to_json(wb.Sheets['Сводка v5'],{header:1}).slice(1));
+  assert.equal(stats.get('Остались спорные ИНН'),1);
+  assert.equal(stats.get('Архив ручной проверки вне 3'),148);
+  const meth=XLSX.utils.sheet_to_json(wb.Sheets['Методика']);
+  assert.match(meth[0].Описание,/3 complete records/);
   assert.deepEqual([fs.readFileSync(x.input),fs.readFileSync(x.xlsx)],x.before);
   assert.notEqual(x.call().status,0,'Must reject existing output');
   const again=x.call(response.outputs.json,path.join(x.dir,'another'));

@@ -115,6 +115,11 @@ data.summary.facts_with_linked_sources=facts.length;
 data.summary.new_facts_from_prior_manual_verification=reviewed.length;
 data.summary.source_linked_identity_claims_requiring_review=claims.length;
 data.summary.missing_inn_alias_entries_actionable=aliases.filter(x=>!x.current_inn).length;
+// Preserve the full historical list but reconcile live unresolved-alias count.
+const historicAliasRows=(data.identity_audit?.unresolved||[]).reduce((n,a)=>n+(a.names?.length||0),0);
+data.summary.unresolved_alias_rows_before_consolidation=historicAliasRows;
+data.summary.resolved_alias_review_rows=historicAliasRows-aliases.length;
+data.summary.unresolved_alias_rows=aliases.length;
 const sha=crypto.createHash('sha256').update(raw).digest('hex');
 data.evidence_provenance_review={
  audit_date:new Date().toISOString().slice(0,10),source_input_sha256:sha,
@@ -186,6 +191,25 @@ tab('Методика фактов v1',['Правило'],[
  'Three reported legal statuses require current signed FNS EGRUL extracts.',
  'No changes to company count, original A/B/C, company notes, existing INNs or source URLs.'
 ],x=>[x]);
+if(book.Sheets['Сводка v5']){
+ const sheet=book.Sheets['Сводка v5'];
+ XLSX.utils.sheet_to_json(sheet,{header:1,defval:''}).slice(1).forEach((r,i)=>{
+  const label=String(r[0]||'').trim(),line=i+2;
+  if(label==='Остались спорные ИНН')sheet['B'+line]={t:'n',v:aliases.length};
+  if(label.startsWith('Архив ручной проверки вне '))
+   sheet['A'+line]={t:'s',v:'Архив ручной проверки вне '+all.size};
+ });
+}
+if(book.Sheets['Методика']){
+ const sheet=book.Sheets['Методика'];
+ XLSX.utils.sheet_to_json(sheet,{header:1,defval:''}).slice(1).forEach((r,i)=>{
+  if(String(r[0])==='Полный JSON'){
+   const key='B'+(i+2);
+   sheet[key]={t:'s',v:String(r[1]||'').replace(/contains all \d+ complete records/,
+    'contains all '+all.size+' complete records')};
+  }
+ });
+}
 if(book.Sheets['Факт и источник']&&reviewed.length){
  XLSX.utils.sheet_add_aoa(book.Sheets['Факт и источник'],reviewed.map(x=>
  [x.id,x.name,'legal_identity',x.inn,x.ogrn,x.url,'']),{origin:-1});
