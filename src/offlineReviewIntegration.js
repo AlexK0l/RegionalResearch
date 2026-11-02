@@ -97,9 +97,63 @@ export function integrateReviewedReplay(verifiedFull, qualificationReplay, optio
     validatedReviewStatus(r);
     replay.set(id, r);
   }
+  // An earlier source-backed alias group is recorded *before* reviewed aliases.
+  // Example: АО «СпецАТХ» (k000319) -> АО «Спецавтохозяйство» (k000066).
+  // The full verified JSON already contains the merged contact/finance fields
+  // and source_ids, while the original alias is not in the later 3-record
+  // reviewed_alias_merges archive. Never resurrect it as a separate company.
+  const earlierRestored = verified.identity_audit?.restored_groups || [];
+  demand(Array.isArray(earlierRestored), "invalid earlier identity audit");
+  const earlierAbsorbed = [];
+  for (const group of earlierRestored) {
+    demand(group.reason === "sourced_explicit_alias" &&
+      Array.isArray(group.original_canonical_ids) &&
+      group.original_canonical_ids.length >= 2 &&
+      Array.isArray(group.absorbed_names) && group.absorbed_names.length,
+      "earlier identity merge lacks an explicit sourced alias group");
+    const winnerIds = group.original_canonical_ids.filter(id => active.has(id));
+    demand(winnerIds.length === 1, "earlier identity group must contain exactly one active survivor");
+    const winner = winnerIds[0];
+    const current = active.get(winner);
+    const savedSources = compact.get(winner)?.source_ids || [];
+    demand(current.row["Организация"] === group.winner_name &&
+      string(current.row["ИНН"]) === string(group.inn) && string(group.inn) &&
+      group.original_canonical_ids.every(id => savedSources.includes(id)) &&
+      (group.source_urls || []).every(url => urlList(current.row).includes(url)),
+      "source-backed earlier alias does not match verified survivor");
+    for (const sourceId of group.original_canonical_ids) {
+      if (sourceId === winner) continue;
+      demand(!sourceRows.has(sourceId) && !absorbed.has(sourceId),
+        "earlier identity alias collides with another record " + sourceId);
+      const originalReplay = replay.get(sourceId);
+      demand(originalReplay && originalReplay.sheet === current.sheet &&
+        group.absorbed_names.includes(originalReplay.organization) &&
+        originalReplay.qualification_status === replay.get(winner)?.qualification_status &&
+        VISIBLE.has(originalReplay.qualification_status) &&
+        (!string(originalReplay.inn) || string(originalReplay.inn) === string(group.inn)),
+        "earlier identity alias contradicts replay role, name, grade or INN " + sourceId);
+      // This is a minimal ORIGINAL-source snapshot from read-only Replay.
+      // No detached full CRM record exists for this already absorbed alias.
+      sourceRows.set(sourceId, { sheet: originalReplay.sheet,
+        row: { __canonical_id: sourceId, "Организация": originalReplay.organization,
+          "ИНН": string(originalReplay.inn) }, absorbed: true,
+        historical_source_restoration: true });
+      absorbed.set(sourceId, winner);
+      earlierAbsorbed.push(sourceId);
+    }
+  }
+  for (const [id] of active) {
+    const sourceIds = compact.get(id)?.source_ids || [id];
+    demand(sourceIds.includes(id) && sourceIds.every(
+      sid => sid === id || absorbed.get(sid) === id),
+      "reviewed compact source_ids are not completely accounted for " + id);
+  }
   demand(replay.size === sourceRows.size &&
     [...sourceRows.keys()].every(id => replay.has(id)),
     "Replay and reviewed JSON do not cover exactly the same original IDs");
+  if (verified.identity_audit?.input_rows != null)
+    demand(Number(verified.identity_audit.input_rows) === replay.size,
+      "earlier identity audit input count differs from replay");
 
   // Fail before mutation when the legal identity or original role differs.
   for (const [id, origin] of sourceRows) {
@@ -112,9 +166,15 @@ export function integrateReviewedReplay(verifiedFull, qualificationReplay, optio
     demand(!oldInn || oldInn === reviewedInn,
       "verified full record has a conflicting or cleared source INN " + id);
     if (origin.absorbed) {
-      demand(candidate.qualification_status === "C" &&
-        replay.get(absorbed.get(id))?.qualification_status === "C",
-        "only pre-reviewed C/C alias groups can be transferred: " + id);
+      if (origin.historical_source_restoration) {
+        demand(VISIBLE.has(candidate.qualification_status) &&
+          candidate.qualification_status === replay.get(absorbed.get(id))?.qualification_status,
+          "source-backed earlier alias qualification mismatch: " + id);
+      } else {
+        demand(candidate.qualification_status === "C" &&
+          replay.get(absorbed.get(id))?.qualification_status === "C",
+          "only later manually reviewed C/C alias groups can be transferred: " + id);
+      }
       demand(!reviewedInn, "absorbed record unexpectedly has a live INN: " + id);
     }
   }
@@ -190,7 +250,10 @@ export function integrateReviewedReplay(verifiedFull, qualificationReplay, optio
   const report = {
     checkpoint, qualification_code_sha: string(options.qualificationSha),
     replay_input_rows: replay.size, active_full_records: active.size,
-    absorbed_alias_records: archive.length, all_original_ids_preserved: true,
+    absorbed_alias_records: archive.length + earlierAbsorbed.length,
+    reviewed_absorbed_alias_records: archive.length,
+    source_restored_alias_records: earlierAbsorbed.length,
+    all_original_ids_preserved: true,
     counts, crm_visible_rows: selected, reviewed_inn_present: reviewedInnPresent,
     reviewed_inn_missing: all.length - reviewedInnPresent,
     old_source_urls_absent_in_reviewed_full: originalSourceUrlsNotInReviewed,
@@ -206,6 +269,7 @@ export function integrateReviewedReplay(verifiedFull, qualificationReplay, optio
   verified.integration_replay_v8 = {
     report, lineage, source_replay_checkpoint: checkpoint,
     input_archive_count: archive.length,
+    earlier_restored_canonical_ids: earlierAbsorbed,
     prior_full_summary: structuredClone(verifiedFull.summary || {}),
     methodology: [
       "Only previously-reviewed legal identities and alias merges are carried forward.",

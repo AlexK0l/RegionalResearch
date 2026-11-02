@@ -111,3 +111,63 @@ test("CLI generates detached JSON/XLSX/audit, never overwrites outputs or source
   assert.deepEqual([fs.readFileSync(source),fs.readFileSync(qual)],old);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test("an earlier proven B/B source alias must be retained in 492-ID lineage without becoming a duplicate",()=>{
+  const x=create();
+  const winner=x.reviewed.final_result.direct_buyers[0];
+  winner.__merged_canonical_ids=["k1","k6"];
+  winner.__evidence.source_urls.push("https://official.example/specialtransport");
+  x.reviewed.rows[0].source_ids=["k1","k6"];
+  x.reviewed.identity_audit={input_rows:6,output_rows:5,restored_groups:[{
+    reason:"sourced_explicit_alias",
+    winner_name:"ООО Основное",inn:"6732191851",
+    original_canonical_ids:["k1","k6"],
+    absorbed_names:["ООО Краткое название"],
+    source_urls:["https://official.example/specialtransport"]
+  }]};
+  x.replay.rows.push({...x.replay.rows[0],
+    canonical_id:"k6",organization:"ООО Краткое название",inn:"",
+    replay_grade:"C",qualification_status:"C",archived_grade:"C"});
+  const {data,report}=integrateReviewedReplay(x.reviewed,x.replay);
+  assert.equal(report.active_full_records,4);
+  assert.equal(report.replay_input_rows,6);
+  assert.equal(report.absorbed_alias_records,2);
+  assert.equal(report.reviewed_absorbed_alias_records,1);
+  assert.equal(report.source_restored_alias_records,1);
+  assert.equal(report.reviewed_inn_present,1);
+  assert.equal(data.integration_replay_v8.lineage.length,6);
+  assert.equal(data.integration_replay_v8.lineage.find(z=>z.canonical_id==="k6").survivor_canonical_id,"k1");
+  assert.equal(data.integration_replay_v8.lineage.find(z=>z.canonical_id==="k6").effective_inn,"6732191851");
+  assert.equal(data.final_result.direct_buyers.length,3);
+  assert.equal(data.final_result.direct_buyers[0]["Телефон"],"79991112233");
+});
+
+test("earlier alias may not be inferred from an undocumented source_ids member",()=>{
+  const x=create();
+  x.reviewed.rows[0].source_ids=["k1","k6"];
+  x.replay.rows.push({...x.replay.rows[0],
+    canonical_id:"k6",organization:"ООО Другой бизнес",inn:"",
+    replay_grade:"C",qualification_status:"C",archived_grade:"C"});
+  assert.throws(()=>integrateReviewedReplay(x.reviewed,x.replay),
+    /not completely accounted for|original IDs/);
+});
+
+test("earlier source-verified alias refuses mismatched identity or source attribution",()=>{
+  for(const mode of ["name","inn","source","grade"]){
+    const x=create(),winner=x.reviewed.final_result.direct_buyers[0];
+    winner.__merged_canonical_ids=["k1","k6"];
+    winner.__evidence.source_urls.push("https://official.example/specialtransport");
+    x.reviewed.rows[0].source_ids=["k1","k6"];
+    x.reviewed.identity_audit={input_rows:6,restored_groups:[{
+      reason:"sourced_explicit_alias",winner_name:"ООО Основное",
+      inn:mode==="inn"?"0000000000":"6732191851",
+      original_canonical_ids:["k1","k6"],
+      absorbed_names:["ООО Краткое название"],
+      source_urls:[mode==="source"?"https://fake.example/not-from-input":"https://official.example/specialtransport"]
+    }]};
+    x.replay.rows.push({...x.replay.rows[0],
+      canonical_id:"k6",organization:mode==="name"?"ООО Не связанный":"ООО Краткое название",
+      inn:"",replay_grade:"C",qualification_status:mode==="grade"?"A":"C",archived_grade:"C"});
+    assert.throws(()=>integrateReviewedReplay(x.reviewed,x.replay),/Offline v8 integration/);
+  }
+});
