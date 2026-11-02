@@ -38,7 +38,7 @@ test("normal production completion is reproducible from a saved checkpoint entir
   assert.equal(record.report.openai_calls,0);
   assert.equal(record.report.originals_lost,0);
   assert.equal(JSON.parse(fs.readFileSync(record.outputs.json)).final_result.direct_buyers[0]["Телефон"],"79991234567");
-  const wb=XLSX.readFile(record.outputs.xlsx,{cellComments:true});
+  const wb=XLSX.read(fs.readFileSync(record.outputs.xlsx),{type:"buffer",cellComments:true});
   assert.equal(wb.SheetNames.length,6);
   assert.equal(XLSX.utils.sheet_to_json(wb.Sheets["Прямые покупатели"]).length,1);
   assert.ok(fs.existsSync(record.outputs.audit));
