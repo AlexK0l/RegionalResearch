@@ -37,6 +37,8 @@ test("approved shortened legal name merges, restores INN and preserves source ev
   assert.equal(survivor["Организация"], "АО «Спецавтохозяйство»");
   assert.match(survivor["Телефон"], /123 456/);
   assert.match(survivor["Телефон"], /654 321/);
+  assert.ok(output.audit.restored_groups[0].filled_fields.includes("Телефон"));
+  assert.ok(output.audit.restored_groups[0].filled_fields.includes("Техника/сегмент"));
   assert.ok(survivor.__evidence.legal_identity_merges[0].source_urls.includes(url));
   assert.equal(survivor.__evidence.previous_conflict_status, "resolved_alias_in_offline_copy");
   assert.equal(JSON.stringify(checkpoint), snapshot, "original checkpoint must remain byte-identical");

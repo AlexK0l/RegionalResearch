@@ -112,10 +112,14 @@ function mergeSourceEvidence(survivor, partition, inn, reason, checkpointId, fie
     }
     if (key === "Телефон") {
       const phones = uniq(rows.flatMap((r) => asText(r["Телефон"]).split(/[;\n]+/).map(asText)));
+      const previous = asText(row[key]);
       row[key] = phones.join("; ");
+      if (row[key] !== previous) changes.push(key);
     } else if (key === "Техника/сегмент") {
       const segments = uniq(rows.flatMap((r) => asText(r[key]).split(" | ").map(asText)));
+      const previous = asText(row[key]);
       row[key] = segments.join(" | ");
+      if (row[key] !== previous) changes.push(key);
     } else if (EMPTY(row[key]) && values.length) {
       row[key] = values[0];
       changes.push(key);
