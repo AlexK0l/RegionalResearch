@@ -12,7 +12,7 @@ function run(bad=false){
  const input=path.join(dir,'in.json'),xlsx=path.join(dir,'input.xlsx'),out=path.join(dir,'output');
  const make=(id,name,inn,grade,url)=>({__canonical_id:id,'Организация':name,'ИНН':inn,__comment:'Old comment '+id,
   __replay_v5:{status:grade,reason:'Archived'},__evidence:{facts:[],source_urls:[url],notes:[]}});
- const a=make('k1','ООО ПО «Энергоресурс»',bad?'6732191852':'6732191851','A','https://er67.ru/contact/');
+ const a=make('k1','ООО ПО «Энергоресурс»',bad?'6713005690':'6732191851','A','https://er67.ru/contact/');
  a.__verified_identity={inn:'6732191851',ogrn:'1206700002376',source_url:'https://er67.ru/contact/',checked_on:'2026-11-02',source_class:'first_party'};
  a.__evidence.identity_verification={inn:'6732191851',method:'final_inn_web',source_urls:['https://er67.ru/contact/']};
  const b=make('k2','Группа компаний','', 'A','https://example.org/brand');
