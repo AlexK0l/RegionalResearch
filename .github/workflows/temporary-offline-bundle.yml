@@ -32,3 +32,14 @@ jobs:
           name: regionalresearch-code-only-gate
           path: /tmp/regionalresearch-quality-gate.mjs
           retention-days: 1
+
+      - name: Bundle genuine production finalize CLI with XLSX encoder
+        run: |
+          ./node_modules/.bin/esbuild scripts/finalize-research-offline.js --bundle --platform=node --format=esm --target=node22 --minify --external:openai --external:playwright --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' --outfile=/tmp/regionalresearch-finalize-cli.mjs
+          node --check /tmp/regionalresearch-finalize-cli.mjs
+      - name: Upload actual production finalize CLI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: regionalresearch-full-offline-cli-code
+          path: /tmp/regionalresearch-finalize-cli.mjs
+          retention-days: 1
