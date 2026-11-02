@@ -98,3 +98,35 @@ test("offline CLI accepts fully reviewed legacy v8 JSON and reports only current
   assert.equal(result.final_quality_gate.originals_lost,0);
  }finally {fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+
+test("CLI normalizes current queues repeated verbatim inside full legacy CRM sections",()=>{
+ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"overlap-reviewed-v8-"));
+ const input=path.join(tmp,"reviewed.json"),out=path.join(tmp,"out");
+ try {
+  const base=id=>({
+   __canonical_id:id,"Организация":"ООО "+id,"ИНН":"",
+   "Основание":"C — зерно",
+   "Город/район":"Смоленская область",
+   "Техника/сегмент":"отгрузка зерна",
+   __final_grade:id==="base"?"C":"",
+   __replay_v8:{status:id==="review"?"REVIEW":id==="excluded"?"EXCLUDED":"C"},
+   __evidence:{source_urls:["https://example.org/"+id],notes:["Предприятие выращивает зерно и отгружает продукцию."]}
+  });
+  const active=base("base"),review=base("review"),excluded=base("excluded");
+  fs.writeFileSync(input,JSON.stringify({checkpoint_id:"f677c97e",
+   final_result:{direct_buyers:[active,review,excluded],intermediaries:[],leasing:[],
+    statistics:[],qualification_review:[base("archive")],
+    qualification_review_v5_archived:[base("archive")],
+    qualification_review_v8:[structuredClone(review)],
+    qualification_excluded_v8:[structuredClone(excluded)]}}));
+  const p=spawnSync(process.execPath,[script,input,"--out="+out],{encoding:"utf8",timeout:45000});
+  assert.equal(p.status,0,p.stderr);
+  const report=JSON.parse(p.stdout).report;
+  assert.equal(report.original_row_count,3);
+  assert.equal(report.duplicated_current_queue_rows_collapsed,2);
+  assert.equal(report.review_records,1);
+  assert.equal(report.excluded_records,1);
+  assert.equal(report.historical_review_records_preserved,1);
+ }finally {fs.rmSync(tmp,{recursive:true,force:true});}
+});

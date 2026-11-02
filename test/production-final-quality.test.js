@@ -236,3 +236,45 @@ test("A source can be attributed from an EXACT same-claim sourced fact, not a lo
  assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.method,
    "matching_structured_fact_statement");
 });
+
+
+test("full legacy v8 with nine exact duplicated current-queue records normalizes 488 to 479 + 7 + 2",()=>{
+ const input=empty();
+ const company=make("base","ООО Производитель",[noteC],{grade:"C"});
+ input.direct_buyers.push(company);
+ const review=Array.from({length:7},(_,i)=>make("r"+i,"Текущий "+i,["Требует проверки."],{grade:""}));
+ const excluded=Array.from({length:2},(_,i)=>make("x"+i,"Исключённый "+i,["Только информационный источник."],{grade:""}));
+ for(const row of review) {row.__replay_v8={status:"REVIEW"};row.__final_qualification_status="REVIEW";}
+ for(const row of excluded) {row.__replay_v8={status:"EXCLUDED"};row.__final_qualification_status="EXCLUDED";}
+ input.direct_buyers.push(...structuredClone(review),...structuredClone(excluded));
+ input.qualification_review_v8=review;
+ input.qualification_excluded_v8=excluded;
+ input.qualification_review=Array.from({length:148},(_,i)=>
+   make("old"+i,"Архив "+i,["Старая проверка."],{grade:""}));
+ input.qualification_review_v5_archived=structuredClone(input.qualification_review);
+ const before=structuredClone(input);
+ const {result,report}=run(input);
+ assert.equal(report.input_commercial_array_rows,10);
+ assert.equal(report.duplicated_current_queue_rows_collapsed,9);
+ assert.equal(report.original_row_count,10);
+ assert.equal(report.active_commercial_records,1);
+ assert.equal(report.review_records,7);
+ assert.equal(report.excluded_records,2);
+ assert.equal(report.historical_review_records_preserved,148);
+ assert.equal(result.direct_buyers.length,1);
+ assert.equal(result.qualification_review_v5_archived.length,148);
+ assert.deepEqual(input,before);
+ const repeat=run(result);
+ assert.equal(repeat.report.duplicated_current_queue_rows_collapsed,0);
+ assert.equal(repeat.report.original_row_count,10);
+});
+
+test("versioned queue ID with DIFFERENT contact or company cannot be silently collapsed",()=>{
+ const input=empty();
+ const r=make("duplicate","ООО Проверить",["Требует проверки."],{grade:""});
+ r.__replay_v8={status:"REVIEW"};
+ input.direct_buyers.push(r);
+ input.qualification_review_v8=[{...structuredClone(r),"Телефон":"79990000000"}];
+ input.qualification_excluded_v8=[];
+ assert.throws(()=>run(input),/conflicting commercial and current queue snapshot/);
+});

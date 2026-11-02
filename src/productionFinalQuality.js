@@ -128,7 +128,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     throw new TypeError("Final quality requires full final_result and offline qualification callbacks");
   }
   const data = structuredClone(source);
-  const commercialBefore = SECTIONS.flatMap(sheet =>
+  const rawCommercial = SECTIONS.flatMap(sheet =>
     data[sheet].map(row => ({ sheet, row })));
   // Full earlier reviewed JSONs may carry 148 HISTORICAL candidates in
   // qualification_review and the actual seven current ones in a separate
@@ -151,6 +151,39 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   const previousExcluded = versionedReview
     ? (Array.isArray(data.qualification_excluded_v8) ? data.qualification_excluded_v8 : [])
     : (Array.isArray(data.qualification_excluded) ? data.qualification_excluded : []);
+  // Some legacy full-v8 JSONs include the SAME nine REVIEW/EXCLUDED
+  // snapshots twice: in the source 488-row commercial arrays AND in the
+  // explicit v8 queues. A row can be collapsed only if status, ID, name,
+  // INN, and the complete archived snapshot match exactly.
+  let commercialBefore = rawCommercial;
+  let duplicatedCurrentQueueRowsCollapsed = 0;
+  if (versionedReview) {
+    const queueById = new Map();
+    for (const [status, rows] of [["REVIEW", previousReview], ["EXCLUDED", previousExcluded]]) {
+      for (const row of rows) {
+        const id = rowId(row);
+        if (!id || queueById.has(id))
+          throw new Error("Final quality: duplicate or missing ID in current versioned queue: " + id);
+        queueById.set(id, { status, row });
+      }
+    }
+    commercialBefore = rawCommercial.filter(({ row }) => {
+      const id = rowId(row);
+      const matched = queueById.get(id);
+      if (!matched) return true;
+      const sameStatus = string(row?.__replay_v8?.status) === matched.status ||
+        string(row?.__final_qualification_status) === matched.status;
+      const sameIdentity = string(row["Организация"]) ===
+        string(matched.row["Организация"]) &&
+        string(row["ИНН"]) === string(matched.row["ИНН"]);
+      if (!sameStatus || !sameIdentity ||
+          JSON.stringify(row) !== JSON.stringify(matched.row)) {
+        throw new Error("Final quality: conflicting commercial and current queue snapshot: " + id);
+      }
+      duplicatedCurrentQueueRowsCollapsed++;
+      return false;
+    });
+  }
   const originalRowCount = commercialBefore.length +
     previousReview.length + previousExcluded.length;
   const preservedFields = [
@@ -338,6 +371,8 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     reviewed_source_manifest_used: false,
     original_row_count: originalRowCount,
     original_commercial_records: commercialBefore.length,
+    input_commercial_array_rows: rawCommercial.length,
+    duplicated_current_queue_rows_collapsed: duplicatedCurrentQueueRowsCollapsed,
     active_commercial_records: visible.length,
     review_records: review.length,
     excluded_records: excluded.length,
