@@ -1,0 +1,153 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as XLSX from "xlsx";
+import { finalizeProductionResearch } from "../src/productionFinalQuality.js";
+import { deterministicQualificationDecision, actionableUnqualifiedLead } from "../src/pipeline.js";
+import { buildWorkbookBuffer } from "../src/xlsx.js";
+
+const make=(id,name,notes,extra={})=>({
+  __canonical_id:id, "Организация":name,"ИНН":extra.inn||"",
+  "Основание":extra.grade+" — old decision","Телефон":extra.phone||"79991234567",
+  "Руководитель / ЛПР":"Руководитель сохранён",
+  "Выручка последнего подтвержденного года":35000000, "Численность":32,
+  "Город/район":"Смоленская область",
+  "Техника/сегмент":extra.segment||"Тяжёлая автомобильная логистика и полуприцепы",
+  "Следующее действие":"Договориться о встрече",
+  __comment:"Original first-column CRM comment",
+  __final_grade:extra.grade,
+  __evidence:{source_urls:extra.urls||["https://example.org/"+id],notes,facts:[]}
+});
+const run=(data)=>finalizeProductionResearch(data,{
+  qualify:deterministicQualificationDecision,isActionable:actionableUnqualifiedLead
+});
+const empty=()=>({direct_buyers:[],intermediaries:[],leasing:[],
+  statistics:[{"Показатель":"Население","Значение":10000}],qualification_review:[],
+  qualification_excluded:[]});
+const noteA="Компания эксплуатирует собственный парк тягачей и полуприцепов Schmitz Cargobull.";
+const noteC="Компания перерабатывает зерно и отгружает готовую продукцию сельхозпокупателям.";
+
+test("production final gate updates stale qualification after contacts without changing verified CRM data",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k101","ООО Перевозчик",[noteA],{grade:"C",inn:"6732114166"}));
+ input.direct_buyers.push(make("k102","ООО Зерновая компания",[noteC],{grade:"C",inn:""}));
+ const snapshot=structuredClone(input);
+ const {result,report}=run(input);
+ assert.deepEqual(input,snapshot,"finalization must be detached and non-mutating");
+ assert.equal(report.original_row_count,2);
+ assert.equal(report.originals_lost,0);
+ assert.deepEqual(report.grades,{A:1,B:0,C:1});
+ assert.equal(result.direct_buyers.find(x=>x.__canonical_id==="k101").__final_grade,"A");
+ assert.equal(result.direct_buyers.find(x=>x.__canonical_id==="k101").__a_rule,"direct_ownership_or_fleet");
+ assert.equal(result.direct_buyers[0]["Телефон"],"79991234567");
+ assert.equal(result.direct_buyers[0]["Руководитель / ЛПР"],"Руководитель сохранён");
+ assert.equal(result.direct_buyers[0]["Выручка последнего подтвержденного года"],35000000);
+ assert.equal(result.direct_buyers[0]["Следующее действие"],"Договориться о встрече");
+ assert.equal(result.direct_buyers[1]["ИНН"],"","missing INN never causes automatic removal");
+ assert.equal(result.statistics[0]["Значение"],10000);
+ assert.equal(report.web_search_calls,0);
+ assert.equal(report.openai_calls,0);
+ assert.equal(report.reviewed_source_manifest_used,false);
+ assert.equal(report.transitions.length,1);
+});
+
+test("live source-only journals, auction lots and farm implements cannot stay in A",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k529","Журнал «ЛесПромИнформ»",[
+   "Роль — информационный discovery-канал; журнал является справочником, не покупателем техники."
+ ],{grade:"C"}));
+ input.direct_buyers.push(make("k252","ООО «ЭНЕРГОМАСТЕР»",[
+   "Источник → лот по продаже залогового имущества → собственник/должник ООО «ЭНЕРГОМАСТЕР» → конкретный прицеп 86122В и VIN X9H86122BB0000048."
+ ],{grade:"A"}));
+ input.direct_buyers.push(make("k239","ООО «МП»",[
+   "Договор №30205964: полуприцеп для раздачи кормов тракторный ПРКТ-10-02."
+ ],{grade:"A",segment:"корма и сельское хозяйство"}));
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.some(x=>x.__canonical_id==="k529"),false);
+ assert.equal(result.direct_buyers.some(x=>x.__canonical_id==="k252"),false);
+ assert.equal(result.direct_buyers.some(x=>x.__canonical_id==="k239"&&x.__final_grade==="A"),false);
+ assert.equal(report.originals_lost,0);
+ assert.equal(result.qualification_review.length+result.qualification_excluded.length+
+   result.direct_buyers.length,3);
+});
+
+test("unresolved shared INN quarantines BOTH legal persons instead of assigning it twice",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k1","ООО Первое",[noteA],{grade:"A",inn:"6732114166"}));
+ input.direct_buyers.push(make("k2","ООО Другое",[noteA],{grade:"A",inn:"6732114166"}));
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(result.qualification_review.length,2);
+ assert.equal(report.shared_inn_conflict_records,2);
+ assert.equal(report.originals_lost,0);
+ assert.deepEqual(result.qualification_review.map(r=>r["ИНН"]),["6732114166","6732114166"]);
+ assert.equal(result.qualification_review[0].__quality_gate.outcome,"REVIEW");
+});
+
+test("rejects malformed INN and missing source WITHOUT losing prospective buyers",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k3","ООО Доставка",[noteA],{grade:"A",inn:"1111111111",urls:[]}));
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(result.qualification_review.length,1);
+ assert.ok(report.flags[0].reasons.includes("invalid_inn_checksum"));
+ assert.ok(report.flags[0].reasons.includes("missing_source_url"));
+ assert.equal(result.qualification_review[0].__evidence.notes[0],noteA);
+ assert.equal(result.qualification_review[0]["Телефон"],"79991234567");
+});
+
+test("structured facts are counted only when a real source URL is attached",()=>{
+ const input=empty();
+ const row=make("k12","ООО Лесная доставка",[
+   noteA+" ([Компания](https://example.com/delivery))"
+ ],{grade:"A"});
+ row.__evidence.facts=[
+   {kind:"financial",statement:"выручка 35000000",source_url:"https://example.com/finance"},
+   {kind:"logistics",statement:"лесовозы",source_url:""},
+   {kind:"legal_identity",value:"6732114166",sources:["https://example.com/ogrn"]}
+ ];
+ input.direct_buyers.push(row);
+ const {result,report}=run(input);
+ assert.equal(report.inline_note_citations,1);
+ assert.equal(report.already_structured_source_facts,2);
+ assert.equal(result.direct_buyers[0].__evidence.facts.length,3);
+ assert.equal(result.direct_buyers[0].__evidence.inline_note_provenance[0].automatic_qualification_proof,false);
+});
+
+test("review and excluded queues survive finalization and Excel keeps six commercial sheets",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k41","ООО Грузовик",[noteA],{grade:"A"}));
+ const review=make("k42","ООО Требуется проверка",[
+   "Вакансия водителя категории Е без упоминания конкретного прицепа."
+ ],{grade:""});
+ review.__decision="manual_review";
+ input.qualification_review.push(review);
+ input.qualification_excluded.push(make("k43","Журнал отрасли",[
+   "Справочник логистических компаний региона."
+ ],{grade:""}));
+ const {result,report}=run(input);
+ assert.equal(result.qualification_review.length,1);
+ assert.equal(result.qualification_excluded.length,1);
+ assert.equal(report.original_row_count,3);
+ assert.equal(report.originals_lost,0);
+ const buffer=buildWorkbookBuffer(result);
+ const wb=XLSX.read(buffer,{type:"buffer",cellComments:true});
+ assert.deepEqual(wb.SheetNames,[
+   "Прямые покупатели","Посредники","Лизинг","Статистика",
+   "Статистика по цветам","Легенда"
+ ]);
+ const active=XLSX.utils.sheet_to_json(wb.Sheets["Прямые покупатели"]);
+ assert.equal(active.length,1);
+ assert.ok(wb.Sheets["Прямые покупатели"].B2.c);
+ assert.equal(result.qualification_review[0]["Телефон"],"79991234567");
+});
+
+test("one canonical ID in two sections never results in two active CRM prospects",()=>{
+ const input=empty();
+ input.direct_buyers.push(make("k22","ООО Дубль",[noteA],{grade:"A"}));
+ input.intermediaries.push(make("k22","ООО Дубль",[noteA],{grade:"A"}));
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.length+result.intermediaries.length,0);
+ assert.equal(result.qualification_review.length,2);
+ assert.equal(report.duplicated_canonical_id_records,2);
+ assert.equal(report.originals_lost,0);
+});
