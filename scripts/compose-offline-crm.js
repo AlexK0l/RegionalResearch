@@ -44,7 +44,7 @@ const safe=(value,field="")=>{
   if(typeof value==="number")return value;
   const text=String(value);
   if(field==="ИНН")return text;
-  return /^[=+\\-@]/.test(text)?"'"+text:text;
+  return text && "=+-@".includes(text[0]) ? "'" + text : text;
 };
 const workbook=XLSX.utils.book_new();
 const counts={A:0,B:0,C:0,REVIEW:0};
