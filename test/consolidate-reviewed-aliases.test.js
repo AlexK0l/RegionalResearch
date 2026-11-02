@@ -33,6 +33,14 @@ function fixture(corrupt=false){
   j.final_result[section].push(row);
   j.rows.push({canonical_id:id,organization:name,sheet:section,inn,status:grade,source_ids:[id]});
  }
+ j.identity_audit={unresolved:[
+  ...[0,1,2,3,4,5].map(i=>({inn:['6229026994','6229026994','6708000520',
+   '6708000520','6732102259','6732102259'][i],names:[base[i][1]],
+   status:'insufficient_alias_evidence'})),
+  {inn:'6713005690',names:['Группа компаний «ГРИН ЛАЙН»'],
+   status:'insufficient_alias_evidence'}
+ ]};
+ j.summary.unresolved_alias_rows=7;
  const pairs=[
   [0,1,'6229026994','1026201086735','https://agrogi.ru/legal/','https://www.tbank.ru/business/contractor/legal/1026201086735/'],
   [2,3,'6708000520','1026700975707','https://www.tbank.ru/business/contractor/legal/1026700975707/','https://econ-kard.admin-smolensk.ru/files/288/zao-mkk.pdf'],
@@ -62,7 +70,17 @@ function fixture(corrupt=false){
   j.final_result[section].forEach((r,i)=>XLSX.utils.cell_add_comment(ws['A'+(i+2)],r.__comment,'RegionalResearch'));
   XLSX.utils.book_append_sheet(wb,ws,title);
  }
- XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([['Показатель','Значение'],['Компаний в рабочей копии',9]]),'Сводка v5');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+  ['Показатель','Значение'],['Компаний в рабочей копии',9],
+  ['Остались спорные ИНН',7],['Архив ручной проверки вне 9',148]
+ ]),'Сводка v5');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+  ['Правило','Описание'],['Полный JSON','final_result contains all 9 complete records']
+ ]),'Методика');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([
+  ['ИНН','Организация','Статус','ОГРН','Решение','Первый источник'],
+  ...j.identity_audit.unresolved.map(r=>[r.inn,r.names[0],r.status,'','',''])
+ ]),'Алиасы на проверку');
  XLSX.writeFile(wb,workbook);
  const old=[fs.readFileSync(input),fs.readFileSync(manifest),fs.readFileSync(workbook)];
  const run=(dest=out)=>spawnSync(process.execPath,[script,input,'--manifest='+manifest,'--base-xlsx='+workbook,'--out='+dest],{encoding:'utf8',timeout:45000});
@@ -84,7 +102,23 @@ test('verified legal aliases consolidate to single entities while preserving all
   assert.equal(data.final_result.intermediaries[0].__evidence.facts.length,1);
   assert.equal(data.final_result.direct_buyers.find(r=>r.__canonical_id==='k000002').__replay_v5.status,'A');
   assert.equal(data.legal_status_review.items.length,3);
+  assert.equal(data.identity_audit.unresolved.length,7,'Historical review unchanged');
+  assert.equal(data.summary.unresolved_alias_rows_before_consolidation,7);
+  assert.equal(data.summary.resolved_alias_review_rows,6);
+  assert.equal(data.summary.unresolved_alias_rows,1);
+  assert.equal(data.reviewed_alias_merges.pending_alias_review_rows,1);
+  const updatedAudit=JSON.parse(fs.readFileSync(response.outputs.audit));
+  assert.equal(updatedAudit.resolved_alias_review_rows,6);
+  assert.equal(updatedAudit.pending_alias_review_rows,1);
   const wb=XLSX.readFile(response.outputs.xlsx,{cellComments:true});
+  const summaryValues=new Map(XLSX.utils.sheet_to_json(wb.Sheets['Сводка v5'],{header:1}).slice(1));
+  assert.equal(summaryValues.get('Остались спорные ИНН'),1);
+  assert.equal(summaryValues.get('Архив ручной проверки вне 6'),148);
+  const meth=XLSX.utils.sheet_to_json(wb.Sheets['Методика']);
+  assert.match(meth.find(r=>r.Правило==='Полный JSON').Описание,/6 complete records/);
+  const aliasSheet=XLSX.utils.sheet_to_json(wb.Sheets['Алиасы на проверку']);
+  assert.equal(aliasSheet.filter(r=>r.Статус==='RESOLVED_VERIFIED_ALIAS').length,6);
+  assert.match(meth.find(r=>r.Правило==='Алиасы после консолидации').Описание,/leaving 1 pending/);
   assert.equal(XLSX.utils.sheet_to_json(wb.Sheets['Проверенные дубли']).length,3);
   assert.equal(XLSX.utils.sheet_to_json(wb.Sheets['Архив алиасов']).length,3);
   assert.equal(XLSX.utils.sheet_to_json(wb.Sheets['Прямые покупатели']).length,5);

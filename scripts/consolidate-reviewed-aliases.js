@@ -157,13 +157,30 @@ for(const row of all){
  factCount+=(row.__evidence?.facts||[]).length;
 }
 if(!all.every(r=>r.__comment&&String(r.__comment).trim()))throw Error('Missing first-cell company note');
+// Keep the historical identity audit immutable, but recalculate current pending
+// reviews after precisely verified aliases are matched by INN and legal name.
+const historicalAliases=Array.isArray(data.identity_audit?.unresolved)
+ ? data.identity_audit.unresolved : null;
+const aliasReviewBefore=historicalAliases?.length ?? Number(data.summary.unresolved_alias_rows||0);
+const acceptedAliasKeys=new Set(merges.flatMap(m=>[m.primary_name,m.absorbed_name]
+ .map(name=>m.inn+'\t'+name)));
+const aliasReviewResolved=historicalAliases
+ ? historicalAliases.filter(item=>(item.names||[]).some(name=>
+     acceptedAliasKeys.has(String(item.inn)+'\t'+name))).length : 0;
+const aliasReviewRemaining=aliasReviewBefore-aliasReviewResolved;
+if(aliasReviewRemaining<0)throw Error('Resolved alias count exceeds original review queue');
 data.summary={...data.summary,total:all.length,with_inn:withInn,without_inn:blank.length,
  grades,full_records_in_json:all.length,stored_evidence_source_urls:sourceCount,
  verified_legal_alias_merges:merges.length,archived_absorbed_alias_records:archived.length,
  recorded_legal_status_findings:legal.length,facts_with_linked_sources:factCount,
+ unresolved_alias_rows_before_consolidation:aliasReviewBefore,
+ resolved_alias_review_rows:aliasReviewResolved,
+ unresolved_alias_rows:aliasReviewRemaining,
  operational_working_copy_pending_egrul:true};
 data.reviewed_alias_merges={reviewed_on:manifest.reviewed_on,merges,archived_original_records:archived,
- original_company_count:map.size,no_unreviewed_merges:true};
+ original_company_count:map.size,no_unreviewed_merges:true,
+ initial_alias_review_rows:aliasReviewBefore,resolved_alias_review_rows:aliasReviewResolved,
+ pending_alias_review_rows:aliasReviewRemaining};
 data.legal_status_review={reviewed_on:manifest.reviewed_on,items:legal,requires_fns_confirmation:true};
 data.working_draft_not_approved_for_crm=true;
 const wb=baseXlsx?XLSX.readFile(path.resolve(baseXlsx),{cellStyles:true,cellComments:true}):XLSX.utils.book_new();
@@ -202,17 +219,41 @@ const summaries=new Map([
  ['Подтверждено B',grades.B],['Подтверждено C',grades.C],
  ['Требуют проверки',grades.REVIEW],['Заполнено ИНН',withInn],
  ['Нет ИНН',blank.length],['Полных записей в JSON',all.length],
- ['Сохранённых ссылок на источники',sourceCount]
+ ['Сохранённых ссылок на источники',sourceCount],
+ ['Остались спорные ИНН',aliasReviewRemaining]
 ]);
 const sumTab=wb.Sheets['Сводка v5'];
 if(sumTab){
  XLSX.utils.sheet_to_json(sumTab,{header:1,defval:''}).forEach((r,i)=>{
   const label=String(r[0]||'').trim();
+  if(i&&label.startsWith('Архив ручной проверки вне ')){
+   const name='A'+(i+1);
+   sumTab[name]={...(sumTab[name]||{}),t:'s',v:'Архив ручной проверки вне '+all.length};
+  }
   if(i&&!summaries.has(label))return;
   if(i){const key='B'+(i+1);sumTab[key]={...(sumTab[key]||{}),t:'n',v:summaries.get(label)};}
  });
 }else{
  add('Сводка консолидации',['Показатель','Значение'],[...summaries],x=>x);
+}
+// Update inherited documentation without altering research-stage evidence.
+if(wb.Sheets['Методика']){
+ const method=wb.Sheets['Методика'];
+ const entries=XLSX.utils.sheet_to_json(method,{header:1,defval:''});
+ entries.slice(1).forEach((row,i)=>{
+  if(String(row[0])==='Полный JSON'){
+   const cell='B'+(i+2);
+   const updated=String(row[1]||'').replace(/contains all \d+ complete records/,
+    'contains all '+all.length+' complete records');
+   method[cell]={...(method[cell]||{}),t:'s',v:updated};
+  }
+ });
+ if(!entries.some(row=>String(row[0])==='Алиасы после консолидации')){
+  XLSX.utils.sheet_add_aoa(method,[['Алиасы после консолидации',
+   'Historical identity_audit.unresolved keeps '+aliasReviewBefore+
+   ' pre-consolidation records; '+aliasReviewResolved+
+   ' are now resolved, leaving '+aliasReviewRemaining+' pending.']],{origin:-1});
+ }
 }
 if(wb.Sheets['Алиасы на проверку']){
  const tab=wb.Sheets['Алиасы на проверку'];
@@ -234,6 +275,8 @@ const audit={checkpoint_id:data.checkpoint_id,source_rows:map.size,output_rows:a
  merges,archived_rows:archived.length,legal_status_findings:legal,
  filled_inn:withInn,missing_inn:blank.length,grades,source_urls:sourceCount,
  linked_facts:factCount,priority_without_inn:priority.length,
+ initial_alias_review_rows:aliasReviewBefore,resolved_alias_review_rows:aliasReviewResolved,
+ pending_alias_review_rows:aliasReviewRemaining,
  no_paid_api_calls:true,requires_current_fns_extract:true};
 const buffers={
  [outputs.json]:Buffer.from(JSON.stringify(data,null,2)),
