@@ -11,7 +11,8 @@
     "recover:identity": "node scripts/recover-identity-offline.js",
     "local": "node --env-file=.env server.js",
     "browser:install": "playwright install chromium",
-    "test": "node --test"
+    "test": "node --test",
+    "compose:offline": "node scripts/compose-offline-crm.js"
   },
   "engines": {
     "node": ">=22"
