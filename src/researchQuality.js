@@ -124,7 +124,7 @@ export function independentBSignals(row) {
 // carrier with a documented haul and equipment association, not for a broker,
 // customer, generic job advert, group fleet or speculative model suitability.
 function normalizeActor(value) {
-  return normalizeText(value).replace(/[^a-zа-я0-9]+/gi, " ").replace(/\s+/g, " ").trim();
+  return normalizeText(value).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^a-zа-я0-9]+/gi, " ").replace(/\s+/g, " ").trim();
 }
 
 function attributedEntityName(row) {
@@ -139,7 +139,7 @@ function carrierRoleAndTrip(note, entityName) {
   const after = text.slice(index + entityName.length, index + entityName.length + 140);
   const before = text.slice(Math.max(0, index - 35), index);
   const sameActorRole =
-    /^(?:указан|назван|выступает|является).{0,85}(?:перевозчик|исполнител)/i.test(after) ||
+    /^\s*(?:указан|назван|выступает|является).{0,85}(?:перевозчик|исполнител)/i.test(after) ||
     /(?:перевозчик|исполнител) $/i.test(before + " ");
   const actualCargoTrip = /(?:перевозчик.{0,60}партии|перевез.{0,55}(?:парт|груз)|(?:перевозк|доставк).{0,50}(?:партии|груз)|(?:партии|груз).{0,45}(?:перевез|доставлен))/.test(text);
   const negatedRole = /(?:не является|не выступает|не указан).{0,55}(?:перевозчик|исполнител)/.test(text);
