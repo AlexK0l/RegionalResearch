@@ -25,3 +25,10 @@ jobs:
           ./node_modules/.bin/esbuild scripts/temporary-offline-gate-entry.mjs --bundle --platform=node --format=esm --target=node22 --minify --tree-shaking=true --packages=external --outfile=/tmp/regionalresearch-quality-gate.mjs
           node -e 'const fs=require("node:fs");const code=fs.readFileSync("/tmp/regionalresearch-quality-gate.mjs","utf8");console.log("RR_BUNDLE_IMPORTS:"+code.slice(0,300));'
           node -e 'const fs=require("node:fs");const z=require("node:zlib");const s=z.gzipSync(fs.readFileSync("/tmp/regionalresearch-quality-gate.mjs"),{level:9}).toString("base64");console.log("RR_BUNDLE_TOTAL:"+s.length);for(let i=0;i<s.length;i+=5000)console.log("RR_BUNDLE_PIECE_"+String(i/5000).padStart(3,"0")+":"+s.slice(i,i+5000));'
+
+      - name: Upload portable public-code-only offline gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: regionalresearch-code-only-gate
+          path: /tmp/regionalresearch-quality-gate.mjs
+          retention-days: 1
