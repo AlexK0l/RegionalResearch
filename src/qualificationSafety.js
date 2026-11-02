@@ -220,13 +220,14 @@ const BANKRUPTCY_DISPOSAL_A = /(?:банкротств|конкурсн.{0,20}п
 // a sale/pledge listing. A separately evidenced later buyer event remains valid.
 // Check ALL saved notes: often the fleet synopsis omits that the source was an auction.
 const DISPOSED_TRAILER_CONTEXT_A =
-  /(?:банкротств|конкурсн.{0,25}производств|должник|залогов.{0,35}имуществ|лот.{0,45}(?:продаж|имуществ|полуприцеп|прицеп)|(?:полуприцеп|прицеп).{0,45}лот|(?:продаж|реализац).{0,40}залогов|(?:выставлен|реализованн).{0,35}(?:на торг|с торгов)|(?:на|по)\s+торг(?:ах|ам)|публичн.{0,25}предложени)/i;
+  /(?:банкротств|конкурсн.{0,25}производств|должник|залогов.{0,35}имуществ|лот.{0,45}(?:продаж|имуществ|полуприцеп|прицеп)|(?:полуприцеп|прицеп).{0,45}лот|(?:продаж|реализац).{0,40}залогов|(?:выставлен|реализованн).{0,35}(?:на торг|с торгов)|(?:на|по)\s+торг(?:ах|ам)|(?:публичн.{0,25}предложени.{0,85}(?:продаж|имуществ|лот|торг)|(?:продаж|имуществ|лот|торг).{0,85}публичн.{0,25}предложени))/i;
 const BANKRUPTCY_BUYER_EVENT_A =
   /(?:выиграл.{0,45}(?:торг|аукцион)|(?:приобрел|приобрела|купил|купила).{0,100}(?:на торгах|с торгов|по итогам торгов)|(?:покупател|победител).{0,40}лота)/i;
-const INDEPENDENT_LATER_FLEET_A =
-  /(?:позднее|после.{0,25}(?:торг|банкротств)|нов.{0,25}договор|по отдельн.{0,30}договор|друг(?:ом|ому).{0,20}источник|в настоящее время|на текущую дату)/i;
-const CONCRETE_CURRENT_TRAILER_A =
-  /(?:приобрел|приобрела|приобрели|купил|купила|заключен.{0,35}договор|эксплуатир|лизингополучател).{0,135}(?:полуприцеп|прицеп|тонар|kogel|schmitz|krone)|(?:полуприцеп|прицеп|тонар|kogel|schmitz|krone).{0,110}(?:купил|приобрел|заключен.{0,25}договор|эксплуатир|в собственности)/i;
+// A retrospective fleet inferred only from liquidation lots is not
+// evidence of present ownership. This is checked on the same NOTE; a
+// different contract/fleet note must be assessed independently.
+const HISTORIC_FLEET_INFERENCE_A =
+  /(?:ранее.{0,85}(?:сформирован|владени|на балансе|парк|прицеп)|(?:парк|прицеп|полуприцеп).{0,80}(?:ранее|историческ)|(?:сигнал|доказательств).{0,65}ранее сформирован)/i;
 // An equipment PROCUREMENT and an order for someone else's haulage service
 // are two different economic events, even when both mention semi-trailers.
 const HAULAGE_SERVICE_CUSTOMER_A =
@@ -267,14 +268,14 @@ export function rejectUnsafeAEvidence(record, note) {
         /(?:прицеп|полуприцеп|тонар|kogel|schmitz|krone)/.test(s)) {
       return "bankruptcy_or_collateral_asset_disposal_not_current_buyer";
     }
-    const allNotes = (Array.isArray(record?.row?.__evidence?.notes) ?
-      record.row.__evidence.notes : []).map((value) =>
-        String(value || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " "));
-    const historicAuction = allNotes.some((other) => DISPOSED_TRAILER_CONTEXT_A.test(other) &&
-      /(?:прицеп|полуприцеп|тонар|kogel|schmitz|krone)/.test(other));
-    if (historicAuction && !actualAuctionBuyer &&
-        !(INDEPENDENT_LATER_FLEET_A.test(s) && CONCRETE_CURRENT_TRAILER_A.test(s))) {
-      return "historic_auction_fleet_not_current_operation";
+    // V7 regression: do NOT veto an independently documented contract or
+    // active fleet simply because an OTHER note mentions an old auction.
+    // Relevance to the same event/asset cannot be inferred from a shared
+    // company's notes. Suspicious candidate notes are rejected on their own
+    // content and kept available for review.
+    if (HISTORIC_FLEET_INFERENCE_A.test(s) &&
+        !/(?:подтвержден.{0,35}(?:нов.{0,15}договор|текущ.{0,25}эксплуатац)|отдельн.{0,20}договор.{0,65}(?:прицеп|полуприцеп))/.test(s)) {
+      return "historical_auction_fleet_inference_not_current_operation";
     }
     if (HAULAGE_SERVICE_CUSTOMER_A.test(s) && !DIRECT_TRAILER_PURCHASE_A.test(s)) {
       return "purchased_transport_service_not_trailer";

@@ -119,6 +119,66 @@ export function independentBSignals(row) {
   return independentClaimPair([...explicit, ...legacyClaims(row)]);
 }
 
+// Completed carrier work and a specific named trailer are two independent
+// commercial B signals. Do not infer *ownership*: B is permitted for a
+// carrier with a documented haul and equipment association, not for a broker,
+// customer, generic job advert, group fleet or speculative model suitability.
+function normalizeActor(value) {
+  return normalizeText(value).replace(/[^a-zа-я0-9]+/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+function attributedEntityName(row) {
+  const name = normalizeActor(row?.["Организация"] || "");
+  return name.length >= 12 ? name : "";
+}
+
+function carrierRoleAndTrip(note, entityName) {
+  const text = normalizeActor(note);
+  const index = text.indexOf(entityName);
+  if (index < 0) return false;
+  const after = text.slice(index + entityName.length, index + entityName.length + 140);
+  const before = text.slice(Math.max(0, index - 35), index);
+  const sameActorRole =
+    /^(?:указан|назван|выступает|является).{0,85}(?:перевозчик|исполнител)/i.test(after) ||
+    /(?:перевозчик|исполнител) $/i.test(before + " ");
+  const actualCargoTrip = /(?:перевозчик.{0,60}партии|перевез.{0,55}(?:парт|груз)|(?:перевозк|доставк).{0,50}(?:партии|груз)|(?:партии|груз).{0,45}(?:перевез|доставлен))/.test(text);
+  const negatedRole = /(?:не является|не выступает|не указан).{0,55}(?:перевозчик|исполнител)/.test(text);
+  return sameActorRole && actualCargoTrip && !negatedRole;
+}
+
+export function attributedCarrierTrailerB(row) {
+  const entity = attributedEntityName(row);
+  const notes = sourceNotes(row);
+  const sources = Array.isArray(row?.__evidence?.source_urls) ? row.__evidence.source_urls : [];
+  if (!entity || !sources.some(usableSourceUrl)) return { valid: false, method: "missing_named_entity_or_source" };
+  const trip = notes.find((note) => carrierRoleAndTrip(note, entity) && /https?:\/\//i.test(note));
+  const equipment = notes.find((note) => {
+    const text = normalizeActor(note);
+    return text.includes(entity) &&
+      /(?:полуприцеп.{0,45}(?:kogel|schmitz|krone|wielton|grunwald|тонар)|(?:kogel|schmitz|krone|wielton|grunwald).{0,45}полуприцеп)/.test(text) &&
+      !/(?:банкротств|залогов|должник|на торгах|продаж.*лот|групп.*парк)/.test(text);
+  });
+  if (!trip || !equipment) return { valid: false, method: "insufficient_carrier_or_trailer_proof" };
+  return { valid: true, method: "attributed_performed_freight_and_named_trailer",
+    carrier: normalizeText(trip), trailer: normalizeText(equipment) };
+}
+
+// Tendering a haulage SERVICE is not an equipment purchase (not A), but
+// remains an addressable C cargo owner if a named entity actually commissioned
+// heavy/material transportation. The tender does not prove owning a trailer.
+export function namedCargoHaulageCustomerC(row) {
+  const name = attributedEntityName(row);
+  const sources = Array.isArray(row?.__evidence?.source_urls) ? row.__evidence.source_urls : [];
+  if (!name || !sources.some(usableSourceUrl)) return false;
+  return sourceNotes(row).some((note) => {
+    const text = normalizeActor(note);
+    return text.includes(name) &&
+      /(?:закупк|тендер|договор).{0,70}услуг.{0,55}(?:перевоз|достав|транспортир)/.test(text) &&
+      /(?:строительн.{0,20}материал|щеб|песок|бетон|зерн|лесоматериал|древес|неруд)/.test(text) &&
+      !/(?:предполага|возможн|не подтвержд|неизвестно)/.test(text);
+  });
+}
+
 export function verifiedInnFromEvidence(row, normalizeInn) {
   const inn = normalizeInn(row?.["ИНН"]);
   const evidence = row?.__evidence || {};

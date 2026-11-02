@@ -3,7 +3,7 @@ import path from "node:path";
 import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
-import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
+import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
@@ -3932,12 +3932,18 @@ function deterministicQualificationDecision(record) {
   } else if (aEvidence) {
     grade = "A";
     reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
+  } else if (directRole && attributedCarrierTrailerB(record.row).valid) {
+    grade = "B";
+    reason = "Отдельные evidence-note связывают то же юридическое лицо с выполненной перевозкой и конкретным полуприцепом; владение или лизинг именно этой техникой для A не доказаны.";
   } else if (target && independentBSignals(record.row).valid) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
   } else if (directRole && target && operatingProcess) {
     grade = "C";
     reason = "Подтверждён действующий целевой производственный/грузовой процесс коммерческого грузовладельца; собственная техника или перевозчик пока не установлены.";
+  } else if (directRole && namedCargoHaulageCustomerC(record.row)) {
+    grade = "C";
+    reason = "Подтверждена закупка транспортных услуг для конкретного целевого груза: компания — грузовладелец/заказчик перевозки, а не доказанный владелец полуприцепа.";
   } else if (target && transport) {
     grade = "C";
     reason = "В evidence подтверждены целевой груз/процесс и конкретный транспортно-логистический сигнал, но недостаточно данных для A/B.";
