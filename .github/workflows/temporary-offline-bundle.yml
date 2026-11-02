@@ -1,0 +1,27 @@
+name: Temporary public-code-only offline qualification bundle
+on:
+  push:
+    branches:
+      - feature/evidence-first-cost-quality-20261028
+    paths:
+      - '.github/workflows/temporary-offline-bundle.yml'
+      - 'scripts/temporary-offline-gate-entry.mjs'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install source dependencies and public bundler
+        run: |
+          npm install --ignore-scripts
+          npm install --no-save --ignore-scripts esbuild@0.25.12
+      - name: Bundle ONLY offline public application code
+        run: |
+          ./node_modules/.bin/esbuild scripts/temporary-offline-gate-entry.mjs --bundle --platform=node --format=esm --target=node22 --minify --tree-shaking=true --packages=external --outfile=/tmp/regionalresearch-quality-gate.mjs
+          node -e 'const fs=require("node:fs");const code=fs.readFileSync("/tmp/regionalresearch-quality-gate.mjs","utf8");console.log("RR_BUNDLE_IMPORTS:"+code.slice(0,300));'
+          node -e 'const fs=require("node:fs");const z=require("node:zlib");const s=z.gzipSync(fs.readFileSync("/tmp/regionalresearch-quality-gate.mjs"),{level:9}).toString("base64");console.log("RR_BUNDLE_TOTAL:"+s.length);for(let i=0;i<s.length;i+=5000)console.log("RR_BUNDLE_PIECE_"+String(i/5000).padStart(3,"0")+":"+s.slice(i,i+5000));'
