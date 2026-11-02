@@ -47,8 +47,8 @@ export function selectedAEvidenceSource(row, aEvidence) {
   const matches = notes.flatMap((note, index) =>
     string(note) === claim ? [index] : []);
   const rawClaimUrls = unique(matches.flatMap(index =>
-    [...string(notes[index]).matchAll(/https?:\\/\\/[^\\s<>\\])]+/gi)]
-      .map(match => match[0].replace(/[.,;!?]+$/g, ""))));
+    (string(notes[index]).match(/https?:\/\/[^\s)<>\]]+/gi) || [])
+      .map(url => url.replace(/[.,;!?]+$/g, ""))));
   const linked = Array.isArray(evidence.inline_note_provenance)
     ? evidence.inline_note_provenance : [];
   const cited = unique(linked.filter(item => matches.includes(item.note_index))
