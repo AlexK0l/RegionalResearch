@@ -25,6 +25,7 @@ test("approved shortened legal name merges, restores INN and preserves source ev
     "Final INN: АО «СпецАТХ» является сокращённым наименованием АО «Спецавтохозяйство» с ИНН 6731069440."
   ], phone: "+7 4812 123 456", leader: "Сотрудник 1", grade: "A" });
   const newer = make("АО «Спецавтохозяйство»", { phone: "+7 4812 654 321", grade: "B" });
+  old["Техника/сегмент"] += " | Полуприцеп Тонар";
   const checkpoint = result(old, newer);
   const snapshot = JSON.stringify(checkpoint);
   const output = restoreAliasesOffline(checkpoint, { checkpointId: "saved" });
