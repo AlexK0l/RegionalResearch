@@ -1,0 +1,17 @@
+{
+  "checkpoint_id": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "reviewed_on": "2026-11-02",
+  "verified_inns": [
+    {
+      "canonical_id": "k000488",
+      "organization": "«Керамет»",
+      "inn": "5003146550",
+      "ogrn": "1215000083209",
+      "source_class": "first_party",
+      "checked_on": "2026-11-02",
+      "source_url": "https://keramet.ru/kontakty/",
+      "secondary_url": "https://saby.ru/profile/5003146550-500301001",
+      "notes": "Официальные реквизиты ООО «КЕРАМЕТ» принадлежат оператору сайта keramet.ru; источник исходной строки https://keramet.ru/smolensk/. Услуги в Смоленске заявлены, но фактическое подразделение и наличие собственных прицепов в регионе не установлены. Класс B не менять."
+    }
+  ]
+}
