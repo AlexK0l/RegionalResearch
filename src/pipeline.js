@@ -8,7 +8,7 @@ import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
-import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence } from "./qualificationSafety.js";
+import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone } from "./researchCostPolicy.js";
@@ -3739,6 +3739,9 @@ function deterministicQualificationDecision(record) {
   const intermediaryRole = role === "intermediaries";
   const leasingRole = role === "leasing";
   const notes = qualificationEvidenceNotes(record);
+  const rawEvidenceNotes = (Array.isArray(record?.row?.__evidence?.notes)
+    ? record.row.__evidence.notes : [])
+    .map((value) => String(value || "").trim()).filter(Boolean);
   const identityRegionMismatch = identityRegionMismatchFromNotes(notes);
   const priorityTarget = hasAnyPattern(text, QUAL_PRIORITY_TARGET_PATTERNS);
   const generalTarget =
@@ -3780,8 +3783,9 @@ function deterministicQualificationDecision(record) {
 
   let aEvidence = "";
   let aRule = "";
+  const aCandidates = [];
 
-  for (const note of notes) {
+  for (const [noteIndex, note] of notes.entries()) {
     if (speculative.test(note) || negativeAEvidence.test(note)) continue;
     // Ownership/lease/procurement of someone else's trailer is not direct A.
     if (/(?:сторонн|треть[еёи]го|чуж|подрядчик).{0,80}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,80}(?:сторонн|треть[еёи]го|чуж|подрядчик)/.test(note) &&
@@ -3799,7 +3803,7 @@ function deterministicQualificationDecision(record) {
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
     const freightTrailerContext =
-      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|2птс[- ]?\d|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
@@ -3829,6 +3833,15 @@ function deterministicQualificationDecision(record) {
       /(продает|продаж[а-я]*|продавец|продавцом|предлагает)/i.test(note) &&
       !/(закупк|приобрет|приобрел|купил|в собственности|на балансе|собственн.{0,30}парк|эксплуат)/i.test(note);
     const actualTrailerProcurement = explicitTrailerProcurement && !serviceProcurementOnly && !partsOnly;
+    // Some direct buyers appear as a clearly identified lessee of a specific
+    // road trailer, even when the separate subject note says "финансовая аренда"
+    // rather than repeating "лизингополучатель". Both parts must be in evidence.
+    const knownLessee = notes.some((other) =>
+      /(?:лизингополучател|арендатор)/.test(other) &&
+      /(?:организац|предприяти|компани|ооо|ао|ип|фирм|является|выступа|в роли|роль)/.test(other));
+    const specificTrailerLease = directRole && freightTrailerContext &&
+      /(?:предмет.{0,35}(?:финансов.{0,20}аренды|лизинг)|договор.{0,55}лизинг|лизингополучател.{0,95}(?:полуприцеп|прицеп|тонар)|лизинг.{0,80}(?:полуприцеп|прицеп|тонар))/i.test(note) &&
+      (/(?:лизингополучател)/.test(note) || knownLessee);
     const actualServiceEvent =
       intermediaryRole && trailer && specificServiceEvent.test(note);
     const ongoingTrailerSeller =
@@ -3854,7 +3867,8 @@ function deterministicQualificationDecision(record) {
 
     let matchedRule = "";
     if (directRole) {
-      if (actualTrailerProcurement) matchedRule = "direct_procurement";
+      if (specificTrailerLease) matchedRule = "direct_financial_lease";
+      else if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
       else if (ceTrailerJob.test(note) && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
@@ -3883,10 +3897,20 @@ function deterministicQualificationDecision(record) {
       // trailer ownership/operation, even if it contains all regex keywords.
       const aExclusion = rejectUnsafeAEvidence(record, note);
       if (aExclusion) continue;
-      aEvidence = note;
-      aRule = matchedRule;
-      break;
+      aCandidates.push({
+        note: rawEvidenceNotes[noteIndex] || note,
+        rule: matchedRule, index: noteIndex,
+        score: rankSafeAEvidence(record, rawEvidenceNotes[noteIndex] || note, matchedRule)
+      });
     }
+  }
+  // The first mention is not necessarily the strongest evidence. A court
+  // contract naming a legal entity should beat an earlier inference from a
+  // vacancy, and the selected quotation retains its original URL case.
+  aCandidates.sort((left, right) => right.score - left.score || left.index - right.index);
+  if (aCandidates.length) {
+    aEvidence = aCandidates[0].note;
+    aRule = aCandidates[0].rule;
   }
 
   // A is evidence-note only. Segment/basis text may support B/C context but

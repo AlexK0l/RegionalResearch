@@ -216,6 +216,32 @@ const TRACTOR_ONLY_A = /(?:тягач.{0,65}(?:необходимост|комп
 // purchase/operation need. A separate current, entity-specific source can
 // still qualify as A; this check concerns only the disposal note.
 const BANKRUPTCY_DISPOSAL_A = /(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг|распродаж.{0,30}имуществ).{0,170}(?:продаж|реализац|отчужд|торг|прицеп|полуприцеп)|(?:ранее\s+находивш.{0,40}баланс|реализованн.{0,25}с\s+торгов).{0,100}(?:прицеп|полуприцеп)/i;
+// Direct buyer A cannot be inferred from a debtor's historic trailers or from
+// a sale/pledge listing. A separately evidenced later buyer event remains valid.
+// Check ALL saved notes: often the fleet synopsis omits that the source was an auction.
+const DISPOSED_TRAILER_CONTEXT_A =
+  /(?:банкротств|конкурсн.{0,25}производств|должник|залогов.{0,35}имуществ|лот.{0,45}(?:продаж|имуществ|полуприцеп|прицеп)|(?:полуприцеп|прицеп).{0,45}лот|(?:продаж|реализац).{0,40}залогов|(?:выставлен|реализованн).{0,35}(?:на торг|с торгов)|(?:на|по)\s+торг(?:ах|ам)|публичн.{0,25}предложени)/i;
+const BANKRUPTCY_BUYER_EVENT_A =
+  /(?:выиграл.{0,45}(?:торг|аукцион)|(?:приобрел|приобрела|купил|купила).{0,100}(?:на торгах|с торгов|по итогам торгов)|(?:покупател|победител).{0,40}лота)/i;
+const INDEPENDENT_LATER_FLEET_A =
+  /(?:позднее|после.{0,25}(?:торг|банкротств)|нов.{0,25}договор|по отдельн.{0,30}договор|друг(?:ом|ому).{0,20}источник|в настоящее время|на текущую дату)/i;
+const CONCRETE_CURRENT_TRAILER_A =
+  /(?:приобрел|приобрела|приобрели|купил|купила|заключен.{0,35}договор|эксплуатир|лизингополучател).{0,135}(?:полуприцеп|прицеп|тонар|kogel|schmitz|krone)|(?:полуприцеп|прицеп|тонар|kogel|schmitz|krone).{0,110}(?:купил|приобрел|заключен.{0,25}договор|эксплуатир|в собственности)/i;
+// An equipment PROCUREMENT and an order for someone else's haulage service
+// are two different economic events, even when both mention semi-trailers.
+const HAULAGE_SERVICE_CUSTOMER_A =
+  /(?:закупк.{0,70}услуг.{0,95}(?:перевоз|достав|транспортир)|(?:услуг.{0,40}перевоз).{0,70}(?:закупк|тендер|договор)|(?:заказчик|грузовладельц).{0,65}(?:перевоз|транспортир|достав)|(?:перевоз|достав).{0,65}(?:заказчик|грузовладельц)|заказыва.{0,60}(?:перевоз|транспортир)|перевозк.{0,50}подрядчик)/i;
+const DIRECT_TRAILER_PURCHASE_A =
+  /(?:приобрел|приобрела|приобрели|купил|купила|закупил|закупила|заключил.{0,40}(?:договор|лизинг)).{0,95}(?:полуприцеп|прицеп|тонар|schmitz|kogel|krone)|(?:полуприцеп|прицеп|тонар|schmitz|kogel|krone).{0,65}(?:приобретен|куплен|закуплен|в собственности)/i;
+// In agricultural catalogues "полуприцеп" may denote tractor-drawn equipment.
+// A 2ПТС, ПРКТ feed-distributor or ПРТ hay roll carrier is not a road freight
+// semitrailer merely because the archived note calls it a полуприцеп.
+const TRACTOR_AGRI_TRAILER_A =
+  /(?:тракторн.{0,75}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,75}тракторн|2птс\s*[- ]?\d|пркт\s*[- ]?\d|прт\s*[- ]?\d|(?:полуприцеп|прицеп).{0,45}(?:кормораздат|рулоновоз))/i;
+const ROAD_TRAILER_EVENT_IN_MIXED_A =
+  /(?:купил|приобрел|закупил|заключил.{0,20}договор).{0,75}(?:автомобильн.{0,20}полуприцеп|дорожн.{0,20}полуприцеп|полуприцеп.{0,25}(?:schmitz|kogel|krone|тонар))|(?:автомобильн|дорожн).{0,20}полуприцеп.{0,55}(?:приобретен|куплен|закуплен)/i;
+const TRACTOR_UNIT_INFERENCE_A =
+  /(?:лизинг|аренд).{0,55}седельн.{0,25}(?:тягач|самосвал).{0,130}(?:для.{0,35}эксплуатаци|комплектован|прицепн.{0,25}техник)|тягов.{0,30}единиц.{0,70}для.{0,30}эксплуатаци.{0,20}прицепн/i;
 const LIGHT_TRAILER_ONLY_A = /(?:легков.{0,35}прицеп|прицеп.{0,45}(?:мзса|дгу|дизель.{0,15}генератор)|мзса.{0,30}прицеп|прицеп.{0,45}цистерн.{0,20}1150)/;
 const HEAVY_TRAILER_PROOF_A = /(?:полуприцеп|тонар[ -]?[0-9]{3,5}|schmitz|krone|kogel|wielton|grunwald|пстб[- ]?\d)/;
 const UNCOMPLETED_SERVICE_A = /(?:предварител.{0,35}заказ.{0,10}наряд|предварител.{0,35}расчет.{0,50}ремонт|смет.{0,40}ремонт|предварител.{0,35}стоимост.{0,30}восстанов)/;
@@ -231,8 +257,34 @@ export function rejectUnsafeAEvidence(record, note) {
   const insolvencyDisposal = BANKRUPTCY_DISPOSAL_A.test(s) ||
     (/(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг)/.test(s) &&
      /(?:продаж|реализац|отчужд|торг)/.test(s));
-  if (record?.sheet === "direct_buyers" && insolvencyDisposal &&
-      /(?:прицеп|полуприцеп)/.test(s)) return "bankruptcy_disposal_not_buyer_event";
+  if (record?.sheet === "direct_buyers") {
+    // A company buying a real trailer *at* an auction is different from the
+    // bankrupt debtor selling its trailer. Buyer role must be explicit.
+    const actualAuctionBuyer = BANKRUPTCY_BUYER_EVENT_A.test(s) &&
+      !/(?:должник|собственник\s*\/\s*должник)/.test(s);
+    if (!actualAuctionBuyer && (insolvencyDisposal || DISPOSED_TRAILER_CONTEXT_A.test(s)) &&
+        /(?:прицеп|полуприцеп|тонар|kogel|schmitz|krone)/.test(s)) {
+      return "bankruptcy_or_collateral_asset_disposal_not_current_buyer";
+    }
+    const allNotes = (Array.isArray(record?.row?.__evidence?.notes) ?
+      record.row.__evidence.notes : []).map((value) =>
+        String(value || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " "));
+    const historicAuction = allNotes.some((other) => DISPOSED_TRAILER_CONTEXT_A.test(other) &&
+      /(?:прицеп|полуприцеп|тонар|kogel|schmitz|krone)/.test(other));
+    if (historicAuction && !actualAuctionBuyer &&
+        !(INDEPENDENT_LATER_FLEET_A.test(s) && CONCRETE_CURRENT_TRAILER_A.test(s))) {
+      return "historic_auction_fleet_not_current_operation";
+    }
+    if (HAULAGE_SERVICE_CUSTOMER_A.test(s) && !DIRECT_TRAILER_PURCHASE_A.test(s)) {
+      return "purchased_transport_service_not_trailer";
+    }
+    if (TRACTOR_AGRI_TRAILER_A.test(s) && !ROAD_TRAILER_EVENT_IN_MIXED_A.test(s)) {
+      return "tractor_agricultural_trailer_not_road_semitrailer";
+    }
+    if (TRACTOR_UNIT_INFERENCE_A.test(s) && !DIRECT_TRAILER_PURCHASE_A.test(s)) {
+      return "tractor_unit_does_not_prove_trailer";
+    }
+  }
   if (DENIED_TRAILER_A.test(s)) return "explicit_denial_of_own_trailer_evidence";
   if (UNSUPPORTED_TRAILER_NOTE_A.test(s) ||
       (UNSPECIFIED_TRAILER_MODELS_A.test(s) && !AFFIRMED_OWN_TRAILERS_A.test(s))) {
@@ -301,4 +353,29 @@ export function rejectUnsafeAEvidence(record, note) {
     }
   }
   return "";
+}
+
+// Deterministic evidence ranking: prioritize specific buyer-side contracts,
+// verified fleet operation and attributable equipment over general assertions.
+// No source URL or ID is invented; the caller preserves the original note.
+export function rankSafeAEvidence(record, note, rule) {
+  const text = String(note || "").toLowerCase().replace(/ё/g, "е");
+  const base = {
+    direct_financial_lease: 105, direct_procurement: 95,
+    direct_vin_ownership: 87, direct_ownership_or_fleet: 83,
+    direct_driver_operation: 65, direct_operation: 60,
+    intermediary_completed_transaction: 95, intermediary_completed_service: 90,
+    intermediary_own_operation: 82, intermediary_established_channel: 74,
+    leasing_concrete_contract: 100, leasing_concrete_transaction: 93
+  };
+  let score = base[rule] || 45;
+  if (/(?:заключен.{0,30}договор|договор.{0,25}лизинг|акт выполненн|в собственности|на балансе|лизингополучател)/.test(text)) score += 16;
+  if (/(?:приобрел|купил|закупил|приобретен|предмет.{0,20}финансов.{0,15}аренды)/.test(text)) score += 13;
+  if (/(?:vin|госномер|\b(?:kogel|schmitz|krone|wielton|grunwald)\b|тонар\s*\d|полуприцеп.{0,25}\d{2,})/.test(text)) score += 8;
+  if (/https?:\/\//.test(String(note || ""))) score += 7;
+  const organization = normalized(record?.row?.["Организация"] || "");
+  if (organization && normalized(note).includes(organization)) score += 9;
+  // Editorial summaries and predictions are weaker than attributable events.
+  if (/(?:указывает\s+на|сильн.{0,20}сигнал|вытекает|потенциальн|предполага)/.test(text)) score -= 17;
+  return score;
 }
