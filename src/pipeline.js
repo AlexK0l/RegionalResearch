@@ -3110,6 +3110,27 @@ function mergeQaRecordRows(records) {
   const legalIdentityConflicts = [];
   const legalIdentityMerges = [];
   let identityVerification = null;
+  // Track ALL original canonical IDs and complete absorbed record snapshots;
+  // a successful identity merge may not silently erase the other source ID.
+  const sourceIds = new Set();
+  const originalRecords = new Map();
+  const keepOriginal = (raw) => {
+    const id = String(raw?.__canonical_id || "").trim();
+    if (!id || originalRecords.has(id)) return;
+    const copy = cloneJson(raw);
+    delete copy.__merged_original_records;
+    originalRecords.set(id, copy);
+  };
+  for (const [position, record] of records.entries()) {
+    const row = record?.row || {};
+    for (const id of [
+      row.__canonical_id,
+      ...(Array.isArray(row.__merged_canonical_ids) ? row.__merged_canonical_ids : [])
+    ]) if (String(id || "").trim()) sourceIds.add(String(id).trim());
+    for (const previous of (Array.isArray(row.__merged_original_records)
+      ? row.__merged_original_records : [])) keepOriginal(previous);
+    if (position) keepOriginal(row);
+  }
 
   for (const record of records) {
     const row = record?.row || {};
@@ -3158,6 +3179,10 @@ function mergeQaRecordRows(records) {
         ])].slice(0, 4)
       });
     }
+  }
+  mergedRow.__merged_canonical_ids = [...sourceIds];
+  if (originalRecords.size) {
+    mergedRow.__merged_original_records = [...originalRecords.values()];
   }
   mergedRow.__evidence = {
     source_urls: [...new Set(urls)],

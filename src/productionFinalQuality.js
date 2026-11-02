@@ -222,6 +222,37 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     throw new Error("Final quality lost records: " + originalRowCount + " -> " + countAfter);
   }
   const presentInn = visible.filter(r => string(r["ИНН"])).length;
+  // The source-ID history is independent of the number of surviving legal
+  // entities. Do not turn aliases into new CRM prospects or restore their
+  // INNs merely to increase coverage statistics.
+  const lineage = [];
+  const allResultRows = [
+    ...SECTIONS.flatMap(sheet => data[sheet].map(row => ({ sheet, row }))),
+    ...review.map(row => ({ sheet: "REVIEW", row })),
+    ...excluded.map(row => ({ sheet: "EXCLUDED", row }))
+  ];
+  const lineageOwners = new Map();
+  const lineageConflicts = [];
+  for (const { sheet, row } of allResultRows) {
+    const owner = rowId(row);
+    const ids = unique([
+      owner,
+      ...(Array.isArray(row.__merged_canonical_ids)
+        ? row.__merged_canonical_ids.map(string) : [])
+    ].filter(Boolean));
+    if (ids.length > 1) lineage.push({
+      survivor_canonical_id: owner, sheet,
+      original_canonical_ids: ids,
+      absorbed_count: ids.length - 1,
+      source_restoration: "preexisting_identity_merge_no_new_lookups"
+    });
+    for (const sourceId of ids) {
+      if (lineageOwners.has(sourceId) && lineageOwners.get(sourceId) !== owner)
+        lineageConflicts.push({ source_id: sourceId,
+          other_survivor: lineageOwners.get(sourceId), survivor: owner });
+      else lineageOwners.set(sourceId, owner);
+    }
+  }
   const report = {
     version: FINAL_QUALITY_GATE_VERSION,
     applied_to: "normal_production_pipeline",
@@ -245,6 +276,9 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     missing_organization_records: missingName,
     duplicated_canonical_id_records: contestedIds.size,
     shared_inn_conflict_records: contestedInn.size,
+    source_id_lineage_count: lineageOwners.size,
+    reviewed_alias_groups_from_pipeline: lineage,
+    source_id_cross_survivor_conflicts: lineageConflicts,
     transitions: changes,
     flags,
     originals_lost: 0,
