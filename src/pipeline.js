@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadLatestCompletedResearch } from "./checkpointStore.js";
 import { independentBSignals, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
+import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
@@ -7106,6 +7107,22 @@ ${JSON.stringify(groupBatch)}`,
     excluded: Number(qualifiedFinal.counts?.excluded || 0) + excludedLegal.length
   };
   if (excludedLegal.length) console.log("[FINAL_LEGAL_EXCLUSIONS] " + JSON.stringify(excludedLegal));
+  // Keep historical notes and source URLs unchanged. Only facts with an
+  // INLINE citation in the same note receive a source pointer. A bare URL
+  // list does not authorize attaching a citation to an unrelated claim.
+  const provenanceRows = [
+    ...allResearchRows(finalResult),
+    ...(Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : [])
+  ];
+  const provenanceCounts = { notes: 0, linked: 0, ambiguous: 0, missing_inline: 0 };
+  for (const row of provenanceRows) {
+    const audit = attachInlineNoteProvenance(row);
+    provenanceCounts.notes += audit.note_count;
+    provenanceCounts.linked += audit.linked;
+    provenanceCounts.ambiguous += audit.ambiguous;
+    provenanceCounts.missing_inline += audit.unlinked;
+  }
+  console.log("[FINAL_NOTE_PROVENANCE_AUDIT] " + JSON.stringify(provenanceCounts));
   for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
 
   finalInnStats.missing = allResearchRows(finalResult)
