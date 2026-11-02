@@ -25,7 +25,8 @@ const e={
   error:document.querySelector("#errorBox"),
   resultCard:document.querySelector("#resultCard"),
   resultSummary:document.querySelector("#resultSummary"),
-  download:document.querySelector("#downloadBtn")
+  download:document.querySelector("#downloadBtn"),
+  downloadJson:document.querySelector("#downloadJsonBtn")
 };
 
 REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions.append(o)});
@@ -401,6 +402,14 @@ async function poll(restoring=false){
         ", лизинг: "+(c.leasing||0)+
         ". Проверено компаний: "+(g.total||0)+
         ", контакты подтверждены для "+(g.ok||0)+"."+
+        (r.quality
+          ?" Финальная проверка: A "+(r.quality.grades?.A||0)+
+            ", B "+(r.quality.grades?.B||0)+
+            ", C "+(r.quality.grades?.C||0)+
+            ", REVIEW "+(r.quality.review_records||0)+
+            ", исключены "+(r.quality.excluded_records||0)+
+            ", без подтверждённого ИНН "+(r.quality.without_inn_commercial||0)+"."
+          :"")+
         (d.continuation_available
           ?" Отложено без поиска: "+Number(d.checkpoint?.contacts_deferred||0)+
             ". Доступно продолжение с checkpoint в пределах оставшегося бюджета."
@@ -587,10 +596,11 @@ async function cancel(){
   }
 }
 
-async function download(){
+async function download(format="xlsx"){
   if(!currentJobId)return;
   try{
-    const r=await fetch(apiUrl("/api/jobs/"+encodeURIComponent(currentJobId)+"/download"),{
+    const endpoint=format==="json"?"/download-json":"/download";
+    const r=await fetch(apiUrl("/api/jobs/"+encodeURIComponent(currentJobId)+endpoint),{
       headers:headers(false)
     });
     if(!r.ok){
@@ -600,7 +610,7 @@ async function download(){
     const b=await r.blob();
     const cd=r.headers.get("content-disposition")||"";
     const m=cd.match(/filename\*=UTF-8''([^;]+)/i);
-    const filename=m?decodeURIComponent(m[1]):"SAT_result.xlsx";
+    const filename=m?decodeURIComponent(m[1]):(format==="json"?"SAT_result.json":"SAT_result.xlsx");
     const u=URL.createObjectURL(b);
     const a=document.createElement("a");
     a.href=u;
@@ -666,7 +676,8 @@ e.start.onclick=start;
 e.resume.onclick=resumeFromCheckpoint;
 e.checkpoint.onclick=downloadCheckpoint;
 e.cancel.onclick=cancel;
-e.download.onclick=download;
+e.download.onclick=()=>download("xlsx");
+e.downloadJson.onclick=()=>download("json");
 
 timerTick=setInterval(()=>{
   if(lastProgress?.statuses)renderSteps(lastProgress.statuses);

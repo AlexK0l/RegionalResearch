@@ -477,7 +477,9 @@ app.get("/api/jobs/:id", (req, res) => {
           qualified_companies: job.result?.qualified_companies || [],
           replay_comparison: job.result?.replay_comparison || null,
           dedupe_comparison: job.result?.dedupe_comparison || null,
-          replay_available: Boolean(job.result?.discovery_snapshot)
+          replay_available: Boolean(job.result?.discovery_snapshot),
+          quality: job.result?.quality || null,
+          full_json_available: Boolean(job.result?.result)
         }
       : null,
     checkpoint: checkpointSummary(job.latestCheckpoint),
@@ -620,6 +622,39 @@ app.get("/api/jobs/:id/download", (req, res) => {
     `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
   );
   res.send(buffer);
+});
+
+
+app.get("/api/jobs/:id/quality", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Итоговый аудит ещё не готов" });
+  const output = job.result?.result;
+  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
+  return res.json({
+    region: job.result?.region || "",
+    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
+    review: output.qualification_review || [],
+    excluded: output.qualification_excluded || []
+  });
+});
+
+app.get("/api/jobs/:id/download-json", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Итоговый JSON ещё не готов" });
+  const output = job.result?.result;
+  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
+  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, ".json");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader("Cache-Control", "no-store");
+  return res.send(JSON.stringify({
+    region: job.result.region,
+    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
+    final_result: output
+  }, null, 2));
 });
 
 setInterval(() => {

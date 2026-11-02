@@ -10,6 +10,7 @@ import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecove
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
+import { finalizeProductionResearch } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
@@ -2540,6 +2541,11 @@ function postInnDedupe(finalResult, region, diagnostics = null) {
     Array.isArray(finalResult?.qualification_review) ? finalResult.qualification_review : [],
     qualified.result.qualification_review
   );
+  qualified.result.qualification_excluded = [
+    ...(Array.isArray(finalResult?.qualification_excluded) ? finalResult.qualification_excluded : []),
+    ...(Array.isArray(qualified.result.qualification_excluded)
+      ? qualified.result.qualification_excluded : [])
+  ];
   return { records, qualified };
 }
 
@@ -4051,7 +4057,8 @@ function applyFinalQualification(records, decisions) {
     intermediaries: [],
     leasing: [],
     statistics: [],
-    qualification_review: []
+    qualification_review: [],
+    qualification_excluded: []
   };
   const counts = { A: 0, B: 0, C: 0, excluded: 0 };
 
@@ -4059,20 +4066,21 @@ function applyFinalQualification(records, decisions) {
     const decision = decisions.get(record.id);
     if (!decision || decision.decision !== "include" || !decision.grade) {
       counts.excluded++;
-      if (actionableUnqualifiedLead(record)) {
-        const row = { ...record.row };
-        row.__decision = "manual_review";
-        row.__final_grade = "";
-        row.__a_evidence = "";
-        row.__a_rule = "";
-        row.__qualification_origin_sheet = record.sheet;
-        row.__decision_reason = String(decision?.reason || "Недостаточно подтверждённой квалификации.");
-        row.__evidence = {
-          ...(row.__evidence || {}),
-          commercial_eligibility: commercialEligibility(row)
-        };
-        result.qualification_review.push(row);
-      }
+      // Preserve every rejected source record in REVIEW or EXCLUDED rather
+      // than discarding it before the user can download the final audit.
+      const row = { ...record.row };
+      row.__decision = actionableUnqualifiedLead(record) ? "manual_review" : "exclude";
+      row.__final_grade = "";
+      row.__a_evidence = "";
+      row.__a_rule = "";
+      row.__qualification_origin_sheet = record.sheet;
+      row.__decision_reason = String(decision?.reason || "Недостаточно подтверждённой квалификации.");
+      row.__evidence = {
+        ...(row.__evidence || {}),
+        commercial_eligibility: commercialEligibility(row)
+      };
+      if (row.__decision === "manual_review") result.qualification_review.push(row);
+      else result.qualification_excluded.push(row);
       continue;
     }
 
@@ -7084,16 +7092,27 @@ ${JSON.stringify(groupBatch)}`,
   // Legal status may become known only after final identity search.
   const eligibleSheets = { direct_buyers: [], intermediaries: [], leasing: [] };
   const excludedLegal = [];
+  const excludedLegalRows = [];
   for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
     for (const row of finalResult[sheet] || []) {
       const eligibility = commercialEligibility(row);
       row.__evidence = { ...(row.__evidence || {}), commercial_eligibility: eligibility };
-      if (eligibility.blocked) excludedLegal.push({
-        canonical_id: row.__canonical_id, organization: row["Организация"],
-        inn: row["ИНН"], kind: eligibility.kind, reason: eligibility.reason,
-        source_url: eligibility.source_url
-      });
-      else eligibleSheets[sheet].push(row);
+      if (eligibility.blocked) {
+        excludedLegal.push({
+          canonical_id: row.__canonical_id, organization: row["Организация"],
+          inn: row["ИНН"], kind: eligibility.kind, reason: eligibility.reason,
+          source_url: eligibility.source_url
+        });
+        excludedLegalRows.push({
+          ...row,
+          __decision: "exclude",
+          __final_grade: "",
+          __a_evidence: "",
+          __a_rule: "",
+          __qualification_origin_sheet: sheet,
+          __decision_reason: eligibility.reason
+        });
+      } else eligibleSheets[sheet].push(row);
     }
   }
   finalResult = {
@@ -7101,7 +7120,11 @@ ${JSON.stringify(groupBatch)}`,
     ...eligibleSheets,
     qualification_review: mergedQualificationReviews(
       Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : []
-    )
+    ),
+    qualification_excluded: [
+      ...(Array.isArray(finalResult.qualification_excluded) ? finalResult.qualification_excluded : []),
+      ...excludedLegalRows
+    ]
   };
   // Discovery candidates may be lost during identity or global dedupe even
   // when the eventual A/B/C qualifier is correct. Never silently drop sourced
@@ -8223,9 +8246,36 @@ ${JSON.stringify(gaps)}
   const unavailable = contactStats.unavailable;
   const notFound = contactStats.notFound;
 
+  // No extra model/search call: finalize the CURRENT research, not a region-
+  // specific historical reviewed manifest. Run after contact enrichment so
+  // late source notes cannot silently change an A/B/C claim in the XLSX.
+  await assertNotCancelled();
+  const finalQuality = finalizeProductionResearch(finalResult, {
+    qualify: deterministicQualificationDecision,
+    isActionable: actionableUnqualifiedLead
+  });
+  finalResult = finalQuality.result;
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    ...finalQuality.report.grades,
+    excluded: finalQuality.report.excluded_records,
+    review: finalQuality.report.review_records
+  };
+  console.log("[FINAL_PRODUCTION_QUALITY_GATE] " + JSON.stringify({
+    original_rows: finalQuality.report.original_row_count,
+    active: finalQuality.report.active_commercial_records,
+    grades: finalQuality.report.grades,
+    review: finalQuality.report.review_records,
+    excluded: finalQuality.report.excluded_records,
+    transitions: finalQuality.report.transitions.length,
+    identity_conflicts: finalQuality.report.shared_inn_conflict_records,
+    originals_lost: finalQuality.report.originals_lost,
+    openai_calls: 0, web_search_calls: 0
+  }));
+
   finishStep(statuses[10]);
   statuses[10].detail =
-    `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · conflicts: ${phoneConflicts}`;
+    `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · REVIEW: ${finalQuality.report.review_records} · QA: OK`;
   await progress({
     phase: "completed",
     step: 11,
@@ -8244,6 +8294,7 @@ ${JSON.stringify(gaps)}
     deduped_records: dedupedRecords,
     qualification_counts: qualifiedFinal.counts,
     final_result: finalResult,
+    final_quality_gate: finalQuality.report,
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
@@ -8257,6 +8308,7 @@ ${JSON.stringify(gaps)}
   return {
     mode: mode === "resume" ? "resume" : "full",
     result: finalResult,
+    quality: finalQuality.report,
     region,
     counts: {
       direct_buyers: finalResult.direct_buyers.length,
