@@ -422,3 +422,35 @@ test("queue-only canonical ID collision is reported without destroying either so
  assert.equal(result.qualification_review.length,1);
  assert.equal(result.qualification_excluded.length,1);
 });
+
+test("final gate holds A when selected claim explicitly denies trailer evidence", () => {
+  const input=empty();
+  const claim="Это прямое подтверждение отраслевого процесса и площадки, но источник не фиксирует конкретные автомобильные перевозки, тягачи или прицепную технику.";
+  input.direct_buyers.push(make("k-neg-a","ООО «Кубаньмасло»",[claim],{
+    grade:"A",inn:"7113021283",segment:"Рапсовое масло; производство и отгрузка растительного сырья"
+  }));
+  const {result,report}=finalizeProductionResearch(input,{
+    qualify:()=>({decision:"include",grade:"A",aEvidence:claim,aRule:"direct_operation",
+      reason:"auto classifier selected weak positive claim"}),
+    isActionable:()=>true
+  });
+  assert.equal(result.direct_buyers.length,0);
+  assert.equal(result.qualification_review.length,1);
+  assert.ok(report.flags[0].reasons.includes("A_selected_claim_explicitly_disclaims_trailer_evidence"));
+  assert.equal(result.qualification_review[0]["ИНН"],"7113021283");
+});
+
+test("final gate does not hold A for a direct sourced trailer-fleet claim", () => {
+  const input=empty();
+  const claim="Официальный сайт подтверждает, что компания эксплуатирует собственный парк тягачей и полуприцепов Schmitz.";
+  input.direct_buyers.push(make("k-pos-a","ООО «Перевозчик»",[claim],{
+    grade:"A",inn:"6732114166",segment:"Собственный парк полуприцепов"
+  }));
+  const {result}=finalizeProductionResearch(input,{
+    qualify:()=>({decision:"include",grade:"A",aEvidence:claim,aRule:"direct_ownership_or_fleet",
+      reason:"confirmed own fleet"}),
+    isActionable:()=>true
+  });
+  assert.equal(result.direct_buyers.length,1);
+  assert.equal(result.qualification_review.length,0);
+});
