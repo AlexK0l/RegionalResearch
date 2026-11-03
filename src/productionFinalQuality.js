@@ -248,7 +248,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
         // A well-shaped but checksum-invalid INN is NOT another verified
         // identity. Still, the same canonical ID in competing queues must
         // never be silently accepted as one commercial legal person.
-        if (/^\\d{10}(?:\\d{2})?$/.test(otherInn)) {
+        if (/^\d{10}(?:\d{2})?$/.test(otherInn)) {
           if (!unverifiedQueueInnConflicts.has(index)) unverifiedQueueInnConflicts.set(index, []);
           unverifiedQueueInnConflicts.get(index).push({
             survivor_canonical_id: rowId(row), source_id: id,

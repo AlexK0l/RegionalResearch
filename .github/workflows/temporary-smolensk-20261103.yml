@@ -36,3 +36,5 @@ jobs:
 # Rebuilt with retained-A-only attribution and extra offline audit queues.
 
 # Rebuilt with canonical ID collisions preserved for explicit review.
+
+# Correct canonical source INN regex validation in replay build.
