@@ -85,6 +85,18 @@ export function selectedAEvidenceSource(row, aEvidence) {
     note_indices: matches, sources_rechecked: false };
 }
 
+// A selected claim can include an explicit disclaimer that the source does
+// NOT establish trailer/tractor operation. Never let an injected classifier
+// override its own negative evidence and sell such a company as grade A.
+export function disclaimsSelectedTrailerEvidence(claim) {
+  const note = string(claim).toLowerCase().replace(/ё/g, "е");
+  if (!note) return false;
+  return [
+    /(?:источник|документ|материал|сведения).{0,65}(?:не фиксир|не подтвержд|не устанавлива).{0,130}(?:полуприцеп|прицепн|тягач|автопоезд)/,
+    /(?:нет|не найдены|не подтверждены|не установлены).{0,60}(?:доказательств|сведений|данных).{0,100}(?:полуприцеп|прицепн|тягач|автопоезд)/
+  ].some(pattern => pattern.test(note));
+}
+
 function rowId(row) { return string(row?.__canonical_id); }
 function gradeFromRow(row) {
   const grade = string(row?.__final_grade).toUpperCase();
@@ -322,6 +334,8 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (eligible && !inn && (grade === "A" || grade === "B")) noInnPriority++;
     const missingAEvidence = grade === "A" && !string(decision?.aEvidence);
     if (missingAEvidence) issues.push("A_without_specific_note");
+    if (grade === "A" && !missingAEvidence && disclaimsSelectedTrailerEvidence(decision.aEvidence))
+      issues.push("A_selected_claim_explicitly_disclaims_trailer_evidence");
     const eligibility = commercialEligibility(row);
     if (eligibility.blocked) issues.push("noncommercial_entity");
     const mustHold = issues.length > 0 || !eligible;
