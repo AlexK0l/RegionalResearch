@@ -393,3 +393,32 @@ test("quarantined A does not inflate claim-to-source statistics of active A",()=
  assert.equal(report.a_claim_source_missing,0);
  assert.equal(report.a_claim_attribution_review.length,0);
 });
+
+test("checksum-invalid competing INN under same canonical ID quarantines active lead",()=>{
+ const x=empty();
+ const main=make("k_same","ООО «СтройАльянс»",[noteC],{grade:"C"});
+ const q=make("k_same","ООО «СтройАльянс»",[noteC],{grade:""});
+ main["ИНН"]="6732114166";
+ q["ИНН"]="6732197636"; // source states numeric, checksum invalid
+ x.direct_buyers.push(main); x.qualification_review.push(q);
+ const {result,report}=run(x);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(result.qualification_review.length,2);
+ assert.equal(report.unverified_cross_queue_inn_conflict_records,1);
+ assert.equal(report.output_canonical_id_collision_groups,1);
+ assert.ok(result.qualification_review.some(r=>r.__quality_gate?.issues?.includes(
+  "cross_queue_canonical_invalid_inn_collision")));
+ assert.equal(report.originals_lost,0);
+});
+test("queue-only canonical ID collision is reported without destroying either source record",()=>{
+ const x=empty();
+ const q=make("k_same","ООО «Континент»",[noteC],{grade:""});
+ const e=structuredClone(q);
+ q["ИНН"]="6732114166";e["ИНН"]="6732114166";
+ x.qualification_review.push(q);x.qualification_excluded.push(e);
+ const {result,report}=run(x);
+ assert.equal(report.output_canonical_id_collision_groups,1);
+ assert.equal(report.output_canonical_id_collisions[0].records.length,2);
+ assert.equal(result.qualification_review.length,1);
+ assert.equal(result.qualification_excluded.length,1);
+});

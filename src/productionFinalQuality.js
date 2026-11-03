@@ -234,6 +234,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     queuedById.get(id).push(entry);
   }
   const verifiedLineageConflicts = new Map();
+  const unverifiedQueueInnConflicts = new Map();
   for (const [index, { row }] of commercialBefore.entries()) {
     const mainInn = string(row["ИНН"]);
     if (!checksumInn(mainInn)) continue;
@@ -242,7 +243,22 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     ].filter(Boolean));
     for (const id of ids) for (const queued of queuedById.get(id) || []) {
       const otherInn = string(queued["ИНН"]);
-      if (!checksumInn(otherInn) || otherInn === mainInn) continue;
+      if (otherInn === mainInn) continue;
+      if (!checksumInn(otherInn)) {
+        // A well-shaped but checksum-invalid INN is NOT another verified
+        // identity. Still, the same canonical ID in competing queues must
+        // never be silently accepted as one commercial legal person.
+        if (/^\\d{10}(?:\\d{2})?$/.test(otherInn)) {
+          if (!unverifiedQueueInnConflicts.has(index)) unverifiedQueueInnConflicts.set(index, []);
+          unverifiedQueueInnConflicts.get(index).push({
+            survivor_canonical_id: rowId(row), source_id: id,
+            survivor_name: string(row["Организация"]), survivor_inn: mainInn,
+            conflicting_name: string(queued["Организация"]), unverified_inn: otherInn,
+            reason: "same_canonical_id_invalid_competing_inn"
+          });
+        }
+        continue;
+      }
       if (!verifiedLineageConflicts.has(index)) verifiedLineageConflicts.set(index, []);
       verifiedLineageConflicts.get(index).push({
         survivor_canonical_id: rowId(row), source_id: id,
@@ -283,6 +299,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     }
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
     if (verifiedLineageConflicts.has(index)) issues.push("cross_queue_lineage_inn_conflict");
+    if (unverifiedQueueInnConflicts.has(index)) issues.push("cross_queue_canonical_invalid_inn_collision");
 
     const provenance = attachInlineNoteProvenance(row);
     inlineLinked += provenance.linked;
@@ -393,7 +410,16 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   ];
   const lineageOwners = new Map();
   const lineageConflicts = [];
+  const outputCanonicalOwners = new Map();
   for (const { sheet, row } of allResultRows) {
+    const currentId = rowId(row);
+    if (currentId) {
+      if (!outputCanonicalOwners.has(currentId)) outputCanonicalOwners.set(currentId, []);
+      outputCanonicalOwners.get(currentId).push({
+        sheet, organization: string(row["Организация"]), inn: string(row["ИНН"]),
+        source_kind: string(row.__review_stage || row.__decision || "")
+      });
+    }
     const owner = rowId(row);
     const ids = unique([
       owner,
@@ -413,6 +439,9 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
       else lineageOwners.set(sourceId, owner);
     }
   }
+  const outputCanonicalIdCollisions = [...outputCanonicalOwners.entries()]
+    .filter(([, holders]) => holders.length > 1)
+    .map(([canonical_id, holders]) => ({ canonical_id, records: holders }));
   const report = {
     version: FINAL_QUALITY_GATE_VERSION,
     applied_to: "normal_production_pipeline",
@@ -453,6 +482,10 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     source_id_cross_survivor_conflicts: lineageConflicts,
     verified_cross_queue_inn_conflict_records: verifiedLineageConflicts.size,
     verified_cross_queue_inn_conflicts: [...verifiedLineageConflicts.values()].flat(),
+    unverified_cross_queue_inn_conflict_records: unverifiedQueueInnConflicts.size,
+    unverified_cross_queue_inn_conflicts: [...unverifiedQueueInnConflicts.values()].flat(),
+    output_canonical_id_collision_groups: outputCanonicalIdCollisions.length,
+    output_canonical_id_collisions: outputCanonicalIdCollisions,
     transitions: changes,
     flags,
     originals_lost: 0,

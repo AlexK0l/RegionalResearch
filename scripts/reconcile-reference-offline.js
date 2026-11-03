@@ -55,6 +55,16 @@ add("Подтверждённые INN-конфл",["ID survivor","ID источ�
  quality.verified_cross_queue_inn_conflicts||[],r=>[
  r.survivor_canonical_id,r.source_id,r.survivor_name,r.survivor_inn,r.conflicting_name,r.conflicting_inn
 ]);
+add("Коллизии Canonical ID",["Canonical ID","Количество записей","Статусы, имена и ИНН"],
+ quality.output_canonical_id_collisions||[],r=>[
+ r.canonical_id,r.records.length,
+ r.records.map(v=>v.sheet+": "+v.organization+" | "+v.inn).join("\n")
+]);
+add("ИНН в конфликте с ID",["ID survivor","ID источника","Наименование survivor","ИНН survivor","Другое наименование","Некорректный ИНН"],
+ quality.unverified_cross_queue_inn_conflicts||[],r=>[
+ r.survivor_canonical_id,r.source_id,r.survivor_name,r.survivor_inn,
+ r.conflicting_name,r.unverified_inn
+]);
 add("Некорректные URL",["Canonical ID","Организация","Некорректные ссылки"],
  quality.invalid_source_url_review||[],r=>[r.canonical_id,r.organization,r.invalid_urls.join("\n")]);
 const missingPriority=SECTIONS => SECTIONS.flatMap(sheet => (result[sheet]||[])
