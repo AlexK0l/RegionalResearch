@@ -305,10 +305,13 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (eligible && !inn && (grade === "A" || grade === "B")) noInnPriority++;
     const missingAEvidence = grade === "A" && !string(decision?.aEvidence);
     if (missingAEvidence) issues.push("A_without_specific_note");
+    const eligibility = commercialEligibility(row);
+    if (eligibility.blocked) issues.push("noncommercial_entity");
+    const mustHold = issues.length > 0 || !eligible;
     // Citation failure is a DOCUMENTED soft warning: no fabricated source,
     // no unsupported automatic A demotion. A real contract without a direct
     // inline URL is still useful for human verification.
-    if (eligible && grade === "A" && !missingAEvidence) {
+    if (eligible && grade === "A" && !missingAEvidence && !mustHold) {
       row.__evidence ||= {};
       const attribution = selectedAEvidenceSource(row, decision.aEvidence);
       row.__evidence.selected_a_provenance = attribution;
@@ -325,10 +328,6 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
         });
       }
     }
-    const eligibility = commercialEligibility(row);
-    if (eligibility.blocked) issues.push("noncommercial_entity");
-
-    const mustHold = issues.length > 0 || !eligible;
     if (mustHold) {
       const reviewable = !eligibility.blocked && (
         eligible || isActionable({ sheet, row, id: id || "quality_record_" + index }));

@@ -51,6 +51,20 @@ add("A без привязки",["ID","Организация","Правило A
  quality.a_claim_attribution_review,r=>[r.canonical_id,r.organization,r.a_rule,r.status,r.selected_a_evidence]);
 add("Конфликты истории ID",["ID источника","Другой survivor","Survivor"],
  quality.source_id_cross_survivor_conflicts,r=>[r.source_id,r.other_survivor,r.survivor]);
+add("Подтверждённые INN-конфл",["ID survivor","ID источника","Наименование survivor","ИНН survivor","Другое наименование","Другой ИНН"],
+ quality.verified_cross_queue_inn_conflicts||[],r=>[
+ r.survivor_canonical_id,r.source_id,r.survivor_name,r.survivor_inn,r.conflicting_name,r.conflicting_inn
+]);
+add("Некорректные URL",["Canonical ID","Организация","Некорректные ссылки"],
+ quality.invalid_source_url_review||[],r=>[r.canonical_id,r.organization,r.invalid_urls.join("\n")]);
+const missingPriority=SECTIONS => SECTIONS.flatMap(sheet => (result[sheet]||[])
+ .filter(row=>["A","B"].includes(row.__final_grade) && !String(row["ИНН"]||"").trim())
+ .map(row=>({sheet,row})));
+add("ИНН A-B отсутствуют",["ID","Организация","Лист","Класс","Источники"],
+ missingPriority(["direct_buyers","intermediaries","leasing"]),({sheet,row})=>[
+ row.__canonical_id||"",row["Организация"]||"",sheet,row.__final_grade||"",
+ (row.__evidence?.source_urls||[]).slice(0,5).join("\n")
+]);
 const hash=bytes=>crypto.createHash("sha256").update(bytes).digest("hex");
 const doc={...current,final_result:result,final_quality_gate:quality,
  reference_reconciliation:{...report,reference_sha256:hash(frozen),current_sha256:hash(source)}};

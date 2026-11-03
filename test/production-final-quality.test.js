@@ -377,3 +377,19 @@ test("an active merged survivor with a conflicting verified queue INN is quarant
    r.__quality_gate.issues.includes("cross_queue_lineage_inn_conflict")),true);
  assert.equal(report.originals_lost,0);
 });
+
+test("quarantined A does not inflate claim-to-source statistics of active A",()=>{
+ const input=empty();
+ const active=make("k_conflict","ООО «Транспорт»",[noteA+" ([Договор](https://example.org/lease))"],{
+  grade:"A",urls:["https://example.org/lease"]
+ });
+ active["ИНН"]="6732114166";active.__merged_canonical_ids=["k_conflict","k_other"];
+ const reviewed=make("k_other","ООО «Другое»",[noteC],{grade:""});
+ reviewed["ИНН"]="6732222073";input.direct_buyers.push(active);input.qualification_review.push(reviewed);
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(report.grades.A,0);
+ assert.equal(report.a_claim_source_linked,0);
+ assert.equal(report.a_claim_source_missing,0);
+ assert.equal(report.a_claim_attribution_review.length,0);
+});

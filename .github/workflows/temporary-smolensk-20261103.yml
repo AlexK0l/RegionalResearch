@@ -32,3 +32,5 @@ jobs:
           retention-days: 2
 
 # Rebuild including strict source-ID and legacy-v8 audit checks.
+
+# Rebuilt with retained-A-only attribution and extra offline audit queues.
