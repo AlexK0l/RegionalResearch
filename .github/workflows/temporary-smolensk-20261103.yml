@@ -1,0 +1,32 @@
+name: Temporary offline Smolensk reconciliation bundle
+on:
+  push:
+    branches:
+      - feature/evidence-first-cost-quality-20261028
+    paths:
+      - '.github/workflows/temporary-smolensk-20261103.yml'
+  workflow_dispatch:
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies only
+        run: |
+          npm install --ignore-scripts
+          npm install --no-save --ignore-scripts esbuild@0.25.12
+      - name: Generate offline-only CLIs without credentials or user data
+        run: |
+          mkdir -p /tmp/smolensk-offline
+          ./node_modules/.bin/esbuild scripts/finalize-research-offline.js --bundle --platform=node --format=esm --target=node22 --minify --external:openai --external:playwright --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' --outfile=/tmp/smolensk-offline/regionalresearch-finalize-cli.mjs
+          ./node_modules/.bin/esbuild scripts/reconcile-reference-offline.js --bundle --platform=node --format=esm --target=node22 --minify --external:openai --external:playwright --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' --outfile=/tmp/smolensk-offline/regionalresearch-reconcile-cli.mjs
+          node --check /tmp/smolensk-offline/regionalresearch-finalize-cli.mjs
+          node --check /tmp/smolensk-offline/regionalresearch-reconcile-cli.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regionalresearch-smolensk-offline-cli-20261103
+          path: /tmp/smolensk-offline
+          retention-days: 2
