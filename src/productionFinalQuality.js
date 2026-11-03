@@ -97,6 +97,24 @@ export function disclaimsSelectedTrailerEvidence(claim) {
   ].some(pattern => pattern.test(note));
 }
 
+// Category/search pages are discovery hints, not a cited fact about a named
+// legal person. A grade-A claim must cite the actual vacancy/contract/company
+// page; these aggregations can contain unrelated employers and locations.
+export function isGenericDiscoverySource(raw) {
+  try {
+    const u = new URL(string(raw));
+    const host = u.hostname.toLowerCase();
+    const path = decodeURIComponent(u.pathname).toLowerCase();
+    if (/(?:^|\\.)hh\\.ru$/.test(host) && path.startsWith("/vacancies/")) return true;
+    if (/(?:^|\\.)b2b-center\\.ru$/.test(host) && path.startsWith("/search/")) return true;
+    if (/(?:^|\\.)jobcareer\\.ru$/.test(host) && path.startsWith("/jobs/")) return true;
+    if (/(?:^|\\.)jobrun\\.ru$/.test(host) && !/\\/vacancy\\/\\d+/.test(path)) return true;
+    if (/(?:^|\\.)samosval\\.info$/.test(host) &&
+        path.includes("/doska-obyavleniy/trebuyutsya-samosvaly-i-tonary/")) return true;
+    return false;
+  } catch { return false; }
+}
+
 function rowId(row) { return string(row?.__canonical_id); }
 function gradeFromRow(row) {
   const grade = string(row?.__final_grade).toUpperCase();
@@ -334,6 +352,12 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (eligible && !inn && (grade === "A" || grade === "B")) noInnPriority++;
     const missingAEvidence = grade === "A" && !string(decision?.aEvidence);
     if (missingAEvidence) issues.push("A_without_specific_note");
+    if (grade === "A" && !missingAEvidence) {
+      const selected = selectedAEvidenceSource(row, decision.aEvidence);
+      if (selected.source_url && isGenericDiscoverySource(selected.source_url)) {
+        issues.push("A_claim_cites_generic_discovery_page");
+      }
+    }
     if (grade === "A" && !missingAEvidence && disclaimsSelectedTrailerEvidence(decision.aEvidence))
       issues.push("A_selected_claim_explicitly_disclaims_trailer_evidence");
     const eligibility = commercialEligibility(row);
