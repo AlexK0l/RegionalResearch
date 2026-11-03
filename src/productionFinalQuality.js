@@ -30,6 +30,15 @@ function sourceUrls(row) {
       ? raw.inline_note_provenance.map(item => item?.source_url) : [])
   ].filter(v => /^https?:\/\/[^\/\s?#]+\.[^\/\s?#]+/i.test(string(v))).map(String));
 }
+function malformedSourceUrls(row) {
+  const urls = Array.isArray(row?.__evidence?.source_urls) ? row.__evidence.source_urls : [];
+  return unique(urls.map(string).filter(value => {
+    try {
+      const parsed = new URL(value);
+      return !["http:", "https:"].includes(parsed.protocol) || !parsed.hostname.includes(".");
+    } catch { return true; }
+  }));
+}
 function factSourceCount(row) {
   const list = Array.isArray(row?.__evidence?.facts) ? row.__evidence.facts : [];
   return list.filter(f => f && (
@@ -225,6 +234,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   let selectedASourceLinked = 0, selectedASourceMissing = 0,
     selectedASourceAmbiguous = 0;
   const attributionWarnings = [];
+  const malformedSourceWarnings = [];
 
   for (const [index, { sheet, row }] of commercialBefore.entries()) {
     const id = rowId(row);
@@ -237,11 +247,20 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     const inn = string(row["ИНН"]);
     if (!inn) noInn++;
     else if (!checksumInn(inn)) issues.push("invalid_inn_checksum");
+    // A twelve-digit INN identifies a person. Never attach it to an LLC.
+    if (inn.length === 12 &&
+        /^(?:ооо|общество с ограниченной ответственностью)(?:\s|[«"'(]|$)/i.test(string(row["Организация"]))) {
+      issues.push("llc_with_individual_inn");
+    }
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
 
     const provenance = attachInlineNoteProvenance(row);
     inlineLinked += provenance.linked;
     notesChecked += provenance.note_count;
+    const invalidUrls = malformedSourceUrls(row);
+    if (invalidUrls.length) malformedSourceWarnings.push({
+      canonical_id: id, organization: string(row["Организация"]), invalid_urls: invalidUrls
+    });
     const sourceCount = sourceUrls(row).length;
     sourceUrlCount += sourceCount;
     factLinked += factSourceCount(row);
@@ -394,6 +413,8 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     a_claim_source_missing: selectedASourceMissing,
     a_claim_source_ambiguous: selectedASourceAmbiguous,
     a_claim_attribution_review: attributionWarnings,
+    invalid_source_url_records: malformedSourceWarnings.length,
+    invalid_source_url_review: malformedSourceWarnings,
     source_attribution_method: "same_note_or_exact_structured_fact_no_live_lookups",
     missing_organization_records: missingName,
     duplicated_canonical_id_records: contestedIds.size,

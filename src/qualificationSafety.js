@@ -255,6 +255,11 @@ export function rejectUnsafeAEvidence(record, note) {
   if (/^(?:identity:|final inn:|подтвержденный инн:|identity без нового web-search:)/.test(s)) {
     return "identity_metadata_not_trailer_proof";
   }
+  // Requests for future evidence and absent repair customers are not completed A events.
+  // Reject only the offending note; an independent positive event still wins.
+  if (/(?:для\s+дальнейш.{0,45}квалификац.{0,50}нужн|для\s+подтвержден.{0,45}нужн.{0,40}документ|общее\s+сервисн.{0,65}но\s+нет|но\s+нет\s+(?:заказчик|клиент|номера\s+ремонта|марки\s+полуприцеп)|нет\s+(?:заказчика|клиента|номера\s+ремонта).{0,125}(?:прицеп|полуприцеп|ремонт))/.test(s)) {
+    return "missing_completed_event_or_request_for_evidence";
+  }
   const insolvencyDisposal = BANKRUPTCY_DISPOSAL_A.test(s) ||
     (/(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг)/.test(s) &&
      /(?:продаж|реализац|отчужд|торг)/.test(s));

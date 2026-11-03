@@ -156,6 +156,9 @@ function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
 function discoveryGeoExpansionWorthwhile(stats) {
   const value = stats || {};
   return (
+    // Discovering several real companies is useful even if all are still C.
+    // Do not abort deeper geography because deterministic A/B proof is scarce.
+    Number(value.newOrganizations || 0) >= 3 ||
     Number(value.a || 0) >= 1 ||
     Number(value.strongNew || 0) >= 2 ||
     (
@@ -1600,7 +1603,7 @@ async function runResearchMicroBatch({
         const threshold = adaptiveDiscoveryLowYieldThreshold(knownNames.length);
         const streakLimit = adaptiveDiscoveryLowYieldStreak(selectedScopes.length);
         lowYieldStreak =
-          added <= threshold || discoveryQualityIsLow(yieldStats)
+          added <= threshold && discoveryQualityIsLow(yieldStats)
             ? lowYieldStreak + 1
             : 0;
         if (
@@ -4630,6 +4633,14 @@ async function askJson(client, {
     const toolCounts = diagnosticToolCounts(response);
     if (webSearch) {
       const webCalls = Number(toolCounts.web_search_call || 0);
+      // OpenAI may return more tool-call output items than the requested
+      // max_tool_calls. Report observed usage; do not cap away billable calls.
+      if (Number(request.max_tool_calls) > 0 && webCalls > Number(request.max_tool_calls)) {
+        console.warn("[WEB_TOOL_CALL_OVER_LIMIT] " + JSON.stringify({
+          query: diagnosticLabel, requested_max: request.max_tool_calls,
+          observed_calls: webCalls, cumulative_before: webUsageSnapshot(client)
+        }));
+      }
       recordWebUsage(client, diagnosticLabel, webCalls);
       recordWebBudgetUsage(
         client,
@@ -6380,7 +6391,7 @@ ${JSON.stringify(compactCourtArchive)}
       const added = Math.max(0, after - before);
       const recoveryThreshold = adaptiveDiscoveryLowYieldThreshold(before);
       const recoveryLowQuality =
-        added <= recoveryThreshold || discoveryQualityIsLow(recoveryYieldAggregate);
+        added <= recoveryThreshold && discoveryQualityIsLow(recoveryYieldAggregate);
       lowYieldStreak = recoveryLowQuality ? lowYieldStreak + 1 : 0;
       const recoveryWebCalls = Math.max(0, webUsageSnapshot(client) - recoveryWebStart);
       console.log("[DISCOVERY_RECOVERY_SUMMARY] " + JSON.stringify({
@@ -7334,6 +7345,15 @@ ${JSON.stringify(groupBatch)}`,
     enrichmentGroups.push(enrichmentPending.slice(i, i + ENRICHMENT_BATCH_SIZE));
   }
 
+  // Reserve a short tail of stage 10 for citation-checked A/B gaps.
+  // Previously ordinary enrichment exhausted the shared deadline and no
+  // A/B recovery batch ran. No API/budget limit is increased.
+  const abRecoveryReserveMs = AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0
+    ? Math.min(120000, Math.floor(STAGE10_MAX_MS / 8)) : 0;
+  const enrichmentStandardDeadlineAt = stage10DeadlineAt - abRecoveryReserveMs;
+  console.log("[ENRICHMENT_PRIORITY_RESERVE] " + JSON.stringify({
+    reserved_ms: abRecoveryReserveMs, deadline_ms: STAGE10_MAX_MS
+  }));
   await mapWithConcurrency(
     enrichmentGroups,
     ENRICHMENT_CONCURRENCY,
@@ -7348,7 +7368,7 @@ ${JSON.stringify(groupBatch)}`,
       let batchAttempted = false;
       let batchBudgetStopped = false;
       let batchFallbackRemaining = ENRICHMENT_MAX_FALLBACKS_PER_BATCH;
-      if (targets.length > 1 && deadlineRemaining(stage10DeadlineAt) > 9000) {
+      if (targets.length > 1 && deadlineRemaining(enrichmentStandardDeadlineAt) > 9000) {
         batchAttempted = true;
         try {
           targetedSearches++;
@@ -7361,7 +7381,7 @@ ${JSON.stringify(groupBatch)}`,
             schemaName: "batch_company_enrichment",
             maxToolCalls: ENRICHMENT_BATCH_MAX_TOOL_CALLS,
             diagnosticLabel: `enrichment batch | ${targets.length} companies`,
-            timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
+            timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(enrichmentStandardDeadlineAt) - 3000)),
             allowJsonRepair: false
           });
           const valid = new Set(targets.map((item) => String(item.id || "")));
@@ -7397,7 +7417,7 @@ ${JSON.stringify(groupBatch)}`,
           continue;
         }
 
-        const remaining = deadlineRemaining(stage10DeadlineAt);
+        const remaining = deadlineRemaining(enrichmentStandardDeadlineAt);
         if (remaining <= 7000) {
           enrichmentDeadlineSkipped++;
           enrichmentProcessed++;

@@ -141,3 +141,19 @@ test("genuine buyer of trailer for providing transport services is still A", () 
   ]);
   assert.equal(d.grade, "A");
 });
+
+test("Minvtormet note requesting documents is not positive A",()=>{
+ const d=grade("ООО «Минвтормет»",[
+  "Для дальнейшей квалификации нужны документы о ломовозах, тягачах, контейнерах или закупке/лизинге полуприцепов."
+ ]);
+ assert.notEqual(d.grade,"A");assert.equal(d.aEvidence,"");
+});
+test("generic repair channel with no customer is not a completed A repair",()=>{
+ const d=deterministicQualificationDecision({sheet:"intermediaries",row:{
+  "Организация":"Вираж","Техника/сегмент":"ремонт полуприцепов",
+  __evidence:{source_urls:["https://example.org/service"],notes:[
+   "В открытом описании приведено общее сервисное позиционирование, но нет заказчика, номера ремонта, марки полуприцепа или подтверждения повторных дорогих ремонтов."
+  ]}
+ }});
+ assert.notEqual(d.grade,"A");assert.equal(d.aEvidence,"");
+});

@@ -113,7 +113,7 @@ test("structured facts are counted only when a real source URL is attached",()=>
  assert.equal(result.direct_buyers[0].__evidence.inline_note_provenance[0].automatic_qualification_proof,false);
 });
 
-test("review and excluded queues survive finalization and Excel keeps six commercial sheets",()=>{
+test("review and excluded queues survive finalization and are visible in Excel",()=>{
  const input=empty();
  input.direct_buyers.push(make("k41","ООО Грузовик",[noteA],{grade:"A"}));
  const review=make("k42","ООО Требуется проверка",[
@@ -133,8 +133,10 @@ test("review and excluded queues survive finalization and Excel keeps six commer
  const wb=XLSX.read(buffer,{type:"buffer",cellComments:true});
  assert.deepEqual(wb.SheetNames,[
    "Прямые покупатели","Посредники","Лизинг","Статистика",
-   "Статистика по цветам","Легенда"
+   "Статистика по цветам","Легенда","REVIEW","EXCLUDED"
  ]);
+ assert.equal(XLSX.utils.sheet_to_json(wb.Sheets.REVIEW).length,1);
+ assert.equal(XLSX.utils.sheet_to_json(wb.Sheets.EXCLUDED).length,1);
  const active=XLSX.utils.sheet_to_json(wb.Sheets["Прямые покупатели"]);
  assert.equal(active.length,1);
  assert.ok(wb.Sheets["Прямые покупатели"].B2.c);
@@ -345,4 +347,16 @@ test("synthetic full-scale 488 records, 492 source IDs, current vs historic queu
  assert.equal(report.web_search_calls,0);
  assert.equal(result.direct_buyers.length,479);
  assert.equal(result.qualification_review_v5_archived.length,148);
+});
+
+test("LLC with individual INN is held in REVIEW without rewriting identity",()=>{
+ const data=empty();
+ const row=make("k_bad","ООО «Плодородие»",[noteA],{grade:"A"});
+ row["ИНН"]="673110458304";data.direct_buyers.push(row);
+ const {result,report}=run(data);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(result.qualification_review.length,1);
+ assert.ok(result.qualification_review[0].__quality_gate.issues.includes("llc_with_individual_inn"));
+ assert.equal(result.qualification_review[0]["ИНН"],"673110458304");
+ assert.equal(report.originals_lost,0);
 });
