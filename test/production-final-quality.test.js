@@ -454,3 +454,53 @@ test("final gate does not hold A for a direct sourced trailer-fleet claim", () =
   assert.equal(result.direct_buyers.length,1);
   assert.equal(result.qualification_review.length,0);
 });
+
+test("regional job category page cannot substantiate a grade A legal entity", () => {
+  const input=empty();
+  const note="Вакансия работодателя категории CE с полуприцепом. ([Источник](https://smolensk.hh.ru/vacancies/voditel_kategorii_e))";
+  input.direct_buyers.push(make("k-gen-hh","ООО Региональный перевозчик",[note],{grade:"A"}));
+  const {result,report}=finalizeProductionResearch(input,{
+    qualify:()=>({decision:"include",grade:"A",aEvidence:note,
+      aRule:"direct_driver_operation",reason:"specific driver claim"}),
+    isActionable:()=>true
+  });
+  assert.equal(result.direct_buyers.length,0);
+  assert.equal(result.qualification_review.length,1);
+  assert.ok(report.flags[0].reasons.includes("A_claim_cites_generic_discovery_page"));
+});
+
+test("specific vacancy and entity site remain valid grade A links", () => {
+  const sources=[
+    "https://smolensk.hh.ru/vacancy/123456789",
+    "https://carrier.example.org/own-trailer-fleet"
+  ];
+  for(const [i,source] of sources.entries()){
+    const input=empty();
+    const note="Собственная эксплуатация полуприцепа и тягача. ([Источник]("+source+"))";
+    input.direct_buyers.push(make("k-good-"+i,"ООО Проверенный перевозчик",[note],{grade:"A"}));
+    const {result}=finalizeProductionResearch(input,{
+      qualify:()=>({decision:"include",grade:"A",aEvidence:note,
+        aRule:"direct_ownership_or_fleet",reason:"direct fleet note"}),
+      isActionable:()=>true
+    });
+    assert.equal(result.direct_buyers.length,1);
+    assert.equal(result.qualification_review.length,0);
+  }
+});
+
+test("regional procurement listings and all-region dump truck directories are discovery, not A", () => {
+  for(const url of [
+    "https://www.b2b-center.ru/search/smolenskaya-oblast/polupricepy/",
+    "https://samosval.info/doska-obyavleniy/trebuyutsya-samosvaly-i-tonary/smolenskaya-oblast/"
+  ]) {
+    const input=empty(),note="Эксплуатация собственного парка полуприцепов. ([Источник]("+url+"))";
+    input.direct_buyers.push(make("k-generic","ООО Перевозчик",[note],{grade:"A"}));
+    const {result}=finalizeProductionResearch(input,{
+      qualify:()=>({decision:"include",grade:"A",aEvidence:note,
+        aRule:"direct_ownership_or_fleet",reason:"sourced"}),
+      isActionable:()=>true
+    });
+    assert.equal(result.direct_buyers.length,0);
+    assert.equal(result.qualification_review.length,1);
+  }
+});
