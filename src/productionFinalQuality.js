@@ -105,11 +105,11 @@ export function isGenericDiscoverySource(raw) {
     const u = new URL(string(raw));
     const host = u.hostname.toLowerCase();
     const path = decodeURIComponent(u.pathname).toLowerCase();
-    if (/(?:^|\\.)hh\\.ru$/.test(host) && path.startsWith("/vacancies/")) return true;
-    if (/(?:^|\\.)b2b-center\\.ru$/.test(host) && path.startsWith("/search/")) return true;
-    if (/(?:^|\\.)jobcareer\\.ru$/.test(host) && path.startsWith("/jobs/")) return true;
-    if (/(?:^|\\.)jobrun\\.ru$/.test(host) && !/\\/vacancy\\/\\d+/.test(path)) return true;
-    if (/(?:^|\\.)samosval\\.info$/.test(host) &&
+    if (/(?:^|\.)hh\.ru$/.test(host) && path.startsWith("/vacancies/")) return true;
+    if (/(?:^|\.)b2b-center\.ru$/.test(host) && path.startsWith("/search/")) return true;
+    if (/(?:^|\.)jobcareer\.ru$/.test(host) && path.startsWith("/jobs/")) return true;
+    if (/(?:^|\.)jobrun\.ru$/.test(host) && !/\/vacancy\/\d+/.test(path)) return true;
+    if (/(?:^|\.)samosval\.info$/.test(host) &&
         path.includes("/doska-obyavleniy/trebuyutsya-samosvaly-i-tonary/")) return true;
     return false;
   } catch { return false; }
