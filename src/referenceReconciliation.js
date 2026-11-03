@@ -78,7 +78,19 @@ function provenanceForValue(oldRow, inn, field, expected) {
 export function reconcileReference(current, reference, { referenceAsOf = "" } = {}) {
  if(!current || !reference || SECTIONS.some(s=>!Array.isArray(current[s])||!Array.isArray(reference[s])))
    throw new TypeError("Both sources must include complete final_result commercial arrays");
- const result=structuredClone(current), oldRows=rowsOf(reference), newRows=rowsOf(result);
+ const result=structuredClone(current), newRows=rowsOf(result);
+ // Full legacy v8 exports may repeat the SAME current REVIEW/EXCLUDED rows
+ // inside commercial arrays. They are not historical commercial prospects.
+ const legacyCurrentQueues=(Array.isArray(reference.qualification_review_v8) ||
+   Array.isArray(reference.qualification_excluded_v8));
+ const legacyQueued=new Map(legacyCurrentQueues
+   ? queueRows(reference).map(x=>[value(x.row.__canonical_id),x.row]) : []);
+ let baselineQueueDuplicatesCollapsed=0;
+ const oldRows=rowsOf(reference).filter(({row})=>{
+   const id=value(row.__canonical_id),queue=legacyQueued.get(id);
+   if(!queue||JSON.stringify(queue)!==JSON.stringify(row))return true;
+   baselineQueueDuplicatesCollapsed++;return false;
+ });
  const oldByInn=indexByInn(oldRows), newByInn=indexByInn(newRows);
  const allNewByInn=indexByInn([...newRows,...queueRows(result).map(x=>({sheet:x.status,row:x.row}))]);
  const oldOnly=[], ambiguous=[], carried=[], unavailable=[], identityConflicts=[];
@@ -119,6 +131,9 @@ export function reconcileReference(current, reference, { referenceAsOf = "" } = 
      const event={...matched,reference_as_of:referenceAsOf||"unspecified",
        reference_canonical_id:value(oldRow.__canonical_id),review_currentness:true};
      newRow.__evidence.historical_carry_forward.push(event);
+     newRow.__evidence.source_urls ||= [];
+     if(!newRow.__evidence.source_urls.includes(matched.source_url))
+       newRow.__evidence.source_urls.push(matched.source_url);
      carried.push({inn,organization:value(newRow["Организация"]),field,
        value:oldRow[field],source_url:matched.source_url,reference_as_of:referenceAsOf||"unspecified"});
    }
@@ -132,6 +147,15 @@ export function reconcileReference(current, reference, { referenceAsOf = "" } = 
        newRow.__evidence.historical_carry_forward ||= [];
        newRow.__evidence.historical_carry_forward.push({...e,
          reference_as_of:referenceAsOf||"unspecified",review_currentness:true});
+       newRow.__evidence.source_urls ||= [];
+       if(!newRow.__evidence.source_urls.includes(e.source_url))
+         newRow.__evidence.source_urls.push(e.source_url);
+       // A newly recovered, sourced email must not leave a stale "not found"
+       // value in the first-column Excel note.
+       const oldComment=value(newRow.__comment);
+       if(oldComment && /^Email:/m.test(oldComment)) {
+         newRow.__comment=oldComment.replace(/^Email:.*$/m,"Email: "+oldEmail);
+       }
        carried.push({inn,organization:value(newRow["Организация"]),field:"Email",
          value:oldEmail,source_url:e.source_url,reference_as_of:referenceAsOf||"unspecified"});
      }
@@ -161,7 +185,9 @@ export function reconcileReference(current, reference, { referenceAsOf = "" } = 
   current_review_after:(result.qualification_review||[]).length,
   current_excluded_before:(current.qualification_excluded||[]).length,
   current_excluded_after:(result.qualification_excluded||[]).length,
-  old_commercial_records:oldRows.length,old_commercial_without_valid_inn:oldCommercialWithoutInn,
+  old_commercial_records:oldRows.length,
+  baseline_current_queue_duplicates_collapsed:baselineQueueDuplicatesCollapsed,
+  old_commercial_without_valid_inn:oldCommercialWithoutInn,
   same_inn_compared:sameInn,safe_exact_identity_pairs:paired,
   historical_fields_carried:carried.length,historical_field_carry:carried,
   historical_fields_not_carried:unavailable.length,historical_field_review:unavailable,

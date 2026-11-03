@@ -30,3 +30,5 @@ jobs:
           name: regionalresearch-smolensk-offline-cli-20261103
           path: /tmp/smolensk-offline
           retention-days: 2
+
+# Rebuild including strict source-ID and legacy-v8 audit checks.

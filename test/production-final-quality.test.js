@@ -360,3 +360,20 @@ test("LLC with individual INN is held in REVIEW without rewriting identity",()=>
  assert.equal(result.qualification_review[0]["ИНН"],"673110458304");
  assert.equal(report.originals_lost,0);
 });
+
+test("an active merged survivor with a conflicting verified queue INN is quarantined",()=>{
+ const input=empty();
+ const active=make("k10","ООО «Агро-Форс»",[noteC],{grade:"C"});
+ active["ИНН"]="6732114166";
+ active.__merged_canonical_ids=["k10","k11"];
+ const foreign=make("k11","ООО «Кроношпан»",[noteC],{grade:""});
+ foreign["ИНН"]="6732222073";
+ input.direct_buyers.push(active);input.qualification_review.push(foreign);
+ const {result,report}=run(input);
+ assert.equal(result.direct_buyers.length,0);
+ assert.equal(result.qualification_review.length,2);
+ assert.equal(report.verified_cross_queue_inn_conflict_records,1);
+ assert.equal(result.qualification_review.some(r=>r.__canonical_id==="k10" &&
+   r.__quality_gate.issues.includes("cross_queue_lineage_inn_conflict")),true);
+ assert.equal(report.originals_lost,0);
+});

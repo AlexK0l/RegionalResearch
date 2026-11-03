@@ -222,6 +222,35 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     .filter(items => items.length > 1).flat());
   const contestedInn = new Set([...innOwners.values()]
     .filter(items => items.length > 1).flat());
+  // A merged source ID can also survive separately in a prior REVIEW queue.
+  // If it subsequently acquired a DIFFERENT checksum-valid INN, the active
+  // survivor has absorbed evidence from a separate legal entity. Quarantine
+  // that active company instead of silently retaining a contaminated CRM row.
+  const queuedById = new Map();
+  for (const entry of [...previousReview, ...previousExcluded]) {
+    const id = rowId(entry);
+    if (!id) continue;
+    if (!queuedById.has(id)) queuedById.set(id, []);
+    queuedById.get(id).push(entry);
+  }
+  const verifiedLineageConflicts = new Map();
+  for (const [index, { row }] of commercialBefore.entries()) {
+    const mainInn = string(row["ИНН"]);
+    if (!checksumInn(mainInn)) continue;
+    const ids = unique([rowId(row),
+      ...(Array.isArray(row.__merged_canonical_ids) ? row.__merged_canonical_ids.map(string) : [])
+    ].filter(Boolean));
+    for (const id of ids) for (const queued of queuedById.get(id) || []) {
+      const otherInn = string(queued["ИНН"]);
+      if (!checksumInn(otherInn) || otherInn === mainInn) continue;
+      if (!verifiedLineageConflicts.has(index)) verifiedLineageConflicts.set(index, []);
+      verifiedLineageConflicts.get(index).push({
+        survivor_canonical_id: rowId(row), source_id: id,
+        survivor_name: string(row["Организация"]), survivor_inn: mainInn,
+        conflicting_name: string(queued["Организация"]), conflicting_inn: otherInn
+      });
+    }
+  }
   const finalSheets = Object.fromEntries(SECTIONS.map(sheet => [sheet, []]));
   const review = [...previousReview];
   const excluded = [...previousExcluded];
@@ -253,6 +282,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
       issues.push("llc_with_individual_inn");
     }
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
+    if (verifiedLineageConflicts.has(index)) issues.push("cross_queue_lineage_inn_conflict");
 
     const provenance = attachInlineNoteProvenance(row);
     inlineLinked += provenance.linked;
@@ -422,6 +452,8 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     source_id_lineage_count: lineageOwners.size,
     reviewed_alias_groups_from_pipeline: lineage,
     source_id_cross_survivor_conflicts: lineageConflicts,
+    verified_cross_queue_inn_conflict_records: verifiedLineageConflicts.size,
+    verified_cross_queue_inn_conflicts: [...verifiedLineageConflicts.values()].flat(),
     transitions: changes,
     flags,
     originals_lost: 0,

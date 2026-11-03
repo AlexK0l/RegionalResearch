@@ -50,3 +50,29 @@ test("old-only rows are audit backlog, never injected into new commercial or REV
  assert.equal(x.result.direct_buyers.length,0);
  assert.equal(x.result.qualification_review.length,0);
 });
+
+test("legacy full v8 queue snapshots are excluded from reference commercial comparison",()=>{
+ const a=make("a","ООО «Основной»","6732114166");
+ const q=make("q","ООО «В очереди»","6732222073");
+ const baseline={...build([a,q]),qualification_review_v8:[structuredClone(q)],
+   qualification_excluded_v8:[]};
+ const {report}=reconcileReference(build([]),baseline);
+ assert.equal(report.baseline_current_queue_duplicates_collapsed,1);
+ assert.equal(report.old_commercial_records,1);
+ assert.equal(report.reference_only_or_unresolved_records,1);
+});
+test("sourced historical email corrects first-column comment and keeps source URL",()=>{
+ const inn="6732114166";
+ const source="https://source.example/case";
+ const prior=make("a","ООО «Перевозки»",inn,"",{
+   email:"office@example.org",identity_observed_facts:[
+   {field:"Email",value:"office@example.org",inn,source_url:source,
+    excerpt:"ООО Перевозки ИНН 6732114166 Email office@example.org"}]});
+ const target=make("b","ООО «Перевозки»",inn);target.__comment="ИНН: 6732114166\nEmail: не найден";
+ target.__evidence.source_urls=[];
+ const {result,report}=reconcileReference(build([target]),build([prior]));
+ assert.equal(result.direct_buyers[0].__evidence.email,"office@example.org");
+ assert.match(result.direct_buyers[0].__comment,/Email: office@example.org/);
+ assert.deepEqual(result.direct_buyers[0].__evidence.source_urls,[source]);
+ assert.equal(report.historical_fields_carried,1);
+});
