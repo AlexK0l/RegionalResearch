@@ -530,6 +530,9 @@ const FINAL_INN_MAX_OUTPUT_TOKENS = Math.min(
   Math.max(1200, Number(process.env.OPENAI_FINAL_INN_MAX_OUTPUT_TOKENS || 2500)),
   OPENAI_MAX_OUTPUT_TOKENS
 );
+const FINAL_INN_REDUNDANT_RETRY =
+  String(process.env.OPENAI_FINAL_INN_RETRY_WITHOUT_NEW_SOURCE || "false")
+    .toLowerCase() === "true";
 
 const DISCOVERY_SCHEMA = {
   type: "object",
@@ -934,6 +937,9 @@ function contract(final = false) {
 - Сначала находи как можно больше разных релевантных организаций по текущей теме и географии.
 - НЕ трать отдельные web_search на телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
 - ИНН является обязательным реквизитом итоговой базы. Во время discovery НЕ запускай отдельный поиск только ради ИНН, но если ИНН встретился в любом уже открытом источнике, ОБЯЗАТЕЛЬНО заполни поле "ИНН" (10 или 12 цифр) и сохрани подтверждающий источник/примечание. Отдельный жёсткий проход по отсутствующим ИНН выполняется позже.
+- ИНН относится ТОЛЬКО к указанному юридическому лицу, а не к другому участнику договора: не переноси ИНН лизингодателя лизингополучателю, клиента перевозчику, продавца покупателю, холдинга дочернему обществу, владельца сайта одноимённой фирме. При конфликте оставляй ИНН пустым и сохраняй сведения в notes с именами обеих сторон.
+- Для одного URL явно укажи, кто собственник, кто фактический эксплуатант, кто лизингодатель и кто лизингополучатель; не присваивай роль по расположению в поисковой выдаче.
+- Проверяй, что населённый пункт относится именно к указанному субъекту РФ: одинаковые названия районов в других регионах не являются подтверждением деятельности здесь.
 - Телефон, сайт и иные реквизиты, случайно встретившиеся в основном источнике, можешь упомянуть в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
 - Не заполняй поля полной финальной таблицы на этом этапе. Они будут обогащены позже отдельным проходом.
 - Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
@@ -2339,6 +2345,9 @@ function applyFinalInnItems(rowsById, result) {
       ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
       ...newSources
     ].map(String).filter(Boolean);
+    const oldSourceSet = new Set((Array.isArray(existing.source_urls)
+      ? existing.source_urls : []).map(String));
+    const newlyDiscoveredUrls = newSources.filter(url => !oldSourceSet.has(url));
     const note = String(item?.note || "").trim();
     if (note) notes.push("Final INN search: " + note);
     row.__evidence = {
@@ -2351,6 +2360,13 @@ function applyFinalInnItems(rowsById, result) {
         : {}),
       ...(conflicts.length ? { legal_identity_conflicts: conflicts } : {}),
       source_urls: [...new Set(sourceUrls)],
+      ...(!confirmedInn && newlyDiscoveredUrls.length ? {
+        final_inn_retry_urls: [...new Set([
+          ...(Array.isArray(existing.final_inn_retry_urls) ?
+            existing.final_inn_retry_urls : []),
+          ...newlyDiscoveredUrls
+        ])]
+      } : {}),
       notes: [...new Set(notes)]
     };
     if (!conflict && confirmedInn) {
@@ -2441,6 +2457,17 @@ ${JSON.stringify(targets)}`,
     });
     return { items: [...(left?.items || []), ...(right?.items || [])] };
   }
+}
+
+// A second identical paid search without any newly obtained source usually
+// repeats the first miss. Retain breadth in the first pass; retry only when
+// the first pass produced another evidence URL, unless explicitly opted in.
+function shouldRetryFinalInn(row, allowRedundant = FINAL_INN_REDUNDANT_RETRY) {
+  if (normalizeInn(row?.["ИНН"])) return false;
+  const hints = row?.__evidence?.final_inn_retry_urls;
+  return Boolean(allowRedundant ||
+    (Array.isArray(hints) && hints.some(url =>
+      /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(String(url)))));
 }
 
 async function resolveFinalMissingInns({
@@ -2534,14 +2561,21 @@ async function resolveFinalMissingInns({
     });
   });
 
-  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]) && !completedIds.has(`retry:${checkpointRowId(row)}`));
+  const remainingMissing = companies.filter(row => !normalizeInn(row?.["ИНН"]));
+  const retryRows = remainingMissing.filter(row =>
+    !completedIds.has("retry:" + checkpointRowId(row)) &&
+    shouldRetryFinalInn(row));
   if (retryRows.length) {
     const retryBatches = [];
     for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
       retryBatches.push(retryRows.slice(offset, offset + FINAL_INN_BATCH_SIZE));
     }
     console.log("[FINAL_INN_RETRY_PLAN] " + JSON.stringify({
-      missing_after_first_pass: retryRows.length,
+      missing_after_first_pass: remainingMissing.length,
+      retry_candidates_with_new_source: retryRows.length,
+      skipped_repeated_search_without_new_source:
+        remainingMissing.length - retryRows.length,
+      allow_redundant_retry: FINAL_INN_REDUNDANT_RETRY,
       batches: retryBatches.length,
       concurrency
     }));
@@ -7420,6 +7454,29 @@ ${JSON.stringify(groupBatch)}`,
   });
 
   await assertNotCancelled();
+  // Before ANY paid enrichment/contact lookups, run the same deterministic
+  // quality gate which previously executed only AFTER stage 11. This saves
+  // money by not enriching disputed or invalid sales prospects. Preserve
+  // every held record in REVIEW and re-run after contacts for new evidence.
+  const preEnrichmentQuality = finalizeProductionResearch(finalResult, {
+    qualify: deterministicQualificationDecision,
+    isActionable: actionableUnqualifiedLead
+  });
+  finalResult = preEnrichmentQuality.result;
+  qualifiedFinal.result = finalResult;
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    ...preEnrichmentQuality.report.grades,
+    review: preEnrichmentQuality.report.review_records,
+    excluded: preEnrichmentQuality.report.excluded_records
+  };
+  console.log("[PRE_ENRICHMENT_QUALITY_GATE] " + JSON.stringify({
+    before: preEnrichmentQuality.report.original_commercial_records,
+    after: preEnrichmentQuality.report.active_commercial_records,
+    held_before_paid_enrichment: preEnrichmentQuality.report.transitions.length,
+    original_rows_preserved: preEnrichmentQuality.report.originals_lost === 0,
+    api_calls: 0, web_search_calls: 0
+  }));
   const finalCompaniesForEnrichment = allResearchRows(finalResult)
     .sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
   let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
@@ -8561,6 +8618,7 @@ export {
   resolveClusterWithoutWeb,
   applyIdentityResult,
   extractInnFromEvidenceNotes,
+  shouldRetryFinalInn,
   actionableUnqualifiedLead,
   createFullWebBudget,
   reserveWebBudgetBeforeCall,
