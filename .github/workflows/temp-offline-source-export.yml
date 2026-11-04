@@ -1,0 +1,22 @@
+name: Temporary offline source snapshot
+on:
+  push:
+    branches:
+      - feature/evidence-first-cost-quality-20261028
+    paths:
+      - .github/workflows/temp-offline-source-export.yml
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack source and offline tests without credentials
+        run: tar -czf project-source.tar.gz src scripts test package.json package-lock.json server.js public
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regionalresearch-feature-source-offline-20261104
+          path: project-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
