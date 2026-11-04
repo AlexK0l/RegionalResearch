@@ -330,9 +330,15 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
     if (verifiedLineageConflicts.has(index)) issues.push("cross_queue_lineage_inn_conflict");
     if (unverifiedQueueInnConflicts.has(index)) issues.push("cross_queue_canonical_invalid_inn_collision");
+    // Historic manual flags may later be resolved by evidence-backed alias
+    // reconciliation. Only newly introduced INN/identity disputes created in
+    // THIS pipeline are blocking; old final_inn_conflict notes remain visible
+    // for audit without undoing a subsequent verified recovery.
     if (Array.isArray(row?.__evidence?.legal_identity_conflicts) &&
         row.__evidence.legal_identity_conflicts.some(conflict =>
-          conflict?.status === "manual_review_required")) {
+          conflict?.status === "manual_review_required" &&
+          ["final_inn", "identity_resolution", "identity_without_web"]
+            .includes(string(conflict?.recorded_at_stage)))) {
       issues.push("unresolved_legal_identity_conflict");
     }
 
