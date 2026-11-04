@@ -136,3 +136,15 @@ test("unresolved incompatible same-INN claimants are quarantined with originals 
   assert.deepEqual(finalResult.qualification_review.map(r=>r["ИНН"]),
     ["6732000000","6732000000"]);
 });
+
+
+test("deterministic quality gate runs before paid enrichment and again after contacts",()=>{
+  const pre=pipeline.indexOf('[PRE_ENRICHMENT_QUALITY_GATE]');
+  const paid=pipeline.indexOf('const finalCompaniesForEnrichment = allResearchRows(finalResult)');
+  const post=pipeline.indexOf('[FINAL_PRODUCTION_QUALITY_GATE]');
+  assert.ok(pre>0,"must report pre-enrichment gate");
+  assert.ok(paid>pre,"pre-enrichment quality gate precedes paid enrichment");
+  assert.ok(post>paid,"post-contact gate still rechecks later evidence");
+  assert.match(pipeline,/FINAL_INN_REDUNDANT_RETRY/);
+  assert.match(pipeline,/shouldRetryFinalInn/);
+});
