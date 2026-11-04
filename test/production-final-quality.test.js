@@ -504,3 +504,49 @@ test("regional procurement listings and all-region dump truck directories are di
     assert.equal(result.qualification_review.length,1);
   }
 });
+
+test("2026-11-04 Smolensk negative-A or hypothetical selected claim enters REVIEW", () => {
+  const claims = [
+    "Тип транспорта указан как «одиночка»; подтверждения собственного парка или полуприцепов нет.",
+    "КДМ и дорожные работы относятся к тяжёлой автомобильной эксплуатации и могут формировать потребность в специализированной прицепной технике.",
+    "Подтверждения закупки, лизинга, ремонта или эксплуатации конкретных полуприцепов в найденных материалах нет.",
+    "Требование категории СЕ и работа на грузовом транспорте являются сильными сигналами потребности в тягачах и полуприцепах.",
+    "Указаны лицензии Росприроднадзора, однако конкретный парк или прицепная техника в источнике не приведены.",
+    "Релевантный карьерный парк подтверждён, но прицепная техника САТ непосредственно не зафиксирована.",
+    "Завершённое внедрение телематики является точкой выхода на закупку/обновление грузовой и прицепной техники.",
+    "Пеллеты пригодны для перевозки в биг-бэгах; подтверждения собственного парка или конкретного полуприцепа в источнике нет.",
+    "Источник подтверждает организацию, но не содержит достаточной детализации по собственному автопарку или прицепной технике."
+  ];
+  for (const [index, claim] of claims.entries()) {
+    const input = empty();
+    input.direct_buyers.push(make("k-live-negative-" + index, "ООО «Кандидат»", [claim], {
+      grade: "A", inn: "6732114166", phone: "79991234567"
+    }));
+    const {result, report} = finalizeProductionResearch(input, {
+      qualify: () => ({decision: "include", grade: "A", aEvidence: claim,
+        aRule: "direct_ownership_or_fleet", reason: "injected preliminary A"}),
+      isActionable: () => true
+    });
+    assert.equal(result.direct_buyers.length, 0, claim);
+    assert.equal(result.qualification_review.length, 1, claim);
+    assert.equal(result.qualification_review[0]["ИНН"], "6732114166");
+    assert.equal(result.qualification_review[0]["Телефон"], "79991234567");
+    assert.ok(report.flags[0].reasons.includes(
+      "A_selected_claim_explicitly_disclaims_trailer_evidence"), claim);
+  }
+});
+
+test("positive ownership A survives only a missing-specific-model caveat", () => {
+  const claim = "Компания эксплуатирует собственный парк полуприцепов Krone, но точная модель полуприцепа не указана.";
+  const input = empty();
+  input.direct_buyers.push(make("k-live-positive", "ООО «Перевозчик»", [claim], {
+    grade: "A", inn: "6732114166"
+  }));
+  const {result} = finalizeProductionResearch(input, {
+    qualify: () => ({decision: "include", grade: "A", aEvidence: claim,
+      aRule: "direct_ownership_or_fleet", reason: "confirmed own fleet"}),
+    isActionable: () => true
+  });
+  assert.equal(result.direct_buyers.length, 1);
+  assert.equal(result.qualification_review.length, 0);
+});
