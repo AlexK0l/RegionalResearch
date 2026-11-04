@@ -298,3 +298,22 @@ test("confirmed identity region mismatch excludes otherwise strong company", () 
   assert.equal(d.grade, "");
   assert.equal(d.signals.identityRegionMismatch, true);
 });
+
+test("generic leasing catalogue cannot become A without an executed named deal",()=>{
+  const d=deterministicQualificationDecision(rec(
+    "leasing","ПАО «ЛК «Европлан»",
+    "Официальная страница Европлана содержит конкретные предметы лизинга: тракторные прицепы 2ПТС и полуприцеп тракторный сельскохозяйственный 2ПС-9.",
+    "Тракторные полуприцепы в каталоге лизинга"
+  ));
+  assert.notEqual(d.grade,"A");
+});
+
+test("documented signed lease and handover of a truck semitrailer remains A",()=>{
+  const d=deterministicQualificationDecision(rec(
+    "leasing","ПАО «ЛК «Европлан»",
+    "Суд установил: между ПАО «ЛК «Европлан» (лизингодатель) и ООО «Стрела» (лизингополучатель) заключён договор лизинга на полуприцеп-самосвал, переданный по акту 27.04.2023.",
+    "Лизинг грузового полуприцепа-самосвала"
+  ));
+  assert.equal(d.grade,"A");
+  assert.equal(d.aRule,"leasing_concrete_contract");
+});
