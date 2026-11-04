@@ -4505,11 +4505,18 @@ function reserveWebBudgetBeforeCall(client, diagnosticLabel, requestedTools = 2)
     return Number(budget.limits[key]) -
       Number(budget.used[key] || 0) - Number(budget.reserved?.[key] || 0);
   };
-  const free = Math.min(requested, cashAvailable,
-    limitAvailable("total"), limitAvailable(scope));
+  // Responses may contain one more web_search_call than max_tool_calls.
+  // Reserve that empirically observed overcall BEFORE concurrent requests,
+  // rather than discovering an overrun after the global cap is exhausted.
+  const overcallBuffer = budget ? 1 : 0;
+  const cashAfterBuffer = cashAvailable - overcallBuffer;
+  const totalAfterBuffer = limitAvailable("total") - overcallBuffer;
+  const scopeAfterBuffer = limitAvailable(scope) - overcallBuffer;
+  const free = Math.min(requested, cashAfterBuffer,
+    totalAfterBuffer, scopeAfterBuffer);
   if (free < 1) {
-    const exhausted = cashAvailable < 1 ? "estimated_cost_usd" :
-      limitAvailable("total") < 1 ? "total" : scope;
+    const exhausted = cashAfterBuffer < 1 ? "estimated_cost_usd" :
+      totalAfterBuffer < 1 ? "total" : scope;
     console.error("[RESEARCH_WEB_BUDGET_DEFER] " + JSON.stringify({
       scope, reason: exhausted, cost_usd: spent, cost_cap_usd: limitUsd,
       used: budget?.used || {}, reserved: budget?.reserved || {}
@@ -4524,19 +4531,20 @@ function reserveWebBudgetBeforeCall(client, diagnosticLabel, requestedTools = 2)
     );
   }
   const calls = Math.floor(free);
+  const reservedCalls = calls + overcallBuffer;
   if (budget) {
     if (!budget.reserved) budget.reserved = {};
-    budget.reserved[scope] = Number(budget.reserved[scope] || 0) + calls;
-    budget.reserved.total = Number(budget.reserved.total || 0) + calls;
+    budget.reserved[scope] = Number(budget.reserved[scope] || 0) + reservedCalls;
+    budget.reserved.total = Number(budget.reserved.total || 0) + reservedCalls;
   }
-  return { scope, calls, budget };
+  return { scope, calls, reservedCalls, budget };
 }
 
 function releaseWebBudgetReservation(reservation) {
   if (!reservation?.budget) return;
-  const { budget, scope, calls } = reservation;
-  budget.reserved[scope] = Math.max(0, Number(budget.reserved[scope] || 0) - calls);
-  budget.reserved.total = Math.max(0, Number(budget.reserved.total || 0) - calls);
+  const { budget, scope, calls, reservedCalls = calls } = reservation;
+  budget.reserved[scope] = Math.max(0, Number(budget.reserved[scope] || 0) - reservedCalls);
+  budget.reserved.total = Math.max(0, Number(budget.reserved.total || 0) - reservedCalls);
 }
 
 function recordWebUsage(client, diagnosticLabel, calls) {
