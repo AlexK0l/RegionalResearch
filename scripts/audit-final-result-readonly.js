@@ -71,7 +71,7 @@ export function auditFinalResult(document){
     // INN notes across all active and review/excluded queues.
     const notes=Array.isArray(row?.__evidence?.notes)?row.__evidence.notes.map(str):[];
     const confirmedInns=[...new Set(notes.flatMap(note=>
-      [...note.matchAll(/Подтвержд[её]нный ИНН:\\s*(\\d{10}|\\d{12})/gi)]
+      [...note.matchAll(/Подтвержд[её]нный ИНН:\s*(\d{10}|\d{12})/gi)]
         .map(match=>match[1])))];
     if(confirmedInns.length>1)issues.push({
       kind:"contradictory_verified_inns_in_notes",id,name,section,
