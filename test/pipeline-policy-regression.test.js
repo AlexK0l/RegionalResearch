@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
 import {
   classifyEntityType,
   deterministicQualificationDecision,
