@@ -973,6 +973,7 @@ function identityResolutionContract() {
 - Если это разные юрлица — раздели их по разным entities.
 - confirmed_inn заполняй только подтверждённым 10- или 12-значным ИНН.
 - Если ИНН надёжно подтвердить не удалось — оставь confirmed_inn пустым и НЕ объединяй сомнительные упоминания: верни их отдельными entities.
+- Если confirmed_inn заполнен, ОБЯЗАТЕЛЬНО укажи полное legal_name именно владельца этого ИНН и его собственный URL-источник. Без однозначного совпадения названия/ОПФ с упоминанием не подставляй номер. Названия других сторон сделки не подменяют проверяемую компанию.
 - Не ищи телефон, директора, email, выручку, численность, холдинг или другие сведения.
 - legal_name и city заполняй только если удалось подтвердить.
 - Если web-проверка показывает, что найденное юридическое лицо относится к ДРУГОМУ региону и исходная региональная привязка ошибочна, ОБЯЗАТЕЛЬНО прямо напиши это в note: "региональный конфликт: юридическое лицо относится к <регион>, исходная привязка к запрошенному региону ошибочна".
@@ -1768,14 +1769,31 @@ function buildIdentityClusters(candidates) {
   }));
 }
 
+// A note about a contractor's INN must never be imported as this company's
+// INN. Only accept a single syntactically valid number explicitly attached
+// to the candidate's own legal name in the SAME source note.
 function extractInnFromEvidenceNotes(row) {
+  const ownName = normalizeOrgKey(row?.["Организация"]);
+  if (!ownName || ownName.length < 4) return "";
   const notes = Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [];
   const candidates = new Set();
   for (const note of notes) {
-    const text = String(note || "");
-    for (const match of text.matchAll(/ИНН\s*[:№-]?\s*(\d{10}|\d{12})/gi)) {
-      const inn = normalizeInn(match[1]);
-      if (inn) candidates.add(inn);
+    const raw = String(note || "");
+    const matches = [...raw.matchAll(/ИНН\s*[:№-]?\s*(\d{10}|\d{12})/gi)];
+    if (!matches.length) continue;
+    // A note mentioning two different INNs is disputed evidence, not a
+    // source for either of them.
+    const values = [...new Set(matches.map(m => normalizeInn(m[1])).filter(Boolean))];
+    if (values.length !== 1) continue;
+    for (const match of matches) {
+      const before = normalizeOrgKey(raw.slice(0, match.index));
+      const ownPosition = before.lastIndexOf(ownName);
+      if (ownPosition < 0) continue;
+      const between = before.slice(ownPosition + ownName.length);
+      // An intervening ООО/АО/ИП may be the actual named owner of the INN.
+      if (/(?:^|\s)(?:ооо|ао|зао|пао|оао|ип)(?:\s|$)/.test(between)) continue;
+      if (between.length > 130) continue;
+      candidates.add(values[0]);
     }
   }
   return candidates.size === 1 ? [...candidates][0] : "";
@@ -1911,26 +1929,38 @@ function clusterNeedsIdentityWebSearch(cluster) {
   return false;
 }
 
+// Zero-cost identity pass is strictly ROW-LOCAL. A cluster is a search
+// batch, NOT a legal entity. Do not copy an INN into a neighbour merely
+// because the name/region or a marketplace domain appears to match.
 function resolveClusterWithoutWeb(cluster) {
-  const identity = clusterEvidenceIdentity(cluster);
-  const inn = identity.inns.length === 1 ? identity.inns[0] : "";
-  return cluster.items.map((item) => {
+  return cluster.items.map(item => {
     const data = { ...(item?.data || {}) };
-    if (inn) {
-      data["ИНН"] = inn;
-      const existingEvidence = data.__evidence || {};
+    const existing = normalizeInn(data["ИНН"]);
+    const ownNoteInn = extractInnFromEvidenceNotes(data);
+    const oldEvidence = data.__evidence || {};
+    const notes = Array.isArray(oldEvidence.notes) ? [...oldEvidence.notes] : [];
+    const conflicts = Array.isArray(oldEvidence.legal_identity_conflicts)
+      ? [...oldEvidence.legal_identity_conflicts] : [];
+    if (existing && ownNoteInn && existing !== ownNoteInn) {
+      conflicts.push({
+        status:"manual_review_required",
+        reason:"discovery_own_note_inn_disagrees_with_field",
+        existing_inn:existing,proposed_inn:ownNoteInn,
+        recorded_at_stage:"identity_without_web"
+      });
+    } else if (!existing && ownNoteInn) {
+      data["ИНН"] = ownNoteInn;
+      notes.push("Identity без нового web-search: ИНН " + ownNoteInn +
+        " извлечён из заметки с собственным названием компании; первичный источник не перепроверен.");
+    }
+    if (conflicts.length || notes.length !== (oldEvidence.notes || []).length) {
       data.__evidence = {
-        ...existingEvidence,
-        source_urls: Array.isArray(existingEvidence.source_urls)
-          ? [...new Set(existingEvidence.source_urls.map(String).filter(Boolean))]
-          : [],
-        notes: [
-          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
-          `Identity без нового web-search: ИНН ${inn} извлечён из уже собранного evidence.`
-        ]
+        ...oldEvidence,
+        ...(conflicts.length ? {legal_identity_conflicts:conflicts}:{}),
+        notes:[...new Set(notes)]
       };
     }
-    return { ...item, data };
+    return {...item,data};
   });
 }
 
@@ -1950,64 +1980,97 @@ function compactIdentityCluster(cluster) {
   };
 }
 
-function applyIdentityResult(cluster, result) {
-  const byId = new Map(cluster.items.map((item) => [item.candidate_id, item]));
+// Model groups are hypotheses. A sourced INN may be attached only to the
+// candidate whose original legal name actually matches the returned entity.
+// Never rewrite a separate firm, branch or holding into that legal person.
+function applyIdentityResult(cluster, result, region = "") {
+  const byId = new Map(cluster.items.map(item => [item.candidate_id, item]));
   const assigned = new Set();
   const resolved = [];
 
   for (const entity of Array.isArray(result?.entities) ? result.entities : []) {
     const ids = [...new Set(
       (Array.isArray(entity?.candidate_ids) ? entity.candidate_ids : [])
-        .map(String)
-        .filter((id) => byId.has(id) && !assigned.has(id))
+        .map(String).filter(id => byId.has(id) && !assigned.has(id))
     )];
     if (!ids.length) continue;
+    const incomingInn = normalizeInn(entity?.confirmed_inn);
+    const legalName = String(entity?.legal_name || "").trim();
+    const urls = [...new Set(
+      (Array.isArray(entity?.source_urls) ? entity.source_urls : [])
+        .map(String).filter(url => /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url))
+    )];
+    const identityNote = String(entity?.note || "").trim();
 
-    const inn = normalizeInn(entity?.confirmed_inn);
-    // Без подтвержденного ИНН не разрешаем модели склеить несколько упоминаний.
-    const groups = inn ? [ids] : ids.map((id) => [id]);
+    for (const id of ids) {
+      assigned.add(id);
+      const original = byId.get(id);
+      const data = { ...(original?.data || {}) };
+      const oldName = String(data["Организация"] || "").trim();
+      const oldInn = normalizeInn(data["ИНН"]);
+      const nameMatch = legalName &&
+        organizationNamesCompatible(oldName, legalName, region) &&
+        !legalEvidenceConflict(data, {"Организация":legalName,"ИНН":incomingInn});
+      const conflictingInn = Boolean(incomingInn && oldInn && incomingInn !== oldInn);
+      const accept = Boolean(incomingInn && urls.length && nameMatch && !conflictingInn);
+      const oldEvidence = data.__evidence || {};
+      const notes = Array.isArray(oldEvidence.notes) ? [...oldEvidence.notes] : [];
+      const oldUrls = Array.isArray(oldEvidence.source_urls)
+        ? [...oldEvidence.source_urls] : [];
 
-    for (const groupIds of groups) {
-      for (const id of groupIds) assigned.add(id);
-      for (const id of groupIds) {
-        const original = byId.get(id);
-        const data = { ...(original?.data || {}) };
-        if (inn) data["ИНН"] = inn;
-        if (String(entity?.legal_name || "").trim()) {
-          data["Организация"] = String(entity.legal_name).trim();
+      if (accept) {
+        data["ИНН"] = incomingInn;
+        // Preserve the discovery name in the CRM. A name variant is recorded
+        // as a sourced alias, not silently substituted as a new legal entity.
+        if (!oldInn || !oldEvidence.identity_verification) {
+          notes.push("Подтверждённый ИНН: " + incomingInn);
         }
-        if (String(entity?.city || "").trim() && !String(data["Город/район"] || "").trim()) {
+        if (identityNote) notes.push(
+          (identityRegionMismatchFromNotes(["Identity: " + identityNote])
+            ? "[IDENTITY_REGION_MISMATCH] " : "") + "Identity: " + identityNote);
+        if (!String(data["Город/район"] || "").trim() &&
+            String(entity?.city || "").trim()) {
           data["Город/район"] = String(entity.city).trim();
         }
-
-        const existingEvidence = data.__evidence || {};
-        const sourceUrls = [
-          ...(Array.isArray(existingEvidence.source_urls) ? existingEvidence.source_urls : []),
-          ...(Array.isArray(entity?.source_urls) ? entity.source_urls : [])
-        ].map(String).filter(Boolean);
-        const identityNote = String(entity?.note || "").trim();
-        const identityNoteWithMarker = identityNote
-          ? `${identityRegionMismatchFromNotes([`Identity: ${identityNote}`]) ? "[IDENTITY_REGION_MISMATCH] " : ""}Identity: ${identityNote}`
-          : "";
-        const notes = [
-          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
-          identityNoteWithMarker,
-          inn ? `Подтверждённый ИНН: ${inn}` : ""
-        ].filter(Boolean);
         data.__evidence = {
-          ...existingEvidence,
-          source_urls: [...new Set(sourceUrls)],
-          notes: [...new Set(notes)],
-          ...(inn && Array.isArray(entity?.source_urls) && entity.source_urls.some((url) => /^https?:\/\//i.test(String(url)))
-            ? { identity_verification: { inn, method: "identity_web", source_urls: entity.source_urls } }
-            : {})
+          ...oldEvidence,
+          source_urls:[...new Set([...oldUrls,...urls])],
+          notes:[...new Set(notes)],
+          identity_verification:{
+            inn:incomingInn,method:"identity_web",
+            source_urls:urls,legal_name:legalName
+          }
         };
-
-        resolved.push({ ...original, data });
+      } else {
+        const reasons = [];
+        if (!incomingInn) reasons.push("unverified_inn");
+        if (!urls.length) reasons.push("no_entity_specific_url");
+        if (!nameMatch) reasons.push("legal_name_or_legal_form_mismatch");
+        if (conflictingInn) reasons.push("conflicts_with_existing_inn");
+        const rejected = {
+          candidate_id:id,reported_legal_name:legalName,proposed_inn:incomingInn,
+          source_urls:urls,reason:reasons.join(","),note:identityNote
+        };
+        const pending = Array.isArray(oldEvidence.unmatched_identity_candidates)
+          ? [...oldEvidence.unmatched_identity_candidates] : [];
+        pending.push(rejected);
+        const conflicts = Array.isArray(oldEvidence.legal_identity_conflicts)
+          ? [...oldEvidence.legal_identity_conflicts] : [];
+        if (conflictingInn) conflicts.push({
+          status:"manual_review_required",reason:"identity_web_inn_conflict",
+          existing_inn:oldInn,proposed_inn:incomingInn,
+          source_urls:urls,recorded_at_stage:"identity_resolution"
+        });
+        data.__evidence = {
+          ...oldEvidence,
+          unmatched_identity_candidates:pending,
+          ...(conflicts.length ? {legal_identity_conflicts:conflicts}: {})
+        };
+        // Do NOT add foreign evidence URLs or replace company name.
       }
+      resolved.push({...original,data});
     }
   }
-
   for (const item of cluster.items) {
     if (!assigned.has(item.candidate_id)) resolved.push(item);
   }
@@ -2098,7 +2161,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
 
       if (item.status === "fulfilled") {
         searchedWebClusters++;
-        const rows = applyIdentityResult(cluster, item.value);
+        const rows = applyIdentityResult(cluster, item.value, region);
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
         resolved.push(...rows);
       } else {
@@ -8480,6 +8543,9 @@ export {
   duplicateInnConflictGroups,
   clearUnresolvedInnConflicts,
   applyFinalInnItems,
+  resolveClusterWithoutWeb,
+  applyIdentityResult,
+  extractInnFromEvidenceNotes,
   actionableUnqualifiedLead,
   createFullWebBudget,
   reserveWebBudgetBeforeCall,
