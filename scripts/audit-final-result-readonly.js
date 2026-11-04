@@ -66,8 +66,29 @@ export function auditFinalResult(document){
       if(!innOwners.has(inn))innOwners.set(inn,[]);
       innOwners.get(inn).push({id,name,section});
     }
-    if(!active)continue;
+    // Evidence may carry a foreign legal entity even when the active INN and
+    // canonical ID are well-shaped. Detect contradictory *explicitly verified*
+    // INN notes across all active and review/excluded queues.
     const notes=Array.isArray(row?.__evidence?.notes)?row.__evidence.notes.map(str):[];
+    const confirmedInns=[...new Set(notes.flatMap(note=>
+      [...note.matchAll(/Подтвержд[её]нный ИНН:\\s*(\\d{10}|\\d{12})/gi)]
+        .map(match=>match[1])))];
+    if(confirmedInns.length>1)issues.push({
+      kind:"contradictory_verified_inns_in_notes",id,name,section,
+      verified_inns:confirmedInns.sort()
+    });
+    const declared=new Set([id,...(Array.isArray(row?.__merged_canonical_ids)
+      ? row.__merged_canonical_ids.map(str):[])].filter(Boolean));
+    const foreignMerged=(Array.isArray(row?.__merged_original_records)
+      ? row.__merged_original_records:[])
+      .map(original=>({id:str(original?.__canonical_id),
+        name:str(original?.["Организация"])}))
+      .filter(original=>original.id&&!declared.has(original.id));
+    if(foreignMerged.length)issues.push({
+      kind:"merged_original_missing_lineage_id",id,name,section,
+      undeclared_originals:foreignMerged
+    });
+    if(!active)continue;
     const text=normalize(notes.join(" ")),nameLower=normalize(name);
     if(section==="leasing"&&text.includes("лизингодатель отдельно не идентифицирован"))
       warnings.push({kind:"leasing_role_not_established",id,name});
