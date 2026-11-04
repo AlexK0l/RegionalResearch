@@ -161,26 +161,45 @@ test("conflicting name with unproven identity remains separate, never receives I
   assert.equal(decision(a, b, inn).merge, false);
 });
 
-test("an irreconcilable same-INN conflict is recorded and cleared without dropping businesses", () => {
+test("unresolved same-INN conflicts preserve both INNs in REVIEW, not blank them", () => {
   const inn = "6732132711";
   const a = make("ООО «ЭКОВТОРПРОМ»", inn);
   const b = make("ООО «Экопром»", inn);
-  const final = { direct_buyers: [a, b], intermediaries: [], leasing: [] };
-  const merged = postInnDedupe(final, "Смоленская область");
-  assert.equal(merged.records.length, 2);
-  const conflicts = duplicateInnConflictGroups(merged.qualified.result);
-  assert.equal(conflicts.length, 1);
-  const cleared = clearUnresolvedInnConflicts(merged.qualified.result);
-  assert.equal(cleared.clearedRows, 2);
-  assert.equal(merged.qualified.result.direct_buyers.length, 2);
-  for (const row of merged.qualified.result.direct_buyers) {
+  const final = { direct_buyers: [a, b], intermediaries: [], leasing: [], qualification_review: [] };
+  const deduped = postInnDedupe(final, "Смоленская область");
+  assert.equal(deduped.records.length, 2);
+  assert.equal(duplicateInnConflictGroups(deduped.qualified.result).length, 1);
+  const held = clearUnresolvedInnConflicts(deduped.qualified.result);
+  assert.equal(held.clearedRows, 0);
+  assert.equal(held.quarantinedRows, 2);
+  assert.equal(deduped.qualified.result.direct_buyers.length, 0);
+  assert.equal(deduped.qualified.result.qualification_review.length, 2);
+  for (const row of deduped.qualified.result.qualification_review) {
     const audit = row.__evidence.legal_identity_conflicts;
     assert.equal(audit.length, 1);
     assert.equal(audit[0].contested_inn, inn);
     assert.equal(audit[0].status, "manual_review_required");
     assert.equal(audit[0].conflicting_organizations.length, 2);
-    assert.equal(row["ИНН"], "");
+    assert.equal(row["ИНН"], inn, "disputed source field must be preserved");
   }
+});
+
+test("one uniquely sourced INN claimant survives and an unproved claimant moves to REVIEW", () => {
+  const inn="6732132711";
+  const a=make("ООО «ЭКОВТОРПРОМ»",inn);
+  a.__canonical_id="k1";
+  const b=make("ООО «Экопром»",inn);
+  b.__canonical_id="k2";
+  delete b.__evidence.identity_verification;
+  const input={direct_buyers:[a,b],intermediaries:[],leasing:[],qualification_review:[]};
+  const result=clearUnresolvedInnConflicts(input);
+  assert.equal(result.preservedVerifiedRows,1);
+  assert.equal(result.quarantinedRows,1);
+  assert.equal(input.direct_buyers.length,1);
+  assert.equal(input.direct_buyers[0].__canonical_id,"k1");
+  assert.equal(input.qualification_review.length,1);
+  assert.equal(input.qualification_review[0].__canonical_id,"k2");
+  assert.equal(input.qualification_review[0]["ИНН"],inn);
 });
 
 
