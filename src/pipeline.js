@@ -3890,10 +3890,15 @@ function deterministicQualificationDecision(record) {
         /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note) ||
         ongoingTrailerSeller
       );
+    // An advertised item or a price calculator is NOT an executed lease.
+    // For A there must be a contract, named customer, or actual handover in
+    // the SAME note as the relevant truck trailer. A broader leasing offer
+    // still belongs in B/C/review when commercial relevance is established.
     const actualLeaseContract =
       leasingRole &&
       freightTrailerContext &&
-      /(договор.{0,50}лизинг|лизингов.{0,50}договор|клиент.{0,100}лизинг|лизинг.{0,100}(тонар|полуприцеп|прицеп))/i.test(note);
+      /(договор.{0,50}лизинг|лизингов.{0,50}договор|клиент.{0,100}лизинг|лизингополучател|переда.{0,80}лизинг|лизинг.{0,80}переда)/i.test(note) &&
+      !/(?:только|лишь|общ[а-я]*|рекламн[а-я]*).{0,65}(предложени|каталог|описани|карточк)|(?:предложени|каталог|прайс|акци[яию]|спецпредложени).{0,100}(?:не подтвержд|без.{0,30}договор|вместо.{0,30}сделк)/i.test(note);
     const directVinOwnership =
       directRole &&
       explicitVinOrPlate &&
