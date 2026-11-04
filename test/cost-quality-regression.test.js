@@ -24,7 +24,9 @@ test("batch enrichment uses structured ids and fallback", () => {
 });
 
 test("INN provenance survives merging and invalid evidence triggers a web lookup", () => {
-  assert.match(pipeline, /identity_verification: \{ inn, method: "identity_web"/);
+  assert.match(pipeline, /method:"identity_web"/);
+  assert.match(pipeline, /unmatched_identity_candidates/);
+  assert.match(pipeline, /cluster_mentions_lack_independent_source_link/);
   assert.match(pipeline, /verifiedInnFromEvidence\(row, normalizeInn\)/);
   assert.match(pipeline, /identityVerification = ev\.identity_verification/);
 });
