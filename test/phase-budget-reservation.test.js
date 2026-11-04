@@ -21,13 +21,13 @@ test("concurrent contact reservations cannot overspend a phase or total budget",
   const b = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
   assert.equal(a.calls, 2);
   assert.equal(b.calls, 2);
-  assert.equal(c.__webBudget.reserved.contacts, 4);
-  assert.equal(c.__webBudget.reserved.total, 4);
+  assert.equal(c.__webBudget.reserved.contacts, 6);
+  assert.equal(c.__webBudget.reserved.total, 6);
   recordWebUsage(c, "contact batch | five", 2);
   recordWebBudgetUsage(c, "contact batch | five", 2);
   releaseWebBudgetReservation(a);
   assert.equal(c.__webBudget.used.contacts, 2);
-  assert.equal(c.__webBudget.reserved.contacts, 2);
+  assert.equal(c.__webBudget.reserved.contacts, 3);
   releaseWebBudgetReservation(b);
   assert.equal(c.__webBudget.reserved.total, 0);
 });
@@ -47,12 +47,13 @@ test("global budget blocks all scopes even before the model returns", () => {
   c.__webUsage.total = c.__webBudget.used.total;
   assert.throws(() => reserveWebBudgetBeforeCall(c, "identity | case", 2), /WEB_BUDGET_STOP:total/);
 });
-test("last available search slot reduces tool-call budget to one", () => {
+test("last two available web slots allow one model call plus its overcall buffer", () => {
   const c = fakeClient();
-  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 1;
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 2;
   c.__webBudget.used.total = 0;
   const res = reserveWebBudgetBeforeCall(c, "contact web | company", 2);
   assert.equal(res.calls, 1);
+  assert.equal(res.reservedCalls, 2);
   releaseWebBudgetReservation(res);
   assert.equal(c.__webBudget.reserved.total, 0);
 });
@@ -72,4 +73,36 @@ test("failed requests can release every reserved call without spending web quota
   const again = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
   assert.equal(again.calls, 2);
   releaseWebBudgetReservation(again);
+});
+
+test("one additional observed web call per request cannot exceed concurrent caps", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 5;
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 5;
+  c.__webUsage.total = c.__webBudget.used.total;
+  const a = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  const b = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  assert.equal(a.calls, 2);
+  assert.equal(a.reservedCalls, 3);
+  assert.equal(b.calls, 1);
+  assert.equal(b.reservedCalls, 2);
+  assert.equal(c.__webBudget.reserved.total, 5);
+  recordWebUsage(c, "contact batch | five", 3);
+  recordWebBudgetUsage(c, "contact batch | five", 3);
+  releaseWebBudgetReservation(a);
+  recordWebUsage(c, "contact batch | five", 2);
+  recordWebBudgetUsage(c, "contact batch | five", 2);
+  releaseWebBudgetReservation(b);
+  assert.equal(c.__webBudget.used.total, c.__webBudget.limits.total);
+  assert.equal(c.__webBudget.used.contacts, c.__webBudget.limits.contacts);
+  assert.equal(c.__webBudget.reserved.total, 0);
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 1),
+    /WEB_BUDGET_STOP:total/);
+});
+
+test("a single remaining slot is held rather than risking an extra billed call", () => {
+  const c = fakeClient();
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 1;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 1),
+    /WEB_BUDGET_STOP:contacts/);
 });
