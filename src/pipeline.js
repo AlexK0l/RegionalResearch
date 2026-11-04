@@ -2207,40 +2207,81 @@ function compactFinalInnTarget(row) {
   };
 }
 
+// A late no-result is NOT a revocation of an earlier valid INN.
+// A new, different INN is a legal-identity conflict, never an implicit rename.
 function applyFinalInnItems(rowsById, result) {
   let recovered = 0;
   for (const item of Array.isArray(result?.items) ? result.items : []) {
     const row = rowsById.get(String(item?.id || ""));
     if (!row) continue;
-    const inn = normalizeInn(item?.confirmed_inn);
-    const legalStatus = statusProofFromFinalInn(item, inn);
-    const previousInn = normalizeInn(row["ИНН"]);
-    row["ИНН"] = inn || "";
-    if (inn && inn !== previousInn) recovered++;
-    if (inn && Array.isArray(item?.source_urls) && item.source_urls.some((url) => /^https?:\/\//i.test(String(url)))) {
-      row.__evidence = { ...(row.__evidence || {}), identity_verification: { inn, method: "final_inn_web", source_urls: item.source_urls } };
-    }
+    const previousRaw = String(row["ИНН"] || "").trim();
+    const previousInn = normalizeInn(previousRaw);
+    const proposedInn = normalizeInn(item?.confirmed_inn);
+    const newSources = [...new Set(
+      (Array.isArray(item?.source_urls) ? item.source_urls : [])
+        .map(String).filter(url => /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url))
+    )];
+    // A checksum is a syntactic check, not legal identity evidence.
+    const confirmedInn = proposedInn && newSources.length ? proposedInn : "";
+    const conflict = Boolean(previousInn && confirmedInn && previousInn !== confirmedInn);
     const existing = row.__evidence || {};
-    const urls = [
+    const notes = [...(Array.isArray(existing.notes) ? existing.notes : [])];
+    const conflicts = Array.isArray(existing.legal_identity_conflicts)
+      ? [...existing.legal_identity_conflicts] : [];
+
+    if (conflict) {
+      conflicts.push({
+        status: "manual_review_required",
+        reason: "final_inn_lookup_disagrees_with_existing_inn",
+        existing_inn: previousInn, proposed_inn: confirmedInn,
+        source_urls: newSources,
+        recorded_at_stage: "final_inn"
+      });
+      notes.push("Final INN conflict: ранее " + previousInn + ", новый источник " +
+        confirmedInn + "; требуется проверка, старый ИНН сохранён.");
+    } else if (confirmedInn) {
+      if (!previousInn && previousRaw) {
+        notes.push('Final INN: прежнее неподтверждённое значение "' +
+          previousRaw + '" заменено после проверки источника.');
+      }
+      row["ИНН"] = confirmedInn;
+      if (!previousInn) recovered++;
+      notes.push("Подтверждённый ИНН: " + confirmedInn);
+    } else if (proposedInn && !newSources.length) {
+      notes.push("Final INN: кандидат " + proposedInn +
+        " не принят: отсутствует URL подтверждения.");
+    } else if (previousInn) {
+      notes.push("Final INN: повторный поиск не подтвердил новый ИНН; ранее найденный " +
+        previousInn + " сохранён без изменения.");
+    }
+
+    const legalStatus = !conflict && confirmedInn
+      ? statusProofFromFinalInn(item, confirmedInn) : null;
+    const sourceUrls = [
       ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
-      ...(Array.isArray(item?.source_urls) ? item.source_urls : [])
+      ...newSources
     ].map(String).filter(Boolean);
     const note = String(item?.note || "").trim();
+    if (note) notes.push("Final INN search: " + note);
     row.__evidence = {
       ...existing,
       ...(legalStatus ? { legal_status_verification: legalStatus } : {}),
-      source_urls: [...new Set(urls)],
-      notes: [
-        ...(Array.isArray(existing.notes) ? existing.notes : []),
-        note ? `Final INN: ${note}` : "",
-        inn ? `Подтверждённый ИНН: ${inn}` : ""
-      ].filter(Boolean)
+      ...(confirmedInn && !conflict
+        ? { identity_verification: {
+            inn: confirmedInn, method: "final_inn_web", source_urls: newSources
+          } }
+        : {}),
+      ...(conflicts.length ? { legal_identity_conflicts: conflicts } : {}),
+      source_urls: [...new Set(sourceUrls)],
+      notes: [...new Set(notes)]
     };
-    const reused = reuseIdentityObservedFacts(row, item);
-    if (reused.length) console.log("[FINAL_INN_REUSED_SOURCE_FACTS] " + JSON.stringify({
-      canonical_id: checkpointRowId(row), inn,
-      fields: reused.map((fact) => fact.field)
-    }));
+    if (!conflict && confirmedInn) {
+      const reused = reuseIdentityObservedFacts(row, item);
+      if (reused.length) console.log("[FINAL_INN_REUSED_SOURCE_FACTS] " + JSON.stringify({
+        canonical_id: checkpointRowId(row), inn: confirmedInn,
+        fields: reused.map((fact) => fact.field)
+      }));
+    }
   }
   return recovered;
 }
@@ -2477,24 +2518,35 @@ function duplicateInnConflictGroups(finalResult) {
     .map(([inn, rows]) => ({ inn, rows }));
 }
 
+// Legacy name retained for API compatibility. Do not blank every claimant:
+// keep a uniquely sourced legal person active; quarantine unresolved claimants
+// with their disputed INNs and original source material intact.
 function clearUnresolvedInnConflicts(finalResult) {
   const groups = duplicateInnConflictGroups(finalResult);
-  let clearedRows = 0;
+  let quarantinedRows = 0;
+  let preservedVerifiedRows = 0;
+  const quarantine = new Set();
+
   for (const group of groups) {
-    const organizations = [...new Set(group.rows.map((row) =>
-      String(row["Организация"] || "").trim()).filter(Boolean)
-    )];
-    const competingOgrns = [...new Set(group.rows.flatMap((row) => identityOgrns(row)))];
+    const organizations = [...new Set(group.rows.map(row =>
+      String(row["Организация"] || "").trim()).filter(Boolean))];
+    const competingOgrns = [...new Set(group.rows.flatMap(row => identityOgrns(row)))];
+    const proved = group.rows.filter(row =>
+      verifiedInnFromEvidence(row, normalizeInn) === group.inn);
+    // Multiple verified-looking claimants may still have sources belonging
+    // to different parties. Do not automatically choose a winner.
+    const retained = proved.length === 1 ? proved[0] : null;
+
     for (const row of group.rows) {
-      // Clear only the field asserting an unresolved identity. Do not erase
-      // supporting notes, OGRN candidates or the underlying legal entity.
-      row["ИНН"] = "";
-      const evidence = row.__evidence || { source_urls: [], notes: [] };
+      if (row === retained) {
+        preservedVerifiedRows++;
+        continue;
+      }
+      const evidence = row.__evidence || {};
       const conflicts = Array.isArray(evidence.legal_identity_conflicts)
-        ? evidence.legal_identity_conflicts : [];
+        ? [...evidence.legal_identity_conflicts] : [];
       row.__evidence = {
         ...evidence,
-        source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
         legal_identity_conflicts: [
           ...conflicts,
           {
@@ -2503,19 +2555,45 @@ function clearUnresolvedInnConflicts(finalResult) {
             conflicting_organizations: organizations,
             competing_ogrns: competingOgrns,
             own_ogrns: identityOgrns(row),
+            retained_verified_id: retained ? checkpointRowId(retained) : "",
             recorded_at_stage: "final_inn_conflict"
           }
         ],
-        notes: [
+        notes: [...new Set([
           ...(Array.isArray(evidence.notes) ? evidence.notes : []),
-          `Final INN conflict: ИНН ${group.inn} встретился у несовместимых сущностей и очищен до однозначного подтверждения.`
-        ]
+          "Final INN conflict: ИНН " + group.inn +
+            " оставлен как СПОРНЫЙ; компания направлена в REVIEW, не подтверждена для продаж."
+        ])]
       };
-      mergeResearchComment(row);
-      clearedRows++;
+      row.__grade_before_conflict = row.__final_grade || "";
+      row.__final_grade = "";
+      row.__a_evidence = "";
+      row.__a_rule = "";
+      row.__decision = "manual_review";
+      row.__decision_reason = "Конфликт юридической идентификации по ИНН " +
+        group.inn + "; исходный реквизит сохранён для сверки с ЕГРЮЛ.";
+      row.__qualification_origin_sheet ||= ["direct_buyers","intermediaries","leasing"]
+        .find(sheet => finalResult[sheet]?.includes(row)) || "";
+      quarantine.add(row);
+      quarantinedRows++;
     }
   }
-  return { groups: groups.length, clearedRows };
+
+  if (quarantine.size) {
+    for (const sheet of ["direct_buyers","intermediaries","leasing"]) {
+      finalResult[sheet] = (finalResult[sheet] || [])
+        .filter(row => !quarantine.has(row));
+    }
+    finalResult.qualification_review ||= [];
+    finalResult.qualification_review.push(...quarantine);
+  }
+  console.log("[POST_INN_CONFLICT_QUARANTINE] " + JSON.stringify({
+    groups: groups.length, quarantined_rows: quarantinedRows,
+    retained_verified_rows: preservedVerifiedRows,
+    inn_fields_cleared: 0
+  }));
+  return { groups: groups.length, clearedRows: 0,
+    quarantinedRows, preservedVerifiedRows };
 }
 
 function deterministicRequalification(records) {
@@ -7120,7 +7198,7 @@ ${JSON.stringify(groupBatch)}`,
 
   const unresolvedInnConflictClear = innConflictGroups.length
     ? clearUnresolvedInnConflicts(finalResult)
-    : { groups: 0, clearedRows: 0 };
+    : { groups: 0, clearedRows: 0, quarantinedRows: 0, preservedVerifiedRows: 0 };
   if (unresolvedInnConflictClear.groups) {
     const afterConflictClear = postInnDedupe(finalResult, region, postInnDiagnostics);
     dedupedRecords = afterConflictClear.records;
@@ -7229,8 +7307,10 @@ ${JSON.stringify(groupBatch)}`,
     output_rows: rowCount(finalResult),
     qualification_counts: qualifiedFinal.counts,
     conflict_rechecks: innConflictRechecks,
-    unresolved_conflict_groups_cleared: unresolvedInnConflictClear.groups,
-    unresolved_conflict_rows_cleared: unresolvedInnConflictClear.clearedRows,
+    unresolved_conflict_groups_quarantined: unresolvedInnConflictClear.groups,
+    unresolved_conflict_rows_quarantined: unresolvedInnConflictClear.quarantinedRows || 0,
+    conflict_verified_rows_preserved: unresolvedInnConflictClear.preservedVerifiedRows || 0,
+    unresolved_conflict_inn_fields_cleared: 0,
     remaining_inn_conflicts: innConflictGroups.length,
     missing_inn: finalInnStats.missing
   }));
@@ -8399,6 +8479,7 @@ export {
   postInnDedupe,
   duplicateInnConflictGroups,
   clearUnresolvedInnConflicts,
+  applyFinalInnItems,
   actionableUnqualifiedLead,
   createFullWebBudget,
   reserveWebBudgetBeforeCall,
