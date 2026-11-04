@@ -2008,15 +2008,29 @@ function applyIdentityResult(cluster, result, region = "") {
       const data = { ...(original?.data || {}) };
       const oldName = String(data["Организация"] || "").trim();
       const oldInn = normalizeInn(data["ИНН"]);
-      const nameMatch = legalName &&
-        organizationNamesCompatible(oldName, legalName, region) &&
-        !legalEvidenceConflict(data, {"Организация":legalName,"ИНН":incomingInn});
-      const conflictingInn = Boolean(incomingInn && oldInn && incomingInn !== oldInn);
-      const accept = Boolean(incomingInn && urls.length && nameMatch && !conflictingInn);
       const oldEvidence = data.__evidence || {};
       const notes = Array.isArray(oldEvidence.notes) ? [...oldEvidence.notes] : [];
       const oldUrls = Array.isArray(oldEvidence.source_urls)
         ? [...oldEvidence.source_urls] : [];
+      // The same trademark or partly matching company name is NOT legal
+      // proof. Keep abbreviations/renames for an OGRN-backed alias pass.
+      const nameMatch = Boolean(
+        legalNameKey(oldName) &&
+        legalNameKey(oldName) === legalNameKey(legalName) &&
+        !legalEvidenceConflict(data, {"Организация":legalName,"ИНН":incomingInn})
+      );
+      const conflictingInn = Boolean(incomingInn && oldInn && incomingInn !== oldInn);
+      // Multi-mention answers must corroborate each candidate separately.
+      // A model grouping two identical names cannot transfer one firm's
+      // INN to an unrelated row lacking its own source.
+      const ownSources = new Set(oldUrls.map(url =>
+        String(url).toLowerCase().replace(/\/+$/, "")));
+      const sourceOverlap = urls.some(url =>
+        ownSources.has(String(url).toLowerCase().replace(/\/+$/, "")));
+      const independentLink = ids.length === 1 || sourceOverlap ||
+        Boolean(oldInn && oldInn === incomingInn);
+      const accept = Boolean(incomingInn && urls.length && nameMatch &&
+        independentLink && !conflictingInn);
 
       if (accept) {
         data["ИНН"] = incomingInn;
@@ -2046,6 +2060,7 @@ function applyIdentityResult(cluster, result, region = "") {
         if (!incomingInn) reasons.push("unverified_inn");
         if (!urls.length) reasons.push("no_entity_specific_url");
         if (!nameMatch) reasons.push("legal_name_or_legal_form_mismatch");
+        if (!independentLink) reasons.push("cluster_mentions_lack_independent_source_link");
         if (conflictingInn) reasons.push("conflicts_with_existing_inn");
         const rejected = {
           candidate_id:id,reported_legal_name:legalName,proposed_inn:incomingInn,
