@@ -109,3 +109,22 @@ test("recycled or absent source URLs do not trigger a redundant paid lookup",()=
     "k107","",["https://carrier.example.org/fleet"]));
   assert.equal(shouldRetryFinalInn(row,false),false);
 });
+
+test("historically resolved same-INN alias flag does not undo later verified recovery",()=>{
+  const row=make("k106-recovered","6732114166");
+  row.__evidence.legal_identity_conflicts=[{
+    contested_inn:"6732114166",status:"manual_review_required",
+    recorded_at_stage:"final_inn_conflict",
+    conflicting_organizations:["АО «Сокращение»","АО «Полное имя»"]
+  }];
+  const input={direct_buyers:[row],intermediaries:[],leasing:[],
+    qualification_review:[],qualification_excluded:[],statistics:[]};
+  const result=finalizeProductionResearch(input,{
+    qualify:()=>({decision:"include",grade:"B",reason:"known cargo operations"}),
+    isActionable:()=>true
+  });
+  assert.equal(result.result.direct_buyers.length,1);
+  assert.equal(result.result.qualification_review.length,0);
+  assert.equal(result.report.originals_lost,0);
+  assert.equal(result.result.direct_buyers[0]["ИНН"],"6732114166");
+});
