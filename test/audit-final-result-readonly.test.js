@@ -98,3 +98,50 @@ test("CLI fail-on-critical and output are deterministic on all platforms",()=>{
 test("missing required queues is an explicit error, not a silent zero",()=>{
   assert.throws(()=>auditFinalResult({direct_buyers:[],intermediaries:[],leasing:[]}),TypeError);
 });
+
+test("a record can hide two confirmed INNs even with a valid current INN",()=>{
+  const input=empty();
+  const a=row("k-identity","C","6732114166");
+  a.__evidence.notes=[
+    "Подтверждённый ИНН: 6732114166",
+    "Подтвержденный ИНН: 9728010201"
+  ];
+  input.direct_buyers.push(a);
+  const report=auditFinalResult(input);
+  assert.ok(report.issues.some(issue=>
+    issue.kind==="contradictory_verified_inns_in_notes" &&
+    issue.id==="k-identity" && issue.verified_inns.includes("9728010201")));
+});
+
+test("undeclared merged historical record is a cross-entity lineage conflict",()=>{
+  const input=empty();
+  const review=row("k-review","","", "");
+  review.__merged_canonical_ids=["k-review","k-alias"];
+  review.__merged_original_records=[
+    {__canonical_id:"k-alias","Организация":"ООО То же юрлицо"},
+    {__canonical_id:"k-foreign","Организация":"ООО Другое юрлицо"}
+  ];
+  input.qualification_review.push(review);
+  const report=auditFinalResult(input);
+  assert.equal(report.issues.filter(v=>
+    v.kind==="merged_original_missing_lineage_id").length,1);
+  assert.equal(report.issues.find(v=>
+    v.kind==="merged_original_missing_lineage_id")
+    .undeclared_originals[0].id,"k-foreign");
+});
+
+test("declared same-INN aliases with matching notes have no false conflict",()=>{
+  const input=empty();
+  const survivor=row("k1","C","6732114166");
+  survivor.__evidence.notes=[
+    "Подтверждённый ИНН: 6732114166",
+    "Подтверждённый ИНН: 6732114166"
+  ];
+  survivor.__merged_canonical_ids=["k1","k2"];
+  survivor.__merged_original_records=[{
+    __canonical_id:"k2","Организация":"ООО Алиас"
+  }];
+  input.direct_buyers.push(survivor);
+  const report=auditFinalResult(input);
+  assert.equal(report.critical_issue_count,0);
+});
