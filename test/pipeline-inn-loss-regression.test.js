@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyFinalInnItems } from "../src/pipeline.js";
+import { applyFinalInnItems, shouldRetryFinalInn } from "../src/pipeline.js";
 import { finalizeProductionResearch } from "../src/productionFinalQuality.js";
 
 function make(id, inn="") {
@@ -88,4 +88,24 @@ test("previous invalid raw INN is archived when replaced, not overwritten withou
   assert.equal(second,1);
   assert.equal(row["ИНН"],"6732114166");
   assert.ok(row.__evidence.notes.some(x=>x.includes('не установлен')));
+});
+
+test("automatic second paid INN attempt needs a genuinely new URL lead",()=>{
+  const row=make("k106","");
+  assert.equal(shouldRetryFinalInn(row,false),false);
+  assert.equal(shouldRetryFinalInn(row,true),true);
+  applyFinalInnItems(new Map([["k106",row]]),
+    response("k106","",["https://registry.example.org/new-lead"]));
+  assert.equal(shouldRetryFinalInn(row,false),true);
+  assert.deepEqual(row.__evidence.final_inn_retry_urls,
+    ["https://registry.example.org/new-lead"]);
+  row["ИНН"]="6732114166";
+  assert.equal(shouldRetryFinalInn(row,true),false);
+});
+
+test("recycled or absent source URLs do not trigger a redundant paid lookup",()=>{
+  const row=make("k107","");
+  applyFinalInnItems(new Map([["k107",row]]),response(
+    "k107","",["https://carrier.example.org/fleet"]));
+  assert.equal(shouldRetryFinalInn(row,false),false);
 });
