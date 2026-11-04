@@ -330,6 +330,11 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
     if (verifiedLineageConflicts.has(index)) issues.push("cross_queue_lineage_inn_conflict");
     if (unverifiedQueueInnConflicts.has(index)) issues.push("cross_queue_canonical_invalid_inn_collision");
+    if (Array.isArray(row?.__evidence?.legal_identity_conflicts) &&
+        row.__evidence.legal_identity_conflicts.some(conflict =>
+          conflict?.status === "manual_review_required")) {
+      issues.push("unresolved_legal_identity_conflict");
+    }
 
     const provenance = attachInlineNoteProvenance(row);
     inlineLinked += provenance.linked;
