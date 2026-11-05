@@ -106,3 +106,36 @@ test("a single remaining slot is held rather than risking an extra billed call",
   assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 1),
     /WEB_BUDGET_STOP:contacts/);
 });
+
+test("optional enrichment defers before taking the contact web reserve", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 70;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "enrichment batch | 5 companies", 2),
+    /WEB_BUDGET_STOP:contact_reservation/);
+  const contacts = reserveWebBudgetBeforeCall(c, "contact batch | 5 companies", 2);
+  assert.equal(contacts.calls, 2);
+  assert.equal(contacts.reservedCalls, 3);
+  releaseWebBudgetReservation(contacts);
+  assert.equal(c.__webBudget.reserved.total, 0);
+});
+
+test("contact reserve does not block identity or discovery under the same cap", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 60;
+  c.__webUsage.total = c.__webBudget.used.total;
+  const identity = reserveWebBudgetBeforeCall(c, "final inn | 5 companies", 2);
+  assert.equal(identity.scope, "identity");
+  releaseWebBudgetReservation(identity);
+  const discovery = reserveWebBudgetBeforeCall(c, "этап 9 | район", 2);
+  assert.equal(discovery.scope, "discovery");
+  releaseWebBudgetReservation(discovery);
+});
+
+test("the optional enrichment reserve is not an additional web budget", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | 5 companies", 2),
+    /WEB_BUDGET_STOP:total/);
+});
