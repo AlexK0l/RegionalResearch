@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
-import { loadLatestCompletedResearch } from "./checkpointStore.js";
+import { loadLatestCompletedResearch, loadRecentCompletedResearch } from "./checkpointStore.js";
+import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
@@ -66,6 +67,13 @@ const RESEARCH_GEO_GROUPS = Math.max(
   2,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
+const HISTORICAL_RECALL_ENABLED =
+  String(process.env.OPENAI_HISTORICAL_RECALL_ENABLED ?? "true").toLowerCase() !== "false";
+const HISTORICAL_RECALL_MAX_BATCHES = Math.max(0,
+  Math.min(5, Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_MAX_BATCHES ?? 3))));
+const HISTORICAL_RECALL_BATCH_SIZE = Math.max(2,
+  Math.min(12, Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_BATCH_SIZE ?? 8))));
+const HISTORICAL_RECALL_MAX_CALLS_PER_BATCH = 2;
 const FINAL_INN_CONCURRENCY = Math.max(
   1,
   Math.min(8, Number(process.env.OPENAI_FINAL_INN_CONCURRENCY || 4))
@@ -6932,6 +6940,127 @@ ${JSON.stringify(compactCourtArchive)}
       ),
       contacts: { total: 0, checked: 0, skipped: 0, ok: 0, unavailable: 0, notFound: 0 }
     };
+  }
+
+
+  // A bounded history pass is part of real discovery, NOT a frozen benchmark.
+  // Earlier completed studies supply only name/region/URL search hints. Never
+  // transfer their INNs, phone numbers, A/B/C grades or legal identities.
+  let historicalRuns = [];
+  if (!diagnosticMode && !replayMode && executionMode === "full") {
+    try {
+      historicalRuns = await loadRecentCompletedResearch(region, 3);
+    } catch (error) {
+      console.warn("[HISTORICAL_RECALL_HISTORY_ERROR] " + JSON.stringify({
+        region, error: error?.message || String(error)
+      }));
+    }
+  }
+  let historicalRecall = cloneJson(resumeCheckpoint?.historical_recall || null);
+  const historicalRecallCanRun = !diagnosticMode && !replayMode &&
+    executionMode === "full" && HISTORICAL_RECALL_ENABLED &&
+    !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity");
+  if (historicalRecallCanRun && !historicalRecall?.completed) {
+    if (!historicalRecall?.plan) {
+      const plan = buildHistoricalRecallPlan(historicalRuns, flattenCandidates(parts), {
+        maxCandidates: HISTORICAL_RECALL_MAX_BATCHES * HISTORICAL_RECALL_BATCH_SIZE
+      });
+      historicalRecall = {
+        version: 1, plan, next_batch: 0, attempted_inns: [],
+        accepted: 0, rejected: 0, calls: 0, completed: false
+      };
+      console.log("[HISTORICAL_RECALL_PLAN] " + JSON.stringify({
+        prior_runs: plan.prior_runs.length,
+        verified_history_unique: plan.verified_history_unique,
+        already_seen_by_inn: plan.already_seen_by_inn,
+        already_seen_by_name_unverified: plan.already_seen_by_name_unverified,
+        ambiguity_holds: plan.ambiguous_history + plan.current_name_inn_conflicts,
+        recently_attempted: plan.recently_attempted_in_previous_runs,
+        eligible_missing: plan.total_missing_candidates,
+        selected_for_search: plan.candidates.length,
+        deferred_without_research: plan.deferred_candidates
+      }));
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        historical_recall: historicalRecall
+      });
+    }
+    const plan = historicalRecall.plan;
+    const totalBatches = Math.min(HISTORICAL_RECALL_MAX_BATCHES,
+      Math.ceil(plan.candidates.length / HISTORICAL_RECALL_BATCH_SIZE));
+    for (let batchIndex = Number(historicalRecall.next_batch || 0);
+      batchIndex < totalBatches; batchIndex++) {
+      await assertNotCancelled();
+      const budget = client.__webBudget;
+      const remainingDiscovery = Number(budget.limits.discovery) -
+        Number(budget.used.discovery || 0) - Number(budget.reserved.discovery || 0);
+      const remainingTotal = Number(budget.limits.total) -
+        Number(budget.used.total || 0) - Number(budget.reserved.total || 0);
+      // Protect downstream identity + contact research and the dollar ceiling.
+      if (remainingDiscovery < 25 || remainingTotal < 200 ||
+          costEnvLimitUsd() - estimatedApiCostUsd(client) < 2) {
+        historicalRecall.deferred_reason = "preserve_identity_and_contacts_budget";
+        console.log("[HISTORICAL_RECALL_DEFER] " + JSON.stringify({
+          remaining_discovery: remainingDiscovery,
+          remaining_total: remainingTotal,
+          remaining_estimated_usd: Number(
+            (costEnvLimitUsd() - estimatedApiCostUsd(client)).toFixed(2))
+        }));
+        break;
+      }
+      const batch = plan.candidates.slice(batchIndex * HISTORICAL_RECALL_BATCH_SIZE,
+        (batchIndex + 1) * HISTORICAL_RECALL_BATCH_SIZE);
+      const beforeCalls = webUsageSnapshot(client);
+      try {
+        const response = normalize(await askResearch(
+          client,
+          historicalRecallPrompt(region, batch),
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+          "historical recall | batch " + (batchIndex + 1) + "/" + totalBatches,
+          HISTORICAL_RECALL_MAX_CALLS_PER_BATCH
+        ));
+        const findings = filterHistoricalRecallFindings(response, batch);
+        if (!parts[8]) parts[8] = emptyResearchResult();
+        appendResearchResult(parts[8], findings.result, "historical-recall");
+        historicalRecall.accepted += findings.accepted_count;
+        historicalRecall.rejected += findings.rejected_count;
+        historicalRecall.attempted_inns.push(...batch.map(item => item.inn));
+        historicalRecall.next_batch = batchIndex + 1;
+        historicalRecall.calls += Math.max(0, webUsageSnapshot(client) - beforeCalls);
+        console.log("[HISTORICAL_RECALL_BATCH] " + JSON.stringify({
+          batch: batchIndex + 1, hints: batch.length,
+          accepted: findings.accepted_count, rejected: findings.rejected_count,
+          web_calls: Math.max(0, webUsageSnapshot(client) - beforeCalls),
+          historical_inn_copied: false
+        }));
+      } catch (error) {
+        if (isWebBudgetStop(error)) {
+          historicalRecall.deferred_reason = "research_web_budget";
+          console.log("[HISTORICAL_RECALL_DEFER] " + JSON.stringify({
+            reason: "research_web_budget", scope: error.scope
+          }));
+          break;
+        }
+        if (job.cancelled || jobSignal?.aborted) throw error;
+        // Do not convert transient API errors into an unverified company.
+        historicalRecall.next_batch = batchIndex + 1;
+        historicalRecall.errors = Number(historicalRecall.errors || 0) + 1;
+        console.warn("[HISTORICAL_RECALL_BATCH_ERROR] " + JSON.stringify({
+          batch: batchIndex + 1, error: error?.message || String(error)
+        }));
+      }
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        historical_recall: historicalRecall,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    historicalRecall.completed = true;
+    await persistCheckpoint("discovery", {
+      completed_stage: 9, parts, research_scopes: researchScopes,
+      historical_recall: historicalRecall,
+      web_usage_total: webUsageSnapshot(client)
+    });
   }
 
   const censusCompatibleWithResume =
