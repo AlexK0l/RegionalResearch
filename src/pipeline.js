@@ -8657,6 +8657,37 @@ ${JSON.stringify(gaps)}
     isActionable: actionableUnqualifiedLead
   });
   finalResult = finalQuality.result;
+  // Always preserve an offline continuity report. Absence from the current
+  // CRM is not proof of an error: older candidates can be false/irrelevant.
+  // This register never promotes a historical row or copies its data.
+  const historicalCoveragePlan = buildHistoricalRecallPlan(
+    historicalRuns.map(run => ({ ...run, recall_attempted_inns: [] })),
+    finalResult, { maxCandidates: 60 }
+  );
+  const historicalCoverage = {
+    version: 1,
+    source_run_count: historicalCoveragePlan.prior_runs.length,
+    prior_verified_inn_unique: historicalCoveragePlan.verified_history_unique,
+    present_in_current_or_queues_by_inn: historicalCoveragePlan.already_seen_by_inn,
+    same_name_but_identity_not_confirmed: historicalCoveragePlan.already_seen_by_name_unverified,
+    ambiguous_historical_identity: historicalCoveragePlan.ambiguous_history,
+    same_name_different_inn: historicalCoveragePlan.current_name_inn_conflicts,
+    not_found_by_current_name_or_inn: historicalCoveragePlan.total_missing_candidates,
+    sample_only_not_automatically_promoted: historicalCoveragePlan.candidates.map(item => ({
+      organization: item.name, prior_inn: item.inn,
+      grade_is_old_priority_only: item.grade,
+      source_job_id: item.source_job_id
+    }))
+  };
+  finalQuality.report.historical_coverage = historicalCoverage;
+  console.log("[HISTORICAL_COVERAGE_FINAL] " + JSON.stringify({
+    ...historicalCoverage,
+    sample_only_not_automatically_promoted:
+      historicalCoverage.sample_only_not_automatically_promoted.length,
+    historical_recall_accepted: Number(historicalRecall?.accepted || 0),
+    historical_recall_calls: Number(historicalRecall?.calls || 0),
+    old_records_copied_to_current: 0
+  }));
   qualifiedFinal.counts = {
     ...qualifiedFinal.counts,
     ...finalQuality.report.grades,
@@ -8697,6 +8728,8 @@ ${JSON.stringify(gaps)}
     qualification_counts: qualifiedFinal.counts,
     final_result: finalResult,
     final_quality_gate: finalQuality.report,
+    historical_recall: historicalRecall,
+    historical_coverage: historicalCoverage,
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
