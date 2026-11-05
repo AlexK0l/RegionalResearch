@@ -35,6 +35,18 @@ export function costEnvLimitUsd(env = process.env) {
   const n = Number(env.OPENAI_MAX_RESEARCH_COST_USD);
   return Number.isFinite(n) && n > 0 ? Math.max(1, n) : 25;
 }
+// Preserve a small contact-search allowance from optional enrichment calls.
+// This does NOT increase the global web or dollar limits and does not block
+// mandatory discovery/identity checks. It is a conservative, configurable
+// soft reservation, not a guarantee about actual OpenAI billing.
+export function protectedContactAllowance(env = process.env) {
+  const webCalls = boundedInt(env.OPENAI_CONTACTS_PROTECTED_WEB_CALLS, 75, 0, 270);
+  const rawUsd = Number(env.OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD ?? 1.2);
+  const estimatedUsd = Number.isFinite(rawUsd) ?
+    Math.max(0, Math.min(5, rawUsd)) : 1.2;
+  return { webCalls, estimatedUsd };
+}
+
 export function contactLimits(env = process.env) {
   return {
     batchSize: boundedInt(env.OPENAI_CONTACT_BATCH_SIZE, 5, 2, 8),
