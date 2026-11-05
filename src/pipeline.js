@@ -3,6 +3,7 @@ import path from "node:path";
 import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
+import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
@@ -1144,8 +1145,11 @@ function createCheckpointBatcher(flush) {
 function appendResearchResult(target, source, passNumber) {
   for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
     for (const row of source?.[sheet] || []) {
+      const normalizedRow = preserveCitedDiscoveryBasis(
+        normalizeDiscoverySourceUrls(row)
+      );
       target[sheet].push({
-        ...row,
+        ...normalizedRow,
         __research_pass: passNumber
       });
     }
