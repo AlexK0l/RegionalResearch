@@ -26,7 +26,7 @@ export function researchWebScope(label, kind = "full") {
   if (/^(?:contact\s|phone verify\s*\|)/.test(s)) return "contacts";
   if (/^(?:enrichment\s|targeted enrichment\s|company enrichment\s)/.test(s)) return "enrichment";
   if (/^(?:regional statistics|статистик)/.test(s)) return "statistics";
-  if (/^(?:этап\s*\d+\s*\||discovery\s|coverage gap\s|география региона\s*\||geo(?:graphy)?\s|entity census\s)/.test(s)) {
+  if (/^(?:этап\s*\d+\s*\||discovery\s|coverage gap\s|география региона\s*\||geo(?:graphy)?\s|entity census\s|historical recall\s*\|)/.test(s)) {
     return "discovery";
   }
   return "other";
