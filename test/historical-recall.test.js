@@ -346,3 +346,39 @@ test("historical URL that names another checksum-valid INN is a manual conflict,
   assert.equal(ledger.entries[0].historical_identity_url_needs_manual_review, true);
   assert.equal(ledger.entries[0].automatically_promoted_to_crm, false);
 });
+
+
+test("historical recall quarantines a legal name shared by two INNs even when the newest alias looks unique", () => {
+  const newRun = run("latest", [row("ООО «Новое имя перевозчика»", innA)]);
+  const oldRun = run("earlier", [
+    row("ООО «Общее старое имя»", innA),
+    row("ООО «Общее старое имя»", innB)
+  ]);
+  const history = [newRun, oldRun];
+  const plan = buildHistoricalRecallPlan(history, []);
+  const ledger = buildHistoricalCoverageLedger(history, []);
+  assert.equal(ledger.counts.historic_name_multiple_inn, 2);
+  assert.equal(plan.ambiguous_history, 2);
+  assert.equal(plan.total_missing_candidates, 0);
+  assert.equal(plan.candidates.length, 0);
+});
+
+test("historical recall checks previous legal-name aliases against unverified and conflicting current entities", () => {
+  const history = [
+    run("latest", [row("ООО «Транспортная компания Новая»", innA)]),
+    run("earlier", [row("ООО «Транспортная компания Старая»", innA)])
+  ];
+  const unverified = [{ "Организация": "ООО «Транспортная компания Старая»", "ИНН": "" }];
+  const missingInnPlan = buildHistoricalRecallPlan(history, unverified);
+  assert.equal(missingInnPlan.already_seen_by_name_unverified, 1);
+  assert.equal(missingInnPlan.total_missing_candidates, 0);
+  assert.equal(buildHistoricalCoverageLedger(history, unverified).counts.current_same_name_unverified, 1);
+  const differentInn = [{ "Организация": "ООО «Транспортная компания Старая»", "ИНН": innB }];
+  const conflictPlan = buildHistoricalRecallPlan(history, differentInn);
+  assert.equal(conflictPlan.current_name_inn_conflicts, 1);
+  assert.equal(conflictPlan.candidates.length, 0);
+  assert.equal(buildHistoricalCoverageLedger(history, differentInn).counts.current_same_name_different_inn, 1);
+  const safePlan = buildHistoricalRecallPlan(history, []);
+  assert.equal(safePlan.total_missing_candidates, 1);
+  assert.equal(safePlan.candidates[0].inn, innA);
+});
