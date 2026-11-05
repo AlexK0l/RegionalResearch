@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
-import { loadLatestCompletedResearch, loadRecentCompletedResearch } from "./checkpointStore.js";
+import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
@@ -8053,9 +8053,13 @@ ${JSON.stringify(gaps)}
   const companies = allResearchRows(finalResult);
   if (String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "true").toLowerCase() !== "false") {
     try {
-      const prior = await loadLatestCompletedResearch(region);
+      // Read several COMPLETED studies; the newest source-confirmed phone wins.
+      // A company absent from the latest run may still have a recent verified
+      // contact in an older run. No phone is carried without exact matching INN.
+      const priorRuns = await loadRecentCompletedResearch(region, 5);
       const byInn = new Map();
-      for (const historical of allResearchRows(prior || {})) {
+      for (const historical of priorRuns.flatMap(
+        previous => allResearchRows(previous.final_result))) {
         const inn = normalizeInn(historical?.["ИНН"]);
         const proof = historical?.__evidence?.contact_verification;
         const age = Date.now() - Date.parse(String(proof?.verified_at || ""));
@@ -8063,7 +8067,7 @@ ${JSON.stringify(gaps)}
             !Number.isFinite(age) || age < 0 || age > 90 * 24 * 3600 * 1000) continue;
         const phone = normalizePhoneDigits(proof?.phone);
         if (phone && splitPhoneEntries(historical["Телефон"]).some((item) => normalizePhoneDigits(item) === phone)) {
-          byInn.set(inn, { phone, source_url: proof.source_url });
+          if (!byInn.has(inn)) byInn.set(inn, { phone, source_url: proof.source_url });
         }
       }
       let recovered = 0;
@@ -8076,7 +8080,9 @@ ${JSON.stringify(gaps)}
         recovered++;
         row.__evidence = { ...(row.__evidence || {}), notes: [ ...(row.__evidence?.notes || []), `Контакт восстановлен по подтверждённому ИНН из исследования этого региона за последние 90 дней: ${priorPhone.source_url}` ] };
       }
-      console.log("[PREVIOUS_CONTACT_CACHE] " + JSON.stringify({ recovered, eligible: byInn.size }));
+      console.log("[PREVIOUS_CONTACT_CACHE] " + JSON.stringify({
+        recovered, eligible: byInn.size, completed_studies_consulted: priorRuns.length
+      }));
     } catch (error) {
       console.warn("[PREVIOUS_CONTACT_CACHE_ERROR] " + JSON.stringify({ error: error?.message || String(error) }));
     }
