@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome
+  buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger
 } from "../src/historicalRecall.js";
 import { researchWebScope } from "../src/researchCostPolicy.js";
 
@@ -215,4 +215,97 @@ test("final recall trace records name matches but NEVER confirms identity by nam
   assert.equal(trace.identity_verified_by_name,false);
   assert.equal(trace.entries[0].possible_distinct_legal_person,true);
   assert.equal(trace.entries[0].identity_verified_by_name,false);
+});
+
+test("historical recall reserves part of unchanged 24-lead cap for older completed studies", () => {
+  const oldInn = "6950267331";
+  const history = [
+    run("recent-a", [row("ООО «Актуальный один»", innA),
+      row("ООО «Актуальный два»", innB)]),
+    run("recent-b", [row("ООО «Актуальный три»", "6714048954")]),
+    run("recent-c", [row("ООО «Актуальный четыре»", "7702349370")]),
+    run("older", [row("ООО «Давно найденный перевозчик»", oldInn, "C")])
+  ];
+  const plan = buildHistoricalRecallPlan(history, [], {maxCandidates: 4});
+  assert.equal(plan.verified_history_unique, 5);
+  assert.equal(plan.candidates.length, 4);
+  assert.equal(plan.older_history_eligible, 1);
+  assert.equal(plan.older_history_selected, 1);
+  assert.ok(plan.candidates.some(x => x.inn === oldInn));
+  assert.equal(plan.deferred_candidates, 1);
+  assert.equal(plan.candidates.some(x => x.inn === "6950267331"), true);
+});
+
+test("older paid recall attempts do not permanently blacklist candidates", () => {
+  const history = [
+    run("recent", [row("ООО «Текущий»", innA)]),
+    run("recent2", []),
+    run("recent3", []),
+    run("ancient", [row("ООО «Прошлый»", "6714048954")], ["6714048954"])
+  ];
+  const plan = buildHistoricalRecallPlan(history, [], {maxCandidates: 4});
+  assert.equal(plan.recently_attempted_in_previous_runs, 0);
+  assert.ok(plan.candidates.some(x => x.inn === "6714048954"));
+});
+
+test("full historical ledger retains every source-linked INN without CRM promotion", () => {
+  const prior = [
+    run("recent", [
+      row("ООО «Работает»", innA),
+      row("ООО «В REVIEW»", innB),
+      row("ООО «В EXCLUDED»", "6714048954"),
+      row("ООО «Только имя»", "7702349370"),
+      row("ООО «Конфликтующее имя»", "6950267331")
+    ]),
+    run("old", [
+      row("ООО «Не найден»", "6229026994"),
+      row("ООО «Многократный»", "5024179934"),
+      row("ООО «Два ИНН»", "6732208880"),
+      row("ООО «Два ИНН»", "6722003019"),
+      row("ООО «Работает»", innA)
+    ])
+  ];
+  const current = {
+    direct_buyers: [{"Организация":"ООО «Работает»","ИНН":innA}],
+    intermediaries:[],
+    leasing:[],
+    qualification_review: [{"Организация":"ООО «В REVIEW»","ИНН":innB},
+      {"Организация":"ООО «Только имя»","ИНН":""}],
+    qualification_excluded: [{"Организация":"ООО «В EXCLUDED»","ИНН":"6714048954"},
+      {"Организация":"ООО «Конфликтующее имя»","ИНН":"6726504312"}]
+  };
+  const snapshot = structuredClone(current);
+  const ledger = buildHistoricalCoverageLedger(prior, current);
+  assert.deepEqual(current,snapshot,"report must not mutate current CRM");
+  assert.equal(ledger.counts.historic_source_linked_inn,9);
+  assert.equal(ledger.counts.present_active_by_inn,1);
+  assert.equal(ledger.counts.present_review_by_inn,1);
+  assert.equal(ledger.counts.present_excluded_by_inn,1);
+  assert.equal(ledger.counts.current_same_name_unverified,1);
+  assert.equal(ledger.counts.current_same_name_different_inn,1);
+  assert.equal(ledger.counts.historic_name_multiple_inn,2);
+  assert.equal(ledger.counts.not_found_in_current,2);
+  assert.equal(ledger.missing_or_conflicting,6);
+  assert.equal(ledger.entries.length,9);
+  const seen = ledger.entries.find(x => x.historical_inn === innA);
+  assert.equal(seen.observed_in_completed_runs,2);
+  const conflict = ledger.entries.find(x => x.historical_inn === "6950267331");
+  assert.deepEqual(conflict.current_same_name_inns_audit_only,["6726504312"]);
+  assert.equal(conflict.automatically_promoted_to_crm,false);
+  assert.equal(ledger.auto_promoted_records,0);
+  assert.equal(ledger.extra_web_calls,0);
+});
+
+test("bad identity provenance does not enter full history ledger", () => {
+  const bad = row("ООО «Подмена»", innA, "A", {
+    __evidence: {identity_verification:{
+      inn: innB,source_urls:["https://registry.example.org/other"]
+    }}
+  });
+  const ledger = buildHistoricalCoverageLedger([run("old",[
+    bad,row("ООО «Подтвержденный источник»",innB)
+  ])],[]);
+  assert.equal(ledger.counts.historic_source_linked_inn,1);
+  assert.equal(ledger.entries[0].historical_inn,innB);
+  assert.equal(ledger.entries[0].automatically_promoted_to_crm,false);
 });
