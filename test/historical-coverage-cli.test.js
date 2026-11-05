@@ -78,6 +78,7 @@ test("CLI reads SQLite in read-only mode and emits standalone full JSON and unre
     assert.match(output,/HISTORICAL_OFFLINE_AUDIT/);
     assert.equal(fs.existsSync(out),true);
     assert.equal(fs.existsSync(out.replace(/\.json$/,"")+"_unresolved.csv"),true);
+    assert.equal(fs.existsSync(out.replace(/\.json$/,"")+"_not_in_active.csv"),true);
     const report=JSON.parse(fs.readFileSync(out,"utf8"));
     assert.equal(report.current_job_id,"new");
     assert.deepEqual(report.history_runs_consulted.map(x=>x.job_id),["prior"]);
@@ -92,4 +93,21 @@ test("CLI reads SQLite in read-only mode and emits standalone full JSON and unre
   } finally {
     fs.rmSync(dir,{recursive:true,force:true});
   }
+});
+
+test("unresolved CSV excludes REVIEW and EXCLUDED; nonactive CSV retains both", () => {
+  const entries = [
+    {historical_inn:"6732114166",historical_name:"Активная",status:"present_active_by_inn"},
+    {historical_inn:"6714048954",historical_name:"На проверке",status:"present_review_by_inn"},
+    {historical_inn:"6730050615",historical_name:"Исключено",status:"present_excluded_by_inn"},
+    {historical_inn:"6732056186",historical_name:"Пропущено",status:"not_found_in_current"},
+    {historical_inn:"6730051753",historical_name:"Конфликт",status:"current_same_name_different_inn"}
+  ];
+  const unresolved = outstandingCsv({entries});
+  const nonactive = outstandingCsv({entries}, "not_in_active");
+  assert.equal(unresolved.split("\r\n").filter(Boolean).length, 3);
+  assert.equal(nonactive.split("\r\n").filter(Boolean).length, 5);
+  assert.doesNotMatch(unresolved,/На проверке|Исключено|Активная/);
+  assert.match(nonactive,/На проверке|Исключено/);
+  assert.throws(() => outstandingCsv({entries},"all"),/Invalid historical CSV filter/);
 });
