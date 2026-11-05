@@ -24,7 +24,7 @@ const row = (name, inn, grade = "A", extra = {}) => ({
     identity_verification: {
       inn, source_urls: ["https://example.org/registry/" + inn]
     },
-    source_urls: ["https://example.org/transport/" + inn],
+    source_urls: ["https://example.org/transport/company"],
     notes: ["Архивное подтверждение полуприцепа"]
   },
   ...extra
