@@ -338,6 +338,23 @@ export function buildHistoricalCoverageLedger(history, current) {
       currentByName.get(name).push(record);
     }
   }
+  // Repeated URLs may be legitimate multi-company registries or a sign
+  // that a generic document was incorrectly used as individual proof.
+  // This audit is intentionally non-blocking and makes no network calls.
+  const innsByIdentityUrl = new Map();
+  for (const item of grouped.values()) {
+    const url = item.historical_identity_source;
+    if (!url) continue;
+    if (!innsByIdentityUrl.has(url)) innsByIdentityUrl.set(url, new Set());
+    innsByIdentityUrl.get(url).add(item.historical_inn);
+  }
+  const otherValidInnsInUrl = (url, expectedInn) => {
+    let decoded = String(url || "");
+    try { decoded = decodeURIComponent(decoded); } catch { /* keep original */ }
+    return [...new Set(decoded.match(/(?<!\d)\d{10}(?:\d{2})?(?!\d)/g) || [])]
+      .filter(inn => inn !== expectedInn && Boolean(validInn(inn)))
+      .slice(0, 8);
+  };
   const priorInnByName = new Map();
   for (const item of grouped.values()) for (const name of item.known_names) {
     const normalized = normalizedName(name);
@@ -356,7 +373,10 @@ export function buildHistoricalCoverageLedger(history, current) {
     current_same_name_unverified: 0,
     current_same_name_different_inn: 0,
     historic_name_multiple_inn: 0,
-    not_found_in_current: 0
+    not_found_in_current: 0,
+    historical_identity_source_reused_across_inns: 0,
+    historical_identity_source_contains_other_valid_inn: 0,
+    historical_identity_source_contains_same_inn: 0
   };
   for (const item of grouped.values()) {
     const innMatches = currentByInn.get(item.historical_inn) || [];
@@ -388,6 +408,14 @@ export function buildHistoricalCoverageLedger(history, current) {
       status = "not_found_in_current";
     }
     counts[status]++;
+    const historicalUrl = item.historical_identity_source || "";
+    const sourceSharedBy = innsByIdentityUrl.get(historicalUrl)?.size || 0;
+    const otherValidInnInSourceUrl = otherValidInnsInUrl(historicalUrl, item.historical_inn);
+    const sourceHasSameInn = Boolean(historicalUrl.includes(item.historical_inn));
+    if (sourceSharedBy > 1) counts.historical_identity_source_reused_across_inns++;
+    if (otherValidInnInSourceUrl.length)
+      counts.historical_identity_source_contains_other_valid_inn++;
+    if (sourceHasSameInn) counts.historical_identity_source_contains_same_inn++;
     entries.push({
       historical_inn: item.historical_inn,
       historical_name: item.historical_name,
@@ -395,6 +423,12 @@ export function buildHistoricalCoverageLedger(history, current) {
       previous_grade_priority_only: item.previous_priority_only,
       historical_identity_source_audit_only: item.historical_identity_source,
       historical_search_hint_audit_only: item.historical_search_hint,
+      historical_identity_source_reused_by_inns: sourceSharedBy,
+      historical_identity_url_contains_own_inn: sourceHasSameInn,
+      historical_identity_url_contains_other_valid_inns: otherValidInnInSourceUrl,
+      historical_identity_url_needs_manual_review: sourceSharedBy > 1 ||
+        otherValidInnInSourceUrl.length > 0,
+      historical_source_contents_rechecked: false,
       latest_historical_job_id: item.latest_historical_job_id,
       latest_historical_updated_at: item.latest_historical_updated_at,
       observed_in_completed_runs: item.run_ids.size,
@@ -407,8 +441,9 @@ export function buildHistoricalCoverageLedger(history, current) {
   }
   entries.sort((a,b) => a.historical_inn.localeCompare(b.historical_inn));
   return {
-    version: 1,
+    version: 2,
     counts,
+    source_url_reuse_does_not_imply_invalid_identity: true,
     history_runs_included: arr(history).length,
     missing_or_conflicting: counts.not_found_in_current +
       counts.historic_name_multiple_inn +
