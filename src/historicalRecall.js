@@ -82,6 +82,11 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
   const byInn = new Map();
   for (const row of prior) if (!byInn.has(row.inn)) byInn.set(row.inn, row);
   const unique = [...byInn.values()];
+  // Last completed runs remember searched INNs. A later study can spend its
+  // small recall allowance on different leads instead of paying repeatedly
+  // for the same unsourced historical candidates.
+  const previousAttempts = new Set(arr(history).flatMap(run =>
+    arr(run?.recall_attempted_inns).map(validInn).filter(Boolean)));
   const innsByName = new Map();
   for (const item of unique) {
     if (!innsByName.has(item.name_key)) innsByName.set(item.name_key, new Set());
@@ -100,6 +105,7 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
   }
 
   let seenByInn = 0, seenByName = 0, ambiguous = 0, currentConflict = 0;
+  let recentlyAttempted = 0;
   const gaps = [], conflicts = [];
   for (const item of unique) {
     if (currentInns.has(item.inn)) { seenByInn++; continue; }
@@ -115,6 +121,7 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
       continue;
     }
     if (currentNames.has(item.name_key)) { seenByName++; continue; }
+    if (previousAttempts.has(item.inn)) { recentlyAttempted++; continue; }
     gaps.push(item);
   }
 
@@ -132,6 +139,7 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
     already_seen_by_name_unverified: seenByName,
     ambiguous_history: ambiguous,
     current_name_inn_conflicts: currentConflict,
+    recently_attempted_in_previous_runs: recentlyAttempted,
     conflicts,
     total_missing_candidates: gaps.length,
     deferred_candidates: Math.max(0, gaps.length - cap),
