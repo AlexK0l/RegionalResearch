@@ -107,8 +107,14 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
   // permanent exclusion of an otherwise relevant organization.
   const previousAttempts = new Set(arr(history).slice(0, 3).flatMap(run =>
     arr(run?.recall_attempted_inns).map(validInn).filter(Boolean)));
+  // Consider ALL historical legal-name variants, not just the newest
+  // display name. Otherwise a renamed entity can silently bypass conflicts
+  // already visible in the full audit ledger and waste a paid recall slot.
   const innsByName = new Map();
-  for (const item of unique) {
+  const namesByInn = new Map();
+  for (const item of prior) {
+    if (!namesByInn.has(item.inn)) namesByInn.set(item.inn, new Set());
+    namesByInn.get(item.inn).add(item.name_key);
     if (!innsByName.has(item.name_key)) innsByName.set(item.name_key, new Set());
     innsByName.get(item.name_key).add(item.inn);
   }
@@ -129,18 +135,21 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
   const gaps = [], conflicts = [];
   for (const item of unique) {
     if (currentInns.has(item.inn)) { seenByInn++; continue; }
-    if ((innsByName.get(item.name_key)?.size || 0) > 1) {
+    const nameVariants = namesByInn.get(item.inn) || new Set([item.name_key]);
+    if ([...nameVariants].some(name =>
+      (innsByName.get(name)?.size || 0) > 1)) {
       ambiguous++;
       conflicts.push({ name: item.name, kind: "prior_same_name_multiple_inn" });
       continue;
     }
-    const matching = currentNames.get(item.name_key);
-    if (matching?.size) {
+    if ([...nameVariants].some(name => (currentNames.get(name)?.size || 0) > 0)) {
       currentConflict++;
       conflicts.push({ name: item.name, kind: "current_same_name_different_inn" });
       continue;
     }
-    if (currentNames.has(item.name_key)) { seenByName++; continue; }
+    if ([...nameVariants].some(name => currentNames.has(name))) {
+      seenByName++; continue;
+    }
     if (previousAttempts.has(item.inn)) { recentlyAttempted++; continue; }
     gaps.push(item);
   }
