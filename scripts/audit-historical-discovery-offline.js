@@ -4,6 +4,7 @@
 // Output is an audit artifact, NEVER an automatic company import.
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { buildHistoricalCoverageLedger, buildHistoricalRecallPlan } from "../src/historicalRecall.js";
 
@@ -132,7 +133,7 @@ async function main() {
   }));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) ===
-    path.resolve(new URL(import.meta.url).pathname)) {
+    path.resolve(fileURLToPath(import.meta.url))) {
   main().catch(error => {
     console.error("[HISTORICAL_OFFLINE_AUDIT_ERROR] " +
       (error?.message || String(error)));
