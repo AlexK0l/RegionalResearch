@@ -37,6 +37,15 @@ function validSourceUrl(value) {
   } catch { return false; }
 }
 
+// A source URL can itself embed an old INN (registry/1234567890).
+// Never leak that identity into a new search prompt via a URL.
+function safeSearchHintUrl(value) {
+  if (!validSourceUrl(value)) return false;
+  let decoded = txt(value);
+  try { decoded = decodeURIComponent(decoded); } catch { /* keep raw */ }
+  return !/\d{10}(?:\d{2})?/.test(decoded);
+}
+
 const commercialRows = doc => SECTIONS.flatMap(section => arr(doc?.[section]));
 const allCurrentRows = doc => Array.isArray(doc)
   ? doc.map(item => item?.data || item)
@@ -58,12 +67,15 @@ function historyRows(history) {
       const key = normalizedName(name);
       const proof = row?.__evidence?.identity_verification;
       const urls = [...new Set(arr(proof?.source_urls).filter(validSourceUrl))];
+      const hintUrls = [...new Set([
+        ...arr(row?.__evidence?.source_urls), ...urls
+      ].filter(safeSearchHintUrl))];
       if (!inn || !key || proof?.inn !== inn || !urls.length) continue;
       if (commercialEligibility(row).blocked) continue;
       result.push({
         inn, name, name_key: key,
         city: txt(row?.["Город/район"]).slice(0, 150),
-        source_hint: urls[0],
+        source_hint: hintUrls[0] || "",
         grade: previousGrade(row),
         source_job_id: txt(run.id),
         source_updated_at: txt(run.updated_at)
@@ -151,7 +163,7 @@ export function historicalRecallPrompt(region, candidates) {
   const hints = arr(candidates).map(item => ({
     organization: txt(item.name).slice(0, 160),
     region_hint: txt(item.city).slice(0, 120),
-    historical_url_hint: validSourceUrl(item.source_hint) ? item.source_hint : ""
+    historical_url_hint: safeSearchHintUrl(item.source_hint) ? item.source_hint : ""
   }));
   return [
     "ИСТОРИЧЕСКИЕ ПОДСКАЗКИ, НЕ ДОКАЗАТЕЛЬСТВА.",
