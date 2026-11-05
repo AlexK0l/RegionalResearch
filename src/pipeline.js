@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
+import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
@@ -8365,13 +8366,97 @@ ${JSON.stringify(gaps)}
       }
     }
   );
+  // In the 05-Nov paid run 92 companies had no attributable batch response
+  // after exhausting 30 individual fallbacks, despite 33 contacts web slots
+  // remaining. Retry a small high-priority sample in groups of three, never
+  // entries with a completed source-backed "not_found" result.
+  const omissionLimits = contactOmissionRecheckLimits();
+  const omissionPlan = planContactOmissionRechecks(
+    googleCompanies, contactUnsearched, contactCompleted,
+    checkpointRowId, contactResearchPriority, omissionLimits
+  );
+  let omissionRecheckModelCalls = 0;
+  let omissionRecheckResearched = 0;
+  let omissionRecheckBudgetStopped = false;
+  console.log("[CONTACT_OMISSION_RECHECK_PLAN] " + JSON.stringify({
+    eligible: omissionPlan.eligible, selected: omissionPlan.selected,
+    batches: omissionPlan.groups.length,
+    deferred_without_recheck: omissionPlan.deferredWithoutRecheck
+  }));
+  for (const batch of omissionPlan.groups) {
+    await assertNotCancelled();
+    const budget = client.__webBudget;
+    const availableContacts = Number(budget.limits.contacts) -
+      Number(budget.used.contacts || 0) -
+      Number(budget.reserved?.contacts || 0);
+    const availableTotal = Number(budget.limits.total) -
+      Number(budget.used.total || 0) -
+      Number(budget.reserved?.total || 0);
+    if (availableContacts <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
+        omissionLimits.reservedWebForPhoneConflicts ||
+        availableTotal <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
+        omissionLimits.reservedWebForPhoneConflicts ||
+        costEnvLimitUsd() - estimatedApiCostUsd(client) < 0.5 ||
+        deadlineRemaining(stage11DeadlineAt) <= 12000) {
+      console.log("[CONTACT_OMISSION_RECHECK_DEFER] " + JSON.stringify({
+        reason: "protect_residual_phone_and_cost_budget",
+        available_contacts: availableContacts, available_total: availableTotal
+      }));
+      break;
+    }
+    try {
+      omissionRecheckModelCalls++;
+      const items = await searchContactBatchWithWeb({
+        client, rows: batch, region, deadlineAt: stage11DeadlineAt
+      });
+      let researched = 0;
+      for (const item of items) {
+        if (!item.result || !contactUnsearched.has(item.id)) continue;
+        const row = batch.find(candidate => checkpointRowId(candidate) === item.id);
+        if (!row) continue;
+        recordContactAttempt(item.id, true, contactCompleted, contactUnsearched);
+        primaryResults.set(item.id, {
+          ...item.result,
+          __needPhone: !hasConfirmedPhone(row),
+          __needLeader: !hasConfirmedLeader(row)
+        });
+        if (item.result.status === "ok") webOk++;
+        else webNotFound++;
+        const evidence = row.__evidence || {};
+        if (item.result.source_urls?.length) {
+          row.__evidence = { ...evidence,
+            source_urls: [...new Set([...(evidence.source_urls || []),
+              ...item.result.source_urls])] };
+        }
+        researched++;
+        contactBatchMatched++;
+      }
+      omissionRecheckResearched += researched;
+      console.log("[CONTACT_OMISSION_RECHECK_BATCH] " + JSON.stringify({
+        requested: batch.length, researched,
+        remaining_unsearched: contactUnsearched.size
+      }));
+    } catch (error) {
+      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      omissionRecheckBudgetStopped = isWebBudgetStop(error);
+      console.warn("[CONTACT_OMISSION_RECHECK_ERROR] " + JSON.stringify({
+        error: error?.message || String(error),
+        budget_stop: omissionRecheckBudgetStopped
+      }));
+      if (omissionRecheckBudgetStopped) break;
+    }
+    await contactCheckpointBatcher.request({ force: true });
+  }
   console.log("[CONTACT_BATCH_EFFICIENCY] " + JSON.stringify({
     batch_model_calls: contactBatchCalls,
     batch_matched_companies: contactBatchMatched,
     individual_fallbacks: contactFallbackCalls,
+    omission_recheck_batches: omissionRecheckModelCalls,
+    omission_recheck_researched: omissionRecheckResearched,
     phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
     companies_deferred: contactUnsearched.size,
-    budget_deferred: contactBudgetDeferred
+    budget_deferred: contactBudgetDeferred,
+    recheck_budget_stopped: omissionRecheckBudgetStopped
   }));
 
   // Build a global claim map BEFORE accepting newly found phones. This catches
