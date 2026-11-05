@@ -379,7 +379,21 @@ export function rankSafeAEvidence(record, note, rule) {
   if (/(?:заключен.{0,30}договор|договор.{0,25}лизинг|акт выполненн|в собственности|на балансе|лизингополучател)/.test(text)) score += 16;
   if (/(?:приобрел|купил|закупил|приобретен|предмет.{0,20}финансов.{0,15}аренды)/.test(text)) score += 13;
   if (/(?:vin|госномер|\b(?:kogel|schmitz|krone|wielton|grunwald)\b|тонар\s*\d|полуприцеп.{0,25}\d{2,})/.test(text)) score += 8;
-  if (/https?:\/\//.test(String(note || ""))) score += 7;
+  // Prefer an attributable A claim over a stronger-sounding unsourced one.
+  // The URL must appear in the SAME note; a company-wide URL list is not
+  // evidence for the chosen statement. This is not live source verification.
+  const noteUrls = [...new Set((String(note || "")
+    .match(/https?:\/\/[^\s)<>\]]+/gi) || [])
+    .map(url => url.replace(/[.,;!?]+$/g, "")))];
+  if (noteUrls.length === 1) {
+    try {
+      const source = new URL(noteUrls[0]);
+      if (["https:", "http:"].includes(source.protocol) &&
+          source.hostname.includes(".") && !source.username && !source.password) {
+        score += 25;
+      }
+    } catch { /* Invalid URL contributes no evidence score. */ }
+  }
   const organization = normalized(record?.row?.["Организация"] || "");
   if (organization && normalized(note).includes(organization)) score += 9;
   // Editorial summaries and predictions are weaker than attributable events.
