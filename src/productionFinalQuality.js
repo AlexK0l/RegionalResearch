@@ -130,6 +130,21 @@ export function isGenericDiscoverySource(raw) {
   } catch { return false; }
 }
 
+// The first CRM column has a comment, not an extra source column. Retain the
+// five existing CRM lines and show whether the SELECTED A claim has its OWN
+// source. A company-wide URL is never inserted as claim-level evidence.
+function annotateAClaimSourceInComment(row, attribution) {
+  const original = string(row?.__comment);
+  const kept = original.split(/\r?\n/)
+    .filter(line => !/^источник основания a\s*:/i.test(line.trim()))
+    .join("\n").trim();
+  const selected = string(attribution?.source_url);
+  const line = selected
+    ? "Источник основания A: " + selected + " (привязка по заметке; источник повторно не проверен)"
+    : "Источник основания A: не установлен для выбранного утверждения (проверить вручную)";
+  row.__comment = [kept, line].filter(Boolean).join("\n");
+}
+
 function rowId(row) { return string(row?.__canonical_id); }
 function gradeFromRow(row) {
   const grade = string(row?.__final_grade).toUpperCase();
@@ -396,6 +411,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
       row.__evidence ||= {};
       const attribution = selectedAEvidenceSource(row, decision.aEvidence);
       row.__evidence.selected_a_provenance = attribution;
+      annotateAClaimSourceInComment(row, attribution);
       if (attribution.source_url) selectedASourceLinked++;
       else {
         if (attribution.status === "ambiguous_claim_sources")
