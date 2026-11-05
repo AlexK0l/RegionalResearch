@@ -65,6 +65,20 @@ export function normalizeRussianPhone(value) {
   if (v.length === 10) v = "7" + v;
   return v.length === 11 && v.startsWith("7") ? v : "";
 }
+
+// Contact calls are scarce when the global cost cap is near exhaustion.
+// Within each A/B/C grade, prioritize missing PHONE ahead of merely missing
+// leadership. Do not drop rows: ordering only, not automatic verification.
+export function contactResearchPriority(row) {
+  const grade = String(row?.__final_grade || row?.["Основание"] || "")
+    .trim().toUpperCase().slice(0, 1);
+  const gradeWeight = grade === "A" ? 3 : grade === "B" ? 2 : 1;
+  const phoneKnown = String(row?.["Телефон"] || "").split(";")
+    .some(entry => Boolean(normalizeRussianPhone(entry)));
+  const leaderKnown = Boolean(String(row?.["Руководитель / ЛПР"] || "").trim());
+  return gradeWeight * 10 + (phoneKnown ? 0 : 2) + (leaderKnown ? 0 : 1);
+}
+
 /**
  * Batch contact items are accepted ONLY if exactly tied to the requested
  * row ID and confirmed INN. No source => no harvested personal fields.
