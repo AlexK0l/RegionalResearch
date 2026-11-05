@@ -179,7 +179,9 @@ export async function loadRecentCompletedResearch(region, limit = 3) {
     if (!checkpoint?.final_result) return [];
     return [{
       id: String(row.id), updated_at: String(row.updated_at),
-      final_result: checkpoint.final_result
+      final_result: checkpoint.final_result,
+      recall_attempted_inns: Array.isArray(checkpoint.historical_recall?.attempted_inns)
+        ? checkpoint.historical_recall.attempted_inns : []
     }];
   });
 }
