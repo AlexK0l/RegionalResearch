@@ -189,9 +189,12 @@ export function filterHistoricalRecallFindings(result, candidates) {
         commercialEligibility(row).blocked) { rejected++; continue; }
     acceptedNames.add(key);
     accepted[sheet].push({
-      ...row,
+      "Организация": txt(row["Организация"]),
       "ИНН": "", // Prior legal identity cannot be laundered through a search prompt.
-      __evidence: { ...evidence, source_urls: urls, notes },
+      "Город/район": txt(row["Город/район"]),
+      "Техника/сегмент": txt(row["Техника/сегмент"]),
+      "Основание": txt(row["Основание"]),
+      __evidence: { source_urls: urls, notes },
       __historical_recall: {
         version: 1,
         prior_job_id: hint.source_job_id,
