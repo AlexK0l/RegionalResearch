@@ -317,3 +317,26 @@ test("documented signed lease and handover of a truck semitrailer remains A",()=
   assert.equal(d.grade,"A");
   assert.equal(d.aRule,"leasing_concrete_contract");
 });
+
+test("A chooses a same-note cited own trailer fleet over a competing unsourced procurement", () => {
+  const unsourced = "Компания опубликовала закупку полуприцепов для перевозки груза.";
+  const cited = "Компания эксплуатирует собственный парк полуприцепов Schmitz для перевозки грузов. ([Источник](https://fleet.example.org/vehicles))";
+  const source = rec("direct_buyers", "ООО «Два основания»", unsourced,
+    "Собственные полуприцепы и закупка").row;
+  source.__evidence.notes.push(cited);
+  source.__evidence.source_urls = ["https://fleet.example.org/vehicles"];
+  const decision = deterministicQualificationDecision({ sheet: "direct_buyers", row: source });
+  assert.equal(decision.grade, "A");
+  assert.equal(decision.aEvidence, cited);
+  assert.equal(decision.aRule, "direct_ownership_or_fleet");
+});
+
+test("an unrelated company-wide URL does not change selection of a source note", () => {
+  const purchase = "Компания приобрела два полуприцепа для перевозок.";
+  const source = rec("direct_buyers", "ООО «Без привязанной ссылки»", purchase).row;
+  source.__evidence.source_urls = ["https://unrelated.example.org/fleet"];
+  const decision = deterministicQualificationDecision({ sheet: "direct_buyers", row: source });
+  assert.equal(decision.grade, "A");
+  assert.equal(decision.aEvidence, purchase);
+  assert.equal(decision.aEvidence.includes("https://unrelated.example.org/fleet"), false);
+});
