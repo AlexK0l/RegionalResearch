@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits,
-  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone
+  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone, contactResearchPriority
 } from "../src/researchCostPolicy.js";
 import { identitySnippetFact, reuseIdentityObservedFacts } from "../src/identityFactReuse.js";
 
@@ -127,4 +127,25 @@ test("different INN, source URL or missing excerpt never supplies identity-sourc
   };
   assert.equal(reuseIdentityObservedFacts(same, altered).length, 0);
   assert.equal(identitySnippetFact(r, r.observed_facts[0], same)?.field, "Телефон");
+});
+
+test("contact research prioritizes missing phones within a sales grade", () => {
+  const grade = "__final_grade";
+  const phoneMissing = { [grade]: "A", "Телефон": "", "Руководитель / ЛПР": "И.И. Иванов" };
+  const leaderMissing = { [grade]: "A", "Телефон": "79001234567", "Руководитель / ЛПР": "" };
+  assert.ok(contactResearchPriority(phoneMissing) > contactResearchPriority(leaderMissing));
+  assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "B" }) <
+    contactResearchPriority(leaderMissing), "A remains ahead of B");
+  assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "C" }) <
+    contactResearchPriority({ ...phoneMissing, [grade]: "B" }));
+  assert.ok(contactResearchPriority({ ...phoneMissing, "Телефон": "не найден" }) >
+    contactResearchPriority(leaderMissing));
+});
+
+test("contact priority never treats invalid telephone as a completed phone", () => {
+  const a = { __final_grade: "A", "Телефон": "8999", "Руководитель / ЛПР": "Директор" };
+  const b = { ...a, "Телефон": "8 (900) 123-45-67" };
+  assert.ok(contactResearchPriority(a) > contactResearchPriority(b));
+  const c = { ...a, "Телефон": "не указан; +7 900 123-45-67" };
+  assert.equal(contactResearchPriority(c), contactResearchPriority(b));
 });
