@@ -197,6 +197,9 @@ test("selected A note cites only its OWN inline URL, never a company-wide first 
  assert.equal(row.__evidence.selected_a_provenance.source_url,"https://court.example/contract1");
  assert.equal(row.__evidence.selected_a_provenance.method,"exact_same_evidence_note");
  assert.equal(row.__evidence.selected_a_provenance.sources_rechecked,false);
+ assert.match(row.__comment,/Источник основания A: https:\/\/court\.example\/contract1/);
+ assert.doesNotMatch(row.__comment,/Источник основания A: https:\/\/seller\.example/);
+ assert.match(row.__comment,/Original first-column CRM comment/);
 });
 
 test("unattributed A remains A with a visible soft-warning, NEVER borrow a company URL",()=>{
@@ -212,6 +215,8 @@ test("unattributed A remains A with a visible soft-warning, NEVER borrow a compa
  assert.equal(report.a_claim_attribution_review.length,1);
  assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.source_url,"");
  assert.equal(result.direct_buyers[0].__evidence.selected_a_provenance.status,"missing_claim_source");
+ assert.match(result.direct_buyers[0].__comment,/Источник основания A: не установлен/);
+ assert.doesNotMatch(result.direct_buyers[0].__comment,/Источник основания A: https/);
 });
 
 test("two different URLs in the SAME positive note are flagged ambiguous, not assigned arbitrarily",()=>{
@@ -549,4 +554,16 @@ test("positive ownership A survives only a missing-specific-model caveat", () =>
   });
   assert.equal(result.direct_buyers.length, 1);
   assert.equal(result.qualification_review.length, 0);
+});
+
+test("A first-column citation annotation is stable across repeated final quality checks", () => {
+  const input = empty();
+  input.direct_buyers.push(make("k-a-comment", "ООО Тягач", [
+    noteA + " ([Источник](https://court.example/contract2))"
+  ], { grade: "A" }));
+  const first = run(input).result;
+  const once = first.direct_buyers[0].__comment;
+  const second = run(first).result;
+  assert.equal(second.direct_buyers[0].__comment, once);
+  assert.equal(once.split("Источник основания A:").length, 2);
 });
