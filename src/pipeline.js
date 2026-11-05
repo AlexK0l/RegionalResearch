@@ -5,7 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
-import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome } from "./historicalRecall.js";
+import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
@@ -71,6 +71,10 @@ const RESEARCH_GEO_GROUPS = Math.max(
 );
 const HISTORICAL_RECALL_ENABLED =
   String(process.env.OPENAI_HISTORICAL_RECALL_ENABLED ?? "true").toLowerCase() !== "false";
+// Read completed local snapshots beyond the latest three so verified leads
+// from earlier studies remain visible. Only 3x8 are offered new paid searches.
+const HISTORICAL_RECALL_HISTORY_RUNS = Math.max(3, Math.min(20,
+  Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_HISTORY_RUNS) || 12)));
 const HISTORICAL_RECALL_MAX_BATCHES = Math.max(0,
   Math.min(5, Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_MAX_BATCHES ?? 3))));
 const HISTORICAL_RECALL_BATCH_SIZE = Math.max(2,
@@ -6971,7 +6975,7 @@ ${JSON.stringify(compactCourtArchive)}
   let historicalRuns = [];
   if (!diagnosticMode && !replayMode && executionMode === "full") {
     try {
-      historicalRuns = await loadRecentCompletedResearch(region, 3);
+      historicalRuns = await loadRecentCompletedResearch(region, HISTORICAL_RECALL_HISTORY_RUNS);
     } catch (error) {
       console.warn("[HISTORICAL_RECALL_HISTORY_ERROR] " + JSON.stringify({
         region, error: error?.message || String(error)
@@ -6999,6 +7003,8 @@ ${JSON.stringify(compactCourtArchive)}
         ambiguity_holds: plan.ambiguous_history + plan.current_name_inn_conflicts,
         recently_attempted: plan.recently_attempted_in_previous_runs,
         eligible_missing: plan.total_missing_candidates,
+        eligible_from_older_history: plan.older_history_eligible,
+        selected_from_older_history: plan.older_history_selected,
         selected_for_search: plan.candidates.length,
         deferred_without_research: plan.deferred_candidates
       }));
@@ -8785,8 +8791,9 @@ ${JSON.stringify(gaps)}
     historicalRuns.map(run => ({ ...run, recall_attempted_inns: [] })),
     finalResult, { maxCandidates: 60 }
   );
+  const historicalLedger = buildHistoricalCoverageLedger(historicalRuns, finalResult);
   const historicalCoverage = {
-    version: 1,
+    version: 2,
     source_run_count: historicalCoveragePlan.prior_runs.length,
     prior_verified_inn_unique: historicalCoveragePlan.verified_history_unique,
     present_in_current_or_queues_by_inn: historicalCoveragePlan.already_seen_by_inn,
@@ -8794,6 +8801,9 @@ ${JSON.stringify(gaps)}
     ambiguous_historical_identity: historicalCoveragePlan.ambiguous_history,
     same_name_different_inn: historicalCoveragePlan.current_name_inn_conflicts,
     not_found_by_current_name_or_inn: historicalCoveragePlan.total_missing_candidates,
+    // ALL source-backed older records are retained in a read-only ledger,
+    // not only a truncated 60-item sample. No historical row enters CRM.
+    ledger: historicalLedger,
     sample_only_not_automatically_promoted: historicalCoveragePlan.candidates.map(item => ({
       organization: item.name, prior_inn: item.inn,
       grade_is_old_priority_only: item.grade,
@@ -8817,6 +8827,9 @@ ${JSON.stringify(gaps)}
   }));
   console.log("[HISTORICAL_COVERAGE_FINAL] " + JSON.stringify({
     ...historicalCoverage,
+    // The complete ledger is in the checkpoint/quality report; do not emit
+    // thousands of historical company records into an already large log.
+    ledger: historicalLedger.counts,
     sample_only_not_automatically_promoted:
       historicalCoverage.sample_only_not_automatically_promoted.length,
     historical_recall_accepted: Number(historicalRecall?.accepted || 0),
