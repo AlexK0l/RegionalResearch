@@ -30,6 +30,10 @@ const VERIFIED_EXCLUSIONS = [
 const GOVERNMENT = [
   /(?:^| )администраци/, /(?:^| )министерств/, /(?:^| )департамент/,
   /(?:^| )комитет(?: |$)/, /(?:^| )правительств/,
+  // Regional/federal authorities often use "Главное управление" without
+  // the words ministry, administration or government. Keep the pattern
+  // narrow enough not to block ordinary commercial "управляющие" firms.
+  /(?:^| )главное управление (?:[а-я]+ области|[а-я]+ края|[а-я]+ республики|мчс|мвд|фсб|росгварди|федеральн)/,
   /совет.{0,20}депутат/, /городск.{0,20}дум/,
   /муниципальн.{0,30}(совет|собрани)/
 ];
