@@ -309,3 +309,40 @@ test("bad identity provenance does not enter full history ledger", () => {
   assert.equal(ledger.entries[0].historical_inn,innB);
   assert.equal(ledger.entries[0].automatically_promoted_to_crm,false);
 });
+
+test("long-form regional budget education institutions are not commercial history candidates", () => {
+  const budget = row("Смоленское областное государственное бюджетное профессиональное образовательное учреждение «Верхнеднепровский технологический техникум»", innA);
+  const plan = buildHistoricalRecallPlan([run("old-budget", [budget])], []);
+  const ledger = buildHistoricalCoverageLedger([run("old-budget", [budget])], []);
+  assert.equal(plan.verified_history_unique, 0);
+  assert.equal(ledger.counts.historic_source_linked_inn, 0);
+});
+
+test("historical identity URLs shared by many INNs are flagged, not treated as independently verified", () => {
+  const shared = "https://office.example.org/companies/multiple-firms.pdf";
+  const a = row("ООО «Первый перевозчик»", innA);
+  const b = row("ООО «Второй перевозчик»", innB);
+  for (const item of [a, b])
+    item.__evidence.identity_verification.source_urls = [shared];
+  const ledger = buildHistoricalCoverageLedger([run("shared-url", [a, b])], []);
+  assert.equal(ledger.counts.historical_identity_source_reused_across_inns, 2);
+  assert.equal(ledger.counts.historical_identity_source_contains_other_valid_inn, 0);
+  assert.ok(ledger.entries.every(e => e.historical_identity_source_reused_by_inns === 2));
+  assert.ok(ledger.entries.every(e => e.historical_identity_url_needs_manual_review));
+  assert.ok(ledger.entries.every(e => e.historical_source_contents_rechecked === false));
+  assert.equal(ledger.auto_promoted_records, 0);
+});
+
+test("historical URL that names another checksum-valid INN is a manual conflict, not company proof", () => {
+  const a = row("ООО «СОТРАНС ЛИЗИНГ»", "4716045183");
+  a.__evidence.identity_verification.source_urls =
+    ["https://e-ecolog.ru/entity/7802403007/links"];
+  const ledger = buildHistoricalCoverageLedger([run("linked-other-inn",[a])],[]);
+  assert.equal(ledger.entries.length, 1);
+  assert.equal(ledger.counts.historical_identity_source_contains_other_valid_inn, 1);
+  assert.equal(ledger.entries[0].historical_identity_url_contains_own_inn, false);
+  assert.deepEqual(ledger.entries[0].historical_identity_url_contains_other_valid_inns,
+    ["7802403007"]);
+  assert.equal(ledger.entries[0].historical_identity_url_needs_manual_review, true);
+  assert.equal(ledger.entries[0].automatically_promoted_to_crm, false);
+});
