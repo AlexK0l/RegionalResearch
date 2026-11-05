@@ -54,7 +54,7 @@ export function auditCompletedSnapshots(rows, region, maxOlderRuns = 20) {
   const plan = buildHistoricalRecallPlan(history, current.final_result,
     {maxCandidates: 24});
   return {
-    version: 1,
+    version: 2,
     region,
     current_job_id: current.id,
     current_updated_at: current.updated_at,
@@ -79,7 +79,10 @@ export function auditCompletedSnapshots(rows, region, maxOlderRuns = 20) {
   };
 }
 
-export function outstandingCsv(report) {
+export function outstandingCsv(report, mode = "unresolved") {
+  if (!["unresolved", "not_in_active"].includes(mode))
+    throw new Error("Invalid historical CSV filter: " + mode);
+
   const columns = [
     ["historical_inn", "Исторический ИНН"],
     ["historical_name", "Наименование"],
@@ -87,10 +90,15 @@ export function outstandingCsv(report) {
     ["previous_grade_priority_only", "Старая категория (только ориентир)"],
     ["observed_in_completed_runs", "В скольких завершённых исследованиях"],
     ["latest_historical_job_id", "Исторический checkpoint"],
-    ["historical_identity_source_audit_only", "Исторический URL для проверки"]
+    ["historical_identity_source_audit_only", "Исторический URL для проверки"],
+    ["historical_identity_source_reused_by_inns", "Общий URL указан у ИНН"],
+    ["historical_identity_url_contains_other_valid_inns", "Другие ИНН в URL (проверить)"]
   ];
   const rows = report.entries.filter(entry =>
-    !["present_active_by_inn"].includes(entry.status));
+    mode === "not_in_active"
+      ? entry.status !== "present_active_by_inn"
+      : !["present_active_by_inn", "present_review_by_inn",
+          "present_excluded_by_inn", "present_unqualified_by_inn"].includes(entry.status));
   return "\uFEFF" + columns.map(item => safeCsv(item[1])).join(",") + "\r\n" +
     rows.map(row => columns.map(item => safeCsv(row[item[0]])).join(",")).join("\r\n") +
     (rows.length ? "\r\n" : "");
@@ -120,16 +128,25 @@ async function main() {
   const out = path.resolve(flags.out || path.join("exports",
     "historical_coverage_" + slug + "_" + timestamp + ".json"));
   const csv = out.replace(/\.json$/i, "") + "_unresolved.csv";
+  const nonactiveCsv = out.replace(/\.json$/i, "") + "_not_in_active.csv";
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, JSON.stringify(report, null, 2) + "\n", {flag:"wx"});
-  fs.writeFileSync(csv, outstandingCsv(report), {flag:"wx"});
+  fs.writeFileSync(csv, outstandingCsv(report, "unresolved"), {flag:"wx"});
+  fs.writeFileSync(nonactiveCsv, outstandingCsv(report, "not_in_active"),
+    {flag:"wx"});
   console.log("[HISTORICAL_OFFLINE_AUDIT] " + JSON.stringify({
     region, current_job_id: report.current_job_id,
     historical_runs: report.history_runs_consulted.length,
     historic_source_linked_inn: report.counts.historic_source_linked_inn,
     missing_or_conflicting: report.missing_or_conflicting,
+    nonactive_including_review_excluded: report.entries.filter(e =>
+      e.status !== "present_active_by_inn").length,
+    historical_identity_url_reuse_flags:
+      report.counts.historical_identity_source_reused_across_inns,
+    historical_identity_url_other_inn_flags:
+      report.counts.historical_identity_source_contains_other_valid_inn,
     archived_records_added_to_crm: 0, web_search_calls: 0,
-    json: out, csv
+    json: out, csv, not_in_active_csv: nonactiveCsv
   }));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) ===
