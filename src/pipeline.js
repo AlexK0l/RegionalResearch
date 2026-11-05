@@ -13,7 +13,7 @@ import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalIn
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
-import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority } from "./researchCostPolicy.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -4520,16 +4520,30 @@ function reserveWebBudgetBeforeCall(client, diagnosticLabel, requestedTools = 2)
   // Reserve that empirically observed overcall BEFORE concurrent requests,
   // rather than discovering an overrun after the global cap is exhausted.
   const overcallBuffer = budget ? 1 : 0;
-  const cashAfterBuffer = cashAvailable - overcallBuffer;
-  const totalAfterBuffer = limitAvailable("total") - overcallBuffer;
+  // A recent paid run reached the shared cap before contacts were complete.
+  // Keep a small reserve from OPTIONAL enrichment only; mandatory identity
+  // and broad discovery are unaffected. This reserve is within existing caps.
+  const optionalEnrichment = budget?.kind === "full" && scope === "enrichment";
+  const contactHold = optionalEnrichment ? protectedContactAllowance() :
+    { webCalls: 0, estimatedUsd: 0 };
+  const remainingContactPhase = Math.max(0, limitAvailable("contacts"));
+  const protectedWebCalls = Math.min(contactHold.webCalls, remainingContactPhase);
+  const protectedCashSlots = Math.ceil(contactHold.estimatedUsd / price);
+  const hardCashAfterBuffer = cashAvailable - overcallBuffer;
+  const hardTotalAfterBuffer = limitAvailable("total") - overcallBuffer;
   const scopeAfterBuffer = limitAvailable(scope) - overcallBuffer;
+  const cashAfterBuffer = hardCashAfterBuffer - protectedCashSlots;
+  const totalAfterBuffer = hardTotalAfterBuffer - protectedWebCalls;
   const free = Math.min(requested, cashAfterBuffer,
     totalAfterBuffer, scopeAfterBuffer);
   if (free < 1) {
-    const exhausted = cashAfterBuffer < 1 ? "estimated_cost_usd" :
-      totalAfterBuffer < 1 ? "total" : scope;
+    const exhausted = hardCashAfterBuffer < 1 ? "estimated_cost_usd" :
+      hardTotalAfterBuffer < 1 ? "total" :
+      scopeAfterBuffer < 1 ? scope : "contact_reservation";
     console.error("[RESEARCH_WEB_BUDGET_DEFER] " + JSON.stringify({
       scope, reason: exhausted, cost_usd: spent, cost_cap_usd: limitUsd,
+      contact_reserved_web: protectedWebCalls,
+      contact_reserved_estimated_usd: contactHold.estimatedUsd,
       used: budget?.used || {}, reserved: budget?.reserved || {}
     }));
     throw new WebBudgetStopError(
