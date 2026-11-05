@@ -5,7 +5,7 @@ import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unreso
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
-import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings } from "./historicalRecall.js";
+import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
@@ -7045,6 +7045,14 @@ ${JSON.stringify(compactCourtArchive)}
         if (!parts[8]) parts[8] = emptyResearchResult();
         appendResearchResult(parts[8], findings.result, "historical-recall");
         historicalRecall.accepted += findings.accepted_count;
+        // Record only fresh candidate names; this is a trace, NOT proof of
+        // legal identity or permission to copy the old company's INN.
+        historicalRecall.accepted_candidates ||= [];
+        historicalRecall.accepted_candidates.push(
+          ...allResearchRows(findings.result).map(row => ({
+            name: String(row["Организация"] || "").slice(0, 180)
+          }))
+        );
         historicalRecall.rejected += findings.rejected_count;
         historicalRecall.attempted_inns.push(...batch.map(item => item.inn));
         historicalRecall.next_batch = batchIndex + 1;
@@ -8792,7 +8800,21 @@ ${JSON.stringify(gaps)}
       source_job_id: item.source_job_id
     }))
   };
+  // Model-found historical hints may disappear during alias merge, or
+  // coincide with another legal entity. Report name matches and INN conflicts
+  // without claiming that history recovered a verified legal identity.
+  const historicalTrace = auditHistoricalRecallOutcome(historicalRecall, finalResult);
+  historicalCoverage.historical_recall_trace = historicalTrace;
   finalQuality.report.historical_coverage = historicalCoverage;
+  console.log("[HISTORICAL_RECALL_FINAL_TRACE] " + JSON.stringify({
+    accepted_candidates: historicalTrace.accepted_discovery_candidates,
+    active_name_matches: historicalTrace.active_name_matches,
+    review_name_matches: historicalTrace.review_name_matches,
+    excluded_name_matches: historicalTrace.excluded_name_matches,
+    unmatched_by_name: historicalTrace.unmatched_by_name,
+    possible_inn_conflicts: historicalTrace.possible_inn_conflicts,
+    identity_verified_by_name: false
+  }));
   console.log("[HISTORICAL_COVERAGE_FINAL] " + JSON.stringify({
     ...historicalCoverage,
     sample_only_not_automatically_promoted:
