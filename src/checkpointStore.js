@@ -173,7 +173,7 @@ export async function loadRecentCompletedResearch(region, limit = 3) {
     "SELECT id, updated_at, payload FROM research_checkpoints " +
     "WHERE region = ? AND mode = 'full' AND status = 'completed' " +
     "ORDER BY updated_at DESC LIMIT ?"
-  ).all(value, Math.max(1, Math.min(5, Math.floor(Number(limit) || 3))));
+  ).all(value, Math.max(1, Math.min(20, Math.floor(Number(limit) || 3))));
   return rows.flatMap(row => {
     const checkpoint = rowToCheckpoint(row);
     if (!checkpoint?.final_result) return [];
