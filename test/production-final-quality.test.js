@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { finalizeProductionResearch } from "../src/productionFinalQuality.js";
+import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference } from "../src/productionFinalQuality.js";
 import { deterministicQualificationDecision, actionableUnqualifiedLead } from "../src/pipeline.js";
 import { buildWorkbookBuffer } from "../src/xlsx.js";
 
@@ -566,4 +566,45 @@ test("A first-column citation annotation is stable across repeated final quality
   const second = run(first).result;
   assert.equal(second.direct_buyers[0].__comment, once);
   assert.equal(once.split("Источник основания A:").length, 2);
+});
+
+test("05-Nov live direct-buyers cannot retain A when selected statement only infers need", () => {
+  const doubtful = [
+    "Нет доказательства, что «Ф. Транзит» владеет или эксплуатирует собственные полуприцепы.",
+    "Источник подтверждает адрес промплощадки в Смоленске, но не парк полуприцепов.",
+    "Негабаритные перевозки требуют специализированной прицепной техники и тягачей.",
+    "Дорожное строительство предполагает регулярную перевозку щебня, песка, ПГС, грунта, асфальтобетонных и иных строительных материалов, поэтому седельные автопоезда и бортовые полуприцепы являются физически релевантной техникой.",
+    "Основания: B — одновременно подтверждены целевой навалочный груз и крупная дорожная поставка, для которой рациональны самосвальные полуприцепы и регулярное привлечение тягачей.",
+    "C — публичная карточка содержит указание на автопарк компании, но без раскрытия конкретных моделей прицепной техники.",
+    "Есть подтверждённая потребность в запасных частях для прицепной техники и узлов, характерных для регулярной эксплуатации.",
+    "Связь с веткой: контрактная перевозка тяжёлого навалочного груза из Вязьмы, непосредственно соответствующая самосвальным полуприцепам."
+  ];
+  for (const [i,claim] of doubtful.entries()) {
+    assert.equal(selectedADirectBuyerIsOnlyInference(claim),true,claim);
+    const input = empty();
+    input.direct_buyers.push(make("k-doubt-"+i,"ООО «Проверяемый покупатель»",[claim],{
+      grade:"A",inn:"6732114166",phone:"79001234567"
+    }));
+    const {result,report}=finalizeProductionResearch(input,{
+      qualify:()=>({decision:"include",grade:"A",aEvidence:claim,
+        aRule:"direct_ownership_or_fleet",reason:"injected live false-A"}),
+      isActionable:()=>true
+    });
+    assert.equal(result.direct_buyers.length,0,claim);
+    assert.equal(result.qualification_review.length,1,claim);
+    assert.equal(result.qualification_review[0]["ИНН"],"6732114166");
+    assert.equal(result.qualification_review[0]["Телефон"],"79001234567");
+    assert.ok(report.flags[0].reasons.includes(
+      "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"),claim);
+  }
+});
+
+test("a documented trailer purchase or owned fleet stays A despite missing specific model", () => {
+  const real = [
+    "ООО «Перевозчик» владеет собственным парком полуприцепов Schmitz, конкретная модель не указана.",
+    "Компания приобрела полуприцеп Krone по договору на обновление парка.",
+    "Судебный акт подтверждает договор лизинга конкретного полуприцепа Тонар."
+  ];
+  for (const claim of real)
+    assert.equal(selectedADirectBuyerIsOnlyInference(claim),false,claim);
 });
