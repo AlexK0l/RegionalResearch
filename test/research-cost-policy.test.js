@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits,
-  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone, contactResearchPriority
+  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone, contactResearchPriority, protectedContactAllowance
 } from "../src/researchCostPolicy.js";
 import { identitySnippetFact, reuseIdentityObservedFacts } from "../src/identityFactReuse.js";
 
@@ -148,4 +148,18 @@ test("contact priority never treats invalid telephone as a completed phone", () 
   assert.ok(contactResearchPriority(a) > contactResearchPriority(b));
   const c = { ...a, "Телефон": "не указан; +7 900 123-45-67" };
   assert.equal(contactResearchPriority(c), contactResearchPriority(b));
+});
+
+test("protected contacts share is conditional and does not enlarge the global cap", () => {
+  assert.deepEqual(protectedContactAllowance({}),
+    { webCalls: 75, estimatedUsd: 1.2 });
+  assert.deepEqual(protectedContactAllowance({
+    OPENAI_CONTACTS_PROTECTED_WEB_CALLS: "0",
+    OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD: "0"
+  }), { webCalls: 0, estimatedUsd: 0 });
+  assert.deepEqual(protectedContactAllowance({
+    OPENAI_CONTACTS_PROTECTED_WEB_CALLS: "500",
+    OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD: "10"
+  }), { webCalls: 270, estimatedUsd: 5 });
+  assert.equal(fullWebLimits({}).total, 1850);
 });
