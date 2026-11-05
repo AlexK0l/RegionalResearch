@@ -13,7 +13,7 @@ import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalIn
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
-import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone } from "./researchCostPolicy.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -8202,7 +8202,8 @@ ${JSON.stringify(gaps)}
   };
   const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
 
-  googleCompanies.sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
+  googleCompanies.sort((a, b) =>
+    contactResearchPriority(b) - contactResearchPriority(a));
   const contactPending = pendingContactRows(googleCompanies, contactCompleted, primaryResults, checkpointRowId);
   primaryProcessed = Math.max(0, googleCompanies.length - contactPending.length);
 
