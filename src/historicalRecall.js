@@ -217,3 +217,47 @@ export function filterHistoricalRecallFindings(result, candidates) {
   }
   return { result: accepted, accepted_count: acceptedNames.size, rejected_count: rejected };
 }
+
+// Audits names of NEW historical-discovery candidates after final sorting.
+// Same-name matches are not proof that the same legal entity was recovered.
+export function auditHistoricalRecallOutcome(recall, current) {
+  const accepted = arr(recall?.accepted_candidates);
+  const observed = new Map();
+  for (const section of [...SECTIONS, "qualification_review", "qualification_excluded"]) {
+    for (const row of arr(current?.[section])) {
+      const key = normalizedName(row?.["Организация"]);
+      if (!key) continue;
+      if (!observed.has(key)) observed.set(key, []);
+      observed.get(key).push({ section, inn: validInn(row?.["ИНН"]) });
+    }
+  }
+  const prior = new Map(arr(recall?.plan?.candidates).map(item =>
+    [normalizedName(item?.name), validInn(item?.inn)]));
+  const entries = accepted.map(item => {
+    const name = txt(item?.name);
+    const key = normalizedName(name);
+    const found = observed.get(key) || [];
+    const previousInn = prior.get(key) || "";
+    const currentInns = [...new Set(found.map(x => x.inn).filter(Boolean))];
+    const state = found.some(x => SECTIONS.includes(x.section)) ? "active_name_match" :
+      found.some(x => x.section === "qualification_review") ? "review_name_match" :
+      found.some(x => x.section === "qualification_excluded") ? "excluded_name_match" :
+      "not_found_by_name";
+    return {
+      name, state, prior_inn_audit_only: previousInn,
+      current_inns_audit_only: currentInns,
+      possible_distinct_legal_person: Boolean(previousInn &&
+        currentInns.some(inn => inn !== previousInn)),
+      identity_verified_by_name: false
+    };
+  });
+  return {
+    version: 1, accepted_discovery_candidates: accepted.length,
+    active_name_matches: entries.filter(x => x.state === "active_name_match").length,
+    review_name_matches: entries.filter(x => x.state === "review_name_match").length,
+    excluded_name_matches: entries.filter(x => x.state === "excluded_name_match").length,
+    unmatched_by_name: entries.filter(x => x.state === "not_found_by_name").length,
+    possible_inn_conflicts: entries.filter(x => x.possible_distinct_legal_person).length,
+    identity_verified_by_name: false, entries
+  };
+}
