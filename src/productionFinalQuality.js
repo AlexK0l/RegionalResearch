@@ -112,6 +112,34 @@ export function disclaimsSelectedTrailerEvidence(claim) {
   });
 }
 
+// A direct BUYER cannot be grade A merely because their cargo or profession
+// would make trailers useful. These words were actually selected as A
+// evidence in the 05-Nov paid run. The check is limited to direct buyers;
+// a dealer may be A as a sales CHANNEL without owning a trailer.
+export function selectedADirectBuyerIsOnlyInference(claim) {
+  const note = string(claim).toLowerCase().replace(/ё/g, "е");
+  if (!note) return false;
+  const strongNegatives = [
+    /нет (?:прямых? )?доказательств?.{0,160}(?:влад|эксплуат|(?:полу)?прицеп|тягач)/,
+    /(?:но |а )?не парк (?:полу)?прицеп/,
+    /(?:подтвержда|указани).{0,100}(?:адрес|автопарк|профиль).{0,130}(?:но не парк|без раскрытия.{0,60}прицепн)/,
+    /(?:отсутствуют|не представлено).{0,100}(?:парк|(?:полу)?прицеп|эксплуатаци)/
+  ];
+  if (strongNegatives.some(pattern => pattern.test(note))) return true;
+  const actualTrailerEvent = [
+    /(?:собственник|владеет|приобрел|приобрела|закупил|закупила|арендует|эксплуатирует).{0,160}(?:полу)?прицеп/,
+    /(?:полу)?прицеп.{0,150}(?:приобретен|закуплен|арендован|принадлежит|эксплуатируется|зарегистрирован)/,
+    /(?:договор|контракт|реестр|судебный акт).{0,170}(?:полу)?прицеп/
+  ].some(pattern => pattern.test(note));
+  if (actualTrailerEvent) return false;
+  return [
+    /(?:перевозк|строительств|производств|грузопоток).{0,160}(?:предполага|требу|рациональн|целесообразн|соответствующ).{0,160}(?:полу)?прицеп/,
+    /(?:предполага|рациональн|целесообразн|соответствующ).{0,200}(?:полу)?прицеп/,
+    /(?:негабаритны|дорожны|навалочны).{0,85}(?:требу|предполага).{0,150}(?:прицепн|полуприцеп|тягач)/,
+    /потребност.{0,130}(?:запасн.{0,25}част|полуприцеп).{0,100}(?:характерн|релевантн|вероятн)/
+  ].some(pattern => pattern.test(note));
+}
+
 // Category/search pages are discovery hints, not a cited fact about a named
 // legal person. A grade-A claim must cite the actual vacancy/contract/company
 // page; these aggregations can contain unrelated employers and locations.
@@ -401,6 +429,9 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     }
     if (grade === "A" && !missingAEvidence && disclaimsSelectedTrailerEvidence(decision.aEvidence))
       issues.push("A_selected_claim_explicitly_disclaims_trailer_evidence");
+    if (sheet === "direct_buyers" && grade === "A" && !missingAEvidence &&
+        selectedADirectBuyerIsOnlyInference(decision.aEvidence))
+      issues.push("A_direct_buyer_selected_claim_is_inference_not_a_trailer_event");
     const eligibility = commercialEligibility(row);
     if (eligibility.blocked) issues.push("noncommercial_entity");
     const mustHold = issues.length > 0 || !eligible;
