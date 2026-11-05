@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings
+  buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome
 } from "../src/historicalRecall.js";
 import { researchWebScope } from "../src/researchCostPolicy.js";
 
@@ -184,4 +184,35 @@ test("recent completed SQLite studies are readable without loading resumable che
     if (old === undefined) delete process.env.CHECKPOINT_DB_PATH;
     else process.env.CHECKPOINT_DB_PATH = old;
   }
+});
+
+test("final recall trace records name matches but NEVER confirms identity by name", () => {
+  const recall = {
+    accepted_candidates: [
+      {name:"ООО «ПАРТНЕР ЛАЙН»"},
+      {name:"ООО «МОВЕТ»"},
+      {name:"ООО «ТЭК Симплекс»"},
+      {name:"ООО «Без ответа»"}
+    ],
+    plan:{candidates:[
+      {name:"ООО «ПАРТНЕР ЛАЙН»",inn:innA},
+      {name:"ООО «МОВЕТ»",inn:innB}
+    ]}
+  };
+  const current = {
+    direct_buyers:[{"Организация":"ООО «ПАРТНЕР ЛАЙН»","ИНН":innB},
+      {"Организация":"ООО «МОВЕТ»","ИНН":innB}],
+    intermediaries:[],leasing:[],
+    qualification_review:[{"Организация":"ООО «ТЭК Симплекс»","ИНН":""}],
+    qualification_excluded:[]
+  };
+  const trace = auditHistoricalRecallOutcome(recall,current);
+  assert.equal(trace.accepted_discovery_candidates,4);
+  assert.equal(trace.active_name_matches,2);
+  assert.equal(trace.review_name_matches,1);
+  assert.equal(trace.unmatched_by_name,1);
+  assert.equal(trace.possible_inn_conflicts,1);
+  assert.equal(trace.identity_verified_by_name,false);
+  assert.equal(trace.entries[0].possible_distinct_legal_person,true);
+  assert.equal(trace.entries[0].identity_verified_by_name,false);
 });
