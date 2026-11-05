@@ -76,6 +76,7 @@ function historyRows(history) {
         inn, name, name_key: key,
         city: txt(row?.["Город/район"]).slice(0, 150),
         source_hint: hintUrls[0] || "",
+        identity_source_url: urls[0],
         grade: previousGrade(row),
         source_job_id: txt(run.id),
         source_updated_at: txt(run.updated_at)
@@ -92,12 +93,19 @@ function historyRows(history) {
 export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24 } = {}) {
   const prior = historyRows(history);
   const byInn = new Map();
-  for (const row of prior) if (!byInn.has(row.inn)) byInn.set(row.inn, row);
-  const unique = [...byInn.values()];
-  // Last completed runs remember searched INNs. A later study can spend its
-  // small recall allowance on different leads instead of paying repeatedly
-  // for the same unsourced historical candidates.
-  const previousAttempts = new Set(arr(history).flatMap(run =>
+  const appearances = new Map();
+  for (const row of prior) {
+    if (!byInn.has(row.inn)) byInn.set(row.inn, row);
+    if (!appearances.has(row.inn)) appearances.set(row.inn, new Set());
+    appearances.get(row.inn).add(row.source_job_id);
+  }
+  const unique = [...byInn.values()].map(row => ({
+    ...row, historical_run_count: appearances.get(row.inn).size
+  }));
+  // Only suppress repeated paid attempts from the most recent THREE
+  // completed studies, not forever. Older failures must not become a
+  // permanent exclusion of an otherwise relevant organization.
+  const previousAttempts = new Set(arr(history).slice(0, 3).flatMap(run =>
     arr(run?.recall_attempted_inns).map(validInn).filter(Boolean)));
   const innsByName = new Map();
   for (const item of unique) {
@@ -140,9 +148,28 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
   // Prior A/B is a search PRIORITY SIGNAL ONLY, not inherited qualification.
   const rank = { A: 0, B: 1, C: 2 };
   gaps.sort((a, b) => rank[a.grade] - rank[b.grade] ||
+    b.historical_run_count - a.historical_run_count ||
     b.source_updated_at.localeCompare(a.source_updated_at) ||
     a.name.localeCompare(b.name, "ru"));
   const cap = Math.max(0, Math.min(2000, Math.floor(Number(maxCandidates) || 0)));
+  // Never let a few recent large studies starve older validated leads.
+  // One quarter of the SMALL preexisting recall budget is reserved for
+  // candidates absent from the latest three historical snapshots.
+  const recentRunIds = new Set(arr(history).slice(0, 3).map(run => txt(run?.id)));
+  const oldOnly = gaps.filter(item => !recentRunIds.has(item.source_job_id));
+  const olderSlots = arr(history).length > 3
+    ? Math.min(oldOnly.length, Math.floor(cap / 4)) : 0;
+  const candidates = gaps.filter(item => recentRunIds.has(item.source_job_id))
+    .slice(0, cap - olderSlots);
+  candidates.push(...oldOnly.slice(0, olderSlots));
+  const selectedInns = new Set(candidates.map(item => item.inn));
+  for (const item of gaps) {
+    if (candidates.length >= cap) break;
+    if (!selectedInns.has(item.inn)) {
+      candidates.push(item);
+      selectedInns.add(item.inn);
+    }
+  }
   return {
     version: 1,
     prior_runs: arr(history).map(run => txt(run?.id)).filter(Boolean),
@@ -154,8 +181,10 @@ export function buildHistoricalRecallPlan(history, current, { maxCandidates = 24
     recently_attempted_in_previous_runs: recentlyAttempted,
     conflicts,
     total_missing_candidates: gaps.length,
-    deferred_candidates: Math.max(0, gaps.length - cap),
-    candidates: gaps.slice(0, cap)
+    older_history_eligible: oldOnly.length,
+    older_history_selected: candidates.filter(x => !recentRunIds.has(x.source_job_id)).length,
+    deferred_candidates: Math.max(0, gaps.length - candidates.length),
+    candidates
   };
 }
 
@@ -259,5 +288,135 @@ export function auditHistoricalRecallOutcome(recall, current) {
     unmatched_by_name: entries.filter(x => x.state === "not_found_by_name").length,
     possible_inn_conflicts: entries.filter(x => x.possible_distinct_legal_person).length,
     identity_verified_by_name: false, entries
+  };
+}
+
+/**
+ * Full, zero-cost continuity ledger. Every historically source-linked legal
+ * identity is represented once; no row is inserted into the current CRM.
+ * A same-name match without the same INN is NOT a confirmed return.
+ * Links are historical audit leads only (pages are not re-fetched here).
+ */
+export function buildHistoricalCoverageLedger(history, current) {
+  const prior = historyRows(history);
+  const grouped = new Map();
+  for (const item of prior) {
+    let entry = grouped.get(item.inn);
+    if (!entry) {
+      entry = {
+        historical_inn: item.inn,
+        historical_name: item.name,
+        previous_priority_only: item.grade,
+        historical_identity_source: item.identity_source_url || "",
+        historical_search_hint: item.source_hint || "",
+        latest_historical_job_id: item.source_job_id,
+        latest_historical_updated_at: item.source_updated_at,
+        run_ids: new Set(),
+        known_names: new Set()
+      };
+      grouped.set(item.inn, entry);
+    }
+    entry.run_ids.add(item.source_job_id);
+    entry.known_names.add(item.name);
+  }
+  const currentByInn = new Map();
+  const currentByName = new Map();
+  const sections = [...SECTIONS, "qualification_review", "qualification_excluded"];
+  const currentSections = Array.isArray(current)
+    ? [{ sheet: "unqualified_discovery", rows: allCurrentRows(current) }]
+    : sections.map(sheet => ({ sheet, rows: arr(current?.[sheet]) }));
+  for (const { sheet, rows } of currentSections) for (const row of rows) {
+    const inn = validInn(row?.["ИНН"]);
+    const name = normalizedName(row?.["Организация"]);
+    const record = { sheet, inn, name };
+    if (inn) {
+      if (!currentByInn.has(inn)) currentByInn.set(inn, []);
+      currentByInn.get(inn).push(record);
+    }
+    if (name) {
+      if (!currentByName.has(name)) currentByName.set(name, []);
+      currentByName.get(name).push(record);
+    }
+  }
+  const priorInnByName = new Map();
+  for (const item of grouped.values()) for (const name of item.known_names) {
+    const normalized = normalizedName(name);
+    if (!normalized) continue;
+    if (!priorInnByName.has(normalized)) priorInnByName.set(normalized, new Set());
+    priorInnByName.get(normalized).add(item.historical_inn);
+  }
+
+  const entries = [];
+  const counts = {
+    historic_source_linked_inn: grouped.size,
+    present_active_by_inn: 0,
+    present_review_by_inn: 0,
+    present_excluded_by_inn: 0,
+    present_unqualified_by_inn: 0,
+    current_same_name_unverified: 0,
+    current_same_name_different_inn: 0,
+    historic_name_multiple_inn: 0,
+    not_found_in_current: 0
+  };
+  for (const item of grouped.values()) {
+    const innMatches = currentByInn.get(item.historical_inn) || [];
+    const names = [...item.known_names];
+    const matchingNames = [...new Map(names.flatMap(name =>
+      (currentByName.get(normalizedName(name)) || []).map(row =>
+        [row.sheet + ":" + row.name + ":" + row.inn, row])
+    )).values()];
+    const nameInns = [...new Set(matchingNames.map(x => x.inn).filter(Boolean))];
+    const competingHistoric = names.some(name =>
+      (priorInnByName.get(normalizedName(name))?.size || 0) > 1);
+
+    let status;
+    if (innMatches.some(x => SECTIONS.includes(x.sheet))) {
+      status = "present_active_by_inn";
+    } else if (innMatches.some(x => x.sheet === "qualification_review")) {
+      status = "present_review_by_inn";
+    } else if (innMatches.some(x => x.sheet === "qualification_excluded")) {
+      status = "present_excluded_by_inn";
+    } else if (innMatches.length) {
+      status = "present_unqualified_by_inn";
+    } else if (nameInns.some(inn => inn !== item.historical_inn)) {
+      status = "current_same_name_different_inn";
+    } else if (matchingNames.length) {
+      status = "current_same_name_unverified";
+    } else if (competingHistoric) {
+      status = "historic_name_multiple_inn";
+    } else {
+      status = "not_found_in_current";
+    }
+    counts[status]++;
+    entries.push({
+      historical_inn: item.historical_inn,
+      historical_name: item.historical_name,
+      historical_name_variants: names,
+      previous_grade_priority_only: item.previous_priority_only,
+      historical_identity_source_audit_only: item.historical_identity_source,
+      historical_search_hint_audit_only: item.historical_search_hint,
+      latest_historical_job_id: item.latest_historical_job_id,
+      latest_historical_updated_at: item.latest_historical_updated_at,
+      observed_in_completed_runs: item.run_ids.size,
+      status,
+      current_same_name_inns_audit_only: status === "current_same_name_different_inn"
+        ? nameInns : [],
+      identity_proven_from_name: false,
+      automatically_promoted_to_crm: false
+    });
+  }
+  entries.sort((a,b) => a.historical_inn.localeCompare(b.historical_inn));
+  return {
+    version: 1,
+    counts,
+    history_runs_included: arr(history).length,
+    missing_or_conflicting: counts.not_found_in_current +
+      counts.historic_name_multiple_inn +
+      counts.current_same_name_unverified +
+      counts.current_same_name_different_inn,
+    entries,
+    historical_data_not_reverified: true,
+    auto_promoted_records: 0,
+    extra_web_calls: 0
   };
 }
