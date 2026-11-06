@@ -14,6 +14,8 @@ const e={
   jobsSummary:document.querySelector("#jobsSummary"),
   jobsList:document.querySelector("#jobsList"),
   selectedJob:document.querySelector("#selectedJob"),
+  etaCountdown:document.querySelector("#etaCountdown"),
+  etaHint:document.querySelector("#etaHint"),
   refreshJobs:document.querySelector("#refreshJobsBtn"),
   resume:document.querySelector("#resumeBtn"),
   checkpoint:document.querySelector("#checkpointBtn"),
@@ -46,6 +48,8 @@ let regionCheckpoint=null;
 let regionCheckpointTimer=null;
 let jobsTimer=null;
 let lastJobs=[];
+let selectedEta=null;
+let selectedEtaReceivedAt=0;
 let startRequestPending=false;
 
 const LAST_REGION_KEY="sat_last_region";
@@ -302,6 +306,52 @@ function renderSteps(statuses){
 }
 
 
+
+function remainingEtaMs(eta, receivedAt, now=Date.now()){
+  if(eta?.status!=="estimated" || !Number.isFinite(Number(eta.remainingMs)))
+    return null;
+  const elapsed=Math.max(0,now-Number(receivedAt||now));
+  return Math.max(0,Number(eta.remainingMs)-elapsed);
+}
+
+function etaLabel(eta, receivedAt, now=Date.now()){
+  if(eta?.status==="estimated"){
+    const remaining=remainingEtaMs(eta,receivedAt,now);
+    if(remaining===null)return "Время уточняется";
+    if(remaining<1000)return "Пересчитываем прогноз…";
+    return "≈ "+formatDuration(Math.ceil(remaining/1000)*1000);
+  }
+  if(eta?.status==="completed")return "Завершено";
+  if(eta?.status==="queued")return "Ожидание очереди";
+  if(eta?.status==="calibrating")return "Оцениваем скорость этапов…";
+  if(eta?.status==="recalibrating")return "Уточняем прогноз…";
+  if(eta?.status==="finishing")return "Сохраняем результат…";
+  if(eta?.status==="failed")return "Исследование завершилось с ошибкой";
+  if(eta?.status==="cancelled")return "Исследование остановлено";
+  if(eta?.status==="cancelling")return "Останавливаем…";
+  return "Оценка пока недоступна";
+}
+
+function updateEtaDisplay(){
+  if(!e.etaCountdown)return;
+  e.etaCountdown.textContent=etaLabel(selectedEta,selectedEtaReceivedAt);
+  e.etaHint.textContent=selectedEta?.reason ||
+    "Прогноз появляется после первых этапов и не гарантирует точное время завершения.";
+}
+
+function updateJobEtaLabels(){
+  if(!e.jobsList)return;
+  for(const card of e.jobsList.querySelectorAll(".jobs-item")){
+    const job=lastJobs.find(item=>item.id===card.dataset.jobId);
+    const details=card.querySelector(".jobs-details");
+    if(!job || !details)continue;
+    details.textContent=jobStateText(job)+
+      (job.state==="active" && job.eta?.status==="estimated"
+        ?" · осталось "+etaLabel(job.eta,job.etaReceivedAt)
+        :"");
+  }
+}
+
 function jobStateText(job){
   const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
     completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",
@@ -339,7 +389,10 @@ function renderJobs(payload){
     name.textContent=item.region||"Регион не указан";
     const details=document.createElement("span");
     details.className="jobs-details";
-    details.textContent=jobStateText(item);
+    details.textContent=jobStateText(item)+
+      (item.state==="active" && item.eta?.status==="estimated"
+        ?" · осталось "+etaLabel(item.eta,item.etaReceivedAt)
+        :"");
     b.append(name,details);
     b.onclick=()=>{void activateJob(item.id,{changeRegion:true});};
     e.jobsList.append(b);
@@ -350,7 +403,8 @@ async function refreshJobs(){
   if(!backendReady)return;
   try{
     const state=await api("/api/jobs");
-    renderJobs(state);
+    const receivedAt=Date.now();
+    renderJobs({...state,jobs:(state.jobs||[]).map(job=>({...job,etaReceivedAt:receivedAt}))});
     if(!currentJobId&&lastJobs.length){
       await activateJob(lastJobs[0].id,{changeRegion:true});
     }
@@ -373,6 +427,9 @@ async function activateJob(id,{changeRegion=false}={}){
   }
   e.selectedJob.textContent="Выбрано: "+(item?.region||e.region.value.trim()||"регион")+
     " · "+id;
+  selectedEta=null;
+  selectedEtaReceivedAt=0;
+  updateEtaDisplay();
   e.progressCard.hidden=false;
   e.resultCard.hidden=true;
   e.error.hidden=true;
@@ -400,6 +457,9 @@ function resetIdleState(){
   currentJobId="";
   localStorage.removeItem("sat_current_job");
   lastProgress=null;
+  selectedEta=null;
+  selectedEtaReceivedAt=0;
+  updateEtaDisplay();
   if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
   e.error.hidden=true;
   e.error.textContent="";
@@ -472,6 +532,9 @@ async function poll(restoring=false){
   try{
     const d=await api("/api/jobs/"+encodeURIComponent(requestedJobId));
     if(requestedJobId!==currentJobId)return;
+    selectedEta=d.eta||null;
+    selectedEtaReceivedAt=Date.now();
+    updateEtaDisplay();
     e.selectedJob.textContent="Выбрано: "+(d.region||"регион")+" · "+requestedJobId;
     e.progressCard.hidden=false;
     setProgress(d.progress||{});
@@ -777,6 +840,8 @@ e.downloadAudit.onclick=()=>download("audit");
 
 timerTick=setInterval(()=>{
   if(lastProgress?.statuses)renderSteps(lastProgress.statuses);
+  updateEtaDisplay();
+  updateJobEtaLabels();
 },1000);
 
 (async()=>{

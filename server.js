@@ -6,6 +6,7 @@ import { runResearchPipeline } from "./src/pipeline.js";
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
+import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
@@ -470,6 +471,8 @@ app.post("/api/jobs", async (req, res) => {
 });
 
 app.get("/api/jobs", (_req, res) => {
+  const now = Date.now();
+  const history = historicalStageDurations(jobs.values());
   res.setHeader("Cache-Control", "no-store");
   res.json({
     queue: fullQueue.snapshot(),
@@ -485,7 +488,8 @@ app.get("/api/jobs", (_req, res) => {
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
         createdAt: job.createdAt,
-        hasResult: job.state === "completed" && Boolean(job.result?.result)
+        hasResult: job.state === "completed" && Boolean(job.result?.result),
+        eta: estimateResearchEta(job, { now, history })
       }))
   });
 });
@@ -494,11 +498,15 @@ app.get("/api/jobs/:id", (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено или сервис был перезапущен" });
 
+  const now = Date.now();
+  const history = historicalStageDurations(jobs.values());
+  res.setHeader("Cache-Control", "no-store");
   res.json({
     id: job.id,
     region: job.region,
     mode: job.mode,
     state: job.state,
+    eta: estimateResearchEta(job, { now, history }),
     progress: job.progress || {},
     result: job.state === "completed"
       ? {
