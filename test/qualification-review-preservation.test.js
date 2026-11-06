@@ -67,7 +67,14 @@ test("public institution and ceased legal entity are excluded, not in review", (
   const x = rec("Муниципальное бюджетное учреждение «Управление коммунального хозяйства»", {
     inn: "6726024549", segment: "Обслуживание спецтехники"
   });
-  const y = rec("ООО «Смоленская транспортная компания»", { inn: "6731065653" });
+  const y = rec("ООО «Прекратившая деятельность компания»", { inn: "6731065653" });
+  // Generic, entity-bound official proof is required. The name/INN alone
+  // must not create an exception in the production qualification policy.
+  y.row.__evidence.legal_status_verification = {
+    inn: "6731065653", status: "ceased",
+    source_url: "https://service.nalog.ru/download/6731065653",
+    evidence_excerpt: "ИНН 6731065653 деятельность прекращена"
+  };
   const r = postInnDedupe(result(x, y), "Смоленская область").qualified.result;
   assert.equal(r.qualification_review.length, 0);
   assert.equal(commercialCount(r), 0);
