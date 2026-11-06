@@ -151,6 +151,7 @@ export function filterAutonomousDiscoveryFindings({
   response, current, sector, isCommercial = () => true
 } = {}) {
   const known = new Set(rowsOf(current).map(({row}) => nameOf(row)).filter(Boolean));
+  const acceptedThisPass = new Set();
   const rejected = {
     duplicate_current: 0, duplicate_new: 0, no_name: 0,
     off_topic: 0, no_specific_source: 0, noncommercial: 0
@@ -161,17 +162,14 @@ export function filterAutonomousDiscoveryFindings({
     const name = nameOf(row);
     if (!name) { rejected.no_name++; continue; }
     if (known.has(name)) { rejected.duplicate_current++; continue; }
-    if (accepted && Object.values(result).some(rows =>
-      rows.some(item => nameOf(item) === name))) {
-      rejected.duplicate_new++; continue;
-    }
-    if (!sector?.pattern?.test(contentFor(row))) {
-      rejected.off_topic++; continue;
-    }
+    if (acceptedThisPass.has(name)) { rejected.duplicate_new++; continue; }
     const sources = urlsFor(row);
     const notes = arr(row?.__evidence?.notes).filter(note => text(note));
     if (!sources.length || !notes.length) {
       rejected.no_specific_source++; continue;
+    }
+    if (!sector?.pattern?.test(contentFor(row))) {
+      rejected.off_topic++; continue;
     }
     if (!isCommercial(row)) { rejected.noncommercial++; continue; }
     // New discovery facts are hints only. In particular do not trust model-
@@ -193,7 +191,7 @@ export function filterAutonomousDiscoveryFindings({
       "Выручка последнего подтвержденного года", "Численность"
     ]) delete clean[key];
     result[sheet].push(clean);
-    known.add(name);
+    acceptedThisPass.add(name);
     accepted++;
   }
   return {result, accepted, rejected,
