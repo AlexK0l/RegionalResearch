@@ -91,6 +91,18 @@ export function selectedAEvidenceSource(row, aEvidence) {
 export function disclaimsSelectedTrailerEvidence(claim) {
   const note = string(claim).toLowerCase().replace(/ё/g, "е");
   if (!note) return false;
+  // Specific make/model/registration details are OPTIONAL for an otherwise
+  // clearly confirmed own trailer fleet. A negative statement solely about
+  // those details must never cancel a positive ownership/operation assertion.
+  const confirmedOwnTrailers =
+    /(?:эксплуатир|владе|собственн.{0,30}парк|на балансе).{0,95}(?:полуприцеп|прицеп)/.test(note) ||
+    /(?:полуприцеп|прицеп).{0,95}(?:эксплуатир|в собственности|на балансе|принадлеж)/.test(note);
+  const unknownModelOnly =
+    /(?:модел|марк|vin|госномер).{0,110}не (?:приведен|указан|назван|найден|раскрыт|подтвержден)/.test(note);
+  const explicitlyDeniedFleet =
+    /(?:собственн.{0,30}парк|(?:полу)?прицеп|эксплуатаци).{0,85}не (?:установл|подтвержд|доказан|найден|указан)/.test(note);
+  if (confirmedOwnTrailers && unknownModelOnly && !explicitlyDeniedFleet)
+    return false;
   // A confirmed trailer fleet may have an unknown model number. Evaluate
   // separate clauses, but quarantine a selected claim that actually denies
   // trailer evidence or merely predicts hypothetical future demand.
