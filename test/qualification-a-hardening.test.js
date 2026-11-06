@@ -340,3 +340,33 @@ test("an unrelated company-wide URL does not change selection of a source note",
   assert.equal(decision.aEvidence, purchase);
   assert.equal(decision.aEvidence.includes("https://unrelated.example.org/fleet"), false);
 });
+
+test("speculative direct-buyer A note falls back to confirmed operating-process C", () => {
+  const record=rec("direct_buyers","ООО «Поставщик нерудных материалов»",
+    "Найденное событие подтверждает физический грузопоток, но не владение или эксплуатацию полуприцепов самим заводом.",
+    "Предприятие производит щебень и отгружает строительные материалы");
+  record.row.__evidence.notes.unshift(
+    "Предприятие добывает щебень в собственном карьере и регулярно отгружает его заказчикам.");
+  const decision=deterministicQualificationDecision(record);
+  assert.equal(decision.grade,"C");
+  assert.equal(decision.aEvidence,"");
+});
+
+test("a strong independent trailer ownership event survives a competing unsupported A note", () => {
+  const record=rec("direct_buyers","ООО «Транспортное предприятие»",
+    "Собственный парк полуприцепов для грузовых перевозок подтвержден документом о регистрации транспорта.",
+    "Грузовые автомобильные перевозки; полуприцепы");
+  record.row.__evidence.notes.unshift(
+    "Грузопоток предполагает возможное расширение собственного парка полуприцепов, но это только оценка потребности.");
+  const decision=deterministicQualificationDecision(record);
+  assert.equal(decision.grade,"A");
+  assert.match(decision.aEvidence,/подтвержден документом/);
+});
+
+test("unsubstantiated direct-buyer trailer inference cannot cause grade A even when worded as fleet operation", () => {
+  const record=rec("direct_buyers","ООО «Грузовладелец»",
+    "Для потенциального расширения производства прицепная техника является логичным соседним объектом обновления парка.",
+    "Переработка зерна и транспортировка сырья");
+  const decision=deterministicQualificationDecision(record);
+  assert.notEqual(decision.grade,"A");
+});
