@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
+import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
@@ -69,8 +70,14 @@ const RESEARCH_GEO_GROUPS = Math.max(
   2,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
-const HISTORICAL_RECALL_ENABLED =
-  String(process.env.OPENAI_HISTORICAL_RECALL_ENABLED ?? "true").toLowerCase() !== "false";
+const AUTONOMOUS_DISCOVERY_ENABLED = String(
+  process.env.OPENAI_AUTONOMOUS_DISCOVERY_ENABLED ?? "true").toLowerCase() !== "false";
+const AUTONOMOUS_DISCOVERY_MAX_PASSES = Math.max(0, Math.min(4, Math.floor(
+  Number(process.env.OPENAI_AUTONOMOUS_DISCOVERY_MAX_PASSES ?? 2))));
+const AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Math.floor(
+  Number(process.env.OPENAI_AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS ?? 2))));
+const HISTORICAL_RECALL_ENABLED = !AUTONOMOUS_DISCOVERY_ENABLED &&
+  String(process.env.OPENAI_HISTORICAL_RECALL_ENABLED ?? "false").toLowerCase() === "true";
 // Read completed local snapshots beyond the latest three so verified leads
 // from earlier studies remain visible. Only 3x8 are offered new paid searches.
 const HISTORICAL_RECALL_HISTORY_RUNS = Math.max(3, Math.min(20,
@@ -6973,7 +6980,7 @@ ${JSON.stringify(compactCourtArchive)}
   // Earlier completed studies supply only name/region/URL search hints. Never
   // transfer their INNs, phone numbers, A/B/C grades or legal identities.
   let historicalRuns = [];
-  if (!diagnosticMode && !replayMode && executionMode === "full") {
+  if (!diagnosticMode && !replayMode && executionMode === "full" && HISTORICAL_RECALL_ENABLED) {
     try {
       historicalRuns = await loadRecentCompletedResearch(region, HISTORICAL_RECALL_HISTORY_RUNS);
     } catch (error) {
@@ -7136,6 +7143,113 @@ ${JSON.stringify(compactCourtArchive)}
       reason: "identity_or_later_checkpoint_must_keep_frozen_candidate_pool",
       phase: resumeCheckpoint.phase || ""
     }));
+  }
+
+  // Second opinion uses this run alone; selected discoveries still pass
+  // the normal identity/dedupe/qualification stages without inherited fields.
+  let autonomousCoverage = cloneJson(resumeCheckpoint?.autonomous_coverage || null);
+  if (AUTONOMOUS_DISCOVERY_ENABLED && !diagnosticMode && !replayMode &&
+      executionMode === "full" && !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity") &&
+      !autonomousCoverage?.completed) {
+    const current = emptyResearchResult();
+    for (const part of parts) appendResearchResult(current, part, "current-run-only");
+    if (!autonomousCoverage?.plan) {
+      const plan = planAutonomousDiscoveryCoverage({
+        current, sectors: ENTITY_CENSUS_BUCKETS,
+        undercoveredGeography: coverageSnapshot(current, researchScopes).undercovered_geography,
+        classifySource: discoverySourceFamily,
+        gradeForRow: deterministicQualificationDecision,
+        maxPasses: AUTONOMOUS_DISCOVERY_MAX_PASSES
+      });
+      autonomousCoverage = {version: 1, plan, next_pass: 0,
+        accepted: 0, rejected: {}, calls: 0, completed: false};
+      console.log("[AUTONOMOUS_DISCOVERY_PLAN] " + JSON.stringify({
+        current_seen: plan.current_seen_organizations,
+        selected: plan.passes.map(p => p.key),
+        sectors: plan.sectors.map(x => ({key:x.key, count:x.count,
+          strong:x.strong, diversity:x.source_diversity, eligible:x.eligible})),
+        prior_runs_used: 0
+      }));
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        census_completed: true, autonomous_coverage: autonomousCoverage,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    for (let index = Number(autonomousCoverage.next_pass || 0);
+      index < autonomousCoverage.plan.passes.length; index++) {
+      await assertNotCancelled();
+      const pass = autonomousCoverage.plan.passes[index];
+      const budget = client.__webBudget;
+      const remainingDiscovery = Number(budget.limits.discovery) -
+        Number(budget.used.discovery || 0) - Number(budget.reserved.discovery || 0);
+      const remainingTotal = Number(budget.limits.total) -
+        Number(budget.used.total || 0) - Number(budget.reserved.total || 0);
+      if (remainingDiscovery < AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS + 25 ||
+          remainingTotal < 200 ||
+          costEnvLimitUsd() - estimatedApiCostUsd(client) < 2) {
+        autonomousCoverage.deferred_reason = "protect_identity_contacts_and_cost";
+        console.log("[AUTONOMOUS_DISCOVERY_DEFER] " + JSON.stringify({
+          sector: pass.key, reason: autonomousCoverage.deferred_reason
+        }));
+        break;
+      }
+      const before = webUsageSnapshot(client);
+      try {
+        const response = normalize(await askResearch(client,
+          autonomousDiscoveryPrompt({
+            region, pass, alreadyFound: foundOrganizationNames(current, 180),
+            core: DISCOVERY_CORE_PROMPT
+          }),
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+          "discovery autonomous coverage | " + pass.key + " | " +
+            (index + 1) + "/" + autonomousCoverage.plan.passes.length,
+          AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS
+        ));
+        const sector = ENTITY_CENSUS_BUCKETS.find(s => s.key === pass.key);
+        const filtered = filterAutonomousDiscoveryFindings({
+          response, current, sector,
+          isCommercial: row => !commercialEligibility(row).blocked
+        });
+        if (!parts[8]) parts[8] = emptyResearchResult();
+        appendResearchResult(parts[8], filtered.result, "autonomous-coverage");
+        appendResearchResult(current, filtered.result, "autonomous-new");
+        autonomousCoverage.accepted += filtered.accepted;
+        for (const [reason, count] of Object.entries(filtered.rejected)) {
+          autonomousCoverage.rejected[reason] =
+            Number(autonomousCoverage.rejected[reason] || 0) + count;
+        }
+        autonomousCoverage.calls += Math.max(0, webUsageSnapshot(client) - before);
+        console.log("[AUTONOMOUS_DISCOVERY_PASS] " + JSON.stringify({
+          sector: pass.key, accepted: filtered.accepted,
+          rejected: filtered.rejected,
+          web_calls: Math.max(0, webUsageSnapshot(client) - before),
+          historical_runs_used: 0, inherited_inns: 0
+        }));
+      } catch (error) {
+        if (isWebBudgetStop(error)) {
+          autonomousCoverage.deferred_reason = "existing_web_budget";
+          break;
+        }
+        if (job.cancelled || jobSignal?.aborted) throw error;
+        autonomousCoverage.errors = Number(autonomousCoverage.errors || 0) + 1;
+        console.warn("[AUTONOMOUS_DISCOVERY_ERROR] " + JSON.stringify({
+          sector: pass.key, error: error?.message || String(error)
+        }));
+      }
+      autonomousCoverage.next_pass = index + 1;
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        census_completed: true, autonomous_coverage: autonomousCoverage,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    autonomousCoverage.completed = true;
+    await persistCheckpoint("discovery", {
+      completed_stage: 9, parts, research_scopes: researchScopes,
+      census_completed: true, autonomous_coverage: autonomousCoverage,
+      web_usage_total: webUsageSnapshot(client)
+    });
   }
 
   await assertNotCancelled();
@@ -8784,6 +8898,7 @@ ${JSON.stringify(gaps)}
     isActionable: actionableUnqualifiedLead
   });
   finalResult = finalQuality.result;
+  if (HISTORICAL_RECALL_ENABLED) {
   // Always preserve an offline continuity report. Absence from the current
   // CRM is not proof of an error: older candidates can be false/irrelevant.
   // This register never promotes a historical row or copies its data.
@@ -8836,6 +8951,14 @@ ${JSON.stringify(gaps)}
     historical_recall_calls: Number(historicalRecall?.calls || 0),
     old_records_copied_to_current: 0
   }));
+  }
+  if (AUTONOMOUS_DISCOVERY_ENABLED) {
+    finalQuality.report.autonomous_discovery = {
+      ...(autonomousCoverage || {completed: false, accepted: 0, calls: 0}),
+      prior_runs_used: 0, inherited_inns: 0,
+      named_company_targets: 0
+    };
+  }
   qualifiedFinal.counts = {
     ...qualifiedFinal.counts,
     ...finalQuality.report.grades,
