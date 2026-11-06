@@ -1,0 +1,7 @@
+# Replace research.example.org with a real DNS name that resolves to your VPS.
+# Never expose Node's private 10000 port to the internet.
+# API authentication is performed by RegionalResearch through API_ACCESS_TOKEN.
+research.example.org {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:10000
+}
