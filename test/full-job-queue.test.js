@@ -56,11 +56,47 @@ test("cancelling a queued region frees only that region and preserves other jobs
   assert.deepEqual(starts,["a","c"]);
 });
 
-test("concurrency defaults to two and caps at three",()=>{
+test("concurrency defaults to two and caps at ten",()=>{
   assert.equal(fullJobConcurrencyLimit({}),2);
   assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"3"}),3);
-  assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"99"}),3);
+  assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"10"}),10);
+  assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"11"}),10);
+  assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"99"}),10);
+  assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"3.8"}),3);
   assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"0"}),2);
   assert.equal(fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"oops"}),2);
   assert.equal(normalizedRegionKey("  ЁЛКИ — Тверская   область "),"елки-тверская область");
+});
+
+test("MAX_ACTIVE_FULL_JOBS=10: first ten start, eleventh queues until a slot frees",async()=>{
+  const gates=new Map(),starts=[],running=new Set();
+  let peak=0;
+  const queue=createFullJobQueue({
+    limit:fullJobConcurrencyLimit({MAX_ACTIVE_FULL_JOBS:"10"}),
+    execute:async work=>{
+      starts.push(work.id);
+      running.add(work.id);
+      peak=Math.max(peak,running.size);
+      const gate=deferred();gates.set(work.id,gate);
+      await gate.promise;
+      running.delete(work.id);
+      work.state="completed";
+    }
+  });
+  const studies=Array.from({length:11},(_,i)=>job("r"+i,"Тестовый регион "+i));
+  for(const study of studies)assert.equal(queue.enqueue(study,"key").accepted,true);
+  await tick();
+  assert.equal(starts.length,10);
+  assert.equal(peak,10);
+  assert.deepEqual(queue.snapshot(),{active:10,pending:1,limit:10});
+  assert.equal(studies[10].progress.queuePosition,1);
+  assert.equal(queue.enqueue(job("duplicate"," ТЕСТОВЫЙ РЕГИОН 10 "),"key").accepted,false);
+  gates.get("r0").resolve();
+  await tick();
+  assert.equal(starts.length,11);
+  assert.equal(peak,10);
+  assert.deepEqual(queue.snapshot(),{active:10,pending:0,limit:10});
+  for(let i=1;i<11;i++)gates.get("r"+i).resolve();
+  await tick();
+  assert.deepEqual(queue.snapshot(),{active:0,pending:0,limit:10});
 });

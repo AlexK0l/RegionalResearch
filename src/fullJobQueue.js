@@ -1,5 +1,7 @@
 // Bounded in-process queue for full/resume research. Each region is reserved
 // from acceptance until completion/cancellation, including while queued.
+export const MAX_CONCURRENT_RESEARCH_JOBS = 10;
+
 export function normalizedRegionKey(value) {
   return String(value || "").normalize("NFKC").toLocaleLowerCase("ru-RU")
     .replace(/ё/g, "е").replace(/\s*[-–—]\s*/g, "-")
@@ -8,11 +10,11 @@ export function normalizedRegionKey(value) {
 export function fullJobConcurrencyLimit(env=process.env) {
   const value=Number(env.MAX_ACTIVE_FULL_JOBS);
   return Number.isFinite(value)&&value>=1
-    ? Math.min(3,Math.max(1,Math.floor(value))) : 2;
+    ? Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(value))) : 2;
 }
 export function createFullJobQueue({limit=2,execute,onError=console.error}={}) {
   if(typeof execute!=="function")throw TypeError("Queue executor required");
-  const capacity=Math.min(3,Math.max(1,Math.floor(Number(limit)||2)));
+  const capacity=Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(Number(limit)||2)));
   const pending=[],regions=new Map();
   let active=0;
   const snapshot=()=>({active,pending:pending.length,limit:capacity});
