@@ -40,7 +40,7 @@ fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs" "$APP_DIR/exports"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR" "$APP_HOME"
 chmod 700 "$APP_HOME/backups"
-runuser -u "$APP_USER" -- env HOME="$APP_HOME" npm --prefix "$APP_DIR" ci
+(cd "$APP_DIR" && runuser -u "$APP_USER" -- env HOME="$APP_HOME" npm ci)
 if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
   runuser -u "$APP_USER" -- python3 -m venv "$APP_DIR/.venv"
 fi
