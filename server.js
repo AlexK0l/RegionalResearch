@@ -3,7 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
-import { buildWorkbookBuffer, buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
+import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
+import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
@@ -621,7 +622,7 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   res.json({ ok: true, state: job.state });
 });
 
-app.get("/api/jobs/:id/download", (req, res) => {
+app.get("/api/jobs/:id/download", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") {
@@ -631,22 +632,31 @@ app.get("/api/jobs/:id/download", (req, res) => {
   const result = job.result?.result;
   if (!result) return res.status(500).json({ error: "Результат отсутствует" });
 
-  const buffer = buildWorkbookBuffer(result);
-  const filename = safeFileName(job.result?.region || "result");
-
-  res.setHeader(
-    "Content-Type",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  );
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
-  );
-  res.send(buffer);
+  try {
+    // The browser receives the sanitized reference's exact five-sheet layout.
+    // No silent fallback to the old 37-column approximation.
+    const buffer = await buildReferenceWorkbookBuffer(result);
+    const filename = safeFileName(job.result?.region || "result");
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.send(buffer);
+  } catch (error) {
+    console.error("[REFERENCE_EXPORT_FAILED]", error?.message || String(error));
+    res.status(503).json({ error:
+      "Не удалось сформировать Excel по строгому шаблону: " +
+      String(error?.message || error) });
+  }
 });
 
 
-// QA queue export is separate so the commercial SAT workbook always has 6 sheets.
+// REVIEW/EXCLUDED remain in a separate audit workbook, not the reference.
 app.get("/api/jobs/:id/download-audit", (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
