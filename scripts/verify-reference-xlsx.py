@@ -2,6 +2,7 @@
 No paid calls, no network access, no mutation of either file.
 """
 import sys
+from copy import copy
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -23,8 +24,8 @@ def verify(template, output, names):
         assert s.freeze_panes==t.freeze_panes, name+': frozen panes'
         assert s.sheet_view.showGridLines==t.sheet_view.showGridLines, name+': gridlines'
         assert s.row_dimensions[1].height==t.row_dimensions[1].height, name+': header height'
-        assert s.cell(1,1).fill==t.cell(1,1).fill, name+': header fill'
-        assert s.cell(1,1).font==t.cell(1,1).font, name+': header font'
+        assert copy(s.cell(1,1).fill)==copy(t.cell(1,1).fill), name+': header fill'
+        assert copy(s.cell(1,1).font)==copy(t.cell(1,1).font), name+': header font'
         assert len(s.conditional_formatting)==len(t.conditional_formatting), name+': formatting rules'
         for i in range(1,count+1):
             col=get_column_letter(i)
