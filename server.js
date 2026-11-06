@@ -43,6 +43,15 @@ app.use(express.json({ limit: "32mb" }));
 // logs, checkpoints and downloads. Local development remains compatible.
 const API_ACCESS_TOKEN = String(process.env.API_ACCESS_TOKEN || "").trim();
 const PROTECT_API = Boolean(API_ACCESS_TOKEN);
+// Local app defaults to loopback so a missing API_ACCESS_TOKEN never exposes
+// paid job creation, logs or checkpoints to other devices on the network.
+// Render keeps its existing external bind behavior. LAN mode is explicit.
+const BIND_HOST = String(process.env.BIND_HOST ||
+  (process.env.RENDER ? "0.0.0.0" : "127.0.0.1")).trim();
+if (!process.env.RENDER && !PROTECT_API &&
+    !["127.0.0.1", "::1", "localhost"].includes(BIND_HOST)) {
+  throw new Error("BIND_HOST outside localhost requires API_ACCESS_TOKEN");
+}
 app.use("/api", (req, res, next) => {
   if (req.path === "/config") return next();
   if (!PROTECT_API) return next();
@@ -246,6 +255,23 @@ async function executeJob(job, apiKey) {
       const output = await runResearchPipeline({ job, apiKey });
       if (job.cancelled) throw new Error("JOB_CANCELLED");
       job.result = output;
+      // Release safety: never invalidate an earlier resumable checkpoint when
+      // a new full run is merely queued, cancelled, or fails before finishing.
+      // Only retire older resume pointers AFTER the replacement is durably saved.
+      if (job.mode === "full" || job.mode === "resume") {
+        try {
+          const persisted = await loadCheckpoint(job.id);
+          if (persisted?.phase === "completed" && persisted?.final_result) {
+            await supersedeRegionCheckpoints(job.region, "full", job.id);
+          } else {
+            console.warn("[CHECKPOINT_REPLACEMENT_DEFERRED] " +
+              JSON.stringify({job_id:job.id,reason:"completed_snapshot_not_persisted"}));
+          }
+        } catch (checkpointError) {
+          console.error("[CHECKPOINT_REPLACEMENT_ERROR] " +
+            JSON.stringify({job_id:job.id,error:checkpointError?.message || String(checkpointError)}));
+        }
+      }
       job.state = "completed";
     } catch (error) {
       if (
@@ -415,13 +441,8 @@ app.post("/api/jobs", async (req, res) => {
         checkpoint: existingCheckpoint
       });
     }
-    if (req.body?.startFresh) {
-      await supersedeRegionCheckpoints(region, "full");
-    }
-  }
-
-  if (mode === "resume" && data.sourceJobId) {
-    await supersedeRegionCheckpoints(region, "full", data.sourceJobId);
+    // startFresh intentionally keeps the older resumable payload intact:
+    // replacement happens only after successful completed checkpoint persistence.
   }
 
   const id = crypto.randomUUID();
@@ -537,8 +558,8 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
       error: "Checkpoint создан несовместимой версией pipeline"
     });
   }
-  await supersedeRegionCheckpoints(checkpoint.region, "full", req.params.id);
-
+  // Do not supersede the source checkpoint merely for queuing a resume.
+  // The original remains available if the new attempt fails or is cancelled.
   const id = crypto.randomUUID();
   const job = {
     id,
@@ -697,8 +718,12 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: error?.message || "Внутренняя ошибка" });
 });
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`SAT research web service listening on ${port}`);
+const httpServer = app.listen(port, BIND_HOST, () => {
+  const boundPort = httpServer.address()?.port || port;
+  console.log(`SAT research web service listening on ${BIND_HOST}:${boundPort}`);
+  // The launch smoke-test exercises HTTP and SQLite without downloading or
+  // opening Chromium. Normal local launches still perform the self-test.
+  if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;
   setTimeout(async () => {
     let browser;
     try {

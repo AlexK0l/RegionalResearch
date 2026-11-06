@@ -470,3 +470,13 @@ REVIEW/EXCLUDED) и `*_not_in_active.csv` (все вне основной баз
 - В production юридической политике нет именованных исключений по конкретным ИНН. Организационно-правовая форма, статус и обоснованное исключение проверяются универсальными правилами с сохранением доказательств.
 - Судебный архив: при наличии `COURT_VECTOR_STORE_ID` поддерживается file_search по загруженному пользователем корпусу; резервный компактный индекс ограничен и не гарантирует поиск по всем документам юридических лиц, зарегистрированных в регионе. До получения/проверки полного корпуса этот отдельный пункт нельзя считать выполненным. Совпадение региона суда не подтверждает место регистрации организации.
 - Ветка остаётся экспериментальной, основные исследования не запускать до сохранения SQLite/WAL/SHM, успешных Windows/Ubuntu CI и контролируемого сравнения реального результата. `main` не обновляется автоматически.
+
+### Release-integration: local safety and checkpoint lifecycle (2026-11-06)
+
+**No paid investigation is needed for this release smoke test.** Offline CI runs all `npm test` suites on Windows and Ubuntu, including a real local Express HTTP smoke test with a temporary empty SQLite/WAL database, HTTP configuration, archive/CRM download availability checks, API authorization, and rejected paid-job creation without an API key. An additional SQLite integration test verifies that superseding a checkpoint changes metadata but not the original payload.
+
+- When `API_ACCESS_TOKEN` is unset, local mode binds **127.0.0.1** by default, rather than `0.0.0.0`; `http://localhost:10000` still works. To expose a local server to other devices, explicitly set both `BIND_HOST=0.0.0.0` and a strong `API_ACCESS_TOKEN`. Render's existing binding is unchanged.
+- `startFresh:true` and `resume` **no longer immediately mark earlier resumable checkpoints as superseded**. An older run stays resumable if a replacement fails or is cancelled. Only a successfully completed study with its own durable completed SQLite payload retires older resume pointers; previous payloads are not deleted.
+- Back up the existing local SQLite before switching branches or beginning a new full investigation. A live WAL database must be copied using an SQLite-consistent backup, not merely copying the `.sqlite` file while the app runs.
+- Main CRM XLSX has exactly six sheets; REVIEW and EXCLUDED remain available separately and in full JSON. Neither the geography nor discovery/qualification rules are modified by this release-integration patch.
+- PR #13 remains a draft until an explicit merge decision; do not merge based solely on unit-test success. The large PR changes over 100 files relative to main, so a clean green CI and manual release sign-off are required.
