@@ -113,7 +113,10 @@ def main():
     wb=load_workbook(template)
     validate(wb)
     clear_existing(wb)
-    payload=json.load(sys.stdin)
+    # Node writes UTF-8 bytes to stdin. Windows text pipes may default to
+    # CP1251/CP866; decoding through sys.stdin would corrupt Cyrillic keys.
+    # json.load(bytes) detects UTF-8 independently of the OS text code page.
+    payload=json.load(sys.stdin.buffer)
     if isinstance(payload,dict) and isinstance(payload.get('final_result'),dict):
         payload=payload['final_result']
     if not isinstance(payload,dict):raise ValueError('Result must be object')

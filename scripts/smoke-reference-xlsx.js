@@ -56,7 +56,8 @@ async function verify(template, output, result){
     result.intermediaries?.[0]?.["Организация"]||""
   ];
   await new Promise((resolve,reject)=>{
-    const child=spawn(python,[verifier,template,output,...names],{stdio:["ignore","pipe","pipe"],windowsHide:true});
+    const child=spawn(python,[verifier,template,output,...names],{stdio:["ignore","pipe","pipe"],windowsHide:true,
+      env:{...process.env,PYTHONIOENCODING:"utf-8",PYTHONUTF8:"1"}});
     let stdout="",stderr="";
     child.stdout.on("data",data=>{stdout+=data.toString();});
     child.stderr.on("data",data=>{stderr+=data.toString();});

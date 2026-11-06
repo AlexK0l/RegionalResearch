@@ -21,7 +21,8 @@ export async function buildReferenceWorkbookBuffer(result, { templatePath = "" }
   try {
     await new Promise((resolve, reject) => {
       const child = spawn(python, [script, template, output],
-        { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
+        { stdio: ["pipe", "ignore", "pipe"], windowsHide: true,
+          env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } });
       let stderr = "";
       let settled = false;
       child.stderr.on("data", data => { stderr += data.toString().slice(0, 8192); });
