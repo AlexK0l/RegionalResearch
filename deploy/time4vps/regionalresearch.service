@@ -1,0 +1,24 @@
+[Unit]
+Description=RegionalResearch SAT backend (loopback only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=regionalresearch
+Group=regionalresearch
+WorkingDirectory=/opt/regionalresearch
+Environment=HOME=/var/lib/regionalresearch
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --env-file=/opt/regionalresearch/.env /opt/regionalresearch/server.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+LimitNOFILE=65535
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

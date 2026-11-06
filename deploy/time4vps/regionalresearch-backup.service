@@ -1,0 +1,10 @@
+[Unit]
+Description=SQLite consistent backup for RegionalResearch
+
+[Service]
+Type=oneshot
+User=regionalresearch
+Group=regionalresearch
+WorkingDirectory=/opt/regionalresearch
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/regionalresearch/deploy/time4vps/backup_sqlite.py --source /opt/regionalresearch/data/checkpoints.sqlite --directory /var/lib/regionalresearch/backups --keep 14
