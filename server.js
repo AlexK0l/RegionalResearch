@@ -34,6 +34,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
 const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
+if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS) !== String(MAX_ACTIVE_FULL_JOBS)) {
+  console.warn("[MAX_ACTIVE_FULL_JOBS_ADJUSTED] " + JSON.stringify({configured:process.env.MAX_ACTIVE_FULL_JOBS,effective:MAX_ACTIVE_FULL_JOBS}));
+}
 
 app.use(express.json({ limit: "32mb" }));
 
