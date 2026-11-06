@@ -62,6 +62,13 @@ test("local server HTTP smoke: ready SQLite, config, rejected paid job, safe mis
     const config=await fetch(base+"/api/config");
     assert.equal(config.status,200);
     assert.ok((await config.json()).pipelineVersion>=1);
+    const queue=await fetch(base+"/api/jobs");
+    assert.equal(queue.status,200);
+    const initial=await queue.json();
+    assert.deepEqual(initial.jobs,[]);
+    assert.equal(initial.queue.limit,2);
+    assert.equal(initial.queue.active,0);
+    assert.equal(initial.queue.pending,0);
     const list=await fetch(base+"/api/checkpoints?region="+encodeURIComponent("Смоленская область")+"&mode=full");
     assert.equal(list.status,200);
     assert.deepEqual((await list.json()).history,[]);
