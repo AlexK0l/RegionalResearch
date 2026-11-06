@@ -1,0 +1,3115 @@
+{
+  "source_file": "D:\\RegionalResearch\\data\\checkpoints.sqlite",
+  "source_sha256": "39e83b7cbfbebfcc9bfa776c6f94af5b9bcfddcd541fa2eb6ac37c45b0e09a2c",
+  "source_hash_scope": "selected_sqlite_payload",
+  "source_checkpoint_id": "bd94e732-a9af-4df1-af9d-e0d20a52f733",
+  "final_quality_gate": {
+    "version": "2",
+    "applied_to": "normal_production_pipeline",
+    "reviewed_source_manifest_used": false,
+    "original_row_count": 865,
+    "original_commercial_records": 473,
+    "input_commercial_array_rows": 473,
+    "duplicated_current_queue_rows_collapsed": 0,
+    "active_commercial_records": 464,
+    "review_records": 333,
+    "excluded_records": 68,
+    "prior_review_records_preserved": 325,
+    "prior_excluded_records_preserved": 67,
+    "review_queue_mode": "normal_production",
+    "historical_review_records_preserved": 0,
+    "current_review_records_at_input": 325,
+    "grades": {
+      "A": 81,
+      "B": 60,
+      "C": 323
+    },
+    "with_inn_commercial": 369,
+    "without_inn_commercial": 95,
+    "missing_inn_in_original_commercial_records": 96,
+    "ab_missing_inn_attempt_still_required": 26,
+    "inline_note_citations": 340,
+    "evidence_notes_examined": 2572,
+    "source_urls_in_input_commercial_records": 1757,
+    "already_structured_source_facts": 0,
+    "a_claim_source_linked": 69,
+    "a_claim_source_missing": 12,
+    "a_claim_source_ambiguous": 0,
+    "a_claim_attribution_review": [
+      {
+        "canonical_id": "k000703",
+        "organization": "ЗАО «ЖелдорАльянс»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "A — судебный акт по делу Арбитражного суда Смоленской области содержит конкретную идентификацию полуприцепа Schmitz Cargobull 9084 и указание, что имущество принадлежит ЗАО «ЖелдорАльянс».",
+        "company_source_url_count": 3
+      },
+      {
+        "canonical_id": "k000153",
+        "organization": "ООО «АлгаТранс»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Рефрижератор является конкретным типом прицепной техники, а вакансия подтверждает эксплуатационный процесс.",
+        "company_source_url_count": 1
+      },
+      {
+        "canonical_id": "k000155",
+        "organization": "ООО «АЛЕВ-ТРАНС»",
+        "a_rule": "direct_driver_operation",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Вакансия непосредственно привязывает компанию к категории Е и конкретной модели полуприцепа.",
+        "company_source_url_count": 4
+      },
+      {
+        "canonical_id": "k000851",
+        "organization": "ООО «Альфа Транс Экспедиция»",
+        "a_rule": "direct_driver_operation",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Вакансия категории Е размещена в тематической выдаче «водитель на полуприцепе» и привязана к ООО «Альфа Транс Экспедиция».",
+        "company_source_url_count": 7
+      },
+      {
+        "canonical_id": "k000287",
+        "organization": "ООО «ВОЯЖ»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Связка полуприцеп-фургон + седельный тягач подтверждает наличие автопоезда.",
+        "company_source_url_count": 2
+      },
+      {
+        "canonical_id": "k000294",
+        "organization": "ООО «ЗЛК»",
+        "a_rule": "direct_financial_lease",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Конкретно подтверждены роль лизингополучателя и предмет лизинга — полуприцеп.",
+        "company_source_url_count": 1
+      },
+      {
+        "canonical_id": "k000001",
+        "organization": "ООО «КСП «Струково»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Источник указывает ООО «КСП «Струково» как собственника имущества, в состав которого входил полуприцеп KRONE SDP 27.",
+        "company_source_url_count": 4
+      },
+      {
+        "canonical_id": "k000146",
+        "organization": "ООО «НЕО ТРАНС»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Конкретно подтверждены собственный автопарк, категория Е и модель/тип полуприцепа в одном объявлении.",
+        "company_source_url_count": 3
+      },
+      {
+        "canonical_id": "k000422",
+        "organization": "ООО «Совтрансавто-Смоленск»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Конкретный парк тягачей и тентованной прицепной техники подтверждён региональным экспортным каталогом.",
+        "company_source_url_count": 4
+      },
+      {
+        "canonical_id": "k000424",
+        "organization": "ООО «ТЕЛС Карго Лайн»",
+        "a_rule": "direct_driver_operation",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Связка «локальная организация — таможенные перевозки — вакансии водителей на полуприцепы категории CE» подтверждает регулярную тяжёлую автологистику.",
+        "company_source_url_count": 6
+      },
+      {
+        "canonical_id": "k000774",
+        "organization": "ООО «Трансснип»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Сайт организации: парк транспортных средств включает шторные полуприцепы Schmitz SCS и полуприцепы Schmitz SCO 24; адрес — г. Смоленск, ул. Лавочкина, д. 55, офис 401.",
+        "company_source_url_count": 5
+      },
+      {
+        "canonical_id": "k000154",
+        "organization": "«Стандарт Европа»",
+        "a_rule": "direct_ownership_or_fleet",
+        "status": "missing_claim_source",
+        "selected_a_evidence": "Связь работодателя, категории Е, собственного парка и прицепной техники дана в тексте вакансии.",
+        "company_source_url_count": 1
+      }
+    ],
+    "invalid_source_url_records": 0,
+    "invalid_source_url_review": [],
+    "source_attribution_method": "same_note_or_exact_structured_fact_no_live_lookups",
+    "missing_organization_records": 0,
+    "duplicated_canonical_id_records": 0,
+    "shared_inn_conflict_records": 0,
+    "source_id_lineage_count": 1089,
+    "reviewed_alias_groups_from_pipeline": [
+      {
+        "survivor_canonical_id": "k000234",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000234",
+          "k000449",
+          "k000235",
+          "k000236",
+          "k000237"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000889",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000889",
+          "k000890"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000609",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000609",
+          "k000610"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000184",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000184",
+          "k000185"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000915",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000915",
+          "k000916"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000643",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000643",
+          "k000644"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000876",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000876",
+          "k000877",
+          "k000878"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000880",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000880",
+          "k000881"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000328",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000328",
+          "k000326",
+          "k000327"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000073",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000073",
+          "k000074",
+          "k000075",
+          "k000076"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000049",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000049",
+          "k000046",
+          "k000047",
+          "k000048",
+          "k000050"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000143",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000143",
+          "k000140",
+          "k000141",
+          "k000142",
+          "k000144",
+          "k000145"
+        ],
+        "absorbed_count": 5,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000807",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000807",
+          "k000808",
+          "k000809"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000220",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000220",
+          "k000221",
+          "k000222"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000607",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000607",
+          "k000608"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000442",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000442",
+          "k000443"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000592",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000592",
+          "k000593"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000272",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000272",
+          "k000271"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000565",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000565",
+          "k000566"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000366",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000366",
+          "k000367"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000348",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000348",
+          "k000345",
+          "k000346",
+          "k000347",
+          "k000349",
+          "k000350"
+        ],
+        "absorbed_count": 5,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000285",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000285",
+          "k000286"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000437",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000437",
+          "k000438"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000008",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000008",
+          "k000007",
+          "k000009",
+          "k000010",
+          "k000011"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000816",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000816",
+          "k000817",
+          "k000818"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000003",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000003",
+          "k000004"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000257",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000257",
+          "k000256"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000529",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000529",
+          "k000530"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000687",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000687",
+          "k000688"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000595",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000595",
+          "k000596",
+          "k000597",
+          "k000598"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000851",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000851",
+          "k000849",
+          "k000850"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000232",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000232",
+          "k000233"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000119",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000119",
+          "k000120",
+          "k000121"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000436",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000436",
+          "k000435"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000646",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000646",
+          "k000647",
+          "k000648",
+          "k000649"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000005",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000005",
+          "k000006"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000275",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000275",
+          "k000276"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000138",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000138",
+          "k000139"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000716",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000716",
+          "k000717"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000101",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000101",
+          "k000102",
+          "k000103"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000420",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000420",
+          "k000421"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000300",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000300",
+          "k000301"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000406",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000406",
+          "k000407",
+          "k000408",
+          "k000409",
+          "k000410",
+          "k000411"
+        ],
+        "absorbed_count": 5,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000062",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000062",
+          "k000063"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000871",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000871",
+          "k000870"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000581",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000581",
+          "k000582"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000882",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000882",
+          "k000883",
+          "k000884"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000632",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000632",
+          "k000631"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000585",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000585",
+          "k000586"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000654",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000654",
+          "k000653"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000674",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000674",
+          "k000675"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000893",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000893",
+          "k000894",
+          "k000895"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000840",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000840",
+          "k000842"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000024",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000024",
+          "k000023"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000560",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000560",
+          "k000559"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000468",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000468",
+          "k000467"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000091",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000091",
+          "k000092"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000018",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000018",
+          "k000016",
+          "k000017"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000910",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000910",
+          "k000911"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000619",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000619",
+          "k000620"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000629",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000629",
+          "k000630"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000210",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000210",
+          "k000209",
+          "k000211"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000174",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000174",
+          "k000173",
+          "k000175"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000547",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000547",
+          "k000548"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000550",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000550",
+          "k000549"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000475",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000475",
+          "k000474",
+          "k000476"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000638",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000638",
+          "k000639"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000810",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000810",
+          "k000811"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000613",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000613",
+          "k000614"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000058",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000058",
+          "k000059"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000001",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000001",
+          "k000002"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000200",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000200",
+          "k000199",
+          "k000201",
+          "k000202",
+          "k000203"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000611",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000611",
+          "k000612"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000274",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000274",
+          "k000273"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000854",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000854",
+          "k000853"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000125",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000125",
+          "k000126",
+          "k000127",
+          "k000128"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000029",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000029",
+          "k000030"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000834",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000834",
+          "k000835",
+          "k000836",
+          "k000837",
+          "k000838",
+          "k000839"
+        ],
+        "absorbed_count": 5,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000390",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000390",
+          "k000391",
+          "k000392",
+          "k000393"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000456",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000456",
+          "k000457",
+          "k000458"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000146",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000146",
+          "k000147",
+          "k000148"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000108",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000108",
+          "k000107",
+          "k000109"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000901",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000901",
+          "k000902"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000170",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000170",
+          "k000169",
+          "k000171"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000830",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000830",
+          "k000831",
+          "k000832",
+          "k000833"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000804",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000804",
+          "k000805",
+          "k000806"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000315",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000315",
+          "k000314"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000865",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000865",
+          "k000866",
+          "k000867"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000013",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000013",
+          "k000012",
+          "k000014"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000666",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000666",
+          "k000665",
+          "k000667",
+          "k000668"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000182",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000182",
+          "k000180",
+          "k000181"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000814",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000814",
+          "k000815"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000539",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000539",
+          "k000540",
+          "k000541"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000353",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000353",
+          "k000060"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000115",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000115",
+          "k000116",
+          "k000117"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000331",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000331",
+          "k000329",
+          "k000330"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000558",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000558",
+          "k000563"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000579",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000579",
+          "k000580"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000827",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000827",
+          "k000828",
+          "k000829"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000742",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000742",
+          "k000743"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000897",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000897",
+          "k000898",
+          "k000899"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000036",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000036",
+          "k000034",
+          "k000035",
+          "k000037",
+          "k000038"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000053",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000053",
+          "k000054",
+          "k000055",
+          "k000056",
+          "k000057"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000422",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000422",
+          "k000423"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000129",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000129",
+          "k000130",
+          "k000131",
+          "k000132"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000484",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000484",
+          "k000485",
+          "k000486"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000885",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000885",
+          "k000886",
+          "k000887",
+          "k000888"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000134",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000134",
+          "k000135",
+          "k000136",
+          "k000137"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000440",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000440",
+          "k000439",
+          "k000441"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000672",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000672",
+          "k000669",
+          "k000670",
+          "k000671"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000650",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000650",
+          "k000651",
+          "k000652"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000481",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000481",
+          "k000480",
+          "k000482"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000465",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000465",
+          "k000464",
+          "k000089",
+          "k000090"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000157",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000157",
+          "k000156"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000414",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000414",
+          "k000415"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000334",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000334",
+          "k000335",
+          "k000336"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000491",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000491",
+          "k000490"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000701",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000701",
+          "k000700"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000341",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000341",
+          "k000342"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000086",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000086",
+          "k000087"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000576",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000576",
+          "k000577",
+          "k000578"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000381",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000381",
+          "k000380",
+          "k000382",
+          "k000383"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000082",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000082",
+          "k000083",
+          "k000084"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000908",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000908",
+          "k000909"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000194",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000194",
+          "k000192",
+          "k000193",
+          "k000195",
+          "k000196",
+          "k000197",
+          "k000198"
+        ],
+        "absorbed_count": 6,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000166",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000166",
+          "k000162",
+          "k000163",
+          "k000164",
+          "k000165"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000066",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000066",
+          "k000067",
+          "k000068"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000205",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000205",
+          "k000204",
+          "k000206",
+          "k000207",
+          "k000208"
+        ],
+        "absorbed_count": 4,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000400",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000400",
+          "k000401",
+          "k000402",
+          "k000403"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000452",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000452",
+          "k000453"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000123",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000123",
+          "k000124"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000615",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000615",
+          "k000616",
+          "k000617"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000297",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000297",
+          "k000298",
+          "k000299"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000868",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000868",
+          "k000869"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000032",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000032",
+          "k000033"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000812",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000812",
+          "k000813"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000078",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000078",
+          "k000079",
+          "k000080",
+          "k000081"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000847",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000847",
+          "k000848"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000167",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000167",
+          "k000168"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000149",
+        "sheet": "direct_buyers",
+        "original_canonical_ids": [
+          "k000149",
+          "k000150",
+          "k000151",
+          "k000152"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000357",
+        "sheet": "intermediaries",
+        "original_canonical_ids": [
+          "k000357",
+          "k000358"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000354",
+        "sheet": "intermediaries",
+        "original_canonical_ids": [
+          "k000354",
+          "k000355"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000246",
+        "sheet": "intermediaries",
+        "original_canonical_ids": [
+          "k000246",
+          "k000247",
+          "k000248",
+          "k000249"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000861",
+        "sheet": "intermediaries",
+        "original_canonical_ids": [
+          "k000861",
+          "k000862",
+          "k000863"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000361",
+        "sheet": "intermediaries",
+        "original_canonical_ids": [
+          "k000361",
+          "k000362"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000309",
+        "sheet": "leasing",
+        "original_canonical_ids": [
+          "k000309",
+          "k000310"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000961",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000961",
+          "k001007"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000926",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000926",
+          "k001014"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000934",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000934",
+          "k000943"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000919",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000919",
+          "k000962",
+          "k000967",
+          "k001009"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000979",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000979",
+          "k001032"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k001057",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k001057",
+          "k001081"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000923",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000923",
+          "k001011"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000970",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000970",
+          "k001030"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k001044",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k001044",
+          "k001075"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000939",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000939",
+          "k001051"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000966",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000966",
+          "k000921"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000930",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000930",
+          "k000974"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000920",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000920",
+          "k000963",
+          "k000965",
+          "k001008"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k001062",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k001062",
+          "k001010"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000960",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000960",
+          "k001080"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000973",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000973",
+          "k001031"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000922",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000922",
+          "k001013"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000252",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000252",
+          "k000253",
+          "k000254"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000492",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000492",
+          "k000493",
+          "k000494"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000306",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000306",
+          "k000307"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000396",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000396",
+          "k000397",
+          "k000398",
+          "k000399"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000418",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000418",
+          "k000419"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000110",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000110",
+          "k000111",
+          "k000112",
+          "k000113"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000872",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000872",
+          "k000873"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000819",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000819",
+          "k000820",
+          "k000821",
+          "k000822",
+          "k000823",
+          "k000824",
+          "k000825",
+          "k000826"
+        ],
+        "absorbed_count": 7,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000501",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000501",
+          "k000502"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000843",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000843",
+          "k000844",
+          "k000845",
+          "k000846"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000904",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000904",
+          "k000905",
+          "k000906",
+          "k000907"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000250",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000250",
+          "k000251"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000375",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000375",
+          "k000376",
+          "k000377"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000258",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000258",
+          "k000259"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000217",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000217",
+          "k000218",
+          "k000219"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000071",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000071",
+          "k000072"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000640",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000640",
+          "k000641",
+          "k000642"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000241",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000241",
+          "k000242"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000855",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000855",
+          "k000856"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000624",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000624",
+          "k000625",
+          "k000626"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000266",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000266",
+          "k000265"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000471",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000471",
+          "k000472",
+          "k000473"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000261",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000261",
+          "k000260",
+          "k000262",
+          "k000263"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000158",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000158",
+          "k000159",
+          "k000160",
+          "k000161"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000040",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000040",
+          "k000041",
+          "k000042",
+          "k000043"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000555",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000555",
+          "k000556"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000302",
+        "sheet": "REVIEW",
+        "original_canonical_ids": [
+          "k000302",
+          "k000303"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000918",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000918",
+          "k001017"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000941",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000941",
+          "k000953",
+          "k001039",
+          "k001053"
+        ],
+        "absorbed_count": 3,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000803",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000803",
+          "k000801",
+          "k000802"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000860",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000860",
+          "k000859"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000892",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000892",
+          "k000891"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000955",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000955",
+          "k000956"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000940",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000940",
+          "k001073"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000213",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000213",
+          "k000214",
+          "k000215"
+        ],
+        "absorbed_count": 2,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      },
+      {
+        "survivor_canonical_id": "k000318",
+        "sheet": "EXCLUDED",
+        "original_canonical_ids": [
+          "k000318",
+          "k000319"
+        ],
+        "absorbed_count": 1,
+        "source_restoration": "preexisting_identity_merge_no_new_lookups"
+      }
+    ],
+    "source_id_cross_survivor_conflicts": [
+      {
+        "source_id": "k000004",
+        "other_survivor": "k000003",
+        "survivor": "k000004"
+      },
+      {
+        "source_id": "k000007",
+        "other_survivor": "k000008",
+        "survivor": "k000007"
+      },
+      {
+        "source_id": "k000009",
+        "other_survivor": "k000008",
+        "survivor": "k000009"
+      },
+      {
+        "source_id": "k000012",
+        "other_survivor": "k000013",
+        "survivor": "k000012"
+      },
+      {
+        "source_id": "k000014",
+        "other_survivor": "k000013",
+        "survivor": "k000014"
+      },
+      {
+        "source_id": "k000030",
+        "other_survivor": "k000029",
+        "survivor": "k000030"
+      },
+      {
+        "source_id": "k000033",
+        "other_survivor": "k000032",
+        "survivor": "k000033"
+      },
+      {
+        "source_id": "k000037",
+        "other_survivor": "k000036",
+        "survivor": "k000037"
+      },
+      {
+        "source_id": "k000055",
+        "other_survivor": "k000053",
+        "survivor": "k000055"
+      },
+      {
+        "source_id": "k000060",
+        "other_survivor": "k000353",
+        "survivor": "k000060"
+      },
+      {
+        "source_id": "k000079",
+        "other_survivor": "k000078",
+        "survivor": "k000079"
+      },
+      {
+        "source_id": "k000083",
+        "other_survivor": "k000082",
+        "survivor": "k000083"
+      },
+      {
+        "source_id": "k000084",
+        "other_survivor": "k000082",
+        "survivor": "k000084"
+      },
+      {
+        "source_id": "k000089",
+        "other_survivor": "k000465",
+        "survivor": "k000089"
+      },
+      {
+        "source_id": "k000107",
+        "other_survivor": "k000108",
+        "survivor": "k000107"
+      },
+      {
+        "source_id": "k000113",
+        "other_survivor": "k000110",
+        "survivor": "k000113"
+      },
+      {
+        "source_id": "k000116",
+        "other_survivor": "k000115",
+        "survivor": "k000116"
+      },
+      {
+        "source_id": "k000120",
+        "other_survivor": "k000119",
+        "survivor": "k000120"
+      },
+      {
+        "source_id": "k000140",
+        "other_survivor": "k000143",
+        "survivor": "k000140"
+      },
+      {
+        "source_id": "k000144",
+        "other_survivor": "k000143",
+        "survivor": "k000144"
+      },
+      {
+        "source_id": "k000147",
+        "other_survivor": "k000146",
+        "survivor": "k000147"
+      },
+      {
+        "source_id": "k000148",
+        "other_survivor": "k000146",
+        "survivor": "k000148"
+      },
+      {
+        "source_id": "k000150",
+        "other_survivor": "k000149",
+        "survivor": "k000150"
+      },
+      {
+        "source_id": "k000151",
+        "other_survivor": "k000149",
+        "survivor": "k000151"
+      },
+      {
+        "source_id": "k000152",
+        "other_survivor": "k000149",
+        "survivor": "k000152"
+      },
+      {
+        "source_id": "k000156",
+        "other_survivor": "k000157",
+        "survivor": "k000156"
+      },
+      {
+        "source_id": "k000162",
+        "other_survivor": "k000166",
+        "survivor": "k000162"
+      },
+      {
+        "source_id": "k000163",
+        "other_survivor": "k000166",
+        "survivor": "k000163"
+      },
+      {
+        "source_id": "k000164",
+        "other_survivor": "k000166",
+        "survivor": "k000164"
+      },
+      {
+        "source_id": "k000165",
+        "other_survivor": "k000166",
+        "survivor": "k000165"
+      },
+      {
+        "source_id": "k000168",
+        "other_survivor": "k000167",
+        "survivor": "k000168"
+      },
+      {
+        "source_id": "k000169",
+        "other_survivor": "k000170",
+        "survivor": "k000169"
+      },
+      {
+        "source_id": "k000171",
+        "other_survivor": "k000170",
+        "survivor": "k000171"
+      },
+      {
+        "source_id": "k000173",
+        "other_survivor": "k000174",
+        "survivor": "k000173"
+      },
+      {
+        "source_id": "k000175",
+        "other_survivor": "k000174",
+        "survivor": "k000175"
+      },
+      {
+        "source_id": "k000180",
+        "other_survivor": "k000182",
+        "survivor": "k000180"
+      },
+      {
+        "source_id": "k000181",
+        "other_survivor": "k000182",
+        "survivor": "k000181"
+      },
+      {
+        "source_id": "k000185",
+        "other_survivor": "k000184",
+        "survivor": "k000185"
+      },
+      {
+        "source_id": "k000203",
+        "other_survivor": "k000200",
+        "survivor": "k000203"
+      },
+      {
+        "source_id": "k000204",
+        "other_survivor": "k000205",
+        "survivor": "k000204"
+      },
+      {
+        "source_id": "k000208",
+        "other_survivor": "k000205",
+        "survivor": "k000208"
+      },
+      {
+        "source_id": "k000286",
+        "other_survivor": "k000285",
+        "survivor": "k000286"
+      },
+      {
+        "source_id": "k000301",
+        "other_survivor": "k000300",
+        "survivor": "k000301"
+      },
+      {
+        "source_id": "k000310",
+        "other_survivor": "k000309",
+        "survivor": "k000310"
+      },
+      {
+        "source_id": "k000314",
+        "other_survivor": "k000315",
+        "survivor": "k000314"
+      },
+      {
+        "source_id": "k000326",
+        "other_survivor": "k000328",
+        "survivor": "k000326"
+      },
+      {
+        "source_id": "k000327",
+        "other_survivor": "k000328",
+        "survivor": "k000327"
+      },
+      {
+        "source_id": "k000335",
+        "other_survivor": "k000334",
+        "survivor": "k000335"
+      },
+      {
+        "source_id": "k000336",
+        "other_survivor": "k000334",
+        "survivor": "k000336"
+      },
+      {
+        "source_id": "k000367",
+        "other_survivor": "k000366",
+        "survivor": "k000367"
+      },
+      {
+        "source_id": "k000382",
+        "other_survivor": "k000381",
+        "survivor": "k000382"
+      },
+      {
+        "source_id": "k000398",
+        "other_survivor": "k000396",
+        "survivor": "k000398"
+      },
+      {
+        "source_id": "k000402",
+        "other_survivor": "k000400",
+        "survivor": "k000402"
+      },
+      {
+        "source_id": "k000411",
+        "other_survivor": "k000406",
+        "survivor": "k000411"
+      },
+      {
+        "source_id": "k000415",
+        "other_survivor": "k000414",
+        "survivor": "k000415"
+      },
+      {
+        "source_id": "k000419",
+        "other_survivor": "k000418",
+        "survivor": "k000419"
+      },
+      {
+        "source_id": "k000421",
+        "other_survivor": "k000420",
+        "survivor": "k000421"
+      },
+      {
+        "source_id": "k000423",
+        "other_survivor": "k000422",
+        "survivor": "k000423"
+      },
+      {
+        "source_id": "k000457",
+        "other_survivor": "k000456",
+        "survivor": "k000457"
+      },
+      {
+        "source_id": "k000467",
+        "other_survivor": "k000468",
+        "survivor": "k000467"
+      },
+      {
+        "source_id": "k000476",
+        "other_survivor": "k000475",
+        "survivor": "k000476"
+      },
+      {
+        "source_id": "k000480",
+        "other_survivor": "k000481",
+        "survivor": "k000480"
+      },
+      {
+        "source_id": "k000502",
+        "other_survivor": "k000501",
+        "survivor": "k000502"
+      },
+      {
+        "source_id": "k000540",
+        "other_survivor": "k000539",
+        "survivor": "k000540"
+      },
+      {
+        "source_id": "k000541",
+        "other_survivor": "k000539",
+        "survivor": "k000541"
+      },
+      {
+        "source_id": "k000549",
+        "other_survivor": "k000550",
+        "survivor": "k000549"
+      },
+      {
+        "source_id": "k000563",
+        "other_survivor": "k000558",
+        "survivor": "k000563"
+      },
+      {
+        "source_id": "k000580",
+        "other_survivor": "k000579",
+        "survivor": "k000580"
+      },
+      {
+        "source_id": "k000586",
+        "other_survivor": "k000585",
+        "survivor": "k000586"
+      },
+      {
+        "source_id": "k000620",
+        "other_survivor": "k000619",
+        "survivor": "k000620"
+      },
+      {
+        "source_id": "k000631",
+        "other_survivor": "k000632",
+        "survivor": "k000631"
+      },
+      {
+        "source_id": "k000649",
+        "other_survivor": "k000646",
+        "survivor": "k000649"
+      },
+      {
+        "source_id": "k000667",
+        "other_survivor": "k000666",
+        "survivor": "k000667"
+      },
+      {
+        "source_id": "k000671",
+        "other_survivor": "k000672",
+        "survivor": "k000671"
+      },
+      {
+        "source_id": "k000700",
+        "other_survivor": "k000701",
+        "survivor": "k000700"
+      },
+      {
+        "source_id": "k000743",
+        "other_survivor": "k000742",
+        "survivor": "k000743"
+      },
+      {
+        "source_id": "k000806",
+        "other_survivor": "k000804",
+        "survivor": "k000806"
+      },
+      {
+        "source_id": "k000808",
+        "other_survivor": "k000807",
+        "survivor": "k000808"
+      },
+      {
+        "source_id": "k000809",
+        "other_survivor": "k000807",
+        "survivor": "k000809"
+      },
+      {
+        "source_id": "k000813",
+        "other_survivor": "k000812",
+        "survivor": "k000813"
+      },
+      {
+        "source_id": "k000815",
+        "other_survivor": "k000814",
+        "survivor": "k000815"
+      },
+      {
+        "source_id": "k000821",
+        "other_survivor": "k000819",
+        "survivor": "k000821"
+      },
+      {
+        "source_id": "k000823",
+        "other_survivor": "k000819",
+        "survivor": "k000823"
+      },
+      {
+        "source_id": "k000825",
+        "other_survivor": "k000819",
+        "survivor": "k000825"
+      },
+      {
+        "source_id": "k000828",
+        "other_survivor": "k000827",
+        "survivor": "k000828"
+      },
+      {
+        "source_id": "k000836",
+        "other_survivor": "k000834",
+        "survivor": "k000836"
+      },
+      {
+        "source_id": "k000838",
+        "other_survivor": "k000834",
+        "survivor": "k000838"
+      },
+      {
+        "source_id": "k000844",
+        "other_survivor": "k000843",
+        "survivor": "k000844"
+      },
+      {
+        "source_id": "k000845",
+        "other_survivor": "k000843",
+        "survivor": "k000845"
+      },
+      {
+        "source_id": "k000846",
+        "other_survivor": "k000843",
+        "survivor": "k000846"
+      },
+      {
+        "source_id": "k000848",
+        "other_survivor": "k000847",
+        "survivor": "k000848"
+      },
+      {
+        "source_id": "k000849",
+        "other_survivor": "k000851",
+        "survivor": "k000849"
+      },
+      {
+        "source_id": "k000850",
+        "other_survivor": "k000851",
+        "survivor": "k000850"
+      },
+      {
+        "source_id": "k000867",
+        "other_survivor": "k000865",
+        "survivor": "k000867"
+      },
+      {
+        "source_id": "k000873",
+        "other_survivor": "k000872",
+        "survivor": "k000873"
+      },
+      {
+        "source_id": "k000883",
+        "other_survivor": "k000882",
+        "survivor": "k000883"
+      },
+      {
+        "source_id": "k000884",
+        "other_survivor": "k000882",
+        "survivor": "k000884"
+      },
+      {
+        "source_id": "k000890",
+        "other_survivor": "k000889",
+        "survivor": "k000890"
+      },
+      {
+        "source_id": "k000894",
+        "other_survivor": "k000893",
+        "survivor": "k000894"
+      },
+      {
+        "source_id": "k000902",
+        "other_survivor": "k000901",
+        "survivor": "k000902"
+      },
+      {
+        "source_id": "k000921",
+        "other_survivor": "k000966",
+        "survivor": "k000921"
+      },
+      {
+        "source_id": "k001010",
+        "other_survivor": "k001062",
+        "survivor": "k001010"
+      },
+      {
+        "source_id": "k001081",
+        "other_survivor": "k001057",
+        "survivor": "k001081"
+      },
+      {
+        "source_id": "k000247",
+        "other_survivor": "k000246",
+        "survivor": "k000247"
+      },
+      {
+        "source_id": "k000248",
+        "other_survivor": "k000246",
+        "survivor": "k000248"
+      },
+      {
+        "source_id": "k000249",
+        "other_survivor": "k000246",
+        "survivor": "k000249"
+      },
+      {
+        "source_id": "k000253",
+        "other_survivor": "k000252",
+        "survivor": "k000253"
+      },
+      {
+        "source_id": "k000254",
+        "other_survivor": "k000252",
+        "survivor": "k000254"
+      },
+      {
+        "source_id": "k000355",
+        "other_survivor": "k000354",
+        "survivor": "k000355"
+      },
+      {
+        "source_id": "k000362",
+        "other_survivor": "k000361",
+        "survivor": "k000362"
+      },
+      {
+        "source_id": "k000862",
+        "other_survivor": "k000861",
+        "survivor": "k000862"
+      },
+      {
+        "source_id": "k000863",
+        "other_survivor": "k000861",
+        "survivor": "k000863"
+      },
+      {
+        "source_id": "k001031",
+        "other_survivor": "k000973",
+        "survivor": "k001031"
+      },
+      {
+        "source_id": "k001032",
+        "other_survivor": "k000979",
+        "survivor": "k001032"
+      },
+      {
+        "source_id": "k000276",
+        "other_survivor": "k000275",
+        "survivor": "k000276"
+      },
+      {
+        "source_id": "k000869",
+        "other_survivor": "k000868",
+        "survivor": "k000869"
+      },
+      {
+        "source_id": "k000159",
+        "other_survivor": "k000159",
+        "survivor": "k000158"
+      },
+      {
+        "source_id": "k000160",
+        "other_survivor": "k000160",
+        "survivor": "k000158"
+      },
+      {
+        "source_id": "k000161",
+        "other_survivor": "k000161",
+        "survivor": "k000158"
+      },
+      {
+        "source_id": "k000041",
+        "other_survivor": "k000041",
+        "survivor": "k000040"
+      },
+      {
+        "source_id": "k000042",
+        "other_survivor": "k000042",
+        "survivor": "k000040"
+      },
+      {
+        "source_id": "k000043",
+        "other_survivor": "k000043",
+        "survivor": "k000040"
+      },
+      {
+        "source_id": "k000303",
+        "other_survivor": "k000303",
+        "survivor": "k000302"
+      },
+      {
+        "source_id": "k000801",
+        "other_survivor": "k000801",
+        "survivor": "k000803"
+      },
+      {
+        "source_id": "k000802",
+        "other_survivor": "k000802",
+        "survivor": "k000803"
+      },
+      {
+        "source_id": "k000891",
+        "other_survivor": "k000891",
+        "survivor": "k000892"
+      },
+      {
+        "source_id": "k000319",
+        "other_survivor": "k000319",
+        "survivor": "k000318"
+      }
+    ],
+    "verified_cross_queue_inn_conflict_records": 0,
+    "verified_cross_queue_inn_conflicts": [],
+    "unverified_cross_queue_inn_conflict_records": 0,
+    "unverified_cross_queue_inn_conflicts": [],
+    "output_canonical_id_collision_groups": 0,
+    "output_canonical_id_collisions": [],
+    "transitions": [
+      {
+        "canonical_id": "k000308",
+        "organization": "АО «Смоленское» по племенной работе",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000775",
+        "organization": "ИП Цыганков Иван Анатольевич",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000706",
+        "organization": "ООО «КТК»",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000158",
+        "organization": "ООО «ЛК Аргамак»",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000040",
+        "organization": "ООО «МоревоНеруд»",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000555",
+        "organization": "ООО «Строительные детали»",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000302",
+        "organization": "ООО «Царское Село»",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000344",
+        "organization": "RWB / Wildberries & Russ",
+        "sheet": "direct_buyers",
+        "before": "A",
+        "after": "REVIEW",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ],
+        "evidence_rechecked": false
+      },
+      {
+        "canonical_id": "k000318",
+        "organization": "Главное управление Смоленской области по регулированию контрактной системы",
+        "sheet": "intermediaries",
+        "before": "A",
+        "after": "EXCLUDED",
+        "reasons": [
+          "noncommercial_entity"
+        ],
+        "evidence_rechecked": false
+      }
+    ],
+    "flags": [
+      {
+        "canonical_id": "k000308",
+        "organization": "АО «Смоленское» по племенной работе",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000775",
+        "organization": "ИП Цыганков Иван Анатольевич",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000706",
+        "organization": "ООО «КТК»",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000158",
+        "organization": "ООО «ЛК Аргамак»",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000040",
+        "organization": "ООО «МоревоНеруд»",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000555",
+        "organization": "ООО «Строительные детали»",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000302",
+        "organization": "ООО «Царское Село»",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000344",
+        "organization": "RWB / Wildberries & Russ",
+        "sheet": "direct_buyers",
+        "reasons": [
+          "A_direct_buyer_selected_claim_is_inference_not_a_trailer_event"
+        ]
+      },
+      {
+        "canonical_id": "k000318",
+        "organization": "Главное управление Смоленской области по регулированию контрактной системы",
+        "sheet": "intermediaries",
+        "reasons": [
+          "noncommercial_entity"
+        ]
+      }
+    ],
+    "originals_lost": 0,
+    "legal_identities_modified": 0,
+    "new_alias_merges": 0,
+    "fabricated_source_facts": 0,
+    "web_search_calls": 0,
+    "openai_calls": 0,
+    "historical_sources_rechecked": false
+  },
+  "source_untouched": true,
+  "paid_api_calls": 0
+}

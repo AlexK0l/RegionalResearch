@@ -1,0 +1,1309 @@
+{
+  "checkpoint": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "summary": {
+    "fact_records_with_explicit_inline_urls": 318,
+    "rows_missing_inn": 129,
+    "inn_candidates_for_manual_review": 22,
+    "detected_cross_row_inn_conflicts": 2,
+    "filled_rows_with_conflicting_saved_inn": 5,
+    "explicit_role_and_legal_flags": 8,
+    "distinct_inn_candidates_on_blank_rows": 13,
+    "role_issues": 6,
+    "legal_issues": 2,
+    "candidate_rows_without_inn": 22,
+    "conflict_rows_with_filled_inn": 5,
+    "possible_shared_source_pairs": 6,
+    "candidate_inn_groups": 13
+  },
+  "roles": [
+    {
+      "canonical_id": "k000297",
+      "organization": "АО «ЖелДорЭкспедиция» — Смоленский офис и обслуживание Рудни",
+      "current_grade": "C",
+      "current_inn": "7718725461",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Роль классифицирована как посредник/экспедитор, так как страница не доказывает собственную эксплуатацию перечисленной техники.",
+          "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+        },
+        {
+          "type": "legal_form_mismatch",
+          "proposed_role": "verify_registry_legal_form",
+          "evidence_note": "Final INN: ИНН подтверждён для ООО «ЖелДорЭкспедиция»; в исходном названии указана некорректная организационно-правовая форма.",
+          "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "intermediary_in_direct_buyers",
+        "proposed_role": "intermediaries",
+        "evidence_note": "Роль классифицирована как посредник/экспедитор, так как страница не доказывает собственную эксплуатацию перечисленной техники.",
+        "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+      }
+    },
+    {
+      "canonical_id": "k000223",
+      "organization": "«Доставкин67»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Из-за отсутствия раскрытого юрлица и подтверждения собственности конкретной техники оставлен в intermediaries. ([dostavkin67.ru](https://dostavkin67.ru/?utm_source=openai))",
+          "source_urls": [
+            "https://dostavkin67.ru/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 1,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Из-за отсутствия раскрытого юрлица и подтверждения собственности конкретной техники оставлен в intermediaries. ([dostavkin67.ru](https://dostavkin67.ru/?utm_source=openai))",
+          "source_url": "https://dostavkin67.ru/"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "intermediary_in_direct_buyers",
+        "proposed_role": "intermediaries",
+        "evidence_note": "Из-за отсутствия раскрытого юрлица и подтверждения собственности конкретной техники оставлен в intermediaries. ([dostavkin67.ru](https://dostavkin67.ru/?utm_source=openai))",
+        "source_url": "https://dostavkin67.ru/"
+      }
+    },
+    {
+      "canonical_id": "k000529",
+      "organization": "Журнал «ЛесПромИнформ»",
+      "current_grade": "C",
+      "current_inn": "7810776348",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "source_only_in_direct_buyers",
+          "proposed_role": "discovery_source",
+          "evidence_note": "Роль — информационный и профессиональный discovery-канал; конечными потенциальными покупателями являются указанные в справочнике предприятия.",
+          "source_url": "https://lesprominform.ru/jarticles.html?id=4811"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "source_only_in_direct_buyers",
+        "proposed_role": "discovery_source",
+        "evidence_note": "Роль — информационный и профессиональный discovery-канал; конечными потенциальными покупателями являются указанные в справочнике предприятия.",
+        "source_url": "https://lesprominform.ru/jarticles.html?id=4811"
+      }
+    },
+    {
+      "canonical_id": "k000594",
+      "organization": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"ТЕХНОПАРК-СМ\"",
+      "current_grade": "C",
+      "current_inn": "6732100886",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 10,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Роль отнесена к intermediaries: источник подтверждает услугу/операцию сбора, но не подтверждает собственный парк полуприцепов или конечное производство плит/бумаги.",
+          "source_url": "https://vtorsm.ru/"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "intermediary_in_direct_buyers",
+        "proposed_role": "intermediaries",
+        "evidence_note": "Роль отнесена к intermediaries: источник подтверждает услугу/операцию сбора, но не подтверждает собственный парк полуприцепов или конечное производство плит/бумаги.",
+        "source_url": "https://vtorsm.ru/"
+      }
+    },
+    {
+      "canonical_id": "k000373",
+      "organization": "ООО «КЕДР»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Конкретная модель прицепа или собственность на парк в карточке не раскрыта, поэтому компания отнесена к посредникам/перевозчикам, а не к уровню A.",
+          "source_url": "https://gosanalitika.ru/zakupki/postavki-vyvozu-0339300000126000535/"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "intermediary_in_direct_buyers",
+        "proposed_role": "intermediaries",
+        "evidence_note": "Конкретная модель прицепа или собственность на парк в карточке не раскрыта, поэтому компания отнесена к посредникам/перевозчикам, а не к уровню A.",
+        "source_url": "https://gosanalitika.ru/zakupki/postavki-vyvozu-0339300000126000535/"
+      }
+    },
+    {
+      "canonical_id": "k000218",
+      "organization": "ООО «Спецавтотехника»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Организация находится в Смоленске и представляет канал прямого обращения за SAT-зерновозами; эксплуатация собственного парка не подтверждена. ([smolensk.cataloxy.ru](https://smolensk.cataloxy.ru/firms/satpricep.ru.htm?utm_source=openai))",
+          "source_urls": [
+            "https://smolensk.cataloxy.ru/firms/satpricep.ru.htm?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 12,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Организация отнесена к посредникам/сервисно-дилерскому каналу, а не к direct buyer: публичного подтверждения собственной эксплуатации парка в рамках ветки не найдено.",
+          "source_url": "https://satpricep.ru/catalog/polupritsepy/polupritsepy-zernovozy/polupritsep-samosvalnyy-sat118-zernovoz/"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "intermediary_in_direct_buyers",
+        "proposed_role": "intermediaries",
+        "evidence_note": "Организация отнесена к посредникам/сервисно-дилерскому каналу, а не к direct buyer: публичного подтверждения собственной эксплуатации парка в рамках ветки не найдено.",
+        "source_url": "https://satpricep.ru/catalog/polupritsepy/polupritsepy-zernovozy/polupritsep-samosvalnyy-sat118-zernovoz/"
+      }
+    }
+  ],
+  "legal": [
+    {
+      "canonical_id": "k000297",
+      "organization": "АО «ЖелДорЭкспедиция» — Смоленский офис и обслуживание Рудни",
+      "current_grade": "C",
+      "current_inn": "7718725461",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "intermediary_in_direct_buyers",
+          "proposed_role": "intermediaries",
+          "evidence_note": "Роль классифицирована как посредник/экспедитор, так как страница не доказывает собственную эксплуатацию перечисленной техники.",
+          "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+        },
+        {
+          "type": "legal_form_mismatch",
+          "proposed_role": "verify_registry_legal_form",
+          "evidence_note": "Final INN: ИНН подтверждён для ООО «ЖелДорЭкспедиция»; в исходном названии указана некорректная организационно-правовая форма.",
+          "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "legal_form_mismatch",
+        "proposed_role": "verify_registry_legal_form",
+        "evidence_note": "Final INN: ИНН подтверждён для ООО «ЖелДорЭкспедиция»; в исходном названии указана некорректная организационно-правовая форма.",
+        "source_url": "https://www.jde.ru/branch/moskva/to/smolensk/rudnja.html"
+      }
+    },
+    {
+      "canonical_id": "k000601",
+      "organization": "ОТКРЫТОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО \"ИГОРЕВСКИЙ ДЕРЕВООБРАБАТЫВАЮЩИЙ КОМБИНАТ\"",
+      "current_grade": "C",
+      "current_inn": "6719003058",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [
+        {
+          "type": "separate_legal_successor",
+          "proposed_role": "verify_distinct_ogrns",
+          "evidence_note": "Identity: Юридическая идентичность подтверждена по совпадению полного наименования, адресу в ст. Игоревская Холм-Жирковского района и ИНН 6719003058. Не объединено с ООО \"Игоревский деревообрабатывающий комбинат\" (ИНН 6726019740), которое является отдельным юридическим лицом и правопреемником ОАО.",
+          "source_url": "https://faolex.fao.org/docs/pdf/rus155902.pdf"
+        }
+      ],
+      "facts_are_not_verified_by_this_audit": true,
+      "flag": {
+        "type": "separate_legal_successor",
+        "proposed_role": "verify_distinct_ogrns",
+        "evidence_note": "Identity: Юридическая идентичность подтверждена по совпадению полного наименования, адресу в ст. Игоревская Холм-Жирковского района и ИНН 6719003058. Не объединено с ООО \"Игоревский деревообрабатывающий комбинат\" (ИНН 6726019740), которое является отдельным юридическим лицом и правопреемником ОАО.",
+        "source_url": "https://faolex.fao.org/docs/pdf/rus155902.pdf"
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "canonical_id": "k000374",
+      "organization": "АО «Агропромышленная фирма «Наша Житница»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Региональный инвестиционный портал подтверждает реализацию проекта животноводческого комплекса в Гагаринском районе и заявку на льготное инвестиционное кредитование для строительства объектов и приобретения специализированной сельхозтехники. ([smolinvest.ru](https://smolinvest.ru/news/6327/?sphrase_id=1082560&utm_source=openai))",
+          "source_urls": [
+            "https://smolinvest.ru/news/6327/?sphrase_id=1082560&utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "В региональной карточке проекта указаны молочно-товарный комплекс на 1 200 коров, производство продукции растениеводства и инвестиции свыше 1,3 млрд рублей. ([web-mbl-dev01.k8s.trudvsem.ru](https://web-mbl-dev01.k8s.trudvsem.ru/map/region?regionCode=6700000000000&utm_source=openai))",
+          "source_urls": [
+            "https://web-mbl-dev01.k8s.trudvsem.ru/map/region?regionCode=6700000000000&utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "Официальные реквизиты компании подтверждают юридическое лицо и расположение производственной площадки в Гагаринском районе. ([agrogi.ru](https://agrogi.ru/legal/?utm_source=openai))",
+          "source_urls": [
+            "https://agrogi.ru/legal/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6229026994",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6229026994",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000188",
+      "organization": "АО «АПФ «Наша Житница»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6229026994",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6229026994",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000579",
+      "organization": "АО «Кардымовский МКК»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6708000520",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6708000520",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000398",
+      "organization": "АО «Кардымовский молочноконсервный комбинат»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6708000520",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6708000520",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000066",
+      "organization": "АО «Спецавтохозяйство»",
+      "current_grade": "B",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "АО «СпецАТХ» прямо заявляет транспортирование и захоронение отходов производства, в том числе строительного мусора, и наличие современной специализированной техники. ([sah67.ru](https://sah67.ru/?utm_source=openai))",
+          "source_urls": [
+            "https://sah67.ru/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "Сортировочный комплекс предприятия перерабатывает значительные объёмы ТКО; полезные фракции прессуются/брикетируются и отправляются на переработку, что формирует регулярный межобъектный грузопоток. ([newsroom24.ru](https://newsroom24.ru/smolensk/news/zhizn/2026/news_320811/?utm_source=openai))",
+          "source_urls": [
+            "https://newsroom24.ru/smolensk/news/zhizn/2026/news_320811/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 19,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6731069440",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6731069440",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000319",
+      "organization": "АО «СпецАТХ»",
+      "current_grade": "B",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6731069440",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6731069440",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000276",
+      "organization": "Группа компаний «ГРИН ЛАЙН»",
+      "current_grade": "A",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6713005690",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6713005690",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000016",
+      "organization": "Евразийская нерудная компания",
+      "current_grade": "B",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Прямо заявлены производство и доставка нерудной продукции и собственный автопарк. ([evraznerud.com](https://evraznerud.com/?utm_source=openai))",
+          "source_urls": [
+            "https://evraznerud.com/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 1,
+      "candidate_inns_for_review": [
+        {
+          "inn": "7715458112",
+          "status": "already_used_by_another_row",
+          "existing_owners": [
+            {
+              "canonical_id": "k000039",
+              "organization": "ООО «КОНТО-ОЙЛ»"
+            }
+          ]
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "7715458112",
+        "status": "already_used_by_another_row",
+        "existing_owners": [
+          {
+            "canonical_id": "k000039",
+            "organization": "ООО «КОНТО-ОЙЛ»"
+          }
+        ]
+      }
+    },
+    {
+      "canonical_id": "k000193",
+      "organization": "ООО «Агрофирма-Катынь»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 7,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6714049860",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6714049860",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000523",
+      "organization": "ООО «Грин Лайн»",
+      "current_grade": "A",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 6,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6713005690",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6713005690",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000533",
+      "organization": "ООО «Кубаньмасло»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 4,
+      "candidate_inns_for_review": [
+        {
+          "inn": "7113021283",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "7113021283",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000397",
+      "organization": "ООО «Кубаньмасло-ЕМЗ»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "7113021283",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "7113021283",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000340",
+      "organization": "ООО ПО «Энергоресурс»",
+      "current_grade": "A",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Работодатель в Смоленске эксплуатирует тягачи Shacman X3000 с бортовыми полуприцепами ТЗА и Тонар; заявлены регулярные перевозки ЖБИ, металлопроката и прочих стройматериалов по ЦФО. ([xn----8sbnjg0adinpefc8b1e6c.xn--p1ai](https://xn----8sbnjg0adinpefc8b1e6c.xn--p1ai/vacancies/648280-voditel-avtomobilya-gruzovogo-spetsialnogo/?utm_source=openai))",
+          "source_urls": [
+            "https://xn----8sbnjg0adinpefc8b1e6c.xn--p1ai/vacancies/648280-voditel-avtomobilya-gruzovogo-spetsialnogo/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 1,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732191851",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732191851",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000333",
+      "organization": "ООО «СИТИМАТИК»",
+      "current_grade": "B",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Официальный сайт указывает долгосрочные и разовые перевозки отходов, собственный парк и его расширение. ([citymatic-logistic.ru](https://citymatic-logistic.ru/prices/?utm_source=openai))",
+          "source_urls": [
+            "https://citymatic-logistic.ru/prices/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "Региональный экологический доклад фиксирует ООО «Ситиматик» как лицензиата по транспортированию отходов I–IV классов. ([prirod.admin-smolensk.ru](https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai))",
+          "source_urls": [
+            "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732054083",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732054083",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000285",
+      "organization": "ООО «Ситиматик» — Смоленский филиал",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732054083",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732054083",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000338",
+      "organization": "ООО «СмолВторСталь»",
+      "current_grade": "B",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Организация указана в региональном перечне лицензированных участников обращения с отходами. ([prirod.admin-smolensk.ru](https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai))",
+          "source_urls": [
+            "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732124140",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732124140",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000578",
+      "organization": "ООО «СмолВторСырьё»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732124140",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732124140",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000260",
+      "organization": "ООО «Торговая компания БЕЛАТОРГ»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732102259",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732102259",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000510",
+      "organization": "ООО «Форест Групп»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Профессиональное отраслевое сообщество «Лестех» указывает лесопильное производство, переработку до 15 тыс. м³ древесины в месяц, выпуск пиломатериалов и до 1,67 тыс. т пеллет ежемесячно. ([alestech.ru](https://alestech.ru/factory/882-forest-group?utm_source=openai))",
+          "source_urls": [
+            "https://alestech.ru/factory/882-forest-group?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "Собственный сайт прямо указывает доставку продукции лесовозом, собственным транспортом и транспортными компаниями по Смоленской области и всей России. ([forest-groups.ru](https://forest-groups.ru/delivery/?utm_source=openai))",
+          "source_urls": [
+            "https://forest-groups.ru/delivery/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 9,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6722033415",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6722033415",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000357",
+      "organization": "ООО «Экопром»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732132711",
+          "status": "already_used_by_another_row",
+          "existing_owners": [
+            {
+              "canonical_id": "k000104",
+              "organization": "ООО «ЭКОВТОРПРОМ»"
+            }
+          ]
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732132711",
+        "status": "already_used_by_another_row",
+        "existing_owners": [
+          {
+            "canonical_id": "k000104",
+            "organization": "ООО «ЭКОВТОРПРОМ»"
+          }
+        ]
+      }
+    },
+    {
+      "canonical_id": "k000434",
+      "organization": "ООО «Forest Group»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6722033415",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6722033415",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000221",
+      "organization": "ООО «ТК БЕЛАТОРГ»",
+      "current_grade": "C",
+      "current_inn": "",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Роль — дилер/поставщик, а не подтверждённый эксплуатант техники. ([svoefermerstvo.ru](https://svoefermerstvo.ru/organization/31620?utm_source=openai))",
+          "source_urls": [
+            "https://svoefermerstvo.ru/organization/31620?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 6,
+      "candidate_inns_for_review": [
+        {
+          "inn": "6732102259",
+          "status": "candidate_requires_legal_verification",
+          "existing_owners": []
+        }
+      ],
+      "conflicting_inns_in_saved_notes": [],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732102259",
+        "status": "candidate_requires_legal_verification",
+        "existing_owners": []
+      }
+    }
+  ],
+  "contradictions": [
+    {
+      "canonical_id": "k000171",
+      "organization": "ИП Аникеев Сергей Николаевич",
+      "current_grade": "A",
+      "current_inn": "671202587000",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 2,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [
+        {
+          "inn": "6712025870",
+          "status": "manual_entity_provenance_review",
+          "existing_owners": []
+        }
+      ],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6712025870",
+        "status": "manual_entity_provenance_review",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000543",
+      "organization": "ИП Асланян Айк Гагикович",
+      "current_grade": "C",
+      "current_inn": "507902142419",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 3,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [
+        {
+          "inn": "5079021424",
+          "status": "manual_entity_provenance_review",
+          "existing_owners": []
+        }
+      ],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "5079021424",
+        "status": "manual_entity_provenance_review",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000591",
+      "organization": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"КВВ-АГРО\"",
+      "current_grade": "C",
+      "current_inn": "6713017400",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 8,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [
+        {
+          "inn": "6714049860",
+          "status": "manual_entity_provenance_review",
+          "existing_owners": []
+        }
+      ],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6714049860",
+        "status": "manual_entity_provenance_review",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000595",
+      "organization": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"ТЕЛЛУРА\"",
+      "current_grade": "B",
+      "current_inn": "6729002078",
+      "claims_with_inline_urls": [
+        {
+          "statement": "Источник фиксирует ООО «Теллура» и лицензированный вид деятельности по транспортированию отходов. ([prirod.admin-smolensk.ru](https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai))",
+          "source_urls": [
+            "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        },
+        {
+          "statement": "Продажа продукции за пределы локального рынка создаёт логистический поток, однако конкретная техника и перевозчик не подтверждены. ([smol-ray.smolensk.ru](https://smol-ray.smolensk.ru/ray/terrplan/shema-territorialnogo-planirovaniya-polozhenie-o-territorialnom-planirovanii-redakciya-2019-goda/?utm_source=openai))",
+          "source_urls": [
+            "https://smol-ray.smolensk.ru/ray/terrplan/shema-territorialnogo-planirovaniya-polozhenie-o-territorialnom-planirovanii-redakciya-2019-goda/?utm_source=openai"
+          ],
+          "status": "explicit_inline_url_not_independently_verified"
+        }
+      ],
+      "notes_without_inline_urls": 7,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [
+        {
+          "inn": "6732191851",
+          "status": "manual_entity_provenance_review",
+          "existing_owners": []
+        }
+      ],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6732191851",
+        "status": "manual_entity_provenance_review",
+        "existing_owners": []
+      }
+    },
+    {
+      "canonical_id": "k000455",
+      "organization": "ООО «Экотрейд — Смоленск»",
+      "current_grade": "C",
+      "current_inn": "6731079470",
+      "claims_with_inline_urls": [],
+      "notes_without_inline_urls": 5,
+      "candidate_inns_for_review": [],
+      "conflicting_inns_in_saved_notes": [
+        {
+          "inn": "6714032545",
+          "status": "manual_entity_provenance_review",
+          "existing_owners": [
+            {
+              "canonical_id": "k000121",
+              "organization": "ООО «Смоленские вторичные ресурсы»"
+            }
+          ]
+        }
+      ],
+      "role_and_legal_review_flags": [],
+      "facts_are_not_verified_by_this_audit": true,
+      "item": {
+        "inn": "6714032545",
+        "status": "manual_entity_provenance_review",
+        "existing_owners": [
+          {
+            "canonical_id": "k000121",
+            "organization": "ООО «Смоленские вторичные ресурсы»"
+          }
+        ]
+      }
+    }
+  ],
+  "possible_duplicates": [
+    {
+      "inn": "6229026994",
+      "records": [
+        {
+          "canonical_id": "k000374",
+          "organization": "АО «Агропромышленная фирма «Наша Житница»"
+        },
+        {
+          "canonical_id": "k000188",
+          "organization": "АО «АПФ «Наша Житница»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6708000520",
+      "records": [
+        {
+          "canonical_id": "k000579",
+          "organization": "АО «Кардымовский МКК»"
+        },
+        {
+          "canonical_id": "k000398",
+          "organization": "АО «Кардымовский молочноконсервный комбинат»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6731069440",
+      "records": [
+        {
+          "canonical_id": "k000066",
+          "organization": "АО «Спецавтохозяйство»"
+        },
+        {
+          "canonical_id": "k000319",
+          "organization": "АО «СпецАТХ»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6713005690",
+      "records": [
+        {
+          "canonical_id": "k000276",
+          "organization": "Группа компаний «ГРИН ЛАЙН»"
+        },
+        {
+          "canonical_id": "k000523",
+          "organization": "ООО «Грин Лайн»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "7715458112",
+      "records": [
+        {
+          "canonical_id": "k000016",
+          "organization": "Евразийская нерудная компания"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6714049860",
+      "records": [
+        {
+          "canonical_id": "k000193",
+          "organization": "ООО «Агрофирма-Катынь»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "7113021283",
+      "records": [
+        {
+          "canonical_id": "k000533",
+          "organization": "ООО «Кубаньмасло»"
+        },
+        {
+          "canonical_id": "k000397",
+          "organization": "ООО «Кубаньмасло-ЕМЗ»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6732191851",
+      "records": [
+        {
+          "canonical_id": "k000340",
+          "organization": "ООО ПО «Энергоресурс»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6732054083",
+      "records": [
+        {
+          "canonical_id": "k000333",
+          "organization": "ООО «СИТИМАТИК»"
+        },
+        {
+          "canonical_id": "k000285",
+          "organization": "ООО «Ситиматик» — Смоленский филиал"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6732124140",
+      "records": [
+        {
+          "canonical_id": "k000338",
+          "organization": "ООО «СмолВторСталь»"
+        },
+        {
+          "canonical_id": "k000578",
+          "organization": "ООО «СмолВторСырьё»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6732102259",
+      "records": [
+        {
+          "canonical_id": "k000260",
+          "organization": "ООО «Торговая компания БЕЛАТОРГ»"
+        },
+        {
+          "canonical_id": "k000221",
+          "organization": "ООО «ТК БЕЛАТОРГ»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6722033415",
+      "records": [
+        {
+          "canonical_id": "k000510",
+          "organization": "ООО «Форест Групп»"
+        },
+        {
+          "canonical_id": "k000434",
+          "organization": "ООО «Forest Group»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    },
+    {
+      "inn": "6732132711",
+      "records": [
+        {
+          "canonical_id": "k000357",
+          "organization": "ООО «Экопром»"
+        }
+      ],
+      "status": "manual_review_no_automatic_merge"
+    }
+  ],
+  "shared_sources": [
+    {
+      "ids": [
+        "k000386",
+        "k000388"
+      ],
+      "organizations": [
+        "ООО «Агро-Велиж»",
+        "СПК «Крутое»"
+      ],
+      "inns": [
+        "6713014021",
+        "6701004928"
+      ],
+      "shared_urls": [
+        "https://selhoz.admin-smolensk.ru/files/908/22.04.2020_17.10.31_prikaz-0056-ot-07-07-2020-sh.pdf",
+        "https://velizh.admin-smolensk.ru/novosti/osnovnye-rezultaty-raboty-selskohozyajstvennyh-tovaroproizvoditelej-velizhskogo-rajona-za-2018-god"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    },
+    {
+      "ids": [
+        "k000191",
+        "k000508"
+      ],
+      "organizations": [
+        "ООО «АГРО-ФОРС»",
+        "ООО «Козинский тепличный комбинат»"
+      ],
+      "inns": [
+        "6714046241",
+        "6714033860"
+      ],
+      "shared_urls": [
+        "https://smartik.ru/smolensk/post/256744782",
+        "https://rshn32.ru/files/2023/02/riski_pest_sm.pdf"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    },
+    {
+      "ids": [
+        "k000545",
+        "k000546"
+      ],
+      "organizations": [
+        "ООО «Атолл Групп»",
+        "ООО «АТОЛЛ СТАБНА»"
+      ],
+      "inns": [
+        "6732208880",
+        "6700020444"
+      ],
+      "shared_urls": [
+        "https://sciencelab.sgsha.ru/news/detail.php?id=3792",
+        "https://abn.agency/2024/11/02/v-smolenskoj-oblasti-budut-vypuskat-organomineralnye-udobreniya"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    },
+    {
+      "ids": [
+        "k000131",
+        "k000155"
+      ],
+      "organizations": [
+        "ООО «СТА-Центр»",
+        "ООО «Транспортная Компания Технология Движения»"
+      ],
+      "inns": [
+        "6722021794",
+        "5038107432"
+      ],
+      "shared_urls": [
+        "https://smolenskaya-oblast.jobcareer.ru/jobs/voditel",
+        "https://smolensk.hh.ru/vacancies/voditel-dalnobojschik-kategorii-e"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    },
+    {
+      "ids": [
+        "k000426",
+        "k000429"
+      ],
+      "organizations": [
+        "ООО «Русская торфяная компания»",
+        "ООО «Торфопром»"
+      ],
+      "inns": [
+        "5024200047",
+        "6725032804"
+      ],
+      "shared_urls": [
+        "https://smolinvest.ru/en/projects/torfprom-llc",
+        "https://smolinvest.ru/news/5793"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    },
+    {
+      "ids": [
+        "k000266",
+        "k000269"
+      ],
+      "organizations": [
+        "ООО «Транс-СМ»",
+        "ООО «ФАНТОМ ГРУПП»"
+      ],
+      "inns": [
+        "6713006768",
+        "6731063021"
+      ],
+      "shared_urls": [
+        "https://tsmru.com/o-kompanii",
+        "https://tsmru.com"
+      ],
+      "status": "source_overlap_not_an_identity_or_ownership_proof"
+    }
+  ],
+  "source_unchanged": true,
+  "auto_filled_inns": 0,
+  "auto_merged_rows": 0,
+  "openai_calls": 0,
+  "web_search_calls": 0,
+  "caution": "Source-derived hints only. Verify legal names, OGRN, roles and ownership in primary records before changing any rows."
+}

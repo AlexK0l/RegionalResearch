@@ -1,0 +1,103 @@
+{
+  "checkpoint_id": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "changes": [
+    {
+      "canonical_id": "k000488",
+      "organization": "«Керамет»",
+      "inn": "5003146550",
+      "ogrn": "1215000083209",
+      "source_url": "https://keramet.ru/kontakty/",
+      "source_class": "first_party",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Официальные реквизиты ООО «КЕРАМЕТ» принадлежат оператору сайта keramet.ru; источник исходной строки https://keramet.ru/smolensk/. Услуги в Смоленске заявлены, но фактическое подразделение и наличие собственных прицепов в регионе не установлены. Класс B не менять.",
+      "secondary_url": "https://saby.ru/profile/5003146550-500301001"
+    }
+  ],
+  "cumulative_changes": [
+    {
+      "canonical_id": "k000340",
+      "organization": "ООО ПО «Энергоресурс»",
+      "inn": "6732191851",
+      "ogrn": "1206700002376",
+      "source_url": "https://er67.ru/contact/",
+      "source_class": "first_party",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Реквизиты собственного сайта ПО Энергоресурс. Не переносить номер в ООО Теллура.",
+      "secondary_url": "https://xfirm.ru/company/6732191851"
+    },
+    {
+      "canonical_id": "k000523",
+      "organization": "ООО «Грин Лайн»",
+      "inn": "6713005690",
+      "ogrn": "1046745602221",
+      "source_url": "https://smolensk-gov.ru/doc/120340",
+      "source_class": "government_and_registry",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Точный ИНН ООО Грин Лайн; группа компаний не идентифицирована как это юридическое лицо.",
+      "secondary_url": "https://firmoteka.ru/6713005690"
+    },
+    {
+      "canonical_id": "k000338",
+      "organization": "ООО «СмолВторСталь»",
+      "inn": "6732124140",
+      "ogrn": "1166733058557",
+      "source_url": "https://firmoteka.ru/6732124140",
+      "source_class": "current_registry_crosscheck",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Точная реестровая идентичность СмолВторСталь; имя СмолВторСырье в других источниках требует отдельной проверки.",
+      "secondary_url": "https://check.tochka.com/company/1166733058557/"
+    },
+    {
+      "canonical_id": "k000333",
+      "organization": "ООО «СИТИМАТИК»",
+      "inn": "6732054083",
+      "ogrn": "1136733001140",
+      "source_url": "https://www.tbank.ru/business/contractor/legal/1136733001140/",
+      "source_class": "current_registry_crosscheck",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Реквизиты ООО Ситиматик. Смоленский филиал следует сохранить отдельно как региональную площадку.",
+      "secondary_url": "https://check.tochka.com/company/1136733001140/"
+    },
+    {
+      "canonical_id": "k000193",
+      "organization": "ООО «Агрофирма-Катынь»",
+      "inn": "6714049860",
+      "ogrn": "1196733017690",
+      "source_url": "https://olaks.ru/kontakty-agrofirmy/",
+      "source_class": "first_party",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Реквизиты с официальной страницы Агрофирма-Катынь. Нельзя подставлять этот ИНН в КВВ-АГРО.",
+      "secondary_url": "https://industrials.ru/proizvoditel/22307-agrofirma-katyn"
+    },
+    {
+      "canonical_id": "k000488",
+      "organization": "«Керамет»",
+      "inn": "5003146550",
+      "ogrn": "1215000083209",
+      "source_url": "https://keramet.ru/kontakty/",
+      "source_class": "first_party",
+      "checked_on": "2026-11-02",
+      "section": "direct_buyers",
+      "notes": "Официальные реквизиты ООО «КЕРАМЕТ» принадлежат оператору сайта keramet.ru; источник исходной строки https://keramet.ru/smolensk/. Услуги в Смоленске заявлены, но фактическое подразделение и наличие собственных прицепов в регионе не установлены. Класс B не менять.",
+      "secondary_url": "https://saby.ru/profile/5003146550-500301001"
+    }
+  ],
+  "after": {
+    "total": 491,
+    "with_inn": 370,
+    "without_inn": 121,
+    "grades": {
+      "C": 345,
+      "B": 71,
+      "A": 71,
+      "REVIEW": 4
+    }
+  },
+  "without_openai_calls": true
+}
