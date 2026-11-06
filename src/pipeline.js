@@ -14,7 +14,7 @@ import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecove
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
-import { finalizeProductionResearch } from "./productionFinalQuality.js";
+import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, disclaimsSelectedTrailerEvidence } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
@@ -4145,18 +4145,22 @@ function deterministicQualificationDecision(record) {
       else if (actualTrailerProcurement) matchedRule = "leasing_concrete_transaction";
     }
 
-    // A model name, product card, directory listing or generic sale/service
-    // offer is supporting context only. It cannot independently promote a row
-    // to A without a role-appropriate concrete event or operating signal.
+    // Selection must enforce the same safety policy as the final quality
+    // gate. Otherwise a speculative/negative note can win A ranking, and
+    // post-contact QA unnecessarily quarantines a confirmed C cargo owner.
+    // Source-bound evidence for a different positive A note is still eligible.
     if (matchedRule) {
-      // A negative, identity-only or hypothetical mention is not positive
-      // trailer ownership/operation, even if it contains all regex keywords.
+      const selectedClaim = rawEvidenceNotes[noteIndex] || note;
       const aExclusion = rejectUnsafeAEvidence(record, note);
-      if (aExclusion) continue;
+      const unsupportedDirectA = directRole && (
+        selectedADirectBuyerIsOnlyInference(selectedClaim) ||
+        disclaimsSelectedTrailerEvidence(selectedClaim)
+      );
+      if (aExclusion || unsupportedDirectA) continue;
       aCandidates.push({
-        note: rawEvidenceNotes[noteIndex] || note,
+        note: selectedClaim,
         rule: matchedRule, index: noteIndex,
-        score: rankSafeAEvidence(record, rawEvidenceNotes[noteIndex] || note, matchedRule)
+        score: rankSafeAEvidence(record, selectedClaim, matchedRule)
       });
     }
   }
