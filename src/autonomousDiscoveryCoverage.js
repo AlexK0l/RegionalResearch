@@ -30,6 +30,17 @@ function rowsOf(result) {
   return SECTIONS.flatMap(sheet => arr(result?.[sheet]).map(row => ({ sheet, row })));
 }
 function nameOf(row) { return normalize(row?.["Организация"]); }
+// Only byte-equivalent normalized evidence is a safe pre-identity duplicate.
+// Matching names alone never prove that two rows refer to one legal entity.
+function candidateFingerprint(row) {
+  const inn = text(row?.["ИНН"]).replace(/\D/g, "");
+  const sourceKey = urlsFor(row).slice().sort().join("|");
+  const notesKey = arr(row?.__evidence?.notes)
+    .map(normalize).filter(Boolean).sort().join("|");
+  return [nameOf(row), inn, normalize(row?.["Город/район"]),
+    sourceKey, notesKey].join("||");
+}
+
 function compactInt(value, fallback, cap) {
   const number = Number(value);
   return Number.isFinite(number)
@@ -65,11 +76,13 @@ export function planAutonomousDiscoveryCoverage({
     const strong = strongNames.size;
     const diversity = [...sourceFamilies].filter(Boolean).length;
     const ratio = count ? strong / count : 0;
-    // A small/empty sector was already inspected by the ordinary census.
-    // This second opinion is for measurable EVIDENCE quality gaps, not for
-    // inflating the total count of organizations.
-    const eligible = count >= 2 && (ratio < 0.25 || diversity <= 1);
+    // 0-1 company is itself a coverage gap, not proof the sector is empty.
+    // The ordinary census remains first; this is at most maxPasses extra
+    // source-diversified searches within the SAME existing research budget.
+    const thinSector = count <= 1;
+    const eligible = thinSector || ratio < 0.25 || diversity <= 1;
     const score = eligible ? Number((
+      (thinSector ? (count === 0 ? 2.2 : 1.4) : 0) +
       (1 - ratio) * 4 +
       (1 - Math.min(1, diversity / 3)) * 2 +
       (count ? noUrls / count : 0) +
@@ -142,15 +155,16 @@ export function autonomousDiscoveryPrompt({
     "Наличие грузов, логистической потребности или ОКВЭД не означает эксплуатацию полуприцепа.",
     "Не подменяй отсутствие фактов предположениями или общими ссылками на поиск. " +
       "Если не удалось найти организации с самостоятельными источниками, верни пустые массивы.",
-    "Не проводи обогащение контактов или повторный поиск известных организаций.",
-    "УЖЕ НАЙДЕНО В ЭТОМ ЗАПУСКЕ: " + (known.join("; ") || "нет")
+    "Не проводи обогащение контактов и не дублируй уже найденные факты.",
+    "Одинаковые названия НЕ доказывают тождество юрлиц: новые источники, ИНН, ОГРН и роли сохраняй для отдельной identity-проверки.",
+    "УЖЕ НАЙДЕННЫЕ НАЗВАНИЯ В ЭТОМ ЗАПУСКЕ (НЕ стоп-список): " + (known.join("; ") || "нет")
   ].filter(Boolean).join("\n");
 }
 
 export function filterAutonomousDiscoveryFindings({
   response, current, sector, isCommercial = () => true
 } = {}) {
-  const known = new Set(rowsOf(current).map(({row}) => nameOf(row)).filter(Boolean));
+  const known = new Set(rowsOf(current).map(({row}) => candidateFingerprint(row)));
   const acceptedThisPass = new Set();
   const rejected = {
     duplicate_current: 0, duplicate_new: 0, no_name: 0,
@@ -161,8 +175,9 @@ export function filterAutonomousDiscoveryFindings({
   for (const {sheet,row} of rowsOf(response)) {
     const name = nameOf(row);
     if (!name) { rejected.no_name++; continue; }
-    if (known.has(name)) { rejected.duplicate_current++; continue; }
-    if (acceptedThisPass.has(name)) { rejected.duplicate_new++; continue; }
+    const fingerprint = candidateFingerprint(row);
+    if (known.has(fingerprint)) { rejected.duplicate_current++; continue; }
+    if (acceptedThisPass.has(fingerprint)) { rejected.duplicate_new++; continue; }
     const sources = urlsFor(row);
     const notes = arr(row?.__evidence?.notes).filter(note => text(note));
     if (!sources.length || !notes.length) {
@@ -191,7 +206,7 @@ export function filterAutonomousDiscoveryFindings({
       "Выручка последнего подтвержденного года", "Численность"
     ]) delete clean[key];
     result[sheet].push(clean);
-    acceptedThisPass.add(name);
+    acceptedThisPass.add(fingerprint);
     accepted++;
   }
   return {result, accepted, rejected,

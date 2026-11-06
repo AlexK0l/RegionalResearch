@@ -59,12 +59,22 @@ test("source diversity and strong evidence prevent gratuitous paid re-search", (
   assert.equal(plan.passes.length,0);
 });
 
-test("autonomous planner safely avoids paid passes when sector has no companies", () => {
+test("empty sectors are measurable gaps, capped by the same two-pass allowance", () => {
   const plan=planAutonomousDiscoveryCoverage({
     current:current([]),sectors,maxPasses:2
   });
-  assert.equal(plan.passes.length,0);
+  assert.equal(plan.passes.length,2);
   assert.equal(plan.current_seen_organizations,0);
+  assert.ok(plan.passes.every(p=>p.reason==="current_run_evidence_gap"));
+});
+test("a sector with one strong company is not mistaken for complete coverage", () => {
+  const plan=planAutonomousDiscoveryCoverage({
+    current:current([record("Only Carrier","own semitrailer freight",
+      ["https://carrier.example.org/one"])]),
+    sectors:[sectors[0]],gradeForRow:grade,classifySource:sourceFamily,maxPasses:2
+  });
+  assert.equal(plan.sectors[0].count,1);
+  assert.equal(plan.passes.length,1);
 });
 
 test("autonomous prompt has no exact company, INN, prior-run dependency or blind A promotion", () => {
@@ -80,7 +90,7 @@ test("autonomous prompt has no exact company, INN, prior-run dependency or blind
 });
 
 test("only new topic-aligned source-backed commercial candidates enter identity stage", () => {
-  const existing=current([record("Known Carrier","own semitrailer")]);
+  const existing=current([record("Known Carrier","grain freight",["https://grain.example.org/known"])]);
   const findings=filterAutonomousDiscoveryFindings({
     current:existing,sector:sectors[1],
     isCommercial: row=>!row["Организация"].startsWith("Ministry"),
@@ -92,6 +102,7 @@ test("only new topic-aligned source-backed commercial candidates enter identity 
           "Руководитель / ЛПР":"some director"
         }),
         record("New Grain Carrier","grain hauling",["https://grain.example.org/two"]),
+        record("New Grain Carrier","grain hauling",["https://grain.example.org/two"]),
         record("Off Topic","metal recycling",["https://metal.example.org/plant"],{
           "Техника/сегмент":"metal"
         }),
@@ -101,7 +112,7 @@ test("only new topic-aligned source-backed commercial candidates enter identity 
       intermediaries:[],leasing:[]
     }
   });
-  assert.equal(findings.accepted,1);
+  assert.equal(findings.accepted,2);
   assert.equal(findings.rejected.duplicate_current,1);
   assert.equal(findings.rejected.duplicate_new,1);
   assert.equal(findings.rejected.off_topic,1);
@@ -128,4 +139,18 @@ test("no fabricated discovery from malformed links, notes or missing sector", ()
   });
   assert.equal(filtered.accepted,0);
   assert.equal(filtered.rejected.no_specific_source,2);
+});
+
+test("same legal name with different new source is kept for identity, not name-deduped", () => {
+  const a=record("ООО Совпадающее имя","grain transport",
+    ["https://one.example.org/evidence"]);
+  const b=record("ООО Совпадающее имя","grain transport",
+    ["https://two.example.org/evidence"],{"ИНН":"7701122334"});
+  const plan=filterAutonomousDiscoveryFindings({
+    response:current([b]),current:current([a]),sector:sectors[1]
+  });
+  assert.equal(plan.accepted,1);
+  assert.equal(plan.rejected.duplicate_current,0);
+  assert.equal(plan.result.direct_buyers[0].__evidence.identity_verification,undefined);
+  assert.equal(plan.result.direct_buyers[0].__autonomous_coverage.identity_reverified,false);
 });

@@ -24,18 +24,18 @@ test("full official budget-entity names are excluded regardless of purchases", (
   }
 });
 
-test("short archived Khmelita, budget rescue and terminated company are INN-bound", () => {
-  for (const [name, inn] of [
-    ["Музей-заповедник «Хмелита»", "6722007648"],
-    ["Смоленское областное государственное бюджетное учреждение «Пожарно-спасательный центр»", "6732008094"],
-    ["ООО «Смоленская транспортная компания»", "6731065653"]
-  ]) {
-    const eligibility = commercialEligibility(row(name, inn));
-    assert.equal(eligibility.blocked, true);
-    assert.equal(eligibility.method, "audited_entity");
-  }
-  assert.equal(commercialEligibility(row("ООО «Смоленская транспортная компания»", "6731076084")).blocked, false);
-  assert.equal(commercialEligibility(row("ООО «Хмелита Транспорт»", "6711111111")).blocked, false);
+test("universal eligibility never hard-excludes a named firm without its own legal proof", () => {
+  const shortName = row("Музей-заповедник «Хмелита»", "6722007648");
+  assert.equal(commercialEligibility(shortName).blocked, false,
+    "name and historical INN alone cannot establish legal status");
+  const fullBudgetName = row("Смоленское областное государственное бюджетное учреждение «Пожарно-спасательный центр»", "6732008094");
+  assert.equal(commercialEligibility(fullBudgetName).blocked, true);
+  assert.equal(commercialEligibility(fullBudgetName).method, "legal_name");
+  const oldCompany = row("ООО «Смоленская транспортная компания»", "6731065653");
+  assert.equal(commercialEligibility(oldCompany).blocked, false,
+    "termination requires the company's own specific registry document");
+  assert.equal(commercialEligibility(row("ООО «Смоленская транспортная компания»","6731076084")).blocked,false);
+  assert.equal(commercialEligibility(row("ООО «Хмелита Транспорт»","6711111111")).blocked,false);
 });
 
 test("separate branch never becomes independently qualified company", () => {

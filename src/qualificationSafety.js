@@ -1,32 +1,7 @@
 // Evidence-bound commercial eligibility checks. No network calls and no
 // inference of an ACTIVE company from a missing closure record.
-// Audited exceptions are narrow, INN + organization-name matched, and retain
-// their public sources. They do NOT supply identity for other candidates.
-const VERIFIED_EXCLUSIONS = [
-  {
-    inn: "6722007648",
-    name: /хмелит/,
-    kind: "budget_institution",
-    source_url: "https://khmelita.com/kontakty/",
-    reason: "ФГБУК: государственный музей-заповедник, не коммерческий покупатель."
-  },
-  {
-    inn: "6732008094",
-    name: /пожарно[ -]спасательн.{0,15}центр/,
-    kind: "budget_institution",
-    source_url: "https://goszakupki.admin-smolensk.ru/portal/Show/contract?ParentItemId=14&link=10557124",
-    reason: "СОГБУ: бюджетное учреждение, не коммерческий покупатель."
-  },
-  {
-    inn: "6731065653",
-    name: /смоленск.{0,25}транспортн.{0,15}компани/,
-    kind: "ceased",
-    ogrn: "1076731018143",
-    source_url: "https://companies.rbc.ru/id/1076731018143-obschestvo-s-ogranichennoj-otvetstvennostyu-smolenskaya-transportnaya-kompaniya/",
-    reason: "ООО с ОГРН 1076731018143 прекратило деятельность 24.04.2014."
-  }
-];
-
+// No named legal entities or region-specific INNs are hardcoded in production.
+// Only source-bound, entity-specific proof can establish termination.
 const GOVERNMENT = [
   /(?:^| )администраци/, /(?:^| )министерств/, /(?:^| )департамент/,
   /(?:^| )комитет(?: |$)/, /(?:^| )правительств/,
@@ -113,12 +88,6 @@ export function commercialEligibility(row) {
   const name = legalName(row);
   const inn = digits(row?.["ИНН"]);
   const byName = classifyCommercialEntity(row);
-  const reviewed = VERIFIED_EXCLUSIONS.find((item) =>
-    inn === item.inn && item.name.test(name));
-  if (reviewed) {
-    return { blocked: true, kind: reviewed.kind, reason: reviewed.reason,
-      source_url: reviewed.source_url, method: "audited_entity", inn };
-  }
   if (byName === "source_channel") {
     return { blocked: true, kind: byName,
       reason: "Информационный/отраслевой источник не является самостоятельным покупателем прицепной техники.",

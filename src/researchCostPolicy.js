@@ -1,5 +1,15 @@
 // Offline-only cost/attribution policy. The reference workbook is never used.
 // All limits are independently configurable; budgets are not quality claims.
+// A new autonomous study must not inherit phone numbers from older studies.
+// Legacy cache requires an explicit opt-in AND autonomous discovery disabled.
+export function previousContactCacheEnabled(env = process.env) {
+  const autonomous = String(env.OPENAI_AUTONOMOUS_DISCOVERY_ENABLED ?? "true")
+    .toLowerCase() !== "false";
+  const cacheOptIn = String(env.OPENAI_PREVIOUS_CONTACT_CACHE ?? "false")
+    .toLowerCase() === "true";
+  return !autonomous && cacheOptIn;
+}
+
 function boundedInt(raw, fallback, min = 0, max = 20000) {
   const n = Number(raw);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback;

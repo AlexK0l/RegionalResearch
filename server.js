@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
-import { buildWorkbookBuffer, safeFileName } from "./src/xlsx.js";
+import { buildWorkbookBuffer, buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
@@ -624,6 +624,23 @@ app.get("/api/jobs/:id/download", (req, res) => {
   res.send(buffer);
 });
 
+
+// QA queue export is separate so the commercial SAT workbook always has 6 sheets.
+app.get("/api/jobs/:id/download-audit", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Аудит ещё не готов" });
+  const result = job.result?.result;
+  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
+  const buffer = buildAuditWorkbookBuffer(result);
+  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, "_audit.xlsx");
+  res.setHeader("Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader("Cache-Control", "no-store");
+  res.send(buffer);
+});
 
 app.get("/api/jobs/:id/quality", (req, res) => {
   const job = jobs.get(req.params.id);

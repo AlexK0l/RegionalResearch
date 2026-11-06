@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
 import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference } from "../src/productionFinalQuality.js";
 import { deterministicQualificationDecision, actionableUnqualifiedLead } from "../src/pipeline.js";
-import { buildWorkbookBuffer } from "../src/xlsx.js";
+import { buildWorkbookBuffer, buildAuditWorkbookBuffer } from "../src/xlsx.js";
 
 const make=(id,name,notes,extra={})=>({
   __canonical_id:id, "Организация":name,"ИНН":extra.inn||"",
@@ -113,7 +113,7 @@ test("structured facts are counted only when a real source URL is attached",()=>
  assert.equal(result.direct_buyers[0].__evidence.inline_note_provenance[0].automatic_qualification_proof,false);
 });
 
-test("review and excluded queues survive finalization and are visible in Excel",()=>{
+test("review and excluded survive finalization in JSON and separate audit Excel",()=>{
  const input=empty();
  input.direct_buyers.push(make("k41","ООО Грузовик",[noteA],{grade:"A"}));
  const review=make("k42","ООО Требуется проверка",[
@@ -133,10 +133,12 @@ test("review and excluded queues survive finalization and are visible in Excel",
  const wb=XLSX.read(buffer,{type:"buffer",cellComments:true});
  assert.deepEqual(wb.SheetNames,[
    "Прямые покупатели","Посредники","Лизинг","Статистика",
-   "Статистика по цветам","Легенда","REVIEW","EXCLUDED"
+   "Статистика по цветам","Легенда"
  ]);
- assert.equal(XLSX.utils.sheet_to_json(wb.Sheets.REVIEW).length,1);
- assert.equal(XLSX.utils.sheet_to_json(wb.Sheets.EXCLUDED).length,1);
+ const audit=XLSX.read(buildAuditWorkbookBuffer(result),{type:"buffer",cellComments:true});
+ assert.deepEqual(audit.SheetNames,["REVIEW","EXCLUDED"]);
+ assert.equal(XLSX.utils.sheet_to_json(audit.Sheets.REVIEW).length,1);
+ assert.equal(XLSX.utils.sheet_to_json(audit.Sheets.EXCLUDED).length,1);
  const active=XLSX.utils.sheet_to_json(wb.Sheets["Прямые покупатели"]);
  assert.equal(active.length,1);
  assert.ok(wb.Sheets["Прямые покупатели"].B2.c);

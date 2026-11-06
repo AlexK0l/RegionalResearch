@@ -248,13 +248,8 @@ export function buildWorkbookBuffer(result) {
   XLSX.utils.book_append_sheet(wb, buildStatisticsSheet(result.statistics || []), "Статистика");
   XLSX.utils.book_append_sheet(wb, buildColorStatisticsSheet(), "Статистика по цветам");
   XLSX.utils.book_append_sheet(wb, buildLegendSheet(), "Легенда");
-  // Preserve existing six-sheet layout when no REVIEW/EXCLUDED candidates exist.
-  if ((result.qualification_review || []).length || (result.qualification_excluded || []).length) {
-    XLSX.utils.book_append_sheet(wb,
-      buildAuditQueueSheet(result.qualification_review || [], "REVIEW"), "REVIEW");
-    XLSX.utils.book_append_sheet(wb,
-      buildAuditQueueSheet(result.qualification_excluded || [], "EXCLUDED"), "EXCLUDED");
-  }
+  // The commercial SAT workbook has EXACTLY six sheets even if QA queues exist.
+  // REVIEW and EXCLUDED remain in the JSON and a separate audit workbook.
 
   // Recalculate cached statistics BEFORE exporting. Formula cells otherwise
   // carry placeholder zeros in viewers that do not evaluate Excel formulas.
@@ -263,6 +258,16 @@ export function buildWorkbookBuffer(result) {
   wb.Workbook ??= {};
   wb.Workbook.CalcPr = { ...(wb.Workbook.CalcPr || {}), fullCalcOnLoad: true };
 
+  return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+}
+
+// Separate QA workbook: no diagnostic sheets leak into the six-sheet SAT CRM.
+export function buildAuditWorkbookBuffer(result) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,
+    buildAuditQueueSheet(result?.qualification_review || [], "REVIEW"), "REVIEW");
+  XLSX.utils.book_append_sheet(wb,
+    buildAuditQueueSheet(result?.qualification_excluded || [], "EXCLUDED"), "EXCLUDED");
   return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
 }
 

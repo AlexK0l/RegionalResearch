@@ -26,7 +26,8 @@ const e={
   resultCard:document.querySelector("#resultCard"),
   resultSummary:document.querySelector("#resultSummary"),
   download:document.querySelector("#downloadBtn"),
-  downloadJson:document.querySelector("#downloadJsonBtn")
+  downloadJson:document.querySelector("#downloadJsonBtn"),
+  downloadAudit:document.querySelector("#downloadAuditBtn")
 };
 
 REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions.append(o)});
@@ -599,7 +600,7 @@ async function cancel(){
 async function download(format="xlsx"){
   if(!currentJobId)return;
   try{
-    const endpoint=format==="json"?"/download-json":"/download";
+    const endpoint=format==="json"?"/download-json":format==="audit"?"/download-audit":"/download";
     const r=await fetch(apiUrl("/api/jobs/"+encodeURIComponent(currentJobId)+endpoint),{
       headers:headers(false)
     });
@@ -610,7 +611,7 @@ async function download(format="xlsx"){
     const b=await r.blob();
     const cd=r.headers.get("content-disposition")||"";
     const m=cd.match(/filename\*=UTF-8''([^;]+)/i);
-    const filename=m?decodeURIComponent(m[1]):(format==="json"?"SAT_result.json":"SAT_result.xlsx");
+    const filename=m?decodeURIComponent(m[1]):(format==="json"?"SAT_result.json":format==="audit"?"SAT_result_audit.xlsx":"SAT_result.xlsx");
     const u=URL.createObjectURL(b);
     const a=document.createElement("a");
     a.href=u;
@@ -678,6 +679,7 @@ e.checkpoint.onclick=downloadCheckpoint;
 e.cancel.onclick=cancel;
 e.download.onclick=()=>download("xlsx");
 e.downloadJson.onclick=()=>download("json");
+e.downloadAudit.onclick=()=>download("audit");
 
 timerTick=setInterval(()=>{
   if(lastProgress?.statuses)renderSteps(lastProgress.statuses);

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { previousContactCacheEnabled } from "../src/researchCostPolicy.js";
 
 const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
 const costPolicy = readFileSync(new URL("../src/researchCostPolicy.js", import.meta.url), "utf8");
@@ -39,7 +40,8 @@ test("paid API can be protected by a configured bearer token", () => {
 
 test("historical contacts require matching INN, source and 90 day limit", () => {
   assert.match(checkpoints, /loadLatestCompletedResearch/);
-  assert.match(pipeline, /OPENAI_PREVIOUS_CONTACT_CACHE/);
+  assert.match(costPolicy, /OPENAI_PREVIOUS_CONTACT_CACHE/);
+  assert.match(pipeline, /previousContactCacheEnabled\(process.env\)/);
   assert.match(pipeline, /90 \* 24 \* 3600 \* 1000/);
   assert.match(pipeline, /contact_verification/);
 });
@@ -48,4 +50,17 @@ test("frozen priority benchmark does not add reference organizations to discover
   assert.match(benchmark, /reference_priority_recall_pct/);
   assert.match(benchmark, /BENCHMARK_MIN_PRIORITY_RECALL/);
   assert.doesNotMatch(pipeline, /benchmark-reference\.js/);
+});
+
+test("independent research disables previous-run contact reuse despite old local env", () => {
+  assert.equal(previousContactCacheEnabled({}),false);
+  assert.equal(previousContactCacheEnabled({
+    OPENAI_AUTONOMOUS_DISCOVERY_ENABLED:"true",OPENAI_PREVIOUS_CONTACT_CACHE:"true"
+  }),false);
+  assert.equal(previousContactCacheEnabled({
+    OPENAI_AUTONOMOUS_DISCOVERY_ENABLED:"false",OPENAI_PREVIOUS_CONTACT_CACHE:"true"
+  }),true);
+  assert.equal(previousContactCacheEnabled({
+    OPENAI_AUTONOMOUS_DISCOVERY_ENABLED:"false",OPENAI_PREVIOUS_CONTACT_CACHE:"false"
+  }),false);
 });

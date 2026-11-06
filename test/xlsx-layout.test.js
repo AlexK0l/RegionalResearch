@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { buildWorkbookBuffer } from "../src/xlsx.js";
+import { buildWorkbookBuffer, buildAuditWorkbookBuffer } from "../src/xlsx.js";
 
 test("exports synchronized reference workbook layout", () => {
   const buffer = buildWorkbookBuffer({
@@ -63,4 +63,28 @@ test("exports synchronized reference workbook layout", () => {
     assert.equal(colors[cell].v, 0, cell + " counts only explicit CRM color values");
   }
   assert.match(colors.D4.f, /SUMPRODUCT/, "white formula counts blank and zero once");
+});
+
+test("main SAT stays six sheets when review queues exist; audit XLSX retains both queues", () => {
+  const item = (name) => ({ "Организация": name, "ИНН": "6732114166",
+    "__comment": "ИНН: 6732114166", "__canonical_id": name,
+    "__evidence": {source_urls:["https://example.org/entity"],notes:["Проверка"]} });
+  const data = {
+    direct_buyers:[item("Active")], intermediaries:[], leasing:[], statistics:[],
+    qualification_review:[{...item("Review"), "Телефон":"79999999999"}],
+    qualification_excluded:[item("Excluded")]
+  };
+  const main = XLSX.read(buildWorkbookBuffer(data), {type:"buffer",cellComments:true});
+  assert.deepEqual(main.SheetNames,[
+    "Прямые покупатели","Посредники","Лизинг","Статистика",
+    "Статистика по цветам","Легенда"
+  ]);
+  const qa = XLSX.read(buildAuditWorkbookBuffer(data), {type:"buffer",cellComments:true});
+  assert.deepEqual(qa.SheetNames,["REVIEW","EXCLUDED"]);
+  assert.equal(XLSX.utils.sheet_to_json(qa.Sheets.REVIEW).length,1);
+  assert.equal(XLSX.utils.sheet_to_json(qa.Sheets.EXCLUDED).length,1);
+  assert.equal(XLSX.utils.sheet_to_json(qa.Sheets.REVIEW)[0]["Телефон"],undefined);
+  assert.match(qa.Sheets.A1?.v || "Организация",/Организация/);
+  assert.equal(data.qualification_review[0]["Телефон"],"79999999999");
+  assert.ok(qa.Sheets.REVIEW.A2.c);
 });

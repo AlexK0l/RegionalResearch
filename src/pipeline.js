@@ -16,7 +16,7 @@ import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalIn
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
-import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance } from "./researchCostPolicy.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -6157,7 +6157,7 @@ export async function runResearchPipeline({ job, apiKey }) {
         ? `\n\nПОЛЬЗОВАТЕЛЬСКИЙ АРХИВ СУДЕБНЫХ АКТОВ — discovery-кандидаты:
 Архив содержит ${compactCourtArchiveMeta?.documents || 10109} документов. Для выбранного региона компактный индекс дал:
 ${JSON.stringify(compactCourtArchive)}
-Не добавляй организацию только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
+Этот резервный индекс ограничен и отбирает по географии СУДА, а не по месту регистрации организации. Он не охватывает гарантированно все дела компаний региона; не объявляй его полным архивным поиском. Совпадение суда с регионом не доказывает регистрацию фирмы. Не добавляй организацию только из-за присутствия в этом списке. Используй кандидатов для поиска конкретного дела через web_search/официальный судебный источник и независимо подтверждай региональную, юридическую и транспортную релевантность.`
         : "";
 
     if (i === 6 && COURT_VECTOR_STORE_ID && !resumePartialStage) {
@@ -8201,7 +8201,7 @@ ${JSON.stringify(gaps)}
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = allResearchRows(finalResult);
-  if (String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "true").toLowerCase() !== "false") {
+  if (previousContactCacheEnabled(process.env)) {
     try {
       // Read several COMPLETED studies; the newest source-confirmed phone wins.
       // A company absent from the latest run may still have a recent verified
@@ -8236,6 +8236,12 @@ ${JSON.stringify(gaps)}
     } catch (error) {
       console.warn("[PREVIOUS_CONTACT_CACHE_ERROR] " + JSON.stringify({ error: error?.message || String(error) }));
     }
+  } else {
+    console.log("[PREVIOUS_CONTACT_CACHE_DISABLED] " + JSON.stringify({
+      autonomous_discovery: AUTONOMOUS_DISCOVERY_ENABLED,
+      legacy_opt_in_ignored_in_autonomous_mode: AUTONOMOUS_DISCOVERY_ENABLED &&
+        String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "").toLowerCase() === "true"
+    }));
   }
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
