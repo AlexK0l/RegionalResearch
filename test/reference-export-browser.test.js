@@ -24,12 +24,12 @@ test("missing reference template is rejected before starting Python or paid rese
   },{templatePath:absent}),/Reference XLSX template missing/);
 });
 
-test("research queue defaults to a single active full job, preserving parallel-region isolation",()=>{
-  assert.match(server,/MAX_ACTIVE_FULL_JOBS\s*=\s*Math\.max\(/);
-  assert.match(server,/process\.env\.MAX_ACTIVE_FULL_JOBS \|\| 1/);
+test("research queue allows two full jobs with distinct regions",()=>{
+  assert.match(server,/MAX_ACTIVE_FULL_JOBS\s*=\s*fullJobConcurrencyLimit\(\)/);
+  assert.match(server,/createFullJobQueue\(/);
+  assert.match(server,/activeRegionConflict\(/);
+  assert.match(server,/code: "REGION_JOB_ACTIVE"/);
   assert.match(server,/const jobs = new Map\(\)/);
-  assert.match(server,/const pendingFullJobs = \[\]/);
-  assert.match(server,/while \(activeFullJobs < MAX_ACTIVE_FULL_JOBS/);
   assert.match(server,/id,\s*region,\s*mode,\s*data/);
   assert.match(server,/saveCheckpoint\(this\.id, normalized\)/);
 });

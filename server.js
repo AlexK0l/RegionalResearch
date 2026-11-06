@@ -5,6 +5,7 @@ import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
+import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
@@ -31,12 +32,7 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
-const MAX_ACTIVE_FULL_JOBS = Math.max(
-  1,
-  Math.min(2, Number(process.env.MAX_ACTIVE_FULL_JOBS || 1))
-);
-const pendingFullJobs = [];
-let activeFullJobs = 0;
+const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
 
 app.use(express.json({ limit: "32mb" }));
 
@@ -300,48 +296,30 @@ async function executeJob(job, apiKey) {
   });
 }
 
-function refreshFullQueuePositions() {
-  for (let index = 0; index < pendingFullJobs.length; index++) {
-    const queued = pendingFullJobs[index]?.job;
-    if (!queued || queued.cancelled) continue;
-    queued.progress = {
-      ...(queued.progress || {}),
-      phase: "queued",
-      queuePosition: index + 1,
-      activeFullJobs,
-      maxActiveFullJobs: MAX_ACTIVE_FULL_JOBS
-    };
-  }
-}
-
-function pumpFullJobQueue() {
-  while (activeFullJobs < MAX_ACTIVE_FULL_JOBS && pendingFullJobs.length) {
-    const next = pendingFullJobs.shift();
-    if (!next?.job || next.job.cancelled) continue;
-    activeFullJobs++;
-    refreshFullQueuePositions();
-    queueMicrotask(async () => {
-      try {
-        await executeJob(next.job, next.apiKey);
-      } finally {
-        activeFullJobs = Math.max(0, activeFullJobs - 1);
-        refreshFullQueuePositions();
-        pumpFullJobQueue();
-      }
-    });
-  }
-}
+const fullQueue = createFullJobQueue({
+  limit: MAX_ACTIVE_FULL_JOBS,
+  execute: executeJob
+});
 
 function queueJob(job, apiKey) {
-  const isFullResearch = job.mode === "full" || job.mode === "resume";
-  if (!isFullResearch) {
-    queueMicrotask(() => executeJob(job, apiKey));
-    return;
+  if (job.mode === "full" || job.mode === "resume") {
+    return fullQueue.enqueue(job, apiKey);
   }
+  queueMicrotask(() => executeJob(job, apiKey));
+  return { accepted: true };
+}
 
-  pendingFullJobs.push({ job, apiKey });
-  refreshFullQueuePositions();
-  pumpFullJobQueue();
+function activeRegionConflict(region, res) {
+  const existing = fullQueue.conflict(region);
+  if (!existing) return false;
+  res.status(409).json({
+    code: "REGION_JOB_ACTIVE",
+    error: "Исследование этого региона уже выполняется или ожидает в очереди",
+    existingJobId: existing.id,
+    region: existing.region,
+    state: existing.state
+  });
+  return true;
 }
 
 app.post("/api/jobs", async (req, res) => {
@@ -432,6 +410,7 @@ app.post("/api/jobs", async (req, res) => {
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
+  if (["full", "resume"].includes(mode) && activeRegionConflict(region, res)) return;
 
   if (mode === "full") {
     const existingCheckpoint = await findLatestCheckpoint(region, "full");
@@ -470,6 +449,16 @@ app.post("/api/jobs", async (req, res) => {
       await saveCheckpoint(this.id, normalized);
     }
   };
+  const queued = queueJob(job, apiKey);
+  if (!queued.accepted) {
+    return res.status(409).json({
+      code: "REGION_JOB_ACTIVE",
+      error: "Исследование этого региона уже выполняется или ожидает в очереди",
+      existingJobId: queued.existing.id,
+      region: queued.existing.region,
+      state: queued.existing.state
+    });
+  }
   jobs.set(id, job);
 
   res.status(202).json({
@@ -478,7 +467,27 @@ app.post("/api/jobs", async (req, res) => {
     mode,
     resumedFrom: mode === "resume" ? data.sourceJobId || "" : ""
   });
-  queueJob(job, apiKey);
+});
+
+app.get("/api/jobs", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    queue: fullQueue.snapshot(),
+    jobs: [...jobs.values()]
+      .sort((a,b)=>b.createdAt-a.createdAt)
+      .slice(0,100)
+      .map(job=>({
+        id: job.id,
+        region: job.region,
+        mode: job.mode,
+        state: job.state,
+        phase: job.progress?.phase || "",
+        percent: Number(job.progress?.percent || 0),
+        queuePosition: Number(job.progress?.queuePosition || 0),
+        createdAt: job.createdAt,
+        hasResult: job.state === "completed" && Boolean(job.result?.result)
+      }))
+  });
 });
 
 app.get("/api/jobs/:id", (req, res) => {
@@ -487,6 +496,8 @@ app.get("/api/jobs/:id", (req, res) => {
 
   res.json({
     id: job.id,
+    region: job.region,
+    mode: job.mode,
     state: job.state,
     progress: job.progress || {},
     result: job.state === "completed"
@@ -559,8 +570,8 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
       error: "Checkpoint создан несовместимой версией pipeline"
     });
   }
-  // Do not supersede the source checkpoint merely for queuing a resume.
   // The original remains available if the new attempt fails or is cancelled.
+  if (activeRegionConflict(checkpoint.region, res)) return;
   const id = crypto.randomUUID();
   const job = {
     id,
@@ -585,6 +596,15 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
       await saveCheckpoint(this.id, normalized);
     }
   };
+  const queued = queueJob(job, apiKey);
+  if (!queued.accepted) {
+    return res.status(409).json({
+      code: "REGION_JOB_ACTIVE",
+      error: "Исследование этого региона уже выполняется или ожидает в очереди",
+      existingJobId: queued.existing.id,
+      region: queued.existing.region
+    });
+  }
   jobs.set(id, job);
   res.status(202).json({
     id,
@@ -593,7 +613,6 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
     resumedFrom: req.params.id,
     checkpoint: checkpointSummary(checkpoint)
   });
-  queueJob(job, apiKey);
 });
 
 app.get("/api/jobs/:id/snapshot", (req, res) => {
@@ -618,7 +637,7 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   if (!job.abortController?.signal?.aborted) {
     job.abortController?.abort(new Error("JOB_CANCELLED"));
   }
-  if (wasWaiting) refreshFullQueuePositions();
+  if (wasWaiting) fullQueue.cancelQueued(job.id);
   res.json({ ok: true, state: job.state });
 });
 
