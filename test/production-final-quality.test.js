@@ -608,3 +608,54 @@ test("a documented trailer purchase or owned fleet stays A despite missing speci
   for (const claim of real)
     assert.equal(selectedADirectBuyerIsOnlyInference(claim),false,claim);
 });
+
+
+test("production holds a government procurement directorate from active intermediary grade A", () => {
+  const input = empty();
+  input.intermediaries.push(make("k-state-1",
+    "Главное управление Смоленской области по регулированию контрактной системы",
+    ["Закупка № 2973-аэф//т: поставка тягача седельного с самосвальным полуприцепом."],
+    { grade: "A", inn: "6730076910" }));
+  const { result, report } = run(input);
+  assert.equal(result.intermediaries.length, 0);
+  assert.equal(result.qualification_excluded.length, 1);
+  assert.equal(result.qualification_excluded[0]["ИНН"], "6730076910");
+  assert.equal(report.originals_lost, 0);
+});
+
+test("private commercial fleet operators are not mistaken for a government main directorate", () => {
+  const input = empty();
+  input.direct_buyers.push(make("k-private-1", "ООО «Главное управление транспортной логистики»",
+    ["Компания эксплуатирует собственные полуприцепы Schmitz."],
+    { grade: "A", inn: "6732114166" }));
+  const {result} = run(input);
+  assert.equal(result.direct_buyers.length, 1);
+});
+
+test("new paid acceptance weak A narratives are held without losing linked contact or INN", () => {
+  const narratives = [
+    "Для племенного сельхозпредприятия тракторная лизинговая закупка связана с регулярными перевозками кормов, зерна, навоза и другой сельхозпродукции; прицепная техника является логичным соседним объектом обновления парка.",
+    "Размер парка делает кандидата релевантным для продаж полуприцепов и расширения парка.",
+    "C — компания размещает вакансию водителя-международника категории CE с указанием работы на полуприцепе и привязкой к Смоленску.",
+    "Для уровня A/B недостаточно подтверждения собственности или эксплуатации седельного тягача с полуприцепом именно ООО «Царское Село».",
+    "Найденное событие подтверждает физический грузопоток, но не владение или эксплуатацию полуприцепов самим заводом.",
+    "C — в Смоленске размещена вакансия водителя-экспедитора категории CE на полуприцеп для RWB / Wildberries & Russ.",
+    "Источник связывает ООО «КТК» с исполнительным спором и конкретным полуприцепом Krone SDP 27; собственник и эксплуатант требуют дополнительной проверки."
+  ];
+  for (const [i, narrative] of narratives.entries()) {
+    assert.equal(selectedADirectBuyerIsOnlyInference(narrative),true,narrative);
+    const input = empty();
+    input.direct_buyers.push(make("k-weak-"+i, "ООО «Проверяемый перевозчик»",
+      [narrative], {grade:"A",inn:"6732114166",phone:"79001234567"}));
+    const {result,report} = finalizeProductionResearch(input, {
+      qualify: () => ({decision:"include",grade:"A",
+        aEvidence:narrative,aRule:"direct_ownership_or_fleet",reason:"model previously A"}),
+      isActionable:()=>true
+    });
+    assert.equal(result.direct_buyers.length,0,narrative);
+    assert.equal(result.qualification_review.length,1,narrative);
+    assert.equal(result.qualification_review[0]["ИНН"],"6732114166");
+    assert.equal(result.qualification_review[0]["Телефон"],"79001234567");
+    assert.equal(report.originals_lost,0);
+  }
+});
