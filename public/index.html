@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261102-final-quality">
+<link rel="stylesheet" href="/styles.css?v=20261106-parallel-regions">
 </head>
 <body>
 <main class="shell">
@@ -35,10 +35,23 @@
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261102-final-quality</p>
+    <p class="note">UI build: 20261106-parallel-regions</p>
+  </section>
+
+  <section class="card" id="jobsCard">
+    <div class="jobs-head">
+      <div>
+        <h2>Исследования регионов</h2>
+        <p class="note">Можно запустить другой регион, пока текущий исследуется. Выберите задание для просмотра, остановки или скачивания.</p>
+      </div>
+      <button id="refreshJobsBtn" class="secondary">Обновить</button>
+    </div>
+    <p id="jobsSummary" class="note">Загружаем список исследований…</p>
+    <div id="jobsList" class="jobs-list"></div>
   </section>
 
   <section class="card" id="progressCard" hidden>
+    <p id="selectedJob" class="note"></p>
     <div class="progress-head">
       <div>
         <h2 id="statusTitle">Подготовка</h2>
@@ -65,6 +78,6 @@
     </div>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261102-final-quality"></script>
+<script type="module" src="/app.js?v=20261106-parallel-regions"></script>
 </body>
 </html>

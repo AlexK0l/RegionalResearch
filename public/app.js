@@ -11,6 +11,10 @@ const e={
   regionCheckpointText:document.querySelector("#regionCheckpointText"),
   regionResume:document.querySelector("#regionResumeBtn"),
   start:document.querySelector("#startBtn"),
+  jobsSummary:document.querySelector("#jobsSummary"),
+  jobsList:document.querySelector("#jobsList"),
+  selectedJob:document.querySelector("#selectedJob"),
+  refreshJobs:document.querySelector("#refreshJobsBtn"),
   resume:document.querySelector("#resumeBtn"),
   checkpoint:document.querySelector("#checkpointBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
@@ -40,6 +44,9 @@ let timerTick=null;
 let lastProgress=null;
 let regionCheckpoint=null;
 let regionCheckpointTimer=null;
+let jobsTimer=null;
+let lastJobs=[];
+let startRequestPending=false;
 
 const LAST_REGION_KEY="sat_last_region";
 const BROWSER_CHECKPOINT_STORAGE_KEY="sat_browser_checkpoint_v1";
@@ -294,8 +301,94 @@ function renderSteps(statuses){
   }
 }
 
+
+function jobStateText(job){
+  const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
+    completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",
+    cancelling:"Останавливается"};
+  if(job.state==="waiting"&&job.phase==="queued")
+    return "В очереди"+(job.queuePosition?" №"+job.queuePosition:"");
+  if(job.state==="active")return names.active+" · "+Math.round(Number(job.percent||0))+"%";
+  return names[job.state]||job.state;
+}
+
+function renderJobs(payload){
+  const jobs=Array.isArray(payload?.jobs)?payload.jobs:[];
+  lastJobs=jobs;
+  const q=payload?.queue||{};
+  const active=jobs.filter(j=>j.state==="active").length;
+  const waiting=jobs.filter(j=>j.state==="waiting").length;
+  e.jobsSummary.textContent="Активно: "+active+" / "+Number(q.limit||2)+
+    (waiting?" · в очереди: "+waiting:"")+
+    " · завершённые задания доступны для скачивания до перезапуска сервера";
+  e.jobsList.replaceChildren();
+  if(!jobs.length){
+    const p=document.createElement("p");
+    p.className="note";
+    p.textContent="Исследований пока нет. Выберите регион и запустите первое.";
+    e.jobsList.append(p);
+    return;
+  }
+  for(const item of jobs){
+    const b=document.createElement("button");
+    b.type="button";
+    b.className="jobs-item"+(item.id===currentJobId?" selected":"");
+    b.dataset.jobId=item.id;
+    const name=document.createElement("span");
+    name.className="jobs-name";
+    name.textContent=item.region||"Регион не указан";
+    const details=document.createElement("span");
+    details.className="jobs-details";
+    details.textContent=jobStateText(item);
+    b.append(name,details);
+    b.onclick=()=>{void activateJob(item.id,{changeRegion:true});};
+    e.jobsList.append(b);
+  }
+}
+
+async function refreshJobs(){
+  if(!backendReady)return;
+  try{
+    const state=await api("/api/jobs");
+    renderJobs(state);
+    if(!currentJobId&&lastJobs.length){
+      await activateJob(lastJobs[0].id,{changeRegion:true});
+    }
+  }catch(error){
+    console.warn("Не удалось обновить список заданий:",error);
+    e.jobsSummary.textContent="Список исследований временно недоступен: "+error.message;
+  }
+}
+
+async function activateJob(id,{changeRegion=false}={}){
+  if(!id)return;
+  if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
+  currentJobId=id;
+  localStorage.setItem("sat_current_job",id);
+  const item=lastJobs.find(job=>job.id===id);
+  if(changeRegion&&item?.region){
+    e.region.value=item.region;
+    localStorage.setItem(LAST_REGION_KEY,item.region);
+    void refreshRegionCheckpoint();
+  }
+  e.selectedJob.textContent="Выбрано: "+(item?.region||e.region.value.trim()||"регион")+
+    " · "+id;
+  e.progressCard.hidden=false;
+  e.resultCard.hidden=true;
+  e.error.hidden=true;
+  e.error.textContent="";
+  e.resume.hidden=true;
+  e.resume.disabled=true;
+  e.checkpoint.hidden=true;
+  e.checkpoint.disabled=true;
+  renderJobs({jobs:lastJobs,queue:{limit:config?.maxActiveFullJobs||2}});
+  await poll();
+  if(currentJobId===id)pollTimer=setInterval(poll,2000);
+}
+
 function setControlsRunning(running){
-  e.start.disabled=running||!backendReady;
+  // Running the selected study must never block launching another region.
+  e.start.disabled=!backendReady||startRequestPending;
   e.cancel.disabled=!running;
   if(running){
     e.resume.disabled=true;
@@ -375,14 +468,16 @@ function setProgress(p){
 
 async function poll(restoring=false){
   if(!currentJobId)return;
-
+  const requestedJobId=currentJobId;
   try{
-    const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
+    const d=await api("/api/jobs/"+encodeURIComponent(requestedJobId));
+    if(requestedJobId!==currentJobId)return;
+    e.selectedJob.textContent="Выбрано: "+(d.region||"регион")+" · "+requestedJobId;
     e.progressCard.hidden=false;
     setProgress(d.progress||{});
 
     if(d.resume_available&&d.checkpoint){
-      void syncBrowserCheckpointFromBackend(currentJobId,d.checkpoint);
+      void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
     if(d.state==="completed"){
@@ -465,6 +560,7 @@ async function poll(restoring=false){
 }
 
 async function start(){
+  if(startRequestPending)return;
   const region=e.region.value.trim();
   if(!region){
     alert("Выберите или введите регион.");
@@ -472,28 +568,31 @@ async function start(){
   }
 
   localStorage.setItem(LAST_REGION_KEY,region);
+  startRequestPending=true;
+  e.start.disabled=true;
   e.error.hidden=true;
-  e.resultCard.hidden=true;
-  e.contactBox.hidden=true;
-  e.progressCard.hidden=false;
-  setControlsRunning(true);
-
+  e.error.textContent="";
   try{
     const d=await api("/api/jobs",{
       method:"POST",
       body:JSON.stringify({region,mode:"full",startFresh:true})
     });
     clearBrowserCheckpoint(region);
-    currentJobId=d.id;
-    localStorage.setItem("sat_current_job",currentJobId);
     renderRegionCheckpoint(null);
-    if(pollTimer)clearInterval(pollTimer);
-    await poll();
-    pollTimer=setInterval(poll,2000);
+    await refreshJobs();
+    await activateJob(d.id);
   }catch(err){
-    setControlsRunning(false);
-    e.error.hidden=false;
-    e.error.textContent=err.message;
+    if(err.code==="REGION_JOB_ACTIVE"&&err.data?.existingJobId){
+      await refreshJobs();
+      await activateJob(err.data.existingJobId);
+    }else{
+      e.error.hidden=false;
+      e.error.textContent=err.message;
+    }
+  }finally{
+    startRequestPending=false;
+    e.start.disabled=!backendReady;
+    void refreshJobs();
   }
 }
 
@@ -524,15 +623,12 @@ async function startRegionResume(){
       method:"POST",
       body:JSON.stringify(payload)
     });
-    currentJobId=d.id;
-    localStorage.setItem("sat_current_job",currentJobId);
     if(checkpoint.source==="browser"&&checkpoint.browser_checkpoint){
-      saveBrowserCheckpoint(checkpoint.browser_checkpoint,currentJobId);
+      saveBrowserCheckpoint(checkpoint.browser_checkpoint,d.id);
     }
     renderRegionCheckpoint(null);
-    if(pollTimer)clearInterval(pollTimer);
-    await poll();
-    pollTimer=setInterval(poll,2000);
+    await refreshJobs();
+    await activateJob(d.id);
   }catch(err){
     e.regionResume.disabled=false;
     setControlsRunning(false);
@@ -550,13 +646,10 @@ async function resumeFromCheckpoint(){
 
   try{
     const d=await api("/api/jobs/"+encodeURIComponent(currentJobId)+"/resume",{method:"POST"});
-    currentJobId=d.id;
-    localStorage.setItem("sat_current_job",currentJobId);
     e.resume.hidden=true;
     e.checkpoint.hidden=true;
-    if(pollTimer)clearInterval(pollTimer);
-    await poll();
-    pollTimer=setInterval(poll,2000);
+    await refreshJobs();
+    await activateJob(d.id);
   }catch(err){
     e.resume.disabled=false;
     e.checkpoint.disabled=false;
@@ -667,6 +760,7 @@ async function waitForBackend(){
   }
 }
 
+e.refreshJobs.onclick=()=>void refreshJobs();
 e.region.oninput=scheduleRegionCheckpointRefresh;
 e.region.onchange=()=>{
   localStorage.setItem(LAST_REGION_KEY,e.region.value.trim());
@@ -696,6 +790,8 @@ timerTick=setInterval(()=>{
       detail:"ожидает"
     })));
 
+    await refreshJobs();
+    if(!jobsTimer)jobsTimer=setInterval(refreshJobs,4000);
     if(currentJobId){
       try{
         const d=await api("/api/jobs/"+encodeURIComponent(currentJobId));
