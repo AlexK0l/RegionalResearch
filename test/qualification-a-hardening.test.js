@@ -298,3 +298,75 @@ test("confirmed identity region mismatch excludes otherwise strong company", () 
   assert.equal(d.grade, "");
   assert.equal(d.signals.identityRegionMismatch, true);
 });
+
+test("generic leasing catalogue cannot become A without an executed named deal",()=>{
+  const d=deterministicQualificationDecision(rec(
+    "leasing","ПАО «ЛК «Европлан»",
+    "Официальная страница Европлана содержит конкретные предметы лизинга: тракторные прицепы 2ПТС и полуприцеп тракторный сельскохозяйственный 2ПС-9.",
+    "Тракторные полуприцепы в каталоге лизинга"
+  ));
+  assert.notEqual(d.grade,"A");
+});
+
+test("documented signed lease and handover of a truck semitrailer remains A",()=>{
+  const d=deterministicQualificationDecision(rec(
+    "leasing","ПАО «ЛК «Европлан»",
+    "Суд установил: между ПАО «ЛК «Европлан» (лизингодатель) и ООО «Стрела» (лизингополучатель) заключён договор лизинга на полуприцеп-самосвал, переданный по акту 27.04.2023.",
+    "Лизинг грузового полуприцепа-самосвала"
+  ));
+  assert.equal(d.grade,"A");
+  assert.equal(d.aRule,"leasing_concrete_contract");
+});
+
+test("A chooses a same-note cited own trailer fleet over a competing unsourced procurement", () => {
+  const unsourced = "Компания опубликовала закупку полуприцепов для перевозки груза.";
+  const cited = "Компания эксплуатирует собственный парк полуприцепов Schmitz для перевозки грузов. ([Источник](https://fleet.example.org/vehicles))";
+  const source = rec("direct_buyers", "ООО «Два основания»", unsourced,
+    "Собственные полуприцепы и закупка").row;
+  source.__evidence.notes.push(cited);
+  source.__evidence.source_urls = ["https://fleet.example.org/vehicles"];
+  const decision = deterministicQualificationDecision({ sheet: "direct_buyers", row: source });
+  assert.equal(decision.grade, "A");
+  assert.equal(decision.aEvidence, cited);
+  assert.equal(decision.aRule, "direct_ownership_or_fleet");
+});
+
+test("an unrelated company-wide URL does not change selection of a source note", () => {
+  const purchase = "Компания приобрела два полуприцепа для перевозок.";
+  const source = rec("direct_buyers", "ООО «Без привязанной ссылки»", purchase).row;
+  source.__evidence.source_urls = ["https://unrelated.example.org/fleet"];
+  const decision = deterministicQualificationDecision({ sheet: "direct_buyers", row: source });
+  assert.equal(decision.grade, "A");
+  assert.equal(decision.aEvidence, purchase);
+  assert.equal(decision.aEvidence.includes("https://unrelated.example.org/fleet"), false);
+});
+
+test("speculative direct-buyer A note falls back to confirmed operating-process C", () => {
+  const record=rec("direct_buyers","ООО «Поставщик нерудных материалов»",
+    "Найденное событие подтверждает физический грузопоток, но не владение или эксплуатацию полуприцепов самим заводом.",
+    "Предприятие производит щебень и отгружает строительные материалы");
+  record.row.__evidence.notes.unshift(
+    "Предприятие добывает щебень в собственном карьере и регулярно отгружает его заказчикам.");
+  const decision=deterministicQualificationDecision(record);
+  assert.equal(decision.grade,"C");
+  assert.equal(decision.aEvidence,"");
+});
+
+test("a strong independent trailer ownership event survives a competing unsupported A note", () => {
+  const record=rec("direct_buyers","ООО «Транспортное предприятие»",
+    "Собственный парк полуприцепов для грузовых перевозок подтвержден документом о регистрации транспорта.",
+    "Грузовые автомобильные перевозки; полуприцепы");
+  record.row.__evidence.notes.unshift(
+    "Грузопоток предполагает возможное расширение собственного парка полуприцепов, но это только оценка потребности.");
+  const decision=deterministicQualificationDecision(record);
+  assert.equal(decision.grade,"A");
+  assert.match(decision.aEvidence,/подтвержден документом/);
+});
+
+test("unsubstantiated direct-buyer trailer inference cannot cause grade A even when worded as fleet operation", () => {
+  const record=rec("direct_buyers","ООО «Грузовладелец»",
+    "Для потенциального расширения производства прицепная техника является логичным соседним объектом обновления парка.",
+    "Переработка зерна и транспортировка сырья");
+  const decision=deterministicQualificationDecision(record);
+  assert.notEqual(decision.grade,"A");
+});

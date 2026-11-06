@@ -1,6 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
+import { loadRecentCompletedResearch } from "./checkpointStore.js";
+import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
+import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
+import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
+import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
+import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
+import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
+import { decideEnrichmentAction } from "./enrichmentPolicy.js";
+import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
+import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
+import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
+import { stagedRetentionReview } from "./stagedRetention.js";
+import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, disclaimsSelectedTrailerEvidence } from "./productionFinalQuality.js";
+import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -54,6 +70,23 @@ const RESEARCH_GEO_GROUPS = Math.max(
   2,
   Math.min(5, Number(process.env.OPENAI_RESEARCH_GEO_GROUPS || 3))
 );
+const AUTONOMOUS_DISCOVERY_ENABLED = String(
+  process.env.OPENAI_AUTONOMOUS_DISCOVERY_ENABLED ?? "true").toLowerCase() !== "false";
+const AUTONOMOUS_DISCOVERY_MAX_PASSES = Math.max(0, Math.min(4, Math.floor(
+  Number(process.env.OPENAI_AUTONOMOUS_DISCOVERY_MAX_PASSES ?? 2))));
+const AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Math.floor(
+  Number(process.env.OPENAI_AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS ?? 2))));
+const HISTORICAL_RECALL_ENABLED = !AUTONOMOUS_DISCOVERY_ENABLED &&
+  String(process.env.OPENAI_HISTORICAL_RECALL_ENABLED ?? "false").toLowerCase() === "true";
+// Read completed local snapshots beyond the latest three so verified leads
+// from earlier studies remain visible. Only 3x8 are offered new paid searches.
+const HISTORICAL_RECALL_HISTORY_RUNS = Math.max(3, Math.min(20,
+  Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_HISTORY_RUNS) || 12)));
+const HISTORICAL_RECALL_MAX_BATCHES = Math.max(0,
+  Math.min(5, Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_MAX_BATCHES ?? 3))));
+const HISTORICAL_RECALL_BATCH_SIZE = Math.max(2,
+  Math.min(12, Math.floor(Number(process.env.OPENAI_HISTORICAL_RECALL_BATCH_SIZE ?? 8))));
+const HISTORICAL_RECALL_MAX_CALLS_PER_BATCH = 2;
 const FINAL_INN_CONCURRENCY = Math.max(
   1,
   Math.min(8, Number(process.env.OPENAI_FINAL_INN_CONCURRENCY || 4))
@@ -144,6 +177,9 @@ function discoveryScopesForBranch(_stageIndex, _branchIndex, scopes) {
 function discoveryGeoExpansionWorthwhile(stats) {
   const value = stats || {};
   return (
+    // Discovering several real companies is useful even if all are still C.
+    // Do not abort deeper geography because deterministic A/B proof is scarce.
+    Number(value.newOrganizations || 0) >= 3 ||
     Number(value.a || 0) >= 1 ||
     Number(value.strongNew || 0) >= 2 ||
     (
@@ -332,6 +368,8 @@ DISCOVERY-ПРАВИЛА:
 - Не останавливайся на крупнейших известных компаниях: ищи локальные ООО, ИП, КФХ/СПК и другие самостоятельные организации, если они соответствуют теме ветки. ИП считаются полноценными кандидатами.
 - Не делай отдельные поиски ради ИНН, телефона, директора, email, сайта, холдинга, выручки или численности.
 - Для каждой организации сохрани 1–3 уже найденных сильных URL и короткие evidence notes.
+- КРИТИЧНО ДЛЯ A: каждая заметка, утверждающая конкретную сделку, владение, эксплуатацию, лизинг или ремонт прицепной техники, должна содержать ровно один URL конкретной страницы источника В ЭТОЙ ЖЕ ЗАМЕТКЕ. Пример: "ООО «Перевозчик» эксплуатирует собственные полуприцепы Schmitz. ([Источник](https://example.org/fleet))". Ссылку бери исключительно из реально найденного материала; не придумывай и не подставляй ссылку на общий каталог или карточку другой компании.
+- Если у конкретного факта нет собственного URL, сохрани утверждение как неподтверждённую заметку БЕЗ привязки чужого URL. Общий __evidence.source_urls не доказывает каждую заметку; не запускай дополнительный поиск только для оформления ссылки.
 - ЭФФЕКТИВНОСТЬ WEB_SEARCH: сначала объединяй несколько близких формулировок/сущностей в широкие поисковые запросы и используй найденную выдачу пакетно. Не запускай отдельный web_search для каждой компании, если её идентичность и связь с веткой уже подтверждаются текущей выдачей.
 - Для одного branch×scope используй НЕ БОЛЕЕ 4 содержательных web-search проходов. Пятый проход допустим только если предыдущий реально открыл минимум несколько новых организаций И новое семейство источников; иначе остановись. Не делай перефразированные повторы ради полноты.
 - После получения 1–3 сильных URL на кандидата не трать дополнительные web_search на его enrichment: следующий поиск должен быть направлен на НОВЫЕ организации.
@@ -515,6 +553,9 @@ const FINAL_INN_MAX_OUTPUT_TOKENS = Math.min(
   Math.max(1200, Number(process.env.OPENAI_FINAL_INN_MAX_OUTPUT_TOKENS || 2500)),
   OPENAI_MAX_OUTPUT_TOKENS
 );
+const FINAL_INN_REDUNDANT_RETRY =
+  String(process.env.OPENAI_FINAL_INN_RETRY_WITHOUT_NEW_SOURCE || "false")
+    .toLowerCase() === "true";
 
 const DISCOVERY_SCHEMA = {
   type: "object",
@@ -601,13 +642,117 @@ const FINAL_INN_SCHEMA = {
           id: { type: "string" },
           confirmed_inn: { type: "string" },
           source_urls: { type: "array", items: { type: "string" } },
-          note: { type: "string" }
+          note: { type: "string" },
+          legal_status: { type: "string", enum: ["active", "liquidated", "ceased", "unknown"] },
+          legal_status_ogrn: { type: "string" },
+          legal_status_source_url: { type: "string" },
+          legal_status_evidence: { type: "string" },
+          observed_facts: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                field: { type: "string", enum: ["Телефон", "Руководитель / ЛПР", "Управляющая компания", "Выручка последнего подтвержденного года", "Численность", "Email"] },
+                value: { type: "string" },
+                source_url: { type: "string" },
+                evidence_excerpt: { type: "string" }
+              }, required: ["field", "value", "source_url", "evidence_excerpt"]
+            }
+          }
         },
-        required: ["id", "confirmed_inn", "source_urls", "note"]
+        required: ["id", "confirmed_inn", "source_urls", "note", "legal_status", "legal_status_ogrn", "legal_status_source_url", "legal_status_evidence", "observed_facts"]
       }
     }
   },
   required: ["items"]
+};
+
+const ENRICHMENT_BATCH_SIZE = Math.max(1, Math.min(5, Number(process.env.OPENAI_ENRICHMENT_BATCH_SIZE || 4)));
+const ENRICHMENT_BATCH_MAX_TOOL_CALLS = Math.max(1, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_BATCH_MAX_TOOL_CALLS || 1)));
+const ENRICHMENT_MAX_FALLBACKS_TOTAL = Math.max(0, Math.min(200, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_TOTAL ?? 20)));
+const ENRICHMENT_MAX_FALLBACKS_PER_BATCH = Math.max(0, Math.min(3, Number(process.env.OPENAI_ENRICHMENT_MAX_FALLBACKS_PER_BATCH ?? 1)));
+const ENRICHMENT_BATCH_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: { items: { type: "array", items: {
+    type: "object", additionalProperties: false,
+    properties: {
+      id: { type: "string" },
+      fields: { type: "object", additionalProperties: false, properties: {
+        "Управляющая компания": { type: "string" },
+        "Выручка последнего подтвержденного года": { type: "string" },
+        "Численность": { type: "string" }
+      }, required: ["Управляющая компания", "Выручка последнего подтвержденного года", "Численность"] },
+      __comment: { type: "string" }
+    }, required: ["id", "fields", "__comment"]
+  } } }, required: ["items"]
+};
+
+
+// Bounded cited A/B fact recovery. Every call consumes normal global/phase
+// web calls and the same estimated USD cost limit.
+const AB_RECOVERY_ENABLED =
+  String(process.env.OPENAI_AB_RECOVERY_ENABLED ?? "true").toLowerCase() === "true";
+const AB_RECOVERY_BATCH_SIZE = Math.max(
+  1, Math.min(4, Number(process.env.OPENAI_AB_RECOVERY_BATCH_SIZE || 3))
+);
+const AB_RECOVERY_MAX_BATCHES = Math.max(
+  0, Math.min(60, Number(process.env.OPENAI_AB_RECOVERY_MAX_BATCHES ?? 20))
+);
+const AB_RECOVERY_MAX_TOOL_CALLS = Math.max(
+  1, Math.min(3, Number(process.env.OPENAI_AB_RECOVERY_BATCH_MAX_TOOL_CALLS || 2))
+);
+
+const CONTACT_BATCH_SETTINGS = contactLimits();
+
+const AB_RECOVERY_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: { items: {
+    type: "array", items: {
+      type: "object", additionalProperties: false,
+      properties: {
+        id: { type: "string" },
+        organization: { type: "string" },
+        inn: { type: "string" },
+        facts: { type: "array", items: {
+          type: "object", additionalProperties: false,
+          properties: {
+            field: { type: "string", enum: [
+              "Руководитель / ЛПР",
+              "Выручка последнего подтвержденного года",
+              "Численность"
+            ] },
+            value: { type: "string" },
+            year: { type: "string" },
+            source_url: { type: "string" },
+            evidence_excerpt: { type: "string" }
+          }, required: ["field", "value", "year", "source_url", "evidence_excerpt"]
+        } }
+      }, required: ["id", "organization", "inn", "facts"]
+    }
+  } }, required: ["items"]
+};
+
+const CONTACT_BATCH_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    items: {
+      type: "array", items: {
+        type: "object", additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          organization: { type: "string" },
+          inn: { type: "string" },
+          status: { type: "string", enum: ["ok", "not_found"] },
+          phones: { type: "array", items: { type: "string" } },
+          leader: { type: "string" },
+          official_site: { type: "string" },
+          source_urls: { type: "array", items: { type: "string" } },
+          note: { type: "string" }
+        },
+        required: ["id", "organization", "inn", "status", "phones", "leader", "official_site", "source_urls", "note"]
+      }
+    }
+  }, required: ["items"]
 };
 
 const CONTACT_SEARCH_SCHEMA = {
@@ -815,9 +960,13 @@ function contract(final = false) {
 - Сначала находи как можно больше разных релевантных организаций по текущей теме и географии.
 - НЕ трать отдельные web_search на телефон, директора/ЛПР, выручку, численность, email, холдинг/УК, официальный сайт или другие реквизиты.
 - ИНН является обязательным реквизитом итоговой базы. Во время discovery НЕ запускай отдельный поиск только ради ИНН, но если ИНН встретился в любом уже открытом источнике, ОБЯЗАТЕЛЬНО заполни поле "ИНН" (10 или 12 цифр) и сохрани подтверждающий источник/примечание. Отдельный жёсткий проход по отсутствующим ИНН выполняется позже.
+- ИНН относится ТОЛЬКО к указанному юридическому лицу, а не к другому участнику договора: не переноси ИНН лизингодателя лизингополучателю, клиента перевозчику, продавца покупателю, холдинга дочернему обществу, владельца сайта одноимённой фирме. При конфликте оставляй ИНН пустым и сохраняй сведения в notes с именами обеих сторон.
+- Для одного URL явно укажи, кто собственник, кто фактический эксплуатант, кто лизингодатель и кто лизингополучатель; не присваивай роль по расположению в поисковой выдаче.
+- Проверяй, что населённый пункт относится именно к указанному субъекту РФ: одинаковые названия районов в других регионах не являются подтверждением деятельности здесь.
 - Телефон, сайт и иные реквизиты, случайно встретившиеся в основном источнике, можешь упомянуть в "__evidence.notes", но НЕ запускай для них дополнительный поиск.
 - Не заполняй поля полной финальной таблицы на этом этапе. Они будут обогащены позже отдельным проходом.
 - Для каждой организации сохрани 1–3 наиболее сильных URL, которые уже встретились в discovery, и коротко укажи, что именно они подтверждают.
+- Каждая __evidence.notes, претендующая на подтверждение A (прицеп, полуприцеп, VIN, конкретный лизинг/ремонт/закупка/эксплуатация), должна включать соответствующий URL В ТОЙ ЖЕ СТРОКЕ заметки, например "Собственный полуприцеп ([Источник](https://example.org/fleet))". URL из общего списка source_urls нельзя автоматически приписывать отдельной заметке. Не выдумывай отсутствующий адрес и не ищи его специально ради форматирования.
 - Возвращай ВСЕ подтверждённые релевантные организации текущей микро-задачи, а не выборку лучших.
 - Не выдумывай организации, URL и факты.`;
 }
@@ -854,6 +1003,7 @@ function identityResolutionContract() {
 - Если это разные юрлица — раздели их по разным entities.
 - confirmed_inn заполняй только подтверждённым 10- или 12-значным ИНН.
 - Если ИНН надёжно подтвердить не удалось — оставь confirmed_inn пустым и НЕ объединяй сомнительные упоминания: верни их отдельными entities.
+- Если confirmed_inn заполнен, ОБЯЗАТЕЛЬНО укажи полное legal_name именно владельца этого ИНН и его собственный URL-источник. Без однозначного совпадения названия/ОПФ с упоминанием не подставляй номер. Названия других сторон сделки не подменяют проверяемую компанию.
 - Не ищи телефон, директора, email, выручку, численность, холдинг или другие сведения.
 - legal_name и city заполняй только если удалось подтвердить.
 - Если web-проверка показывает, что найденное юридическое лицо относится к ДРУГОМУ региону и исходная региональная привязка ошибочна, ОБЯЗАТЕЛЬНО прямо напиши это в note: "региональный конфликт: юридическое лицо относится к <регион>, исходная привязка к запрошенному региону ошибочна".
@@ -1007,8 +1157,11 @@ function createCheckpointBatcher(flush) {
 function appendResearchResult(target, source, passNumber) {
   for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
     for (const row of source?.[sheet] || []) {
+      const normalizedRow = preserveCitedDiscoveryBasis(
+        normalizeDiscoverySourceUrls(row)
+      );
       target[sheet].push({
-        ...row,
+        ...normalizedRow,
         __research_pass: passNumber
       });
     }
@@ -1484,7 +1637,7 @@ async function runResearchMicroBatch({
         const threshold = adaptiveDiscoveryLowYieldThreshold(knownNames.length);
         const streakLimit = adaptiveDiscoveryLowYieldStreak(selectedScopes.length);
         lowYieldStreak =
-          added <= threshold || discoveryQualityIsLow(yieldStats)
+          added <= threshold && discoveryQualityIsLow(yieldStats)
             ? lowYieldStreak + 1
             : 0;
         if (
@@ -1649,14 +1802,31 @@ function buildIdentityClusters(candidates) {
   }));
 }
 
+// A note about a contractor's INN must never be imported as this company's
+// INN. Only accept a single syntactically valid number explicitly attached
+// to the candidate's own legal name in the SAME source note.
 function extractInnFromEvidenceNotes(row) {
+  const ownName = normalizeOrgKey(row?.["Организация"]);
+  if (!ownName || ownName.length < 4) return "";
   const notes = Array.isArray(row?.__evidence?.notes) ? row.__evidence.notes : [];
   const candidates = new Set();
   for (const note of notes) {
-    const text = String(note || "");
-    for (const match of text.matchAll(/ИНН\s*[:№-]?\s*(\d{10}|\d{12})/gi)) {
-      const inn = normalizeInn(match[1]);
-      if (inn) candidates.add(inn);
+    const raw = String(note || "");
+    const matches = [...raw.matchAll(/ИНН\s*[:№-]?\s*(\d{10}|\d{12})/gi)];
+    if (!matches.length) continue;
+    // A note mentioning two different INNs is disputed evidence, not a
+    // source for either of them.
+    const values = [...new Set(matches.map(m => normalizeInn(m[1])).filter(Boolean))];
+    if (values.length !== 1) continue;
+    for (const match of matches) {
+      const before = normalizeOrgKey(raw.slice(0, match.index));
+      const ownPosition = before.lastIndexOf(ownName);
+      if (ownPosition < 0) continue;
+      const between = before.slice(ownPosition + ownName.length);
+      // An intervening ООО/АО/ИП may be the actual named owner of the INN.
+      if (/(?:^|\s)(?:ооо|ао|зао|пао|оао|ип)(?:\s|$)/.test(between)) continue;
+      if (between.length > 130) continue;
+      candidates.add(values[0]);
     }
   }
   return candidates.size === 1 ? [...candidates][0] : "";
@@ -1792,26 +1962,38 @@ function clusterNeedsIdentityWebSearch(cluster) {
   return false;
 }
 
+// Zero-cost identity pass is strictly ROW-LOCAL. A cluster is a search
+// batch, NOT a legal entity. Do not copy an INN into a neighbour merely
+// because the name/region or a marketplace domain appears to match.
 function resolveClusterWithoutWeb(cluster) {
-  const identity = clusterEvidenceIdentity(cluster);
-  const inn = identity.inns.length === 1 ? identity.inns[0] : "";
-  return cluster.items.map((item) => {
+  return cluster.items.map(item => {
     const data = { ...(item?.data || {}) };
-    if (inn) {
-      data["ИНН"] = inn;
-      const existingEvidence = data.__evidence || {};
+    const existing = normalizeInn(data["ИНН"]);
+    const ownNoteInn = extractInnFromEvidenceNotes(data);
+    const oldEvidence = data.__evidence || {};
+    const notes = Array.isArray(oldEvidence.notes) ? [...oldEvidence.notes] : [];
+    const conflicts = Array.isArray(oldEvidence.legal_identity_conflicts)
+      ? [...oldEvidence.legal_identity_conflicts] : [];
+    if (existing && ownNoteInn && existing !== ownNoteInn) {
+      conflicts.push({
+        status:"manual_review_required",
+        reason:"discovery_own_note_inn_disagrees_with_field",
+        existing_inn:existing,proposed_inn:ownNoteInn,
+        recorded_at_stage:"identity_without_web"
+      });
+    } else if (!existing && ownNoteInn) {
+      data["ИНН"] = ownNoteInn;
+      notes.push("Identity без нового web-search: ИНН " + ownNoteInn +
+        " извлечён из заметки с собственным названием компании; первичный источник не перепроверен.");
+    }
+    if (conflicts.length || notes.length !== (oldEvidence.notes || []).length) {
       data.__evidence = {
-        ...existingEvidence,
-        source_urls: Array.isArray(existingEvidence.source_urls)
-          ? [...new Set(existingEvidence.source_urls.map(String).filter(Boolean))]
-          : [],
-        notes: [
-          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
-          `Identity без нового web-search: ИНН ${inn} извлечён из уже собранного evidence.`
-        ]
+        ...oldEvidence,
+        ...(conflicts.length ? {legal_identity_conflicts:conflicts}:{}),
+        notes:[...new Set(notes)]
       };
     }
-    return { ...item, data };
+    return {...item,data};
   });
 }
 
@@ -1831,61 +2013,112 @@ function compactIdentityCluster(cluster) {
   };
 }
 
-function applyIdentityResult(cluster, result) {
-  const byId = new Map(cluster.items.map((item) => [item.candidate_id, item]));
+// Model groups are hypotheses. A sourced INN may be attached only to the
+// candidate whose original legal name actually matches the returned entity.
+// Never rewrite a separate firm, branch or holding into that legal person.
+function applyIdentityResult(cluster, result, region = "") {
+  const byId = new Map(cluster.items.map(item => [item.candidate_id, item]));
   const assigned = new Set();
   const resolved = [];
 
   for (const entity of Array.isArray(result?.entities) ? result.entities : []) {
     const ids = [...new Set(
       (Array.isArray(entity?.candidate_ids) ? entity.candidate_ids : [])
-        .map(String)
-        .filter((id) => byId.has(id) && !assigned.has(id))
+        .map(String).filter(id => byId.has(id) && !assigned.has(id))
     )];
     if (!ids.length) continue;
+    const incomingInn = normalizeInn(entity?.confirmed_inn);
+    const legalName = String(entity?.legal_name || "").trim();
+    const urls = [...new Set(
+      (Array.isArray(entity?.source_urls) ? entity.source_urls : [])
+        .map(String).filter(url => /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url))
+    )];
+    const identityNote = String(entity?.note || "").trim();
 
-    const inn = normalizeInn(entity?.confirmed_inn);
-    // Без подтвержденного ИНН не разрешаем модели склеить несколько упоминаний.
-    const groups = inn ? [ids] : ids.map((id) => [id]);
+    for (const id of ids) {
+      assigned.add(id);
+      const original = byId.get(id);
+      const data = { ...(original?.data || {}) };
+      const oldName = String(data["Организация"] || "").trim();
+      const oldInn = normalizeInn(data["ИНН"]);
+      const oldEvidence = data.__evidence || {};
+      const notes = Array.isArray(oldEvidence.notes) ? [...oldEvidence.notes] : [];
+      const oldUrls = Array.isArray(oldEvidence.source_urls)
+        ? [...oldEvidence.source_urls] : [];
+      // The same trademark or partly matching company name is NOT legal
+      // proof. Keep abbreviations/renames for an OGRN-backed alias pass.
+      const nameMatch = Boolean(
+        legalNameKey(oldName) &&
+        legalNameKey(oldName) === legalNameKey(legalName) &&
+        !legalEvidenceConflict(data, {"Организация":legalName,"ИНН":incomingInn})
+      );
+      const conflictingInn = Boolean(incomingInn && oldInn && incomingInn !== oldInn);
+      // Multi-mention answers must corroborate each candidate separately.
+      // A model grouping two identical names cannot transfer one firm's
+      // INN to an unrelated row lacking its own source.
+      const ownSources = new Set(oldUrls.map(url =>
+        String(url).toLowerCase().replace(/\/+$/, "")));
+      const sourceOverlap = urls.some(url =>
+        ownSources.has(String(url).toLowerCase().replace(/\/+$/, "")));
+      const independentLink = ids.length === 1 || sourceOverlap ||
+        Boolean(oldInn && oldInn === incomingInn);
+      const accept = Boolean(incomingInn && urls.length && nameMatch &&
+        independentLink && !conflictingInn);
 
-    for (const groupIds of groups) {
-      for (const id of groupIds) assigned.add(id);
-      for (const id of groupIds) {
-        const original = byId.get(id);
-        const data = { ...(original?.data || {}) };
-        if (inn) data["ИНН"] = inn;
-        if (String(entity?.legal_name || "").trim()) {
-          data["Организация"] = String(entity.legal_name).trim();
+      if (accept) {
+        data["ИНН"] = incomingInn;
+        // Preserve the discovery name in the CRM. A name variant is recorded
+        // as a sourced alias, not silently substituted as a new legal entity.
+        if (!oldInn || !oldEvidence.identity_verification) {
+          notes.push("Подтверждённый ИНН: " + incomingInn);
         }
-        if (String(entity?.city || "").trim() && !String(data["Город/район"] || "").trim()) {
+        if (identityNote) notes.push(
+          (identityRegionMismatchFromNotes(["Identity: " + identityNote])
+            ? "[IDENTITY_REGION_MISMATCH] " : "") + "Identity: " + identityNote);
+        if (!String(data["Город/район"] || "").trim() &&
+            String(entity?.city || "").trim()) {
           data["Город/район"] = String(entity.city).trim();
         }
-
-        const existingEvidence = data.__evidence || {};
-        const sourceUrls = [
-          ...(Array.isArray(existingEvidence.source_urls) ? existingEvidence.source_urls : []),
-          ...(Array.isArray(entity?.source_urls) ? entity.source_urls : [])
-        ].map(String).filter(Boolean);
-        const identityNote = String(entity?.note || "").trim();
-        const identityNoteWithMarker = identityNote
-          ? `${identityRegionMismatchFromNotes([`Identity: ${identityNote}`]) ? "[IDENTITY_REGION_MISMATCH] " : ""}Identity: ${identityNote}`
-          : "";
-        const notes = [
-          ...(Array.isArray(existingEvidence.notes) ? existingEvidence.notes : []),
-          identityNoteWithMarker,
-          inn ? `Подтверждённый ИНН: ${inn}` : ""
-        ].filter(Boolean);
         data.__evidence = {
-          ...existingEvidence,
-          source_urls: [...new Set(sourceUrls)],
-          notes: [...new Set(notes)]
+          ...oldEvidence,
+          source_urls:[...new Set([...oldUrls,...urls])],
+          notes:[...new Set(notes)],
+          identity_verification:{
+            inn:incomingInn,method:"identity_web",
+            source_urls:urls,legal_name:legalName
+          }
         };
-
-        resolved.push({ ...original, data });
+      } else {
+        const reasons = [];
+        if (!incomingInn) reasons.push("unverified_inn");
+        if (!urls.length) reasons.push("no_entity_specific_url");
+        if (!nameMatch) reasons.push("legal_name_or_legal_form_mismatch");
+        if (!independentLink) reasons.push("cluster_mentions_lack_independent_source_link");
+        if (conflictingInn) reasons.push("conflicts_with_existing_inn");
+        const rejected = {
+          candidate_id:id,reported_legal_name:legalName,proposed_inn:incomingInn,
+          source_urls:urls,reason:reasons.join(","),note:identityNote
+        };
+        const pending = Array.isArray(oldEvidence.unmatched_identity_candidates)
+          ? [...oldEvidence.unmatched_identity_candidates] : [];
+        pending.push(rejected);
+        const conflicts = Array.isArray(oldEvidence.legal_identity_conflicts)
+          ? [...oldEvidence.legal_identity_conflicts] : [];
+        if (conflictingInn) conflicts.push({
+          status:"manual_review_required",reason:"identity_web_inn_conflict",
+          existing_inn:oldInn,proposed_inn:incomingInn,
+          source_urls:urls,recorded_at_stage:"identity_resolution"
+        });
+        data.__evidence = {
+          ...oldEvidence,
+          unmatched_identity_candidates:pending,
+          ...(conflicts.length ? {legal_identity_conflicts:conflicts}: {})
+        };
+        // Do NOT add foreign evidence URLs or replace company name.
       }
+      resolved.push({...original,data});
     }
   }
-
   for (const item of cluster.items) {
     if (!assigned.has(item.candidate_id)) resolved.push(item);
   }
@@ -1945,7 +2178,7 @@ async function resolveCandidateIdentities({
     }
   }
 
-  const identityConcurrency = client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
+  const identityConcurrency = client?.__webBudget?.kind !== "full" && client?.__webBudget ? 1 : IDENTITY_CONCURRENCY;
   let identityBudgetStopped = false;
   for (let offset = 0; offset < webClusters.length; offset += identityConcurrency) {
     await assertNotCancelled();
@@ -1976,7 +2209,7 @@ ${JSON.stringify(compactIdentityCluster(cluster))}`,
 
       if (item.status === "fulfilled") {
         searchedWebClusters++;
-        const rows = applyIdentityResult(cluster, item.value);
+        const rows = applyIdentityResult(cluster, item.value, region);
         confirmedInnMentions += rows.filter((x) => normalizeInn(x?.data?.["ИНН"])).length;
         resolved.push(...rows);
       } else {
@@ -2055,10 +2288,15 @@ function finalInnLookupContract() {
   return `\n\nФИНАЛЬНАЯ ПОВТОРНАЯ ПРОВЕРКА ИНН — верни ТОЛЬКО JSON по заданной схеме.
 На входе только компании, уже прошедшие dedupe и финальную A/B/C qualification.
 Для КАЖДОГО id обязательно заново проверь ИНН 10 или 12 цифр, даже если existing_inn уже заполнен.
-Ищи только ИНН и юридическую идентичность, необходимую для его проверки. Не ищи телефон, директора, email, выручку, холдинг и другие поля.
+Ищи только ИНН и юридическую идентичность, необходимую для его проверки. НЕ делай дополнительных web_search ради телефона, директора, email, выручки, холдинга и прочих полей.
+Если эти сведения УЖЕ непосредственно видны в источнике, открытом для проверки ИНН, запиши их в observed_facts; иначе верни [].
+Каждый observed_fact: field, value, source_url (ОБЯЗАТЕЛЬНО один из source_urls ответа), evidence_excerpt (дословная выдержка с ЭТИМ ИНН и данным значением).
+Не приписывай сведения холдинга дочернему юрлицу, не переноси телефоны подрядчика, не угадывай и не интерпретируй единицы выручки; выручка строго целое число рублей.
 Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
 Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай. Если надёжно подтверждён другой ИНН того же юрлица, верни подтверждённый корректный ИНН.
 source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
+legal_status: active/liquidated/ceased/unknown; при отсутствии однозначного источника unknown.
+Для liquidated/ceased укажи legal_status_ogrn, legal_status_source_url (официальная ФНС) и legal_status_evidence (точная выдержка с ИНН и прекращением деятельности). Если первичный источник недоступен, статус unknown.
 Каждый входной id должен встретиться ровно один раз.`;
 }
 
@@ -2071,6 +2309,7 @@ function compactFinalInnTarget(row) {
     existing_inn: normalizeInn(row?.["ИНН"]),
     evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .map(String).filter(Boolean).slice(0, 3),
+    legal_ogrns: identityOgrns(row).slice(0, 2),
     evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
       .map(String).filter(Boolean)
       .filter((note) => /адрес|огрн|суд|закуп|договор|официал|сайт|домен|реестр|инн/i.test(note))
@@ -2079,30 +2318,91 @@ function compactFinalInnTarget(row) {
   };
 }
 
+// A late no-result is NOT a revocation of an earlier valid INN.
+// A new, different INN is a legal-identity conflict, never an implicit rename.
 function applyFinalInnItems(rowsById, result) {
   let recovered = 0;
   for (const item of Array.isArray(result?.items) ? result.items : []) {
     const row = rowsById.get(String(item?.id || ""));
     if (!row) continue;
-    const inn = normalizeInn(item?.confirmed_inn);
-    const previousInn = normalizeInn(row["ИНН"]);
-    row["ИНН"] = inn || "";
-    if (inn && inn !== previousInn) recovered++;
+    const previousRaw = String(row["ИНН"] || "").trim();
+    const previousInn = normalizeInn(previousRaw);
+    const proposedInn = normalizeInn(item?.confirmed_inn);
+    const newSources = [...new Set(
+      (Array.isArray(item?.source_urls) ? item.source_urls : [])
+        .map(String).filter(url => /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(url))
+    )];
+    // A checksum is a syntactic check, not legal identity evidence.
+    const confirmedInn = proposedInn && newSources.length ? proposedInn : "";
+    const conflict = Boolean(previousInn && confirmedInn && previousInn !== confirmedInn);
     const existing = row.__evidence || {};
-    const urls = [
+    const notes = [...(Array.isArray(existing.notes) ? existing.notes : [])];
+    const conflicts = Array.isArray(existing.legal_identity_conflicts)
+      ? [...existing.legal_identity_conflicts] : [];
+
+    if (conflict) {
+      conflicts.push({
+        status: "manual_review_required",
+        reason: "final_inn_lookup_disagrees_with_existing_inn",
+        existing_inn: previousInn, proposed_inn: confirmedInn,
+        source_urls: newSources,
+        recorded_at_stage: "final_inn"
+      });
+      notes.push("Final INN conflict: ранее " + previousInn + ", новый источник " +
+        confirmedInn + "; требуется проверка, старый ИНН сохранён.");
+    } else if (confirmedInn) {
+      if (!previousInn && previousRaw) {
+        notes.push('Final INN: прежнее неподтверждённое значение "' +
+          previousRaw + '" заменено после проверки источника.');
+      }
+      row["ИНН"] = confirmedInn;
+      if (!previousInn) recovered++;
+      notes.push("Подтверждённый ИНН: " + confirmedInn);
+    } else if (proposedInn && !newSources.length) {
+      notes.push("Final INN: кандидат " + proposedInn +
+        " не принят: отсутствует URL подтверждения.");
+    } else if (previousInn) {
+      notes.push("Final INN: повторный поиск не подтвердил новый ИНН; ранее найденный " +
+        previousInn + " сохранён без изменения.");
+    }
+
+    const legalStatus = !conflict && confirmedInn
+      ? statusProofFromFinalInn(item, confirmedInn) : null;
+    const sourceUrls = [
       ...(Array.isArray(existing.source_urls) ? existing.source_urls : []),
-      ...(Array.isArray(item?.source_urls) ? item.source_urls : [])
+      ...newSources
     ].map(String).filter(Boolean);
+    const oldSourceSet = new Set((Array.isArray(existing.source_urls)
+      ? existing.source_urls : []).map(String));
+    const newlyDiscoveredUrls = newSources.filter(url => !oldSourceSet.has(url));
     const note = String(item?.note || "").trim();
+    if (note) notes.push("Final INN search: " + note);
     row.__evidence = {
       ...existing,
-      source_urls: [...new Set(urls)],
-      notes: [
-        ...(Array.isArray(existing.notes) ? existing.notes : []),
-        note ? `Final INN: ${note}` : "",
-        inn ? `Подтверждённый ИНН: ${inn}` : ""
-      ].filter(Boolean)
+      ...(legalStatus ? { legal_status_verification: legalStatus } : {}),
+      ...(confirmedInn && !conflict
+        ? { identity_verification: {
+            inn: confirmedInn, method: "final_inn_web", source_urls: newSources
+          } }
+        : {}),
+      ...(conflicts.length ? { legal_identity_conflicts: conflicts } : {}),
+      source_urls: [...new Set(sourceUrls)],
+      ...(!confirmedInn && newlyDiscoveredUrls.length ? {
+        final_inn_retry_urls: [...new Set([
+          ...(Array.isArray(existing.final_inn_retry_urls) ?
+            existing.final_inn_retry_urls : []),
+          ...newlyDiscoveredUrls
+        ])]
+      } : {}),
+      notes: [...new Set(notes)]
     };
+    if (!conflict && confirmedInn) {
+      const reused = reuseIdentityObservedFacts(row, item);
+      if (reused.length) console.log("[FINAL_INN_REUSED_SOURCE_FACTS] " + JSON.stringify({
+        canonical_id: checkpointRowId(row), inn: confirmedInn,
+        fields: reused.map((fact) => fact.field)
+      }));
+    }
   }
   return recovered;
 }
@@ -2186,6 +2486,17 @@ ${JSON.stringify(targets)}`,
   }
 }
 
+// A second identical paid search without any newly obtained source usually
+// repeats the first miss. Retain breadth in the first pass; retry only when
+// the first pass produced another evidence URL, unless explicitly opted in.
+function shouldRetryFinalInn(row, allowRedundant = FINAL_INN_REDUNDANT_RETRY) {
+  if (normalizeInn(row?.["ИНН"])) return false;
+  const hints = row?.__evidence?.final_inn_retry_urls;
+  return Boolean(allowRedundant ||
+    (Array.isArray(hints) && hints.some(url =>
+      /^https?:\/\/[^\s/]+\.[^\s/]+/i.test(String(url)))));
+}
+
 async function resolveFinalMissingInns({
   client,
   finalResult,
@@ -2203,6 +2514,17 @@ async function resolveFinalMissingInns({
     companies.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
   );
 
+  let evidenceVerified = 0;
+  for (const row of companies) {
+    const id = checkpointRowId(row);
+    if (!id || completedIds.has(id)) continue;
+    if (verifiedInnFromEvidence(row, normalizeInn)) {
+      completedIds.add(id);
+      evidenceVerified++;
+    }
+  }
+  console.log("[FINAL_INN_EVIDENCE_RECHECK] " + JSON.stringify({ evidence_verified: evidenceVerified }));
+
   const pending = companies.filter((row) => {
     const id = checkpointRowId(row);
     return id && !completedIds.has(id);
@@ -2216,7 +2538,7 @@ async function resolveFinalMissingInns({
   let recovered = 0;
   let retried = 0;
   let completedBatches = 0;
-  const concurrency = client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
+  const concurrency = client?.__webBudget?.kind !== "full" && client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
 
   console.log("[FINAL_INN_PLAN] " + JSON.stringify({
     region,
@@ -2266,14 +2588,21 @@ async function resolveFinalMissingInns({
     });
   });
 
-  const retryRows = companies.filter((row) => !normalizeInn(row?.["ИНН"]));
+  const remainingMissing = companies.filter(row => !normalizeInn(row?.["ИНН"]));
+  const retryRows = remainingMissing.filter(row =>
+    !completedIds.has("retry:" + checkpointRowId(row)) &&
+    shouldRetryFinalInn(row));
   if (retryRows.length) {
     const retryBatches = [];
     for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
       retryBatches.push(retryRows.slice(offset, offset + FINAL_INN_BATCH_SIZE));
     }
     console.log("[FINAL_INN_RETRY_PLAN] " + JSON.stringify({
-      missing_after_first_pass: retryRows.length,
+      missing_after_first_pass: remainingMissing.length,
+      retry_candidates_with_new_source: retryRows.length,
+      skipped_repeated_search_without_new_source:
+        remainingMissing.length - retryRows.length,
+      allow_redundant_retry: FINAL_INN_REDUNDANT_RETRY,
       batches: retryBatches.length,
       concurrency
     }));
@@ -2289,6 +2618,7 @@ async function resolveFinalMissingInns({
       });
       retried += batch.length;
       recovered += applyFinalInnItems(rowsById, result);
+      for (const row of batch) completedIds.add(`retry:${checkpointRowId(row)}`);
       await onBatch({
         completedIds,
         attempted,
@@ -2327,26 +2657,82 @@ function duplicateInnConflictGroups(finalResult) {
     .map(([inn, rows]) => ({ inn, rows }));
 }
 
+// Legacy name retained for API compatibility. Do not blank every claimant:
+// keep a uniquely sourced legal person active; quarantine unresolved claimants
+// with their disputed INNs and original source material intact.
 function clearUnresolvedInnConflicts(finalResult) {
   const groups = duplicateInnConflictGroups(finalResult);
-  let clearedRows = 0;
+  let quarantinedRows = 0;
+  let preservedVerifiedRows = 0;
+  const quarantine = new Set();
+
   for (const group of groups) {
+    const organizations = [...new Set(group.rows.map(row =>
+      String(row["Организация"] || "").trim()).filter(Boolean))];
+    const competingOgrns = [...new Set(group.rows.flatMap(row => identityOgrns(row)))];
+    const proved = group.rows.filter(row =>
+      verifiedInnFromEvidence(row, normalizeInn) === group.inn);
+    // Multiple verified-looking claimants may still have sources belonging
+    // to different parties. Do not automatically choose a winner.
+    const retained = proved.length === 1 ? proved[0] : null;
+
     for (const row of group.rows) {
-      row["ИНН"] = "";
-      const evidence = row.__evidence || { source_urls: [], notes: [] };
+      if (row === retained) {
+        preservedVerifiedRows++;
+        continue;
+      }
+      const evidence = row.__evidence || {};
+      const conflicts = Array.isArray(evidence.legal_identity_conflicts)
+        ? [...evidence.legal_identity_conflicts] : [];
       row.__evidence = {
         ...evidence,
-        source_urls: Array.isArray(evidence.source_urls) ? evidence.source_urls : [],
-        notes: [
+        legal_identity_conflicts: [
+          ...conflicts,
+          {
+            contested_inn: group.inn,
+            status: "manual_review_required",
+            conflicting_organizations: organizations,
+            competing_ogrns: competingOgrns,
+            own_ogrns: identityOgrns(row),
+            retained_verified_id: retained ? checkpointRowId(retained) : "",
+            recorded_at_stage: "final_inn_conflict"
+          }
+        ],
+        notes: [...new Set([
           ...(Array.isArray(evidence.notes) ? evidence.notes : []),
-          `Final INN conflict: ИНН ${group.inn} встретился у несовместимых сущностей и очищен до однозначного подтверждения.`
-        ]
+          "Final INN conflict: ИНН " + group.inn +
+            " оставлен как СПОРНЫЙ; компания направлена в REVIEW, не подтверждена для продаж."
+        ])]
       };
-      mergeResearchComment(row);
-      clearedRows++;
+      row.__grade_before_conflict = row.__final_grade || "";
+      row.__final_grade = "";
+      row.__a_evidence = "";
+      row.__a_rule = "";
+      row.__decision = "manual_review";
+      row.__decision_reason = "Конфликт юридической идентификации по ИНН " +
+        group.inn + "; исходный реквизит сохранён для сверки с ЕГРЮЛ.";
+      row.__qualification_origin_sheet ||= ["direct_buyers","intermediaries","leasing"]
+        .find(sheet => finalResult[sheet]?.includes(row)) || "";
+      quarantine.add(row);
+      quarantinedRows++;
     }
   }
-  return { groups: groups.length, clearedRows };
+
+  if (quarantine.size) {
+    for (const sheet of ["direct_buyers","intermediaries","leasing"]) {
+      finalResult[sheet] = (finalResult[sheet] || [])
+        .filter(row => !quarantine.has(row));
+    }
+    finalResult.qualification_review ||= [];
+    finalResult.qualification_review.push(...quarantine);
+  }
+  console.log("[POST_INN_CONFLICT_QUARANTINE] " + JSON.stringify({
+    groups: groups.length, quarantined_rows: quarantinedRows,
+    retained_verified_rows: preservedVerifiedRows,
+    inn_fields_cleared: 0
+  }));
+  return { groups: groups.length, clearedRows: 0,
+    quarantinedRows, preservedVerifiedRows };
 }
 
 function deterministicRequalification(records) {
@@ -2370,10 +2756,17 @@ function postInnDedupe(finalResult, region, diagnostics = null) {
     diagnostics,
     region
   );
-  return {
-    records,
-    qualified: deterministicRequalification(records)
-  };
+  const qualified = deterministicRequalification(records);
+  qualified.result.qualification_review = mergedQualificationReviews(
+    Array.isArray(finalResult?.qualification_review) ? finalResult.qualification_review : [],
+    qualified.result.qualification_review
+  );
+  qualified.result.qualification_excluded = [
+    ...(Array.isArray(finalResult?.qualification_excluded) ? finalResult.qualification_excluded : []),
+    ...(Array.isArray(qualified.result.qualification_excluded)
+      ? qualified.result.qualification_excluded : [])
+  ];
+  return { records, qualified };
 }
 
 function enforceFinalInnRequirement(finalResult) {
@@ -2398,7 +2791,7 @@ function enforceFinalInnRequirement(finalResult) {
   // не является причиной удалять релевантную компанию.
   return [];
 }
-function canonicalizeCandidates(candidates, region = "") {
+export function canonicalizeCandidates(candidates, region = "") {
   const parent = candidates.map((_, i) => i);
   const rank = candidates.map(() => 0);
 
@@ -2431,7 +2824,12 @@ function canonicalizeCandidates(candidates, region = "") {
 
       for (const ownerIndex of owners) {
         const ownerName = String(candidates[ownerIndex]?.data?.["Организация"] || "").trim();
-        if (organizationNamesCompatible(name, ownerName, region)) {
+        // Early discovery dedupe must obey the SAME legal-identity guard
+        // as post-INN dedupe; compatible trade names alone are insufficient
+        // across distinct ООО/АО/IP forms, OGRNs or parent/branch roles.
+        const ownerRow = candidates[ownerIndex]?.data || {};
+        if (organizationNamesCompatible(name, ownerName, region) &&
+            !legalEvidenceConflict(row, ownerRow)) {
           compatibleOwner = ownerIndex;
           break;
         }
@@ -2477,8 +2875,12 @@ function canonicalizeCandidates(candidates, region = "") {
 function mergedEvidenceFromCanonical(canonical) {
   const sourceUrls = [];
   const notes = [];
+  const facts = [];
+  let identityVerification = null;
   for (const evidenceItem of canonical?.evidence || []) {
     const ev = evidenceItem?.data?.__evidence || {};
+    for (const fact of Array.isArray(ev.facts) ? ev.facts : []) facts.push(fact);
+    if (!identityVerification && ev.identity_verification?.inn) identityVerification = ev.identity_verification;
     for (const url of Array.isArray(ev.source_urls) ? ev.source_urls : []) {
       if (url) sourceUrls.push(String(url));
     }
@@ -2488,7 +2890,9 @@ function mergedEvidenceFromCanonical(canonical) {
   }
   return {
     source_urls: [...new Set(sourceUrls)],
-    notes: [...new Set(notes)]
+    notes: [...new Set(notes)],
+    facts: distinctSourceFacts({ __evidence: { facts } }),
+    ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 }
 
@@ -2922,6 +3326,31 @@ function mergeQaRecordRows(records) {
   const mergedRow = { ...(first?.row || {}) };
   const urls = [];
   const notes = [];
+  const facts = [];
+  const legalIdentityConflicts = [];
+  const legalIdentityMerges = [];
+  let identityVerification = null;
+  // Track ALL original canonical IDs and complete absorbed record snapshots;
+  // a successful identity merge may not silently erase the other source ID.
+  const sourceIds = new Set();
+  const originalRecords = new Map();
+  const keepOriginal = (raw) => {
+    const id = String(raw?.__canonical_id || "").trim();
+    if (!id || originalRecords.has(id)) return;
+    const copy = cloneJson(raw);
+    delete copy.__merged_original_records;
+    originalRecords.set(id, copy);
+  };
+  for (const [position, record] of records.entries()) {
+    const row = record?.row || {};
+    for (const id of [
+      row.__canonical_id,
+      ...(Array.isArray(row.__merged_canonical_ids) ? row.__merged_canonical_ids : [])
+    ]) if (String(id || "").trim()) sourceIds.add(String(id).trim());
+    for (const previous of (Array.isArray(row.__merged_original_records)
+      ? row.__merged_original_records : [])) keepOriginal(previous);
+    if (position) keepOriginal(row);
+  }
 
   for (const record of records) {
     const row = record?.row || {};
@@ -2938,6 +3367,10 @@ function mergeQaRecordRows(records) {
     if (segments.length) mergedRow["Техника/сегмент"] = [...new Set(segments)].join(" | ");
 
     const evidence = row.__evidence || {};
+    for (const fact of Array.isArray(evidence.facts) ? evidence.facts : []) facts.push(fact);
+    for (const conflict of Array.isArray(evidence.legal_identity_conflicts) ? evidence.legal_identity_conflicts : []) legalIdentityConflicts.push(conflict);
+    for (const merge of Array.isArray(evidence.legal_identity_merges) ? evidence.legal_identity_merges : []) legalIdentityMerges.push(merge);
+    if (!identityVerification && evidence.identity_verification?.inn) identityVerification = evidence.identity_verification;
     for (const url of Array.isArray(evidence.source_urls) ? evidence.source_urls : []) {
       if (url) urls.push(String(url));
     }
@@ -2946,9 +3379,38 @@ function mergeQaRecordRows(records) {
     }
   }
 
+  const mergedInns = [...new Set(records.map((record) =>
+    normalizeInn(record?.row?.["ИНН"])).filter(Boolean))];
+  if (mergedInns.length === 1 && records.length > 1) {
+    const anchor = records[0];
+    for (const record of records.slice(1)) {
+      const decision = confirmedInnAliasDecision(anchor, record, mergedInns[0],
+        (a, b) => organizationNamesCompatible(a, b));
+      if (!decision.merge) continue;
+      legalIdentityMerges.push({
+        confirmed_inn: mergedInns[0],
+        survivor_name: String(anchor?.row?.["Организация"] || ""),
+        merged_name: String(record?.row?.["Организация"] || ""),
+        decision: decision.reason,
+        ogrns: [...new Set([...decision.ogrnsA, ...decision.ogrnsB])],
+        identity_source_urls: [...new Set([
+          ...(anchor?.row?.__evidence?.identity_verification?.source_urls || []),
+          ...(record?.row?.__evidence?.identity_verification?.source_urls || [])
+        ])].slice(0, 4)
+      });
+    }
+  }
+  mergedRow.__merged_canonical_ids = [...sourceIds];
+  if (originalRecords.size) {
+    mergedRow.__merged_original_records = [...originalRecords.values()];
+  }
   mergedRow.__evidence = {
     source_urls: [...new Set(urls)],
-    notes: [...new Set(notes)]
+    notes: [...new Set(notes)],
+    facts: distinctSourceFacts({ __evidence: { facts } }),
+    ...(legalIdentityConflicts.length ? { legal_identity_conflicts: legalIdentityConflicts } : {}),
+    ...(legalIdentityMerges.length ? { legal_identity_merges: legalIdentityMerges } : {}),
+    ...(identityVerification ? { identity_verification: identityVerification } : {})
   };
 
   return {
@@ -3104,6 +3566,8 @@ function safeAliasIdentityCompatible(a, b, region = "") {
   const aName = String(a?.row?.["Организация"] || "").trim();
   const bName = String(b?.row?.["Организация"] || "").trim();
   if (!aName || !bName) return false;
+  if (legalEvidenceConflict(a, b)) return false;
+  if (legalNameKey(aName) === legalNameKey(bName)) return true;
 
   // Compound fields are handled structurally rather than by a blanket slash rule.
   // If a row names several materially different variants, every non-trivial
@@ -3209,21 +3673,44 @@ function conservativeAliasDedupe(records, diagnostics = null, region = "") {
 
 function splitInnGroupByCompatibleIdentity(records, inn, region = "") {
   const groups = [];
+  const aliasReasons = new Map();
+  const conflictReasons = new Map();
 
   for (const record of records) {
-    const name = String(record?.row?.["Организация"] || "").trim();
     let target = null;
 
     for (const group of groups) {
-      const representative = String(group[0]?.row?.["Организация"] || "").trim();
-      if (organizationNamesCompatible(name, representative, region)) {
+      // Pairwise compatibility avoids a transitive "bridge" merge of
+      // unrelated companies with one repeated or hallucinated INN.
+      const decisions = group.map((existing) =>
+        confirmedInnAliasDecision(record, existing, inn,
+          (a, b) => organizationNamesCompatible(a, b, region))
+      );
+      if (decisions.every((item) => item.merge)) {
         target = group;
+        for (const item of decisions) {
+          aliasReasons.set(item.reason, (aliasReasons.get(item.reason) || 0) + 1);
+        }
         break;
       }
+      for (const item of decisions.filter((decision) => !decision.merge)) {
+        conflictReasons.set(item.reason, (conflictReasons.get(item.reason) || 0) + 1);
+      }
     }
-
     if (target) target.push(record);
     else groups.push([record]);
+  }
+
+  if (records.length > 1 && (groups.length > 1 || groups.some((g) => g.length > 1))) {
+    console.log("[DEDUPE_INN_ALIAS_DECISIONS] " + JSON.stringify({
+      inn,
+      before: records.length,
+      after: groups.length,
+      accepted: Object.fromEntries(aliasReasons),
+      rejected: Object.fromEntries(conflictReasons),
+      groups: groups.map((group) => group.map((record) =>
+        String(record?.row?.["Организация"] || "").trim()))
+    }));
   }
 
   if (groups.length > 1) {
@@ -3306,8 +3793,27 @@ function deterministicGlobalDedupe(records, diagnostics = null, region = "") {
 
   output.push(...singles);
   for (const [key, group] of grouped.entries()) {
-    if (group.length > 1) recordDedupeMerge(diagnostics, "normalized_name", group, key);
-    output.push(group.length === 1 ? group[0] : mergeQaRecordRows(group));
+    // A cleared or missing INN is not permission to merge distinct legal
+    // entities. Partition same-name candidates by OGRN and branch/group role.
+    const compatible = [];
+    for (const record of group) {
+      const target = compatible.find((partition) =>
+        partition.every((prior) => unresolvedNameCompatible(prior, record))
+      );
+      if (target) target.push(record);
+      else compatible.push([record]);
+    }
+    if (compatible.length > 1) {
+      console.log("[DEDUPE_NAME_LEGAL_CONFLICT] " + JSON.stringify({
+        key, organizations: group.map((record) =>
+          String(record?.row?.["Организация"] || "")),
+        ogrns: group.map((record) => identityOgrns(record?.row || {}))
+      }));
+    }
+    for (const partition of compatible) {
+      if (partition.length > 1) recordDedupeMerge(diagnostics, "normalized_name", partition, key);
+      output.push(partition.length === 1 ? partition[0] : mergeQaRecordRows(partition));
+    }
   }
 
   const aliasPass = conservativeAliasDedupe(output, diagnostics, region);
@@ -3395,7 +3901,7 @@ const QUAL_GENERAL_TARGET_PATTERNS = [
 const QUAL_GENERAL_FLOW_PATTERNS = [
   /регулярн.{0,30}(перевоз|достав|вывоз|отгруз)/,
   /грузопоток/, /массов.{0,20}перевоз/, /автомобильн.{0,25}отгруз/,
-  /добыч/, /переработ/, /производств/, /погруз/, /разгруз/,
+  /добыч/, /перераб(?:от|ат)/, /производств/, /погруз/, /разгруз/,
   /перевозк/, /доставк/, /вывоз/
 ];
 
@@ -3428,7 +3934,7 @@ const QUAL_TRANSPORT_PATTERNS = [
 ];
 
 const QUAL_OPERATING_PROCESS_PATTERNS = [
-  /производств/, /добыч/, /переработ/, /выращив/, /сельск.{0,20}хозяйств/,
+  /производств/, /добыч/, /перераб(?:от|ат)/, /выращив/, /сельск.{0,20}хозяйств/,
   /фермер/, /кфх\b/, /спк\b/, /элеватор/, /комбикорм/, /карьер/,
   /лесозаготов/, /деревообработ/, /лесопил/, /заготовк.{0,30}(лом|вторсыр)/,
   /прием.{0,30}(лом|вторсыр|отход)/, /приём.{0,30}(лом|вторсыр|отход)/,
@@ -3451,6 +3957,8 @@ const PUBLIC_OPERATOR_PATTERN =
   /(^|\s)(фгуп|гуп|муп)(\s|$)/;
 
 function classifyEntityType(row) {
+  const documented = classifyCommercialEntity(row);
+  if (documented !== "commercial") return documented;
   const name = normalizeOrgKey(row?.["Организация"] || "");
   if (!name) return "commercial";
   if (GOVERNMENT_ENTITY_PATTERNS.some((pattern) => pattern.test(name))) {
@@ -3482,6 +3990,9 @@ function deterministicQualificationDecision(record) {
   const intermediaryRole = role === "intermediaries";
   const leasingRole = role === "leasing";
   const notes = qualificationEvidenceNotes(record);
+  const rawEvidenceNotes = (Array.isArray(record?.row?.__evidence?.notes)
+    ? record.row.__evidence.notes : [])
+    .map((value) => String(value || "").trim()).filter(Boolean);
   const identityRegionMismatch = identityRegionMismatchFromNotes(notes);
   const priorityTarget = hasAnyPattern(text, QUAL_PRIORITY_TARGET_PATTERNS);
   const generalTarget =
@@ -3492,6 +4003,7 @@ function deterministicQualificationDecision(record) {
   const transport = hasAnyPattern(text, QUAL_TRANSPORT_PATTERNS);
   const operatingProcess = hasAnyPattern(text, QUAL_OPERATING_PROCESS_PATTERNS);
   const entityType = classifyEntityType(record?.row || {});
+  const eligibility = commercialEligibility(record?.row || {});
 
   const speculative = /потенциал|потенциальн|перспектив|возможн|может использ|может эксплуат|вероятн|предполож|оценк.{0,30}уровн[ея]\s*b|целевой сегмент|подходит для|экономическ.{0,30}рациональн|наиболее близок|профиль.{0,30}близок/;
   const negativeAEvidence =
@@ -3522,9 +4034,13 @@ function deterministicQualificationDecision(record) {
 
   let aEvidence = "";
   let aRule = "";
+  const aCandidates = [];
 
-  for (const note of notes) {
+  for (const [noteIndex, note] of notes.entries()) {
     if (speculative.test(note) || negativeAEvidence.test(note)) continue;
+    // Ownership/lease/procurement of someone else's trailer is not direct A.
+    if (/(?:сторонн|треть[еёи]го|чуж|подрядчик).{0,80}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,80}(?:сторонн|треть[еёи]го|чуж|подрядчик)/.test(note) &&
+        !/(?:собственн.{0,30}(?:прицеп|полуприцеп)|(?:прицеп|полуприцеп).{0,30}в собственности|на балансе|собственн.{0,20}парк)/.test(note)) continue;
 
     const cargoTrailerMention =
       /(полуприцеп|прицеп[- ]?(зерновоз|самосвал)|самосвальн.{0,20}прицеп|тонар|kogel|krone|schmitz|wielton|grunwald|пс[- ]?\d|пст[- ]?\d|пптс[- ]?\d)/i.test(note);
@@ -3538,7 +4054,7 @@ function deterministicQualificationDecision(record) {
       /(тягач|седельн).{0,100}(полуприцеп|прицеп|тонар)|(полуприцеп|прицеп|тонар).{0,100}(тягач|седельн)/.test(note) &&
       /(эксплуат|работа|рейс|перевоз|парк|водител|автопоезд)/.test(note);
     const freightTrailerContext =
-      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|2птс[- ]?\d|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
+      /(полуприцеп|тонар|kogel|krone|schmitz|wielton|grunwald|пс[- ]?\d|пст[- ]?\d|низкорамн.{0,30}(прицеп|полуприцеп)|тяжеловозн.{0,30}(прицеп|полуприцеп)|грузов.{0,35}(прицеп|полуприцеп)|(прицеп|полуприцеп).{0,35}грузов)/i.test(note);
     const explicitTrailerProcurement =
       freightTrailerContext &&
       (
@@ -3568,6 +4084,15 @@ function deterministicQualificationDecision(record) {
       /(продает|продаж[а-я]*|продавец|продавцом|предлагает)/i.test(note) &&
       !/(закупк|приобрет|приобрел|купил|в собственности|на балансе|собственн.{0,30}парк|эксплуат)/i.test(note);
     const actualTrailerProcurement = explicitTrailerProcurement && !serviceProcurementOnly && !partsOnly;
+    // Some direct buyers appear as a clearly identified lessee of a specific
+    // road trailer, even when the separate subject note says "финансовая аренда"
+    // rather than repeating "лизингополучатель". Both parts must be in evidence.
+    const knownLessee = notes.some((other) =>
+      /(?:лизингополучател|арендатор)/.test(other) &&
+      /(?:организац|предприяти|компани|ооо|ао|ип|фирм|является|выступа|в роли|роль)/.test(other));
+    const specificTrailerLease = directRole && freightTrailerContext &&
+      /(?:предмет.{0,35}(?:финансов.{0,20}аренды|лизинг)|договор.{0,55}лизинг|лизингополучател.{0,95}(?:полуприцеп|прицеп|тонар)|лизинг.{0,80}(?:полуприцеп|прицеп|тонар))/i.test(note) &&
+      (/(?:лизингополучател)/.test(note) || knownLessee);
     const actualServiceEvent =
       intermediaryRole && trailer && specificServiceEvent.test(note);
     const ongoingTrailerSeller =
@@ -3582,10 +4107,15 @@ function deterministicQualificationDecision(record) {
         /(официальн.{0,40}дилер|дилерск.{0,30}центр|trade[- ]?in|аренд.{0,30}выкуп|продаж[а-я]*.{0,40}и аренд|сервисн.{0,30}(центр|дилер))/i.test(note) ||
         ongoingTrailerSeller
       );
+    // An advertised item or a price calculator is NOT an executed lease.
+    // For A there must be a contract, named customer, or actual handover in
+    // the SAME note as the relevant truck trailer. A broader leasing offer
+    // still belongs in B/C/review when commercial relevance is established.
     const actualLeaseContract =
       leasingRole &&
       freightTrailerContext &&
-      /(договор.{0,50}лизинг|лизингов.{0,50}договор|клиент.{0,100}лизинг|лизинг.{0,100}(тонар|полуприцеп|прицеп))/i.test(note);
+      /(договор.{0,50}лизинг|лизингов.{0,50}договор|клиент.{0,100}лизинг|лизингополучател|переда.{0,80}лизинг|лизинг.{0,80}переда)/i.test(note) &&
+      !/(?:только|лишь|общ[а-я]*|рекламн[а-я]*).{0,65}(предложени|каталог|описани|карточк)|(?:предложени|каталог|прайс|акци[яию]|спецпредложени).{0,100}(?:не подтвержд|без.{0,30}договор|вместо.{0,30}сделк)/i.test(note);
     const directVinOwnership =
       directRole &&
       explicitVinOrPlate &&
@@ -3593,7 +4123,8 @@ function deterministicQualificationDecision(record) {
 
     let matchedRule = "";
     if (directRole) {
-      if (actualTrailerProcurement) matchedRule = "direct_procurement";
+      if (specificTrailerLease) matchedRule = "direct_financial_lease";
+      else if (actualTrailerProcurement) matchedRule = "direct_procurement";
       else if (explicitTrailerOwnership || trailerFleet.test(note)) matchedRule = "direct_ownership_or_fleet";
       else if (ceTrailerJob.test(note) && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_driver_operation";
       else if (tractorTrailerOperation && !serviceProcurementOnly && !sellerOnly) matchedRule = "direct_operation";
@@ -3614,14 +4145,32 @@ function deterministicQualificationDecision(record) {
       else if (actualTrailerProcurement) matchedRule = "leasing_concrete_transaction";
     }
 
-    // A model name, product card, directory listing or generic sale/service
-    // offer is supporting context only. It cannot independently promote a row
-    // to A without a role-appropriate concrete event or operating signal.
+    // Selection must enforce the same safety policy as the final quality
+    // gate. Otherwise a speculative/negative note can win A ranking, and
+    // post-contact QA unnecessarily quarantines a confirmed C cargo owner.
+    // Source-bound evidence for a different positive A note is still eligible.
     if (matchedRule) {
-      aEvidence = note;
-      aRule = matchedRule;
-      break;
+      const selectedClaim = rawEvidenceNotes[noteIndex] || note;
+      const aExclusion = rejectUnsafeAEvidence(record, note);
+      const unsupportedDirectA = directRole && (
+        selectedADirectBuyerIsOnlyInference(selectedClaim) ||
+        disclaimsSelectedTrailerEvidence(selectedClaim)
+      );
+      if (aExclusion || unsupportedDirectA) continue;
+      aCandidates.push({
+        note: selectedClaim,
+        rule: matchedRule, index: noteIndex,
+        score: rankSafeAEvidence(record, selectedClaim, matchedRule)
+      });
     }
+  }
+  // The first mention is not necessarily the strongest evidence. A court
+  // contract naming a legal entity should beat an earlier inference from a
+  // vacancy, and the selected quotation retains its original URL case.
+  aCandidates.sort((left, right) => right.score - left.score || left.index - right.index);
+  if (aCandidates.length) {
+    aEvidence = aCandidates[0].note;
+    aRule = aCandidates[0].rule;
   }
 
   // A is evidence-note only. Segment/basis text may support B/C context but
@@ -3630,7 +4179,9 @@ function deterministicQualificationDecision(record) {
   let grade = "";
   let reason = "";
 
-  if (entityTypeExcluded(entityType)) {
+  if (eligibility.blocked) {
+    reason = eligibility.reason;
+  } else if (entityTypeExcluded(entityType)) {
     reason = entityType === "government_body"
       ? "Орган власти исключён из коммерческого списка независимо от факта закупки техники."
       : entityType === "budget_institution"
@@ -3641,12 +4192,18 @@ function deterministicQualificationDecision(record) {
   } else if (aEvidence) {
     grade = "A";
     reason = "Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
-  } else if (target && heavy) {
+  } else if (directRole && attributedCarrierTrailerB(record.row).valid) {
+    grade = "B";
+    reason = "Отдельные evidence-note связывают то же юридическое лицо с выполненной перевозкой и конкретным полуприцепом; владение или лизинг именно этой техникой для A не доказаны.";
+  } else if (target && independentBSignals(record.row).valid) {
     grade = "B";
     reason = "В evidence одновременно подтверждены целевой груз/процесс и тяжелая автологистика или эксплуатационный сигнал.";
   } else if (directRole && target && operatingProcess) {
     grade = "C";
     reason = "Подтверждён действующий целевой производственный/грузовой процесс коммерческого грузовладельца; собственная техника или перевозчик пока не установлены.";
+  } else if (directRole && namedCargoHaulageCustomerC(record.row)) {
+    grade = "C";
+    reason = "Подтверждена закупка транспортных услуг для конкретного целевого груза: компания — грузовладелец/заказчик перевозки, а не доказанный владелец полуприцепа.";
   } else if (target && transport) {
     grade = "C";
     reason = "В evidence подтверждены целевой груз/процесс и конкретный транспортно-логистический сигнал, но недостаточно данных для A/B.";
@@ -3670,6 +4227,7 @@ function deterministicQualificationDecision(record) {
       transport,
       operatingProcess,
       entityType,
+      legalEligibility: eligibility.method,
       aEvidence: Boolean(aEvidence),
       identityRegionMismatch
     }
@@ -3715,12 +4273,46 @@ async function runFinalQualification({
   return decisions;
 }
 
+// Candidate inventory is intentionally NOT a CRM sheet. Strong transport
+// candidates with insufficient A/B/C evidence stay recoverable in checkpoint.
+function actionableUnqualifiedLead(record) {
+  const row = record?.row || {};
+  const eligibility = commercialEligibility(row);
+  if (eligibility.blocked || identityRegionMismatchFromNotes(qualificationEvidenceNotes(record))) return false;
+  const ev = row.__evidence || {};
+  const notes = (Array.isArray(ev.notes) ? ev.notes : [])
+    .filter((note) => !/^(?:final inn:|identity:|подтвержденный инн:)/i.test(String(note).trim()));
+  const urls = Array.isArray(ev.source_urls) ? ev.source_urls : [];
+  if (!notes.length || !urls.some((url) => /^https?:\/\//i.test(String(url)))) return false;
+  const claim = [row["Техника/сегмент"], ...notes].join(" ").toLowerCase().replace(/ё/g, "е");
+  // Evidence of a real carrier, fleet, freight process or operations department.
+  return /(грузоперевоз|грузов.{0,25}транспорт|транспортн.{0,20}компани|седельн.{0,20}тягач|полуприцеп|автопарк|автологистик|категори.{0,10}(?:ce|cе|е|e)|водител.{0,35}рейс|фулфилмент|механик.{0,25}транспорт|лизинг.{0,25}тягач|тентованн.{0,25}транспорт|междугородн.{0,30}перевоз|международн.{0,30}перевоз)/i.test(claim);
+}
+
+function reviewQueueKey(row) {
+  return String(row?.__canonical_id || "") ||
+    [normalizeOrgKey(row?.["Организация"]), normalizeInn(row?.["ИНН"])].join("|");
+}
+
+function mergedQualificationReviews(existing = [], newly = []) {
+  const merged = new Map();
+  for (const row of [...existing, ...newly]) {
+    if (!row || !String(row["Организация"] || "").trim()) continue;
+    if (commercialEligibility(row).blocked) continue;
+    const key = reviewQueueKey(row);
+    if (!merged.has(key)) merged.set(key, row);
+  }
+  return [...merged.values()];
+}
+
 function applyFinalQualification(records, decisions) {
   const result = {
     direct_buyers: [],
     intermediaries: [],
     leasing: [],
-    statistics: []
+    statistics: [],
+    qualification_review: [],
+    qualification_excluded: []
   };
   const counts = { A: 0, B: 0, C: 0, excluded: 0 };
 
@@ -3728,6 +4320,21 @@ function applyFinalQualification(records, decisions) {
     const decision = decisions.get(record.id);
     if (!decision || decision.decision !== "include" || !decision.grade) {
       counts.excluded++;
+      // Preserve every rejected source record in REVIEW or EXCLUDED rather
+      // than discarding it before the user can download the final audit.
+      const row = { ...record.row };
+      row.__decision = actionableUnqualifiedLead(record) ? "manual_review" : "exclude";
+      row.__final_grade = "";
+      row.__a_evidence = "";
+      row.__a_rule = "";
+      row.__qualification_origin_sheet = record.sheet;
+      row.__decision_reason = String(decision?.reason || "Недостаточно подтверждённой квалификации.");
+      row.__evidence = {
+        ...(row.__evidence || {}),
+        commercial_eligibility: commercialEligibility(row)
+      };
+      if (row.__decision === "manual_review") result.qualification_review.push(row);
+      else result.qualification_excluded.push(row);
       continue;
     }
 
@@ -3738,6 +4345,8 @@ function applyFinalQualification(records, decisions) {
     row.__a_evidence = decision.grade === "A" ? String(decision.aEvidence || "") : "";
     row.__a_rule = decision.grade === "A" ? String(decision.aRule || "") : "";
     row["Основание"] = `${decision.grade} — ${decision.reason}`;
+    row.__evidence = { ...(row.__evidence || {}), commercial_eligibility: commercialEligibility(row) };
+    populateCommercialActions(row, record.sheet, decision.grade);
     counts[decision.grade]++;
 
     result[record.sheet].push(row);
@@ -3847,13 +4456,16 @@ class WebBudgetStopError extends Error {
   }
 }
 
-function webBudgetScope(label = "") {
-  const value = String(label || "").toLowerCase();
-  if (value.startsWith("этап 1 |")) return "stage1";
-  if (value.startsWith("этап 2 |")) return "stage2";
-  if (value.startsWith("identity |")) return "identity";
-  if (value.startsWith("география региона |")) return "geography";
-  return "other";
+function webBudgetScope(label = "", client = null) {
+  return researchWebScope(label, client?.__webBudget?.kind || "quality");
+}
+function createFullWebBudget() {
+  const limits = fullWebLimits();
+  const used = Object.fromEntries(Object.keys(limits).map((key) => [key, 0]));
+  return {
+    limits, used, reserved: { ...used },
+    warned: new Set(), stopped: new Set(), kind: "full"
+  };
 }
 
 function createQualityWebBudget() {
@@ -3873,7 +4485,9 @@ function createQualityWebBudget() {
       total: 0
     },
     warned: new Set(),
-    stopped: new Set()
+    stopped: new Set(),
+    reserved: { stage1: 0, stage2: 0, identity: 0, geography: 0, other: 0, total: 0 },
+    kind: "quality"
   };
 }
 
@@ -3881,7 +4495,8 @@ function publicWebBudgetState(budget) {
   if (!budget) return null;
   return {
     limits: { ...budget.limits },
-    used: { ...budget.used }
+    used: { ...budget.used },
+    reserved: { ...(budget.reserved || {}) }
   };
 }
 
@@ -3889,27 +4504,92 @@ function budgetLimitForScope(budget, scope) {
   return Number(budget?.limits?.[scope] || 0);
 }
 
-function assertWebBudgetBeforeCall(client, diagnosticLabel) {
+function estimatedApiCostUsd(client) {
+  const usage = tokenUsageSnapshot(client);
+  const input = Math.max(0, usage.input_tokens - usage.cached_input_tokens);
+  const cached = usage.cached_input_tokens;
+  const output = usage.output_tokens;
+  return Number(((input * Number(process.env.OPENAI_ESTIMATE_INPUT_USD_PER_M || 0.2)
+    + cached * Number(process.env.OPENAI_ESTIMATE_CACHED_USD_PER_M || 0.02)
+    + output * Number(process.env.OPENAI_ESTIMATE_OUTPUT_USD_PER_M || 1.2)) / 1000000
+    + webUsageSnapshot(client) * OPENAI_WEB_SEARCH_COST_PER_CALL).toFixed(4));
+}
+
+// Reservations happen synchronously BEFORE each concurrent API request.
+// Actual tool calls are still taken from the Responses API usage diagnostics.
+function reserveWebBudgetBeforeCall(client, diagnosticLabel, requestedTools = 2) {
+  const limitUsd = costEnvLimitUsd();
+  const price = OPENAI_WEB_SEARCH_COST_PER_CALL || 0.01;
+  const spent = estimatedApiCostUsd(client);
   const budget = client?.__webBudget;
-  if (!budget) return;
-
-  const scope = webBudgetScope(diagnosticLabel);
-  const scopeLimit = budgetLimitForScope(budget, scope);
-  const totalLimit = Number(budget.limits.total || 0);
-  const scopeUsed = Number(budget.used[scope] || 0);
-  const totalUsed = Number(budget.used.total || 0);
-
-  const scopeExceeded = Boolean(scopeLimit && scopeUsed >= scopeLimit);
-  const totalExceeded = Boolean(totalLimit && totalUsed >= totalLimit);
-  if (scopeExceeded || totalExceeded) {
+  const scope = webBudgetScope(diagnosticLabel, client);
+  const requested = Math.max(1, Math.min(8, Math.floor(Number(requestedTools || 2))));
+  const reservedTotal = Number(budget?.reserved?.total || 0);
+  // A small concurrency margin prevents concurrent requests exhausting token
+  // budget just before their outputs are returned; it is not a price guarantee.
+  const cashAvailable = Math.floor(Math.max(0,
+    limitUsd - spent - reservedTotal * price - 0.15) / price);
+  const limitAvailable = (key) => {
+    if (!budget || !Object.prototype.hasOwnProperty.call(budget.limits, key)) {
+      return Infinity;
+    }
+    return Number(budget.limits[key]) -
+      Number(budget.used[key] || 0) - Number(budget.reserved?.[key] || 0);
+  };
+  // Responses may contain one more web_search_call than max_tool_calls.
+  // Reserve that empirically observed overcall BEFORE concurrent requests,
+  // rather than discovering an overrun after the global cap is exhausted.
+  const overcallBuffer = budget ? 1 : 0;
+  // A recent paid run reached the shared cap before contacts were complete.
+  // Keep a small reserve from OPTIONAL enrichment only; mandatory identity
+  // and broad discovery are unaffected. This reserve is within existing caps.
+  const optionalEnrichment = budget?.kind === "full" && scope === "enrichment";
+  const contactHold = optionalEnrichment ? protectedContactAllowance() :
+    { webCalls: 0, estimatedUsd: 0 };
+  const remainingContactPhase = Math.max(0, limitAvailable("contacts"));
+  const protectedWebCalls = Math.min(contactHold.webCalls, remainingContactPhase);
+  const protectedCashSlots = Math.ceil(contactHold.estimatedUsd / price);
+  const hardCashAfterBuffer = cashAvailable - overcallBuffer;
+  const hardTotalAfterBuffer = limitAvailable("total") - overcallBuffer;
+  const scopeAfterBuffer = limitAvailable(scope) - overcallBuffer;
+  const cashAfterBuffer = hardCashAfterBuffer - protectedCashSlots;
+  const totalAfterBuffer = hardTotalAfterBuffer - protectedWebCalls;
+  const free = Math.min(requested, cashAfterBuffer,
+    totalAfterBuffer, scopeAfterBuffer);
+  if (free < 1) {
+    const exhausted = hardCashAfterBuffer < 1 ? "estimated_cost_usd" :
+      hardTotalAfterBuffer < 1 ? "total" :
+      scopeAfterBuffer < 1 ? scope : "contact_reservation";
+    console.error("[RESEARCH_WEB_BUDGET_DEFER] " + JSON.stringify({
+      scope, reason: exhausted, cost_usd: spent, cost_cap_usd: limitUsd,
+      contact_reserved_web: protectedWebCalls,
+      contact_reserved_estimated_usd: contactHold.estimatedUsd,
+      used: budget?.used || {}, reserved: budget?.reserved || {}
+    }));
     throw new WebBudgetStopError(
-      totalExceeded && !scopeExceeded ? "total" : scope,
-      totalExceeded && !scopeExceeded ? totalUsed : scopeUsed,
-      totalExceeded && !scopeExceeded ? totalLimit : scopeLimit,
-      totalUsed,
-      totalLimit
+      exhausted, exhausted === "estimated_cost_usd" ? spent :
+        Number(budget?.used?.[exhausted] || 0),
+      exhausted === "estimated_cost_usd" ? limitUsd :
+        Number(budget?.limits?.[exhausted] || 0),
+      Number(budget?.used?.total || 0),
+      Number(budget?.limits?.total || 0)
     );
   }
+  const calls = Math.floor(free);
+  const reservedCalls = calls + overcallBuffer;
+  if (budget) {
+    if (!budget.reserved) budget.reserved = {};
+    budget.reserved[scope] = Number(budget.reserved[scope] || 0) + reservedCalls;
+    budget.reserved.total = Number(budget.reserved.total || 0) + reservedCalls;
+  }
+  return { scope, calls, reservedCalls, budget };
+}
+
+function releaseWebBudgetReservation(reservation) {
+  if (!reservation?.budget) return;
+  const { budget, scope, calls, reservedCalls = calls } = reservation;
+  budget.reserved[scope] = Math.max(0, Number(budget.reserved[scope] || 0) - reservedCalls);
+  budget.reserved.total = Math.max(0, Number(budget.reserved.total || 0) - reservedCalls);
 }
 
 function recordWebUsage(client, diagnosticLabel, calls) {
@@ -3918,7 +4598,7 @@ function recordWebUsage(client, diagnosticLabel, calls) {
   if (!client.__webUsage) {
     client.__webUsage = { total: 0, by_scope: {} };
   }
-  const scope = webBudgetScope(diagnosticLabel);
+  const scope = webBudgetScope(diagnosticLabel, client);
   client.__webUsage.total = Number(client.__webUsage.total || 0) + amount;
   client.__webUsage.by_scope[scope] =
     Number(client.__webUsage.by_scope[scope] || 0) + amount;
@@ -3957,7 +4637,7 @@ function recordWebBudgetUsage(client, diagnosticLabel, calls) {
   const amount = Math.max(0, Number(calls || 0));
   if (!budget || !amount) return;
 
-  const scope = webBudgetScope(diagnosticLabel);
+  const scope = webBudgetScope(diagnosticLabel, client);
   budget.used[scope] = Number(budget.used[scope] || 0) + amount;
   budget.used.total = Number(budget.used.total || 0) + amount;
 
@@ -4186,7 +4866,10 @@ async function askJson(client, {
   const startedAt = Date.now();
   const query = compactDiagnosticQuery(input, diagnosticLabel);
 
-  if (webSearch) assertWebBudgetBeforeCall(client, diagnosticLabel);
+  const webReservation = webSearch
+    ? reserveWebBudgetBeforeCall(client, diagnosticLabel, maxToolCalls || 4)
+    : null;
+  if (webReservation) request.max_tool_calls = webReservation.calls;
 
   try {
     const response = await client.responses.create(request, requestOptions);
@@ -4198,6 +4881,14 @@ async function askJson(client, {
     const toolCounts = diagnosticToolCounts(response);
     if (webSearch) {
       const webCalls = Number(toolCounts.web_search_call || 0);
+      // OpenAI may return more tool-call output items than the requested
+      // max_tool_calls. Report observed usage; do not cap away billable calls.
+      if (Number(request.max_tool_calls) > 0 && webCalls > Number(request.max_tool_calls)) {
+        console.warn("[WEB_TOOL_CALL_OVER_LIMIT] " + JSON.stringify({
+          query: diagnosticLabel, requested_max: request.max_tool_calls,
+          observed_calls: webCalls, cumulative_before: webUsageSnapshot(client)
+        }));
+      }
       recordWebUsage(client, diagnosticLabel, webCalls);
       recordWebBudgetUsage(
         client,
@@ -4304,6 +4995,7 @@ async function askJson(client, {
           ))
         : 0,
       cumulative_tokens: tokenUsageSnapshot(client),
+      estimated_api_cost_usd: estimatedApiCostUsd(client),
       tool_calls: toolCounts,
       web_search_queries: diagnosticWebQueries(response),
       output_chars: String(response?.output_text || "").length,
@@ -4340,6 +5032,8 @@ async function askJson(client, {
       error: error?.message || String(error)
     }));
     throw error;
+  } finally {
+    releaseWebBudgetReservation(webReservation);
   }
 }
 
@@ -4371,13 +5065,14 @@ function askWithoutSearch(client, input, model, maxOutputTokens) {
   });
 }
 
-function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS) {
+function askTargetedSearch(client, input, timeoutMs = ENRICHMENT_SEARCH_TIMEOUT_MS, maxToolCalls = 2) {
   return askJson(client, {
     input,
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: TARGETED_SEARCH_MAX_OUTPUT_TOKENS,
     webSearch: true,
-    maxToolCalls: 2,
+    maxToolCalls,
+    diagnosticLabel: "targeted enrichment | single",
     timeoutMs
   });
 }
@@ -4405,12 +5100,62 @@ function contactSearchPrompt(row, region, kind = "contacts") {
 Верни ТОЛЬКО JSON по схеме.`;
 }
 
+function compactContactBatchTarget(row) {
+  const evidence = row?.__evidence || {};
+  return {
+    id: checkpointRowId(row),
+    organization: String(row?.["Организация"] || "").slice(0, 170),
+    inn: normalizeInn(row?.["ИНН"]),
+    city: String(row?.["Город/район"] || "").slice(0, 110),
+    need_phone: !hasConfirmedPhone(row),
+    need_leader: !hasConfirmedLeader(row),
+    official_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
+      .filter((url) => /^https?:\/\//i.test(String(url))).slice(0, 2)
+  };
+}
+async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
+  const remaining = deadlineRemaining(deadlineAt);
+  if (remaining <= 8000) throw new Error("CONTACT_BATCH_DEADLINE");
+  // The model sees all five legal entities at once; it must not search
+  // for each one separately or infer phone ownership from group websites.
+  const response = await askJson(client, {
+    input: "ПАКЕТНЫЙ ПОИСК КОНТАКТОВ. РЕГИОН: " + region +
+      "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
+      "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
+      "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
+      "Для найденных контактов обязательны точные source_urls. Не подтверждены — оставь phones=[], leader='' и status='not_found'. " +
+      "Не выполняй отдельный web_search ради каждого телефона или директора. " +
+      "Верни JSON строго по схеме. Каждый id представь один раз.",
+    model: TARGETED_SEARCH_MODEL,
+    maxOutputTokens: Math.max(CONTACT_SEARCH_MAX_OUTPUT_TOKENS, 3200),
+    webSearch: true,
+    responseSchema: CONTACT_BATCH_SCHEMA,
+    schemaName: "contact_batch_search",
+    maxToolCalls: CONTACT_BATCH_SETTINGS.batchWebCalls,
+    diagnosticLabel: "contact batch | " + rows.length + " companies",
+    timeoutMs: Math.min(CONTACT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, remaining - 3000)),
+    allowJsonRepair: false
+  });
+  const byId = new Map();
+  for (const item of Array.isArray(response?.items) ? response.items : []) {
+    const id = String(item?.id || "");
+    if (id && !byId.has(id)) byId.set(id, item);
+  }
+  return rows.map((row) => ({
+    id: checkpointRowId(row),
+    result: validBatchContactItem(byId.get(checkpointRowId(row)), row, checkpointRowId(row))
+  }));
+}
 async function searchContactsWithWeb({
   client,
   row,
   region,
-  deadlineAt
+  deadlineAt,
+  phoneRetryBudget = null
 }) {
+  if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
+    return { status: "ok", phones: [], leader: "", official_site: "", note: "Already confirmed" };
+  }
   const firstTimeout = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
     Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
@@ -4423,7 +5168,7 @@ async function searchContactsWithWeb({
     responseSchema: CONTACT_SEARCH_SCHEMA,
     schemaName: "contact_search",
     diagnosticLabel: `contact web | ${row?.["Организация"] || ""}`,
-    maxToolCalls: 2,
+    maxToolCalls: 1,
     timeoutMs: firstTimeout,
     allowJsonRepair: false
   });
@@ -4435,7 +5180,16 @@ async function searchContactsWithWeb({
   );
 
   let second = null;
-  if (!phones.size && deadlineRemaining(deadlineAt) > 7000) {
+  // Never retry merely because the first search found no phone (or found only
+  // a leader). A strict A + sourced official-site reason and global one-call
+  // reservation is required.
+  const retryAllowed = mayRetryContactPhone(
+    row, { phones: [...phones], official_site: first?.official_site,
+      source_urls: first?.source_urls },
+    Number(phoneRetryBudget?.remaining || 0), deadlineRemaining(deadlineAt)
+  );
+  if (retryAllowed && !hasConfirmedPhone(row)) {
+    phoneRetryBudget.remaining--;
     const secondTimeout = Math.min(
       CONTACT_SEARCH_TIMEOUT_MS,
       Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
@@ -4448,7 +5202,7 @@ async function searchContactsWithWeb({
       responseSchema: CONTACT_SEARCH_SCHEMA,
       schemaName: "contact_phone_search",
       diagnosticLabel: `contact phone retry | ${row?.["Организация"] || ""}`,
-      maxToolCalls: 2,
+      maxToolCalls: 1,
       timeoutMs: secondTimeout,
       allowJsonRepair: false
     });
@@ -4639,6 +5393,7 @@ function missingResearchFields(row) {
 }
 
 function prioritizedResearchGaps(row) {
+  populateKnownEvidenceFields(row);
   return missingResearchFields(row);
 }
 
@@ -4679,7 +5434,7 @@ function applyTargetedPatch(row, result) {
     if (value === undefined || value === null || String(value).trim() === "") continue;
     if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
       const numeric = strictResearchNumber(value);
-      if (numeric !== "") row[key] = numeric;
+      if (numeric !== "" && isMissingText(row[key])) row[key] = numeric;
     } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
       row[key] = value;
     }
@@ -5133,6 +5888,41 @@ export async function runResearchPipeline({ job, apiKey }) {
     : Array.from({ length: researchStageLimit }, (_, index) => index);
   const diagnosticStep = mode === "stage_test" ? requestedStage : 2;
   if (mode === "quality") client.__webBudget = createQualityWebBudget();
+  else if (mode === "full" || mode === "resume") client.__webBudget = createFullWebBudget();
+  // A resume must not quietly reset spending to $0. Both the source run and
+  // its continuation share the SAME estimated budget.
+  const previousUsage = resumeCheckpoint?.api_usage || null;
+  if (previousUsage?.token_usage) {
+    for (const key of Object.keys(client.__tokenUsage)) {
+      client.__tokenUsage[key] = Math.max(0, Number(previousUsage.token_usage[key] || 0));
+    }
+  }
+  const previousWeb = previousUsage?.web_usage;
+  if (previousWeb) {
+    client.__webUsage = {
+      total: Math.max(0, Number(previousWeb.total || 0)),
+      by_scope: { ...(previousWeb.by_scope || {}) }
+    };
+  } else if (resumeCheckpoint && Number(resumeCheckpoint.web_usage_total || 0) > 0) {
+    // Legacy checkpoints lack phase attribution and token counts. This
+    // fallback prevents double-spending a large known web budget.
+    client.__webUsage.total = Number(resumeCheckpoint.web_usage_total);
+    client.__webUsage.by_scope = { unknown: client.__webUsage.total };
+  }
+  if (resumeCheckpoint && client.__webBudget) {
+    const previousUsed = previousUsage?.web_budget_used;
+    for (const key of Object.keys(client.__webBudget.used)) {
+      const fallback = key === "total" ? client.__webUsage.total : 0;
+      client.__webBudget.used[key] = Math.max(0,
+        Number(previousUsed?.[key] ?? client.__webUsage.by_scope?.[key] ?? fallback));
+    }
+    console.log("[RESUME_COST_BUDGET] " + JSON.stringify({
+      web_calls_restored: client.__webUsage.total,
+      estimated_cost_usd: estimatedApiCostUsd(client),
+      scopes: client.__webBudget.used,
+      legacy_checkpoint: !previousUsage
+    }));
+  }
   if (!region) throw new Error("Region is required");
 
   const statuses = initialStatuses();
@@ -5163,6 +5953,14 @@ export async function runResearchPipeline({ job, apiKey }) {
       updated_at: new Date().toISOString()
     });
     if (!checkpointState.created_at) checkpointState.created_at = checkpointState.updated_at;
+    checkpointState.api_usage = {
+      estimated_cost_usd: estimatedApiCostUsd(client),
+      token_usage: tokenUsageSnapshot(client),
+      web_usage: { total: client.__webUsage?.total || 0, by_scope: { ...(client.__webUsage?.by_scope || {}) } },
+      web_budget_used: { ...(client.__webBudget?.used || {}) },
+      web_budget_limits: { ...(client.__webBudget?.limits || {}) },
+      target_cost_usd: costEnvLimitUsd()
+    };
     if (typeof job.updateCheckpoint === "function") {
       await job.updateCheckpoint(checkpointState);
     }
@@ -5353,17 +6151,20 @@ export async function runResearchPipeline({ job, apiKey }) {
     const stageTokenStart = tokenUsageSnapshot(client);
     const stageWebStart = webUsageSnapshot(client);
 
-    const combined = emptyResearchResult();
+    const resumePartialStage = Number(resumeCheckpoint?.discovery_partial_stage || 0) === i + 1;
+    const resumePartialBranch = resumePartialStage ? Math.max(0,
+      Number(resumeCheckpoint?.discovery_partial_branch || 0)) : 0;
+    const combined = resumePartialStage && parts[i] ? cloneJson(parts[i]) : emptyResearchResult();
 
     const compactCourtArchiveContext =
       i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length
         ? `\n\nПОЛЬЗОВАТЕЛЬСКИЙ АРХИВ СУДЕБНЫХ АКТОВ — discovery-кандидаты:
 Архив содержит ${compactCourtArchiveMeta?.documents || 10109} документов. Для выбранного региона компактный индекс дал:
 ${JSON.stringify(compactCourtArchive)}
-Не добавляй организацию только из-за присутствия в этом списке. Используй список для поиска конкретного дела через web_search/официальный судебный источник и возвращай организацию только после подтверждения транспортно-релевантных обстоятельств.`
+Этот резервный индекс ограничен и отбирает по географии СУДА, а не по месту регистрации организации. Он не охватывает гарантированно все дела компаний региона; не объявляй его полным архивным поиском. Совпадение суда с регионом не доказывает регистрацию фирмы. Не добавляй организацию только из-за присутствия в этом списке. Используй кандидатов для поиска конкретного дела через web_search/официальный судебный источник и независимо подтверждай региональную, юридическую и транспортную релевантность.`
         : "";
 
-    if (i === 6 && COURT_VECTOR_STORE_ID) {
+    if (i === 6 && COURT_VECTOR_STORE_ID && !resumePartialStage) {
       const archiveThemes = [
         "превышение массы и осевой нагрузки, автоматический весогабаритный контроль, ущерб дорогам, статья 12.21.1 КоАП",
         "тягачи, полуприцепы и прицепы, VIN, госномера, собственник, перевозчик, фактический эксплуатант",
@@ -5407,8 +6208,11 @@ ${JSON.stringify(compactCourtArchive)}
       ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
       : allBranches;
     let stageBudgetStopped = false;
-    const branchDiagnostics = [];
-    for (let branchIndex = 0; branchIndex < branches.length; branchIndex++) {
+    const branchDiagnostics = resumePartialStage &&
+      Array.isArray(resumeCheckpoint?.discovery_partial_branch_diagnostics)
+        ? cloneJson(resumeCheckpoint.discovery_partial_branch_diagnostics)
+        : [];
+    for (let branchIndex = Math.min(resumePartialBranch, branches.length); branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
       statuses[i].detail =
@@ -5444,6 +6248,27 @@ ${JSON.stringify(compactCourtArchive)}
         });
       } catch (error) {
         if (!isWebBudgetStop(error)) throw error;
+        if (executionMode === "full") {
+          parts[i] = combined;
+          statuses[i].detail = "лимит бюджета — исследование не завершено; результаты сохранены";
+          await persistCheckpoint("discovery", {
+            completed_stage: i,
+            discovery_partial_stage: i + 1,
+            discovery_partial_branch: branchIndex,
+            discovery_partial_branch_diagnostics: branchDiagnostics,
+            parts,
+            research_scopes: researchScopes,
+            discovery_budget_stop: {
+              scope: error.scope, used: error.used,
+              limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
+            }
+          });
+          console.error("[DISCOVERY_BUDGET_CHECKPOINT_SAVED] " + JSON.stringify({
+            stage: i + 1, branch: branchIndex + 1,
+            saved_unique: uniqueResearchCount(combined)
+          }));
+          throw error; // Never claim a full nine-stage discovery is complete.
+        }
         stageBudgetStopped = true;
         statuses[i].detail =
           `web budget достигнут · ${uniqueResearchCount(combined)} уникальных · переходим дальше`;
@@ -5783,6 +6608,21 @@ ${JSON.stringify(compactCourtArchive)}
             }
           }
         } catch (error) {
+          if (isWebBudgetStop(error) && executionMode === "full") {
+            parts[i] = combined;
+            await persistCheckpoint("discovery", {
+              completed_stage: i,
+              discovery_partial_stage: i + 1,
+              discovery_partial_branch: branches.length,
+              discovery_partial_branch_diagnostics: branchDiagnostics,
+              parts,
+              research_scopes: researchScopes,
+              discovery_budget_stop: {
+                scope: error.scope, used: error.used,
+                limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
+              }
+            });
+          }
           if (isWebBudgetStop(error)) throw error;
           console.error("[DISCOVERY_RECOVERY_SCOPE_ERROR] " + JSON.stringify({
             stage: i + 1,
@@ -5799,7 +6639,7 @@ ${JSON.stringify(compactCourtArchive)}
       const added = Math.max(0, after - before);
       const recoveryThreshold = adaptiveDiscoveryLowYieldThreshold(before);
       const recoveryLowQuality =
-        added <= recoveryThreshold || discoveryQualityIsLow(recoveryYieldAggregate);
+        added <= recoveryThreshold && discoveryQualityIsLow(recoveryYieldAggregate);
       lowYieldStreak = recoveryLowQuality ? lowYieldStreak + 1 : 0;
       const recoveryWebCalls = Math.max(0, webUsageSnapshot(client) - recoveryWebStart);
       console.log("[DISCOVERY_RECOVERY_SUMMARY] " + JSON.stringify({
@@ -6139,6 +6979,137 @@ ${JSON.stringify(compactCourtArchive)}
     };
   }
 
+
+  // A bounded history pass is part of real discovery, NOT a frozen benchmark.
+  // Earlier completed studies supply only name/region/URL search hints. Never
+  // transfer their INNs, phone numbers, A/B/C grades or legal identities.
+  let historicalRuns = [];
+  if (!diagnosticMode && !replayMode && executionMode === "full" && HISTORICAL_RECALL_ENABLED) {
+    try {
+      historicalRuns = await loadRecentCompletedResearch(region, HISTORICAL_RECALL_HISTORY_RUNS);
+    } catch (error) {
+      console.warn("[HISTORICAL_RECALL_HISTORY_ERROR] " + JSON.stringify({
+        region, error: error?.message || String(error)
+      }));
+    }
+  }
+  let historicalRecall = cloneJson(resumeCheckpoint?.historical_recall || null);
+  const historicalRecallCanRun = !diagnosticMode && !replayMode &&
+    executionMode === "full" && HISTORICAL_RECALL_ENABLED &&
+    !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity");
+  if (historicalRecallCanRun && !historicalRecall?.completed) {
+    if (!historicalRecall?.plan) {
+      const plan = buildHistoricalRecallPlan(historicalRuns, flattenCandidates(parts), {
+        maxCandidates: HISTORICAL_RECALL_MAX_BATCHES * HISTORICAL_RECALL_BATCH_SIZE
+      });
+      historicalRecall = {
+        version: 1, plan, next_batch: 0, attempted_inns: [],
+        accepted: 0, rejected: 0, calls: 0, completed: false
+      };
+      console.log("[HISTORICAL_RECALL_PLAN] " + JSON.stringify({
+        prior_runs: plan.prior_runs.length,
+        verified_history_unique: plan.verified_history_unique,
+        already_seen_by_inn: plan.already_seen_by_inn,
+        already_seen_by_name_unverified: plan.already_seen_by_name_unverified,
+        ambiguity_holds: plan.ambiguous_history + plan.current_name_inn_conflicts,
+        recently_attempted: plan.recently_attempted_in_previous_runs,
+        eligible_missing: plan.total_missing_candidates,
+        eligible_from_older_history: plan.older_history_eligible,
+        selected_from_older_history: plan.older_history_selected,
+        selected_for_search: plan.candidates.length,
+        deferred_without_research: plan.deferred_candidates
+      }));
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        historical_recall: historicalRecall
+      });
+    }
+    const plan = historicalRecall.plan;
+    const totalBatches = Math.min(HISTORICAL_RECALL_MAX_BATCHES,
+      Math.ceil(plan.candidates.length / HISTORICAL_RECALL_BATCH_SIZE));
+    for (let batchIndex = Number(historicalRecall.next_batch || 0);
+      batchIndex < totalBatches; batchIndex++) {
+      await assertNotCancelled();
+      const budget = client.__webBudget;
+      const remainingDiscovery = Number(budget.limits.discovery) -
+        Number(budget.used.discovery || 0) - Number(budget.reserved.discovery || 0);
+      const remainingTotal = Number(budget.limits.total) -
+        Number(budget.used.total || 0) - Number(budget.reserved.total || 0);
+      // Protect downstream identity + contact research and the dollar ceiling.
+      if (remainingDiscovery < 25 || remainingTotal < 200 ||
+          costEnvLimitUsd() - estimatedApiCostUsd(client) < 2) {
+        historicalRecall.deferred_reason = "preserve_identity_and_contacts_budget";
+        console.log("[HISTORICAL_RECALL_DEFER] " + JSON.stringify({
+          remaining_discovery: remainingDiscovery,
+          remaining_total: remainingTotal,
+          remaining_estimated_usd: Number(
+            (costEnvLimitUsd() - estimatedApiCostUsd(client)).toFixed(2))
+        }));
+        break;
+      }
+      const batch = plan.candidates.slice(batchIndex * HISTORICAL_RECALL_BATCH_SIZE,
+        (batchIndex + 1) * HISTORICAL_RECALL_BATCH_SIZE);
+      const beforeCalls = webUsageSnapshot(client);
+      try {
+        const response = normalize(await askResearch(
+          client,
+          historicalRecallPrompt(region, batch),
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+          "historical recall | batch " + (batchIndex + 1) + "/" + totalBatches,
+          HISTORICAL_RECALL_MAX_CALLS_PER_BATCH
+        ));
+        const findings = filterHistoricalRecallFindings(response, batch);
+        if (!parts[8]) parts[8] = emptyResearchResult();
+        appendResearchResult(parts[8], findings.result, "historical-recall");
+        historicalRecall.accepted += findings.accepted_count;
+        // Record only fresh candidate names; this is a trace, NOT proof of
+        // legal identity or permission to copy the old company's INN.
+        historicalRecall.accepted_candidates ||= [];
+        historicalRecall.accepted_candidates.push(
+          ...allResearchRows(findings.result).map(row => ({
+            name: String(row["Организация"] || "").slice(0, 180)
+          }))
+        );
+        historicalRecall.rejected += findings.rejected_count;
+        historicalRecall.attempted_inns.push(...batch.map(item => item.inn));
+        historicalRecall.next_batch = batchIndex + 1;
+        historicalRecall.calls += Math.max(0, webUsageSnapshot(client) - beforeCalls);
+        console.log("[HISTORICAL_RECALL_BATCH] " + JSON.stringify({
+          batch: batchIndex + 1, hints: batch.length,
+          accepted: findings.accepted_count, rejected: findings.rejected_count,
+          web_calls: Math.max(0, webUsageSnapshot(client) - beforeCalls),
+          historical_inn_copied: false
+        }));
+      } catch (error) {
+        if (isWebBudgetStop(error)) {
+          historicalRecall.deferred_reason = "research_web_budget";
+          console.log("[HISTORICAL_RECALL_DEFER] " + JSON.stringify({
+            reason: "research_web_budget", scope: error.scope
+          }));
+          break;
+        }
+        if (job.cancelled || jobSignal?.aborted) throw error;
+        // Do not convert transient API errors into an unverified company.
+        historicalRecall.next_batch = batchIndex + 1;
+        historicalRecall.errors = Number(historicalRecall.errors || 0) + 1;
+        console.warn("[HISTORICAL_RECALL_BATCH_ERROR] " + JSON.stringify({
+          batch: batchIndex + 1, error: error?.message || String(error)
+        }));
+      }
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        historical_recall: historicalRecall,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    historicalRecall.completed = true;
+    await persistCheckpoint("discovery", {
+      completed_stage: 9, parts, research_scopes: researchScopes,
+      historical_recall: historicalRecall,
+      web_usage_total: webUsageSnapshot(client)
+    });
+  }
+
   const censusCompatibleWithResume =
     !resumeCheckpoint || !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity");
   if (
@@ -6176,6 +7147,113 @@ ${JSON.stringify(compactCourtArchive)}
       reason: "identity_or_later_checkpoint_must_keep_frozen_candidate_pool",
       phase: resumeCheckpoint.phase || ""
     }));
+  }
+
+  // Second opinion uses this run alone; selected discoveries still pass
+  // the normal identity/dedupe/qualification stages without inherited fields.
+  let autonomousCoverage = cloneJson(resumeCheckpoint?.autonomous_coverage || null);
+  if (AUTONOMOUS_DISCOVERY_ENABLED && !diagnosticMode && !replayMode &&
+      executionMode === "full" && !checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity") &&
+      !autonomousCoverage?.completed) {
+    const current = emptyResearchResult();
+    for (const part of parts) appendResearchResult(current, part, "current-run-only");
+    if (!autonomousCoverage?.plan) {
+      const plan = planAutonomousDiscoveryCoverage({
+        current, sectors: ENTITY_CENSUS_BUCKETS,
+        undercoveredGeography: coverageSnapshot(current, researchScopes).undercovered_geography,
+        classifySource: discoverySourceFamily,
+        gradeForRow: deterministicQualificationDecision,
+        maxPasses: AUTONOMOUS_DISCOVERY_MAX_PASSES
+      });
+      autonomousCoverage = {version: 1, plan, next_pass: 0,
+        accepted: 0, rejected: {}, calls: 0, completed: false};
+      console.log("[AUTONOMOUS_DISCOVERY_PLAN] " + JSON.stringify({
+        current_seen: plan.current_seen_organizations,
+        selected: plan.passes.map(p => p.key),
+        sectors: plan.sectors.map(x => ({key:x.key, count:x.count,
+          strong:x.strong, diversity:x.source_diversity, eligible:x.eligible})),
+        prior_runs_used: 0
+      }));
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        census_completed: true, autonomous_coverage: autonomousCoverage,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    for (let index = Number(autonomousCoverage.next_pass || 0);
+      index < autonomousCoverage.plan.passes.length; index++) {
+      await assertNotCancelled();
+      const pass = autonomousCoverage.plan.passes[index];
+      const budget = client.__webBudget;
+      const remainingDiscovery = Number(budget.limits.discovery) -
+        Number(budget.used.discovery || 0) - Number(budget.reserved.discovery || 0);
+      const remainingTotal = Number(budget.limits.total) -
+        Number(budget.used.total || 0) - Number(budget.reserved.total || 0);
+      if (remainingDiscovery < AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS + 25 ||
+          remainingTotal < 200 ||
+          costEnvLimitUsd() - estimatedApiCostUsd(client) < 2) {
+        autonomousCoverage.deferred_reason = "protect_identity_contacts_and_cost";
+        console.log("[AUTONOMOUS_DISCOVERY_DEFER] " + JSON.stringify({
+          sector: pass.key, reason: autonomousCoverage.deferred_reason
+        }));
+        break;
+      }
+      const before = webUsageSnapshot(client);
+      try {
+        const response = normalize(await askResearch(client,
+          autonomousDiscoveryPrompt({
+            region, pass, alreadyFound: foundOrganizationNames(current, 180),
+            core: DISCOVERY_CORE_PROMPT
+          }),
+          RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
+          "discovery autonomous coverage | " + pass.key + " | " +
+            (index + 1) + "/" + autonomousCoverage.plan.passes.length,
+          AUTONOMOUS_DISCOVERY_MAX_TOOL_CALLS
+        ));
+        const sector = ENTITY_CENSUS_BUCKETS.find(s => s.key === pass.key);
+        const filtered = filterAutonomousDiscoveryFindings({
+          response, current, sector,
+          isCommercial: row => !commercialEligibility(row).blocked
+        });
+        if (!parts[8]) parts[8] = emptyResearchResult();
+        appendResearchResult(parts[8], filtered.result, "autonomous-coverage");
+        appendResearchResult(current, filtered.result, "autonomous-new");
+        autonomousCoverage.accepted += filtered.accepted;
+        for (const [reason, count] of Object.entries(filtered.rejected)) {
+          autonomousCoverage.rejected[reason] =
+            Number(autonomousCoverage.rejected[reason] || 0) + count;
+        }
+        autonomousCoverage.calls += Math.max(0, webUsageSnapshot(client) - before);
+        console.log("[AUTONOMOUS_DISCOVERY_PASS] " + JSON.stringify({
+          sector: pass.key, accepted: filtered.accepted,
+          rejected: filtered.rejected,
+          web_calls: Math.max(0, webUsageSnapshot(client) - before),
+          historical_runs_used: 0, inherited_inns: 0
+        }));
+      } catch (error) {
+        if (isWebBudgetStop(error)) {
+          autonomousCoverage.deferred_reason = "existing_web_budget";
+          break;
+        }
+        if (job.cancelled || jobSignal?.aborted) throw error;
+        autonomousCoverage.errors = Number(autonomousCoverage.errors || 0) + 1;
+        console.warn("[AUTONOMOUS_DISCOVERY_ERROR] " + JSON.stringify({
+          sector: pass.key, error: error?.message || String(error)
+        }));
+      }
+      autonomousCoverage.next_pass = index + 1;
+      await persistCheckpoint("discovery", {
+        completed_stage: 9, parts, research_scopes: researchScopes,
+        census_completed: true, autonomous_coverage: autonomousCoverage,
+        web_usage_total: webUsageSnapshot(client)
+      });
+    }
+    autonomousCoverage.completed = true;
+    await persistCheckpoint("discovery", {
+      completed_stage: 9, parts, research_scopes: researchScopes,
+      census_completed: true, autonomous_coverage: autonomousCoverage,
+      web_usage_total: webUsageSnapshot(client)
+    });
   }
 
   await assertNotCancelled();
@@ -6523,7 +7601,7 @@ ${JSON.stringify(groupBatch)}`,
 
   const unresolvedInnConflictClear = innConflictGroups.length
     ? clearUnresolvedInnConflicts(finalResult)
-    : { groups: 0, clearedRows: 0 };
+    : { groups: 0, clearedRows: 0, quarantinedRows: 0, preservedVerifiedRows: 0 };
   if (unresolvedInnConflictClear.groups) {
     const afterConflictClear = postInnDedupe(finalResult, region, postInnDiagnostics);
     dedupedRecords = afterConflictClear.records;
@@ -6533,6 +7611,93 @@ ${JSON.stringify(groupBatch)}`,
     innConflictGroups = duplicateInnConflictGroups(finalResult);
   }
 
+  // Legal status may become known only after final identity search.
+  const eligibleSheets = { direct_buyers: [], intermediaries: [], leasing: [] };
+  const excludedLegal = [];
+  const excludedLegalRows = [];
+  for (const sheet of ["direct_buyers", "intermediaries", "leasing"]) {
+    for (const row of finalResult[sheet] || []) {
+      const eligibility = commercialEligibility(row);
+      row.__evidence = { ...(row.__evidence || {}), commercial_eligibility: eligibility };
+      if (eligibility.blocked) {
+        excludedLegal.push({
+          canonical_id: row.__canonical_id, organization: row["Организация"],
+          inn: row["ИНН"], kind: eligibility.kind, reason: eligibility.reason,
+          source_url: eligibility.source_url
+        });
+        excludedLegalRows.push({
+          ...row,
+          __decision: "exclude",
+          __final_grade: "",
+          __a_evidence: "",
+          __a_rule: "",
+          __qualification_origin_sheet: sheet,
+          __decision_reason: eligibility.reason
+        });
+      } else eligibleSheets[sheet].push(row);
+    }
+  }
+  finalResult = {
+    ...finalResult,
+    ...eligibleSheets,
+    qualification_review: mergedQualificationReviews(
+      Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : []
+    ),
+    qualification_excluded: [
+      ...(Array.isArray(finalResult.qualification_excluded) ? finalResult.qualification_excluded : []),
+      ...excludedLegalRows
+    ]
+  };
+  // Discovery candidates may be lost during identity or global dedupe even
+  // when the eventual A/B/C qualifier is correct. Never silently drop sourced
+  // transport leads; preserve the ORIGINAL evidence in the checkpoint only.
+  const stagedRetention = stagedRetentionReview(stagedResult, finalResult, {
+    isActionable: actionableUnqualifiedLead,
+    isExcluded: (row) => commercialEligibility(row).blocked
+  });
+  finalResult.qualification_review = mergedQualificationReviews(
+    finalResult.qualification_review, stagedRetention.rows
+  );
+  console.log("[FINAL_STAGED_RETENTION_AUDIT] " + JSON.stringify({
+    ...stagedRetention.diagnostics,
+    total_review: finalResult.qualification_review.length
+  }));
+  if (finalResult.qualification_review.length) {
+    console.log("[FINAL_UNQUALIFIED_REVIEW_PRESERVED] " + JSON.stringify({
+      count: finalResult.qualification_review.length,
+      candidates: finalResult.qualification_review.map((row) => ({
+        canonical_id: row.__canonical_id || "",
+        organization: row["Организация"],
+        inn: row["ИНН"] || "",
+        origin_sheet: row.__qualification_origin_sheet || ""
+      }))
+    }));
+  }
+  qualifiedFinal.result = finalResult;
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    A: allResearchRows(finalResult).filter((row) => row.__final_grade === "A").length,
+    B: allResearchRows(finalResult).filter((row) => row.__final_grade === "B").length,
+    C: allResearchRows(finalResult).filter((row) => row.__final_grade === "C").length,
+    excluded: Number(qualifiedFinal.counts?.excluded || 0) + excludedLegal.length
+  };
+  if (excludedLegal.length) console.log("[FINAL_LEGAL_EXCLUSIONS] " + JSON.stringify(excludedLegal));
+  // Keep historical notes and source URLs unchanged. Only facts with an
+  // INLINE citation in the same note receive a source pointer. A bare URL
+  // list does not authorize attaching a citation to an unrelated claim.
+  const provenanceRows = [
+    ...allResearchRows(finalResult),
+    ...(Array.isArray(finalResult.qualification_review) ? finalResult.qualification_review : [])
+  ];
+  const provenanceCounts = { notes: 0, linked: 0, ambiguous: 0, missing_inline: 0 };
+  for (const row of provenanceRows) {
+    const audit = attachInlineNoteProvenance(row);
+    provenanceCounts.notes += audit.note_count;
+    provenanceCounts.linked += audit.linked;
+    provenanceCounts.ambiguous += audit.ambiguous;
+    provenanceCounts.missing_inline += audit.unlinked;
+  }
+  console.log("[FINAL_NOTE_PROVENANCE_AUDIT] " + JSON.stringify(provenanceCounts));
   for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
 
   finalInnStats.missing = allResearchRows(finalResult)
@@ -6545,8 +7710,10 @@ ${JSON.stringify(groupBatch)}`,
     output_rows: rowCount(finalResult),
     qualification_counts: qualifiedFinal.counts,
     conflict_rechecks: innConflictRechecks,
-    unresolved_conflict_groups_cleared: unresolvedInnConflictClear.groups,
-    unresolved_conflict_rows_cleared: unresolvedInnConflictClear.clearedRows,
+    unresolved_conflict_groups_quarantined: unresolvedInnConflictClear.groups,
+    unresolved_conflict_rows_quarantined: unresolvedInnConflictClear.quarantinedRows || 0,
+    conflict_verified_rows_preserved: unresolvedInnConflictClear.preservedVerifiedRows || 0,
+    unresolved_conflict_inn_fields_cleared: 0,
     remaining_inn_conflicts: innConflictGroups.length,
     missing_inn: finalInnStats.missing
   }));
@@ -6578,7 +7745,31 @@ ${JSON.stringify(groupBatch)}`,
   });
 
   await assertNotCancelled();
-  const finalCompaniesForEnrichment = allResearchRows(finalResult);
+  // Before ANY paid enrichment/contact lookups, run the same deterministic
+  // quality gate which previously executed only AFTER stage 11. This saves
+  // money by not enriching disputed or invalid sales prospects. Preserve
+  // every held record in REVIEW and re-run after contacts for new evidence.
+  const preEnrichmentQuality = finalizeProductionResearch(finalResult, {
+    qualify: deterministicQualificationDecision,
+    isActionable: actionableUnqualifiedLead
+  });
+  finalResult = preEnrichmentQuality.result;
+  qualifiedFinal.result = finalResult;
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    ...preEnrichmentQuality.report.grades,
+    review: preEnrichmentQuality.report.review_records,
+    excluded: preEnrichmentQuality.report.excluded_records
+  };
+  console.log("[PRE_ENRICHMENT_QUALITY_GATE] " + JSON.stringify({
+    before: preEnrichmentQuality.report.original_commercial_records,
+    after: preEnrichmentQuality.report.active_commercial_records,
+    held_before_paid_enrichment: preEnrichmentQuality.report.transitions.length,
+    original_rows_preserved: preEnrichmentQuality.report.originals_lost === 0,
+    api_calls: 0, web_search_calls: 0
+  }));
+  const finalCompaniesForEnrichment = allResearchRows(finalResult)
+    .sort((a, b) => safeSearchPriority(b) - safeSearchPriority(a));
   let targetedSearches = Number(resumeCheckpoint?.targeted_searches || 0);
   const enrichmentCompleted = new Set(
     Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
@@ -6588,6 +7779,12 @@ ${JSON.stringify(groupBatch)}`,
   let enrichmentProcessed = 0;
   let enrichmentErrors = 0;
   let enrichmentDeadlineSkipped = 0;
+  let enrichmentBatchAccepted = 0;
+  let enrichmentBatchBlank = 0;
+  let enrichmentFallbackCalls = 0;
+  let enrichmentBatchDeferred = 0;
+  let enrichmentBudgetDeferred = 0;
+  let enrichmentSingleCalls = 0;
 
   for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
 
@@ -6636,7 +7833,8 @@ ${JSON.stringify(groupBatch)}`,
       targeted_searches: targetedSearches,
       enrichment_completed_ids: [...enrichmentCompleted],
       enrichment_errors: enrichmentErrors,
-      enrichment_deadline_skipped: enrichmentDeadlineSkipped
+      enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+      enrichment_budget_deferred: enrichmentBudgetDeferred
     });
   });
 
@@ -6653,71 +7851,325 @@ ${JSON.stringify(groupBatch)}`,
     stage_deadline_ms: STAGE10_MAX_MS
   }));
 
+  const enrichmentGroups = [];
+  for (let i = 0; i < enrichmentPending.length; i += ENRICHMENT_BATCH_SIZE) {
+    enrichmentGroups.push(enrichmentPending.slice(i, i + ENRICHMENT_BATCH_SIZE));
+  }
+
+  // Reserve a short tail of stage 10 for citation-checked A/B gaps.
+  // Previously ordinary enrichment exhausted the shared deadline and no
+  // A/B recovery batch ran. No API/budget limit is increased.
+  const abRecoveryReserveMs = AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0
+    ? Math.min(120000, Math.floor(STAGE10_MAX_MS / 8)) : 0;
+  const enrichmentStandardDeadlineAt = stage10DeadlineAt - abRecoveryReserveMs;
+  console.log("[ENRICHMENT_PRIORITY_RESERVE] " + JSON.stringify({
+    reserved_ms: abRecoveryReserveMs, deadline_ms: STAGE10_MAX_MS
+  }));
   await mapWithConcurrency(
-    enrichmentPending,
+    enrichmentGroups,
     ENRICHMENT_CONCURRENCY,
-    async (row) => {
+    async (batch) => {
       await assertNotCancelled();
-      const rowId = checkpointRowId(row);
-      const gaps = prioritizedResearchGaps(row);
-      if (!gaps.length) {
-        if (rowId) enrichmentCompleted.add(rowId);
-        enrichmentProcessed++;
-        await enrichmentCheckpointBatcher.request();
-        return;
+      const targets = batch.map((row) => ({
+        ...compactEnrichmentTarget(row),
+        missing: prioritizedResearchGaps(row)
+      })).filter((row) => row.missing.length > 0);
+
+      let groupedResults = new Map();
+      let batchAttempted = false;
+      let batchBudgetStopped = false;
+      let batchFallbackRemaining = ENRICHMENT_MAX_FALLBACKS_PER_BATCH;
+      if (targets.length > 1 && deadlineRemaining(enrichmentStandardDeadlineAt) > 9000) {
+        batchAttempted = true;
+        try {
+          targetedSearches++;
+          const result = await askJson(client, {
+            input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников) и __comment. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица. Если достоверное значение НЕ найдено, оставь его пустым: это завершённая проверка, а не ошибка, и повторного поиска не будет. Выполни не более ${ENRICHMENT_BATCH_MAX_TOOL_CALLS} web_search на весь пакет, верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
+            model: TARGETED_SEARCH_MODEL,
+            maxOutputTokens: Math.max(TARGETED_SEARCH_MAX_OUTPUT_TOKENS, 4000),
+            webSearch: true,
+            responseSchema: ENRICHMENT_BATCH_SCHEMA,
+            schemaName: "batch_company_enrichment",
+            maxToolCalls: ENRICHMENT_BATCH_MAX_TOOL_CALLS,
+            diagnosticLabel: `enrichment batch | ${targets.length} companies`,
+            timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2, Math.max(5000, deadlineRemaining(enrichmentStandardDeadlineAt) - 3000)),
+            allowJsonRepair: false
+          });
+          const valid = new Set(targets.map((item) => String(item.id || "")));
+          groupedResults = new Map(
+            (Array.isArray(result?.items) ? result.items : [])
+              .filter((item) => valid.has(String(item?.id || "")))
+              .map((item) => [String(item.id), item])
+          );
+          console.log("[ENRICHMENT_BATCH_RESULT] " + JSON.stringify({
+            requested: targets.length,
+            returned: groupedResults.size,
+            missing: targets.length - groupedResults.size,
+            max_tool_calls: ENRICHMENT_BATCH_MAX_TOOL_CALLS
+          }));
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          batchBudgetStopped = isWebBudgetStop(error);
+          console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
+            size: targets.length,
+            error: error?.message || String(error)
+          }));
+        }
       }
 
-      if (deadlineRemaining(stage10DeadlineAt) <= 7000) {
-        enrichmentDeadlineSkipped++;
-        enrichmentProcessed++;
-        console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
-          id: rowId,
-          organization: row?.["Организация"] || "",
-          gaps
-        }));
-        return;
-      }
+      for (const row of batch) {
+        await assertNotCancelled();
+        const rowId = checkpointRowId(row);
+        const gaps = prioritizedResearchGaps(row);
+        if (!gaps.length) {
+          if (rowId) enrichmentCompleted.add(rowId);
+          enrichmentProcessed++;
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
 
-      targetedSearches++;
-      try {
-        const timeoutMs = Math.min(
-          ENRICHMENT_SEARCH_TIMEOUT_MS,
-          Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)
-        );
-        const enriched = await askTargetedSearch(
-          client,
-          targetedSearchContract() +
-            `\n\nРЕГИОН: ${region}
+        const remaining = deadlineRemaining(enrichmentStandardDeadlineAt);
+        if (remaining <= 7000) {
+          enrichmentDeadlineSkipped++;
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_DEADLINE_SKIP] " + JSON.stringify({
+            id: rowId,
+            organization: row?.["Организация"] || "",
+            gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
+
+        if (batchBudgetStopped) {
+          // Budget exhaustion is NOT negative evidence. Preserve the row in
+          // the checkpoint's pending enrichment set for a controlled resume.
+          enrichmentBudgetDeferred++;
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_COST_DEFERRED] " + JSON.stringify({
+            id: rowId, organization: row["Организация"], gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
+
+        const action = decideEnrichmentAction({
+          batchAttempted,
+          batchItem: groupedResults.get(rowId),
+          rowId,
+          priority: safeSearchPriority(row),
+          globalFallbackRemaining: ENRICHMENT_MAX_FALLBACKS_TOTAL - enrichmentFallbackCalls,
+          batchFallbackRemaining,
+          deadlineRemainingMs: remaining
+        });
+
+        if (action.action === "defer") {
+          // A missing ROW is a technical omission, not an excuse for an
+          // unlimited second paid search across low-priority C companies.
+          enrichmentBatchDeferred++;
+          if (rowId) enrichmentCompleted.add(rowId);
+          enrichmentProcessed++;
+          console.log("[ENRICHMENT_BATCH_DEFERRED] " + JSON.stringify({
+            id: rowId, grade: row.__final_grade || "", reason: action.reason, gaps
+          }));
+          await enrichmentCheckpointBatcher.request();
+          continue;
+        }
+
+        if (action.consumesFallback) {
+          batchFallbackRemaining--;
+          enrichmentFallbackCalls++;
+          console.log("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
+            id: rowId, reason: action.reason,
+            fallback_used: enrichmentFallbackCalls,
+            fallback_limit: ENRICHMENT_MAX_FALLBACKS_TOTAL
+          }));
+        }
+
+        try {
+          let enriched;
+          if (action.action === "use_batch") {
+            enriched = groupedResults.get(rowId);
+            enrichmentBatchAccepted++;
+            if (!Object.values(enriched.fields || {}).some((value) => String(value ?? "").trim()) &&
+                !String(enriched.__comment || "").trim()) enrichmentBatchBlank++;
+          } else {
+            // Individual lookup is for single-item groups or one bounded
+            // structural recovery, NEVER because a researched value is blank.
+            targetedSearches++;
+            if (action.action === "single") enrichmentSingleCalls++;
+            enriched = await askTargetedSearch(
+              client,
+              targetedSearchContract() +
+                `\n\nРЕГИОН: ${region}
 КОМПАНИЯ:
 ${JSON.stringify(compactEnrichmentTarget(row))}
 НЕДОСТАЮЩИЕ СВЕДЕНИЯ:
 ${JSON.stringify(gaps)}
 Компания уже прошла identity, global dedupe, финальную A/B/C qualification и отдельную проверку ИНН.
-Сделай один точечный web_search только по этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля без необходимости.`,
-          timeoutMs
-        );
-        applyTargetedPatch(row, enriched);
-        if (rowId) enrichmentCompleted.add(rowId);
-      } catch (error) {
-        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-        enrichmentErrors++;
-        console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
-          id: rowId,
-          organization: row?.["Организация"] || "",
-          error: error?.message || String(error)
-        }));
-      }
+Используй web_search только для этой компании. Не ищи телефон/ЛПР/ИНН и не перепроверяй заполненные поля. Пустой результат допустим.`,
+              Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS, Math.max(5000, remaining - 3000)),
+              1 // budgeted 1 web call even for an exceptional single query
+            );
+          }
+          applyTargetedPatch(row, enriched);
+          if (rowId) enrichmentCompleted.add(rowId);
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          if (isWebBudgetStop(error)) enrichmentBudgetDeferred++;
+          else enrichmentErrors++;
+          console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
+            id: rowId,
+            organization: row?.["Организация"] || "",
+            error: error?.message || String(error)
+          }));
+        }
 
-      enrichmentProcessed++;
-      if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
-        statuses[9].detail =
-          `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
-        await progress({ phase: "dedupe", step: 10, percent: 89 });
+        enrichmentProcessed++;
+        if (enrichmentProcessed % 10 === 0 || enrichmentProcessed === enrichmentPending.length) {
+          statuses[9].detail =
+            `enrichment ${enrichmentProcessed} / ${enrichmentPending.length} · search: ${targetedSearches} · errors: ${enrichmentErrors}`;
+          await progress({ phase: "dedupe", step: 10, percent: 89 });
+        }
+        await enrichmentCheckpointBatcher.request();
       }
-      await enrichmentCheckpointBatcher.request();
     }
   );
-  await enrichmentCheckpointBatcher.flush();
+  console.log("[ENRICHMENT_EFFICIENCY] " + JSON.stringify({
+    planned_companies: enrichmentPending.length,
+    batch_answered: enrichmentBatchAccepted,
+    batch_empty_answers: enrichmentBatchBlank,
+    individual_searches: enrichmentSingleCalls,
+    structural_fallback_searches: enrichmentFallbackCalls,
+    batch_omissions_deferred: enrichmentBatchDeferred,
+    budget_deferred: enrichmentBudgetDeferred,
+    errors: enrichmentErrors,
+    targeted_model_calls: targetedSearches
+  }));
+    await enrichmentCheckpointBatcher.flush();
+
+  // A/B gap recovery is bounded and shares the original $25 and web limits.
+  // This does NOT change discovery and does not invent missing financial data.
+  const abRecoveredIds = new Set(
+    Array.isArray(resumeCheckpoint?.ab_recovery_completed_ids)
+      ? resumeCheckpoint.ab_recovery_completed_ids.map(String) : []
+  );
+  let abRecoveryBatches = 0;
+  let abRecoveryApplied = 0;
+  let abRecoveryDeferred = 0;
+  let abRecoveryFailed = 0;
+  if (AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
+    const abCandidates = eligiblePriorityRecoveryRows(
+      finalCompaniesForEnrichment, abRecoveredIds, checkpointRowId,
+      AB_RECOVERY_MAX_BATCHES * AB_RECOVERY_BATCH_SIZE
+    );
+    const abGroups = [];
+    for (let index = 0; index < abCandidates.length; index += AB_RECOVERY_BATCH_SIZE) {
+      abGroups.push(abCandidates.slice(index, index + AB_RECOVERY_BATCH_SIZE));
+    }
+    console.log("[AB_GAP_RECOVERY_PLAN] " + JSON.stringify({
+      eligible: abCandidates.length,
+      batches: abGroups.length,
+      max_web_per_batch: AB_RECOVERY_MAX_TOOL_CALLS,
+      spent_cost_usd: estimatedApiCostUsd(client)
+    }));
+    for (const batch of abGroups) {
+      await assertNotCancelled();
+      if (deadlineRemaining(stage10DeadlineAt) <= 8000) {
+        abRecoveryDeferred += batch.length;
+        console.log("[AB_GAP_RECOVERY_DEFERRED] " + JSON.stringify({
+          reason: "deadline", count: batch.length
+        }));
+        break;
+      }
+      const targets = batch.map((row) => ({
+        id: checkpointRowId(row),
+        organization: row["Организация"],
+        inn: normalizeInn(row["ИНН"]),
+        city: row["Город/район"],
+        gaps: priorityRecoveryGaps(row),
+        evidence_urls: (row.__evidence?.source_urls || []).slice(0, 2)
+      }));
+      try {
+        const answer = await askJson(client, {
+          input: [
+            "ДОЗАПОЛНЕНИЕ ТОЛЬКО ПОДТВЕРЖДЕННЫХ A/B КОМПАНИЙ.",
+            "РЕГИОН: " + region,
+            "Для каждого id верни ровно указанные организацию и ИНН и массив facts.",
+            "Ищи только отсутствующие поля: Руководитель / ЛПР, Выручка последнего подтвержденного года (целое число рублей и год), Численность (целое число).",
+            "Каждый факт подтверждай конкретной HTTPS-страницей о ТОМ ЖЕ юридическом лице.",
+            "evidence_excerpt для каждого факта должен ДОСЛОВНО содержать ИНН и значение; для выручки также год. Иначе не возвращай факт.",
+            "Не переноси выручку/численность/руководителя с холдинга на дочернюю компанию или с другого одноимённого ООО.",
+            "Не ищи новые компании, телефон, ИНН или прицепы. Не меняй ранее подтверждённые значения.",
+            "Нечего подтвердить — верни facts:[]; это исследованный пустой результат.",
+            "КОМПАНИИ: " + JSON.stringify(targets)
+          ].join("\n"),
+          model: TARGETED_SEARCH_MODEL,
+          maxOutputTokens: Math.max(4000, TARGETED_SEARCH_MAX_OUTPUT_TOKENS),
+          webSearch: true,
+          responseSchema: AB_RECOVERY_SCHEMA,
+          schemaName: "ab_verified_gap_recovery",
+          maxToolCalls: AB_RECOVERY_MAX_TOOL_CALLS,
+          diagnosticLabel: "enrichment priority | " + batch.length + " verified A/B entities",
+          timeoutMs: Math.min(ENRICHMENT_SEARCH_TIMEOUT_MS * 2,
+            Math.max(5000, deadlineRemaining(stage10DeadlineAt) - 3000)),
+          allowJsonRepair: false
+        });
+        abRecoveryBatches++;
+        const answers = new Map(
+          (Array.isArray(answer?.items) ? answer.items : [])
+            .filter((item) => item && typeof item.id === "string")
+            .map((item) => [String(item.id), item])
+        );
+        for (const row of batch) {
+          const id = checkpointRowId(row);
+          const applied = applyPriorityRecoveryItem(row, answers.get(id), id);
+          if (applied.researched) {
+            abRecoveredIds.add(id);
+            abRecoveryApplied += applied.applied.length;
+            if (applied.applied.length) mergeResearchComment(
+              row, "Сайт/источник: " + applied.applied[0].source_url
+            );
+          } else {
+            abRecoveryDeferred++;
+          }
+        }
+        console.log("[AB_GAP_RECOVERY_RESULT] " + JSON.stringify({
+          batch: abRecoveryBatches,
+          requested: batch.length,
+          completed: batch.filter((r) => abRecoveredIds.has(checkpointRowId(r))).length,
+          new_verified_facts: abRecoveryApplied
+        }));
+      } catch (error) {
+        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        abRecoveryFailed++;
+        abRecoveryDeferred += batch.length;
+        console.warn("[AB_GAP_RECOVERY_ERROR] " + JSON.stringify({
+          error: error?.message || String(error), budget_stop: isWebBudgetStop(error)
+        }));
+        if (isWebBudgetStop(error)) break;
+      }
+      // Accepted facts and completed IDs are saved in the same checkpoint.
+      if (abRecoveryBatches % 4 === 0 || abRecoveryFailed > 0) {
+        await persistCheckpoint("enrichment", {
+          final_result: finalResult,
+          ab_recovery_completed_ids: [...abRecoveredIds]
+        });
+      }
+    }
+    await persistCheckpoint("enrichment", {
+      final_result: finalResult,
+      ab_recovery_completed_ids: [...abRecoveredIds],
+      ab_recovery_stats: {
+        batches: abRecoveryBatches, accepted_facts: abRecoveryApplied,
+        deferred: abRecoveryDeferred, errors: abRecoveryFailed
+      }
+    });
+    console.log("[AB_GAP_RECOVERY_SUMMARY] " + JSON.stringify({
+      batches: abRecoveryBatches, new_verified_facts: abRecoveryApplied,
+      deferred: abRecoveryDeferred, errors: abRecoveryFailed
+    }));
+  }
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
@@ -6743,6 +8195,7 @@ ${JSON.stringify(gaps)}
     enrichment_completed_ids: [...enrichmentCompleted],
     enrichment_errors: enrichmentErrors,
     enrichment_deadline_skipped: enrichmentDeadlineSkipped,
+    enrichment_budget_deferred: enrichmentBudgetDeferred,
     stage10_duration_ms: Date.now() - stage10StartedAt
   });
 
@@ -6752,6 +8205,48 @@ ${JSON.stringify(gaps)}
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = allResearchRows(finalResult);
+  if (previousContactCacheEnabled(process.env)) {
+    try {
+      // Read several COMPLETED studies; the newest source-confirmed phone wins.
+      // A company absent from the latest run may still have a recent verified
+      // contact in an older run. No phone is carried without exact matching INN.
+      const priorRuns = await loadRecentCompletedResearch(region, 5);
+      const byInn = new Map();
+      for (const historical of priorRuns.flatMap(
+        previous => allResearchRows(previous.final_result))) {
+        const inn = normalizeInn(historical?.["ИНН"]);
+        const proof = historical?.__evidence?.contact_verification;
+        const age = Date.now() - Date.parse(String(proof?.verified_at || ""));
+        if (!inn || proof?.inn !== inn || !/^https?:\/\//i.test(String(proof?.source_url || "")) ||
+            !Number.isFinite(age) || age < 0 || age > 90 * 24 * 3600 * 1000) continue;
+        const phone = normalizePhoneDigits(proof?.phone);
+        if (phone && splitPhoneEntries(historical["Телефон"]).some((item) => normalizePhoneDigits(item) === phone)) {
+          if (!byInn.has(inn)) byInn.set(inn, { phone, source_url: proof.source_url });
+        }
+      }
+      let recovered = 0;
+      for (const row of companies) {
+        if (hasConfirmedPhone(row)) continue;
+        const inn = normalizeInn(row["ИНН"]);
+        const priorPhone = byInn.get(inn);
+        if (!inn || !priorPhone) continue;
+        row["Телефон"] = priorPhone.phone;
+        recovered++;
+        row.__evidence = { ...(row.__evidence || {}), notes: [ ...(row.__evidence?.notes || []), `Контакт восстановлен по подтверждённому ИНН из исследования этого региона за последние 90 дней: ${priorPhone.source_url}` ] };
+      }
+      console.log("[PREVIOUS_CONTACT_CACHE] " + JSON.stringify({
+        recovered, eligible: byInn.size, completed_studies_consulted: priorRuns.length
+      }));
+    } catch (error) {
+      console.warn("[PREVIOUS_CONTACT_CACHE_ERROR] " + JSON.stringify({ error: error?.message || String(error) }));
+    }
+  } else {
+    console.log("[PREVIOUS_CONTACT_CACHE_DISABLED] " + JSON.stringify({
+      autonomous_discovery: AUTONOMOUS_DISCOVERY_ENABLED,
+      legacy_opt_in_ignored_in_autonomous_mode: AUTONOMOUS_DISCOVERY_ENABLED &&
+        String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "").toLowerCase() === "true"
+    }));
+  }
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
@@ -6801,10 +8296,14 @@ ${JSON.stringify(gaps)}
   const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
   const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
   const resumedNotFound = contactCheckpointVersion >= 2 ? Number(resumedContactStats.notFound || 0) : 0;
-  let primaryProcessed =
-    contactCheckpointVersion >= 2
-      ? Number(resumedContactStats.primaryProcessed || primaryResults.size || 0)
-      : 0;
+  // Previous primaryProcessed included deferred omissions. Resume progress
+  // from actually completed/received results, not prior attempts.
+  let primaryProcessed = 0;
+  // Initialized here because contactStatsSnapshot closes over these values
+  // and may be called before the first batch starts.
+  let contactBatchCalls = 0, contactBatchMatched = 0, contactFallbackCalls = 0;
+  let contactBatchOmissions = 0, contactBudgetDeferred = 0;
+  const phoneRetryBudget = { remaining: CONTACT_BATCH_SETTINGS.phoneRetries };
 
   const contactStatsSnapshot = () => ({
     version: 2,
@@ -6823,7 +8322,15 @@ ${JSON.stringify(gaps)}
     phoneVerified,
     deadlineSkipped,
     primaryProcessed,
-    browserCircuitOpen: false
+    // Batch metrics may be populated after the plan is constructed.
+    batchModelCalls: contactBatchCalls,
+    batchMatchedCompanies: contactBatchMatched,
+    individualFallbacks: contactFallbackCalls,
+    phoneRetriesUsed: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    batchOmissions: contactBatchOmissions,
+    budgetDeferred: contactBudgetDeferred,
+    browserCircuitOpen: false,
+    unsearched: contactUnsearched.size
   });
 
   let browserCircuitOpen = false;
@@ -6844,6 +8351,7 @@ ${JSON.stringify(gaps)}
       enrichment_completed_ids: [...enrichmentCompleted],
       contact_completed_ids: [...contactCompleted],
       contact_primary_results: Object.fromEntries(primaryResults),
+      contact_unsearched_ids: [...contactUnsearched],
       contact_stats: stats,
       stage10_duration_ms: Date.now() - stage10StartedAt,
       stage11_duration_ms: Date.now() - stage11StartedAt
@@ -6851,10 +8359,10 @@ ${JSON.stringify(gaps)}
   };
   const contactCheckpointBatcher = createCheckpointBatcher(persistContactsCheckpoint);
 
-  const contactPending = googleCompanies.filter((row) => {
-    const id = checkpointRowId(row);
-    return !id || (!contactCompleted.has(id) && !primaryResults.has(id));
-  });
+  googleCompanies.sort((a, b) =>
+    contactResearchPriority(b) - contactResearchPriority(a));
+  const contactPending = pendingContactRows(googleCompanies, contactCompleted, primaryResults, checkpointRowId);
+  primaryProcessed = Math.max(0, googleCompanies.length - contactPending.length);
 
   console.log("[CONTACT_WEB_PLAN] " + JSON.stringify({
     total_companies: companies.length,
@@ -6865,70 +8373,229 @@ ${JSON.stringify(gaps)}
     stage_deadline_ms: STAGE11_MAX_MS
   }));
 
+  const contactGroups = [];
+  const batchEnabled = String(process.env.OPENAI_CONTACT_BATCH_ENABLED || "true").toLowerCase() !== "false";
+  const groupSize = batchEnabled ? CONTACT_BATCH_SETTINGS.batchSize : 1;
+  for (let i = 0; i < contactPending.length; i += groupSize) {
+    contactGroups.push(contactPending.slice(i, i + groupSize));
+  }
+  const contactFallbackBudget = { remaining: CONTACT_BATCH_SETTINGS.individualFallbacks };
+  const contactUnsearched = restoredDeferredContactIds(
+    resumeCheckpoint,
+    googleCompanies.map(checkpointRowId),
+    contactCompleted
+  );
+
+  console.log("[CONTACT_BATCH_PLAN] " + JSON.stringify({
+    pending: contactPending.length,
+    batches: contactGroups.length,
+    batch_enabled: batchEnabled,
+    batch_size: groupSize,
+    max_web_tools_per_batch: CONTACT_BATCH_SETTINGS.batchWebCalls,
+    max_single_fallbacks: CONTACT_BATCH_SETTINGS.individualFallbacks,
+    max_phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries
+  }));
+
   await mapWithConcurrency(
-    contactPending,
-    CONTACT_CONCURRENCY,
-    async (row) => {
+    contactGroups,
+    Math.min(CONTACT_CONCURRENCY, 6),
+    async (batch) => {
       await assertNotCancelled();
-      const rowId = checkpointRowId(row);
-      if (deadlineRemaining(stage11DeadlineAt) <= 6000) {
-        deadlineSkipped++;
-        webUnavailable++;
-        if (rowId) {
-          contactOutcomes.set(rowId, "unavailable");
-          contactCompleted.add(rowId);
+      let answers = new Map();
+      let budgetStop = false;
+      let batchError = "";
+      if (deadlineRemaining(stage11DeadlineAt) > 8000) {
+        try {
+          if (batch.length === 1) {
+            // Avoid an expensive batch request for the final singleton.
+            const row = batch[0];
+            const result = await searchContactsWithWeb({
+              client, row, region, deadlineAt: stage11DeadlineAt,
+              phoneRetryBudget
+            });
+            answers.set(checkpointRowId(row), result);
+          } else {
+            contactBatchCalls++;
+            const results = await searchContactBatchWithWeb({
+              client, rows: batch, region, deadlineAt: stage11DeadlineAt
+            });
+            for (const item of results) {
+              if (item.result) {
+                answers.set(item.id, item.result);
+                contactBatchMatched++;
+              }
+            }
+          }
+        } catch (error) {
+          if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          budgetStop = isWebBudgetStop(error);
+          batchError = String(error?.message || error);
+          console.log("[CONTACT_BATCH_UNAVAILABLE] " + JSON.stringify({
+            size: batch.length, budget_stop: budgetStop, message: batchError
+          }));
+        }
+      } else batchError = "contact deadline reached";
+
+      for (const row of batch) {
+        await assertNotCancelled();
+        const rowId = checkpointRowId(row);
+        let result = answers.get(rowId) || null;
+        const priority = safeSearchPriority(row);
+        const mayFallback = !budgetStop && !result && priority >= 2 &&
+          contactFallbackBudget.remaining > 0 &&
+          deadlineRemaining(stage11DeadlineAt) > 8000;
+        if (mayFallback) {
+          // Structural batch omission only: a valid, empty researched answer
+          // does NOT trigger another paid query.
+          contactFallbackBudget.remaining--;
+          contactFallbackCalls++;
+          try {
+            result = await searchContactsWithWeb({
+              client, row, region, deadlineAt: stage11DeadlineAt,
+              phoneRetryBudget
+            });
+          } catch (error) {
+            if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            if (isWebBudgetStop(error)) budgetStop = true;
+            batchError = String(error?.message || error);
+          }
+        }
+        if (result) {
+          recordContactAttempt(rowId, true, contactCompleted, contactUnsearched);
+          primaryResults.set(rowId, {
+            ...result,
+            __needPhone: !hasConfirmedPhone(row),
+            __needLeader: !hasConfirmedLeader(row)
+          });
+          if (result.status === "ok") webOk++;
+          else webNotFound++;
+          if (Array.isArray(result.source_urls) && result.source_urls.length) {
+            const ev = row.__evidence || {};
+            row.__evidence = { ...ev,
+              source_urls: [...new Set([...(ev.source_urls || []), ...result.source_urls])] };
+          }
+        } else {
+          // Never mark a company "contact checked" after a missing batch
+          // response or exhausted budget. Preserve it for checkpoint resume.
+          recordContactAttempt(rowId, false, contactCompleted, contactUnsearched);
+          contactBatchOmissions++;
+          webUnavailable++;
+          if (budgetStop) contactBudgetDeferred++;
+          if (deadlineRemaining(stage11DeadlineAt) <= 8000) deadlineSkipped++;
+          console.log("[CONTACT_NOT_RESEARCHED_DEFERRED] " + JSON.stringify({
+            id: rowId, grade: row.__final_grade || "",
+            cause: budgetStop ? "web_budget" : batchError || "batch_omission"
+          }));
         }
         primaryProcessed++;
+        if (primaryProcessed % 10 === 0 || primaryProcessed === googleCompanies.length) {
+          statuses[10].detail =
+            `пакетные контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · отложено: ${contactUnsearched.size}`;
+          await progress({
+            phase: "google_ai", step: 11,
+            percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
+            contactCurrent: primaryProcessed,
+            contactTotal: googleCompanies.length,
+            contactCompany: "",
+            contactStats: contactStatsSnapshot()
+          });
+        }
         await contactCheckpointBatcher.request();
-        return;
       }
-
-      try {
-        const needPhoneBefore = !hasConfirmedPhone(row);
-        const needLeaderBefore = !hasConfirmedLeader(row);
-        const result = await searchContactsWithWeb({
-          client,
-          row,
-          region,
-          deadlineAt: stage11DeadlineAt
-        });
-        primaryResults.set(rowId, {
-          ...result,
-          __needPhone: needPhoneBefore,
-          __needLeader: needLeaderBefore
-        });
-        if (result.status === "ok") webOk++;
-        else webNotFound++;
-      } catch (error) {
-        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-        webUnavailable++;
-        primaryResults.set(rowId, {
-          status: "unavailable",
-          phones: [],
-          leader: "",
-          note: error?.message || "contact web search unavailable",
+    }
+  );
+  // In the 05-Nov paid run 92 companies had no attributable batch response
+  // after exhausting 30 individual fallbacks, despite 33 contacts web slots
+  // remaining. Retry a small high-priority sample in groups of three, never
+  // entries with a completed source-backed "not_found" result.
+  const omissionLimits = contactOmissionRecheckLimits();
+  const omissionPlan = planContactOmissionRechecks(
+    googleCompanies, contactUnsearched, contactCompleted,
+    checkpointRowId, contactResearchPriority, omissionLimits
+  );
+  let omissionRecheckModelCalls = 0;
+  let omissionRecheckResearched = 0;
+  let omissionRecheckBudgetStopped = false;
+  console.log("[CONTACT_OMISSION_RECHECK_PLAN] " + JSON.stringify({
+    eligible: omissionPlan.eligible, selected: omissionPlan.selected,
+    batches: omissionPlan.groups.length,
+    deferred_without_recheck: omissionPlan.deferredWithoutRecheck
+  }));
+  for (const batch of omissionPlan.groups) {
+    await assertNotCancelled();
+    const budget = client.__webBudget;
+    const availableContacts = Number(budget.limits.contacts) -
+      Number(budget.used.contacts || 0) -
+      Number(budget.reserved?.contacts || 0);
+    const availableTotal = Number(budget.limits.total) -
+      Number(budget.used.total || 0) -
+      Number(budget.reserved?.total || 0);
+    if (availableContacts <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
+        omissionLimits.reservedWebForPhoneConflicts ||
+        availableTotal <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
+        omissionLimits.reservedWebForPhoneConflicts ||
+        costEnvLimitUsd() - estimatedApiCostUsd(client) < 0.5 ||
+        deadlineRemaining(stage11DeadlineAt) <= 12000) {
+      console.log("[CONTACT_OMISSION_RECHECK_DEFER] " + JSON.stringify({
+        reason: "protect_residual_phone_and_cost_budget",
+        available_contacts: availableContacts, available_total: availableTotal
+      }));
+      break;
+    }
+    try {
+      omissionRecheckModelCalls++;
+      const items = await searchContactBatchWithWeb({
+        client, rows: batch, region, deadlineAt: stage11DeadlineAt
+      });
+      let researched = 0;
+      for (const item of items) {
+        if (!item.result || !contactUnsearched.has(item.id)) continue;
+        const row = batch.find(candidate => checkpointRowId(candidate) === item.id);
+        if (!row) continue;
+        recordContactAttempt(item.id, true, contactCompleted, contactUnsearched);
+        primaryResults.set(item.id, {
+          ...item.result,
           __needPhone: !hasConfirmedPhone(row),
           __needLeader: !hasConfirmedLeader(row)
         });
+        if (item.result.status === "ok") webOk++;
+        else webNotFound++;
+        const evidence = row.__evidence || {};
+        if (item.result.source_urls?.length) {
+          row.__evidence = { ...evidence,
+            source_urls: [...new Set([...(evidence.source_urls || []),
+              ...item.result.source_urls])] };
+        }
+        researched++;
+        contactBatchMatched++;
       }
-
-      primaryProcessed++;
-      if (primaryProcessed % 10 === 0 || primaryResults.size >= googleCompanies.length - contactCompleted.size) {
-        statuses[10].detail =
-          `web-first контакты · ${primaryProcessed} / ${googleCompanies.length} · ok: ${webOk} · unavailable: ${webUnavailable}`;
-        await progress({
-          phase: "google_ai",
-          step: 11,
-          percent: 90 + Math.floor((primaryProcessed / Math.max(1, googleCompanies.length)) * 5),
-          contactCurrent: primaryProcessed,
-          contactTotal: googleCompanies.length,
-          contactCompany: "",
-          contactStats: contactStatsSnapshot()
-        });
-      }
-      await contactCheckpointBatcher.request();
+      omissionRecheckResearched += researched;
+      console.log("[CONTACT_OMISSION_RECHECK_BATCH] " + JSON.stringify({
+        requested: batch.length, researched,
+        remaining_unsearched: contactUnsearched.size
+      }));
+    } catch (error) {
+      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      omissionRecheckBudgetStopped = isWebBudgetStop(error);
+      console.warn("[CONTACT_OMISSION_RECHECK_ERROR] " + JSON.stringify({
+        error: error?.message || String(error),
+        budget_stop: omissionRecheckBudgetStopped
+      }));
+      if (omissionRecheckBudgetStopped) break;
     }
-  );
+    await contactCheckpointBatcher.request({ force: true });
+  }
+  console.log("[CONTACT_BATCH_EFFICIENCY] " + JSON.stringify({
+    batch_model_calls: contactBatchCalls,
+    batch_matched_companies: contactBatchMatched,
+    individual_fallbacks: contactFallbackCalls,
+    omission_recheck_batches: omissionRecheckModelCalls,
+    omission_recheck_researched: omissionRecheckResearched,
+    phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    companies_deferred: contactUnsearched.size,
+    budget_deferred: contactBudgetDeferred,
+    recheck_budget_stopped: omissionRecheckBudgetStopped
+  }));
 
   // Build a global claim map BEFORE accepting newly found phones. This catches
   // both conflicts with existing cells and the same new phone returned for
@@ -7029,6 +8696,16 @@ ${JSON.stringify(gaps)}
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
+    const verifiedSource = String(result.official_site || "").trim();
+    const inn = normalizeInn(row["ИНН"]);
+    if (inn && /^https?:\/\//i.test(verifiedSource)) {
+      const accepted = (result.phones || []).map(normalizePhoneDigits).filter(Boolean)
+        .find((phone) => splitPhoneEntries(row["Телефон"]).some((entry) => normalizePhoneDigits(entry) === phone));
+      if (accepted) row.__evidence = {
+        ...(row.__evidence || {}),
+        contact_verification: { inn, phone: accepted, source_url: verifiedSource, verified_at: new Date().toISOString() }
+      };
+    }
     const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
     const gainedLeader = Boolean(
       result.__needLeader &&
@@ -7047,7 +8724,9 @@ ${JSON.stringify(gaps)}
 
   // Google AI Mode is now a small fallback for unresolved A/B rows only.
   // It is never the primary path and never triggers a full automatic Sol retry.
-  const browserFallbackCandidates = primaryRowsToApply.filter((row) => {
+  // Disabled by default after repeated computer-turn-limit failures; explicit opt-in only.
+  const browserFallbackEnabled = String(process.env.GOOGLE_AI_FALLBACK_ENABLED || "false").toLowerCase() === "true";
+  const browserFallbackCandidates = (browserFallbackEnabled ? primaryRowsToApply : []).filter((row) => {
     if (!isPriorityAB(row)) return false;
     if (!needsGoogleResearch(row)) return false;
     return deadlineRemaining(stage11DeadlineAt) > 45000;
@@ -7215,13 +8894,102 @@ ${JSON.stringify(gaps)}
 
   const contactStats = contactStatsSnapshot();
   contactStats.browserCircuitOpen = browserCircuitOpen;
+  contactStats.unsearched = contactUnsearched.size;
   const ok = contactStats.ok;
   const unavailable = contactStats.unavailable;
   const notFound = contactStats.notFound;
 
+  // No extra model/search call: finalize the CURRENT research, not a region-
+  // specific historical reviewed manifest. Run after contact enrichment so
+  // late source notes cannot silently change an A/B/C claim in the XLSX.
+  await assertNotCancelled();
+  const finalQuality = finalizeProductionResearch(finalResult, {
+    qualify: deterministicQualificationDecision,
+    isActionable: actionableUnqualifiedLead
+  });
+  finalResult = finalQuality.result;
+  if (HISTORICAL_RECALL_ENABLED) {
+  // Always preserve an offline continuity report. Absence from the current
+  // CRM is not proof of an error: older candidates can be false/irrelevant.
+  // This register never promotes a historical row or copies its data.
+  const historicalCoveragePlan = buildHistoricalRecallPlan(
+    historicalRuns.map(run => ({ ...run, recall_attempted_inns: [] })),
+    finalResult, { maxCandidates: 60 }
+  );
+  const historicalLedger = buildHistoricalCoverageLedger(historicalRuns, finalResult);
+  const historicalCoverage = {
+    version: 2,
+    source_run_count: historicalCoveragePlan.prior_runs.length,
+    prior_verified_inn_unique: historicalCoveragePlan.verified_history_unique,
+    present_in_current_or_queues_by_inn: historicalCoveragePlan.already_seen_by_inn,
+    same_name_but_identity_not_confirmed: historicalCoveragePlan.already_seen_by_name_unverified,
+    ambiguous_historical_identity: historicalCoveragePlan.ambiguous_history,
+    same_name_different_inn: historicalCoveragePlan.current_name_inn_conflicts,
+    not_found_by_current_name_or_inn: historicalCoveragePlan.total_missing_candidates,
+    // ALL source-backed older records are retained in a read-only ledger,
+    // not only a truncated 60-item sample. No historical row enters CRM.
+    ledger: historicalLedger,
+    sample_only_not_automatically_promoted: historicalCoveragePlan.candidates.map(item => ({
+      organization: item.name, prior_inn: item.inn,
+      grade_is_old_priority_only: item.grade,
+      source_job_id: item.source_job_id
+    }))
+  };
+  // Model-found historical hints may disappear during alias merge, or
+  // coincide with another legal entity. Report name matches and INN conflicts
+  // without claiming that history recovered a verified legal identity.
+  const historicalTrace = auditHistoricalRecallOutcome(historicalRecall, finalResult);
+  historicalCoverage.historical_recall_trace = historicalTrace;
+  finalQuality.report.historical_coverage = historicalCoverage;
+  console.log("[HISTORICAL_RECALL_FINAL_TRACE] " + JSON.stringify({
+    accepted_candidates: historicalTrace.accepted_discovery_candidates,
+    active_name_matches: historicalTrace.active_name_matches,
+    review_name_matches: historicalTrace.review_name_matches,
+    excluded_name_matches: historicalTrace.excluded_name_matches,
+    unmatched_by_name: historicalTrace.unmatched_by_name,
+    possible_inn_conflicts: historicalTrace.possible_inn_conflicts,
+    identity_verified_by_name: false
+  }));
+  console.log("[HISTORICAL_COVERAGE_FINAL] " + JSON.stringify({
+    ...historicalCoverage,
+    // The complete ledger is in the checkpoint/quality report; do not emit
+    // thousands of historical company records into an already large log.
+    ledger: historicalLedger.counts,
+    sample_only_not_automatically_promoted:
+      historicalCoverage.sample_only_not_automatically_promoted.length,
+    historical_recall_accepted: Number(historicalRecall?.accepted || 0),
+    historical_recall_calls: Number(historicalRecall?.calls || 0),
+    old_records_copied_to_current: 0
+  }));
+  }
+  if (AUTONOMOUS_DISCOVERY_ENABLED) {
+    finalQuality.report.autonomous_discovery = {
+      ...(autonomousCoverage || {completed: false, accepted: 0, calls: 0}),
+      prior_runs_used: 0, inherited_inns: 0,
+      named_company_targets: 0
+    };
+  }
+  qualifiedFinal.counts = {
+    ...qualifiedFinal.counts,
+    ...finalQuality.report.grades,
+    excluded: finalQuality.report.excluded_records,
+    review: finalQuality.report.review_records
+  };
+  console.log("[FINAL_PRODUCTION_QUALITY_GATE] " + JSON.stringify({
+    original_rows: finalQuality.report.original_row_count,
+    active: finalQuality.report.active_commercial_records,
+    grades: finalQuality.report.grades,
+    review: finalQuality.report.review_records,
+    excluded: finalQuality.report.excluded_records,
+    transitions: finalQuality.report.transitions.length,
+    identity_conflicts: finalQuality.report.shared_inn_conflict_records,
+    originals_lost: finalQuality.report.originals_lost,
+    openai_calls: 0, web_search_calls: 0
+  }));
+
   finishStep(statuses[10]);
   statuses[10].detail =
-    `выполнен · web-first проверено ${googleCompanies.length} · browser fallback ${browserFallbacks} · conflicts ${phoneConflicts}`;
+    `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · REVIEW: ${finalQuality.report.review_records} · QA: OK`;
   await progress({
     phase: "completed",
     step: 11,
@@ -7240,11 +9008,15 @@ ${JSON.stringify(gaps)}
     deduped_records: dedupedRecords,
     qualification_counts: qualifiedFinal.counts,
     final_result: finalResult,
+    final_quality_gate: finalQuality.report,
+    historical_recall: historicalRecall,
+    historical_coverage: historicalCoverage,
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
     contact_primary_results: {},
     contact_stats: contactStats,
+    contact_unsearched_ids: [...contactUnsearched],
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt
   });
@@ -7252,6 +9024,7 @@ ${JSON.stringify(gaps)}
   return {
     mode: mode === "resume" ? "resume" : "full",
     result: finalResult,
+    quality: finalQuality.report,
     region,
     counts: {
       direct_buyers: finalResult.direct_buyers.length,
@@ -7291,5 +9064,17 @@ export {
   classifyEntityType,
   postInnDedupe,
   duplicateInnConflictGroups,
-  clearUnresolvedInnConflicts
+  clearUnresolvedInnConflicts,
+  applyFinalInnItems,
+  resolveClusterWithoutWeb,
+  applyIdentityResult,
+  extractInnFromEvidenceNotes,
+  shouldRetryFinalInn,
+  actionableUnqualifiedLead,
+  createFullWebBudget,
+  reserveWebBudgetBeforeCall,
+  releaseWebBudgetReservation,
+  recordWebUsage,
+  recordWebBudgetUsage,
+  estimatedApiCostUsd
 };

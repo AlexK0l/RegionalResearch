@@ -25,6 +25,8 @@ test("checkpoint format validates and summarizes resume state", () => {
     completed_final_batches: 4,
     enrichment_completed: 1,
     contacts_completed: 1,
+    contacts_deferred: 0,
+    continuation_available: false,
     pipeline_version: 0,
     updated_at: null
   });
@@ -103,4 +105,19 @@ test("post-dedupe enrichment searches missing revenue or headcount for every fin
   assert.match(pipeline, /return missingResearchFields\(row\)/);
   assert.doesNotMatch(pipeline, /if \(grade === "A"\) return gaps/);
   assert.match(pipeline, /const gaps = prioritizedResearchGaps\(row\)/);
+});
+
+
+test("a completed checkpoint explicitly reports unfinished contact work", () => {
+  const checkpoint = normalizeCheckpoint({
+    version: 1, region: "Смоленская область", phase: "completed",
+    contact_completed_ids: ["a", "b"],
+    contact_unsearched_ids: ["c", "d"]
+  });
+  const summary = checkpointSummary(checkpoint);
+  assert.equal(summary.contacts_completed, 2);
+  assert.equal(summary.contacts_deferred, 2);
+  assert.equal(summary.continuation_available, true);
+  assert.match(server, /continuation_available/);
+  assert.match(server, /contact_unsearched_ids/);
 });

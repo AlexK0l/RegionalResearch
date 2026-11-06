@@ -1,0 +1,548 @@
+{
+  "checkpoint_id": "f677c97e-21ed-46cf-bd4a-43ba9cceea6a",
+  "input_rows": 492,
+  "output_rows": 491,
+  "restored_inns": 1,
+  "merged_away_rows": 1,
+  "restored_groups": [
+    {
+      "inn": "6731069440",
+      "winner_name": "АО «Спецавтохозяйство»",
+      "absorbed_names": [
+        "АО «СпецАТХ»"
+      ],
+      "original_names": [
+        "АО «Спецавтохозяйство»",
+        "АО «СпецАТХ»"
+      ],
+      "original_canonical_ids": [
+        "k000066",
+        "k000319"
+      ],
+      "before_rows": 2,
+      "after_rows": 1,
+      "reason": "sourced_explicit_alias",
+      "source_urls": [
+        "https://sah67.ru/",
+        "https://finder.work/vacancies/37313869",
+        "https://www.b2b-center.ru/search/smolenskaya-oblast/utilizaciya-avtomobilej/",
+        "https://zakupki.kontur.ru/32515015319",
+        "https://zakupki.kontur.ru/D56731069440250001260000",
+        "https://zakupki.kontur.ru/32616513893",
+        "https://zakupki.kontur.ru/category-region/spectransport-pokupka-arenda-postavka-zapchastej-i-obsluzhivanie/smolenskaya-oblast",
+        "https://zakupki.kontur.ru/category-region/uslugi-po-vyvozu-tverdyx-i-zhidkix-bytovyx-otxodov/smolensk",
+        "https://rzd-medicine.ru/assets/zakupki/2025/1-reestr-dogovorov-novyij-2026-apel.pdf",
+        "https://base.garant.ru/66967111/",
+        "https://base.garant.ru/411600599/b89690251be5277812a78962f6302560/",
+        "https://prirod.admin-smolensk.ru/deyatelnost/obraschenie-s-othodami-proizvodstva-i-potrebleniya/shema/",
+        "https://newsroom24.ru/smolensk/news/zhizn/2026/news_320811/",
+        "https://xn--67-6kcaapbk8ac7bje9a.xn--p1ai/o-municipalnom-okruge/organy-vlasti/upravlenie-po-stroitelstvu-i-zhilischno-kommunalnomu-hozyajs/",
+        "https://prirod.admin-smolensk.ru/news/ekskursiya-na-obekt-razmescheniya-tko-i-musorosortirovochnyj-kompleks/",
+        "https://newsroom24.ru/smolensk/news/details/2026/news_312991/",
+        "https://sah67.ru/wp-content/uploads/2022/04/informaczionnaya-kartochka.pdf",
+        "https://bo.nalog.gov.ru/download/bfo/pdf/2775792?detailId=52195237&period=2024"
+      ],
+      "filled_fields": [],
+      "source_row_fields": [
+        {
+          "organization": "АО «Спецавтохозяйство»",
+          "inn": "",
+          "grade": "B",
+          "phone": "",
+          "canonical_id": "k000066"
+        },
+        {
+          "organization": "АО «СпецАТХ»",
+          "inn": "",
+          "grade": "B",
+          "phone": "74812620132;74812620133",
+          "canonical_id": "k000319"
+        }
+      ],
+      "preserved_grade": "B",
+      "qualification_review": ""
+    }
+  ],
+  "unresolved": [
+    {
+      "inn": "6229026994",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "АО «Агропромышленная фирма «Наша Житница»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://econ.admin-smolensk.ru/files/410/strategiya-socialno-ekonomicheskogo-razvitiya-smolenskoj-oblasti-do-2030-goda-v-red-postanovleniya-ot-19-05-2020-2.pdf",
+        "https://elera.pro/elevatory/1056",
+        "https://smolinvest.ru/news/6327/?sphrase_id=1082560",
+        "https://web-cgu-demo01.k8s.trudvsem.ru/map/region?regionCode=6700000000000",
+        "https://agrogi.ru/legal/",
+        "https://www.agrobase.ru/organizations/apk/organization_apk_13082"
+      ],
+      "decisions": [
+        {
+          "left": "АО «АПФ «Наша Житница»",
+          "right": "АО «Агропромышленная фирма «Наша Житница»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6229026994",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "АО «АПФ «Наша Житница»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://elera.pro/elevatory/smolenskaya-oblast/",
+        "https://rgex.ru/business/smolenskaya-oblast/n/gagarinskiy/companies/",
+        "https://elera.pro/elevatory/1056",
+        "https://agrogi.ru/legal/",
+        "https://www.agrobase.ru/organizations/apk/organization_apk_13082"
+      ],
+      "decisions": [
+        {
+          "left": "АО «АПФ «Наша Житница»",
+          "right": "АО «Агропромышленная фирма «Наша Житница»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6708000520",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "АО «Кардымовский МКК»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://selhoz.admin-smolensk.ru/leftmenu/pischevaya-promyshlennost-i-pererabotka/reestr/",
+        "https://smolinvest.ru/region/otrasli/industry/",
+        "https://clickfile.ru/ul/1026700975707",
+        "https://econ-kard.admin-smolensk.ru/files/288/zao-mkk.pdf",
+        "https://bo.nalog.gov.ru/search?ogrn=1026700975707",
+        "https://srmfc.ru/docs/20260302_331.pdf"
+      ],
+      "decisions": [
+        {
+          "left": "АО «Кардымовский молочноконсервный комбинат»",
+          "right": "АО «Кардымовский МКК»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6708000520",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "АО «Кардымовский молочноконсервный комбинат»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://gutaagro.ru/about/kardimovski/",
+        "https://gutaagro.ru/suppliers/kardimovski.html",
+        "https://data.milknews.ru/regions/smolensk",
+        "https://e-disclosure.azipi.ru/organization/personal-pages/4314279/",
+        "https://rostransnadzor.gov.ru/storage/documents/%D0%93%D0%BE%D1%81%D0%B0%D0%B2%D1%82%D0%BE%D0%B4%D0%BE%D1%80%D0%BD%D0%B0%D0%B4%D0%B7%D0%BE%D1%80/%D0%97%D0%B0%D0%BF%D0%B0%D0%B4%D0%BD%D0%BE%D0%B5%20%D0%9C%D1%83%D0%B3%D0%B0%D0%BD%D0%B4/%D0%9F%D0%BB%D0%B0%D0%BD%20%D0%BF%D1%роверок/2021%20план%20проверок.pdf",
+        "https://bo.nalog.gov.ru/search?ogrn=1026700975707",
+        "https://srmfc.ru/docs/20260302_331.pdf"
+      ],
+      "decisions": [
+        {
+          "left": "АО «Кардымовский молочноконсервный комбинат»",
+          "right": "АО «Кардымовский МКК»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6713005690",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "Группа компаний «ГРИН ЛАЙН»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://greenlinecompany.ru/",
+        "https://greenlinecompany.ru/contacts/",
+        "https://cargotime.ru/carriers/ooo-grin-lajn"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Грин Лайн»",
+          "right": "Группа компаний «ГРИН ЛАЙН»",
+          "accepted": false,
+          "reason": "different_legal_roles",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6713005690",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Грин Лайн»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://cargotime.ru/carriers/ooo-grin-lajn",
+        "https://www.asmap.ru/detail/chleny-regionalnogo-soveta-v-tsfo"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Грин Лайн»",
+          "right": "Группа компаний «ГРИН ЛАЙН»",
+          "accepted": false,
+          "reason": "different_legal_roles",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6714049860",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Агрофирма-Катынь»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://smol-ray.smolensk.ru/news/o-hode-yarovogo-seva-na-territorii-smolenskogo-municipalnogo-okruga-v-2025-godu/",
+        "https://milknews.ru/kompanii-molochnoy-promishlennosti/katin.html",
+        "https://industrials.ru/proizvoditel/22307-agrofirma-katyn",
+        "https://prirod.admin-smolensk.ru/files/680/prilozhenie-1-2.pdf",
+        "https://olaks.ru/kontakty-agrofirmy/"
+      ],
+      "decisions": []
+    },
+    {
+      "inn": "7113021283",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Кубаньмасло»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://selhoz.admin-smolensk.ru/news/kompaniya-kubanmaslo-zapustit-proizvodstvo-rapsovogo-masla-v-roslavlskom-rajone/?display_mode=simple_mode",
+        "https://smolinvest.ru/news/4990/?sphrase_id=1203075",
+        "https://xn--b1aedfedwqbdfbnzkf0oe.xn--p1ai/national-project/organizations_pages/7113021283/",
+        "https://xn----7sbbagdr2anf9afggidws9k.xn--p1ai/contragent/1027102872059/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Кубаньмасло-ЕМЗ»",
+          "right": "ООО «Кубаньмасло»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "7113021283",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Кубаньмасло-ЕМЗ»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://smolinvest.ru/news/4990/?sphrase_id=1203075",
+        "https://smolgazeta.ru/daylynews/66750-v-roslavlskom-rayone-nachnut-proizvodit.html",
+        "https://manufacturers.ru/company/kubanmaslo-emz",
+        "https://xn--b1aedfedwqbdfbnzkf0oe.xn--p1ai/national-project/organizations_pages/7113021283/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Кубаньмасло-ЕМЗ»",
+          "right": "ООО «Кубаньмасло»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6732191851",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО ПО «Энергоресурс»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://xn----8sbnjg0adinpefc8b1e6c.xn--p1ai/vacancies/648280-voditel-avtomobilya-gruzovogo-spetsialnogo/",
+        "https://damia.ru/catalog-orgs?active=1&id=2&okved=23.61&region=67&sort=name",
+        "https://xfirm.ru/company/6732191851",
+        "https://er67.ru/contact/",
+        "https://inndex.ru/ul/smolensk/ogrn-1206700002376-0ec-ooo-po-energoresurs"
+      ],
+      "decisions": []
+    },
+    {
+      "inn": "6732054083",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «СИТИМАТИК»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://citymatic-logistic.ru/prices/",
+        "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf",
+        "https://bazanpa.ru/contragent/6732054083/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Ситиматик» — Смоленский филиал",
+          "right": "ООО «СИТИМАТИК»",
+          "accepted": false,
+          "reason": "different_legal_roles",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6732054083",
+      "status": "separate_branch_or_division",
+      "names": [
+        "ООО «Ситиматик» — Смоленский филиал"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://citymatic-logistic.ru/filial/%D1%81%D0%BC%D0%BE%D0%BB%D0%B5%D0%BD%D1%81%D0%BA/",
+        "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf",
+        "https://www.tbank.ru/business/contractor/legal/1136733001140/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Ситиматик» — Смоленский филиал",
+          "right": "ООО «СИТИМАТИК»",
+          "accepted": false,
+          "reason": "different_legal_roles",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6732124140",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «СмолВторСталь»"
+      ],
+      "ogrns": [
+        "1166733058557"
+      ],
+      "identity_sources": [
+        "https://prirod.admin-smolensk.ru/files/283/doklad-o-sostoyanii-i-ob-ohrane-okruzhayuschej-sredy-smolenskoj-oblasti-v-2020-godu.pdf",
+        "https://ruslom.com/participant/amp/",
+        "https://onlineecology.com/org/ooo-smolvtorstal",
+        "https://companies.rbc.ru/id/1166733058557-ooo-smolvtorstal/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «СмолВторСырьё»",
+          "right": "ООО «СмолВторСталь»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": [
+            "1166733058557"
+          ]
+        }
+      ]
+    },
+    {
+      "inn": "6732124140",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «СмолВторСырьё»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://prirod.admin-smolensk.ru/files/283/57295_doklad_departament-ekologii.pdf"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «СмолВторСырьё»",
+          "right": "ООО «СмолВторСталь»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": [
+            "1166733058557"
+          ]
+        }
+      ]
+    },
+    {
+      "inn": "6732102259",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Торговая компания БЕЛАТОРГ»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://svoefermerstvo.ru/organization/31620",
+        "https://belatorg.ru/rekvizity/",
+        "https://belatorg.ru/wp-content/uploads/2025/08/Politika-konfidentsialnosti.pdf"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «ТК БЕЛАТОРГ»",
+          "right": "ООО «Торговая компания БЕЛАТОРГ»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6732102259",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «ТК БЕЛАТОРГ»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://svoefermerstvo.ru/organization/31620",
+        "https://uslugi.yandex.ru/161608-kozinskoye-rural-settlement/category?text=%D1%80%D0%B5%D0%BC%D0%BE%D0%BD%D1%82+%D1%82%D0%B5%D0%BD%D1%82%D0%B0+%D0%BD%D0%B0+%D0%BF%D0%BE%D0%BB%D1%83%D0%BF%D1%80%D0%B8%D1%86%D0%B5%D0%BF",
+        "https://belatorg.ru/wp-content/uploads/2025/08/Politika-konfidentsialnosti.pdf",
+        "https://belatorg.ru/rekvizity/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «ТК БЕЛАТОРГ»",
+          "right": "ООО «Торговая компания БЕЛАТОРГ»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6722033415",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Форест Групп»"
+      ],
+      "ogrns": [],
+      "identity_sources": [
+        "https://alestech.ru/factory/882-forest-group",
+        "https://forest-groups.ru/delivery/",
+        "https://madeinsmolensk.com/katalog/lesopromyshlennyj-kompleks/ooo-forest-grupp/",
+        "https://smol.aif.ru/society/derevoobrabatyvayushchiy_zavod_polnogo_cikla_stroyat_v_vyazemskom_rayone",
+        "https://forest-groups.ru/company/",
+        "https://industrials.ru/proizvoditel/22140-forest-grupp",
+        "https://www.pelletland.ru/technology/82/",
+        "https://bazanpa.ru/contragent/6722033415/",
+        "https://check.tochka.com/region/vyazma/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Forest Group»",
+          "right": "ООО «Форест Групп»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [
+            "1186733017130"
+          ],
+          "ogrns_right": []
+        }
+      ]
+    },
+    {
+      "inn": "6722033415",
+      "status": "insufficient_alias_evidence",
+      "names": [
+        "ООО «Forest Group»"
+      ],
+      "ogrns": [
+        "1186733017130"
+      ],
+      "identity_sources": [
+        "https://forest-groups.ru/company/",
+        "https://forest-groups.ru/delivery/",
+        "https://forest-groups.ru/",
+        "https://check.tochka.com/company/1186733017130/",
+        "https://bazanpa.ru/contragent/6722033415/",
+        "https://check.tochka.com/region/vyazma/"
+      ],
+      "decisions": [
+        {
+          "left": "ООО «Forest Group»",
+          "right": "ООО «Форест Групп»",
+          "accepted": false,
+          "reason": "alias_unverified",
+          "ogrns_left": [
+            "1186733017130"
+          ],
+          "ogrns_right": []
+        }
+      ]
+    }
+  ],
+  "divisions": [],
+  "untrusted_or_unmatched": [
+    {
+      "inn": "6714049860",
+      "company": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"КВВ-АГРО\"",
+      "sheet": "direct_buyers",
+      "reason": "existing_inn_not_blank",
+      "existingInn": "6713017400"
+    },
+    {
+      "inn": "6732191851",
+      "company": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"ТЕЛЛУРА\"",
+      "sheet": "direct_buyers",
+      "reason": "existing_inn_not_blank",
+      "existingInn": "6729002078"
+    }
+  ],
+  "conflicting_field_values": [
+    {
+      "inn": "6731069440",
+      "company": "АО «Спецавтохозяйство»",
+      "field": "Город/район",
+      "values": [
+        "Смоленск; Починок; Рославль; вся Смоленская область",
+        "Смоленск, Починок, Рославль; вся Смоленская область"
+      ]
+    },
+    {
+      "inn": "6731069440",
+      "company": "АО «Спецавтохозяйство»",
+      "field": "Почему им нужно звонить / потенциальный интерес к САТ",
+      "values": [
+        "Есть независимые признаки целевого грузопотока и тяжёлой логистики: Организация является фактическим оператором и эксплуатантом техники, а не площадкой или посредником.",
+        "Есть независимые признаки целевого грузопотока и тяжёлой логистики: Официальный сайт прямо указывает обращение с растительными отходами и крупный парк специализированной техники."
+      ]
+    }
+  ],
+  "qualification_conflicts": [],
+  "note": "Offline copy only. Source references were preserved, not independently downloaded or revalidated. Existing A/B/C grades were not recalculated; differences are marked for manual review.",
+  "crm_field_transfers": [],
+  "crm_field_conflicts": [],
+  "template_projection": null,
+  "color_statistics": {
+    "refreshed": false,
+    "reason": "no_color_statistics"
+  }
+}

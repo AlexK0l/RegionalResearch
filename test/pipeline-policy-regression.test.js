@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
 import {
   classifyEntityType,
   deterministicQualificationDecision,
@@ -109,7 +111,7 @@ test("post-INN dedupe merges compatible aliases with one confirmed INN", () => {
   assert.equal(result.records[0].row["ИНН"], "6732000000");
 });
 
-test("unresolved incompatible duplicate INN is cleared rather than silently assigned twice", () => {
+test("unresolved incompatible same-INN claimants are quarantined with originals preserved", () => {
   const finalResult = {
     direct_buyers: [
       {
@@ -123,15 +125,28 @@ test("unresolved incompatible duplicate INN is cleared rather than silently assi
         "__evidence": { source_urls: [], notes: [] }
       }
     ],
-    intermediaries: [],
-    leasing: []
+    intermediaries: [], leasing: [], qualification_review: []
   };
-
   assert.equal(duplicateInnConflictGroups(finalResult).length, 1);
-  const cleared = clearUnresolvedInnConflicts(finalResult);
-  assert.equal(cleared.groups, 1);
-  assert.equal(cleared.clearedRows, 2);
+  const resolution = clearUnresolvedInnConflicts(finalResult);
+  assert.equal(resolution.groups, 1);
+  assert.equal(resolution.clearedRows, 0);
+  assert.equal(resolution.quarantinedRows, 2);
   assert.equal(duplicateInnConflictGroups(finalResult).length, 0);
-  assert.equal(finalResult.direct_buyers[0]["ИНН"], "");
-  assert.equal(finalResult.direct_buyers[1]["ИНН"], "");
+  assert.equal(finalResult.direct_buyers.length, 0);
+  assert.equal(finalResult.qualification_review.length, 2);
+  assert.deepEqual(finalResult.qualification_review.map(r=>r["ИНН"]),
+    ["6732000000","6732000000"]);
+});
+
+
+test("deterministic quality gate runs before paid enrichment and again after contacts",()=>{
+  const pre=pipeline.indexOf('[PRE_ENRICHMENT_QUALITY_GATE]');
+  const paid=pipeline.indexOf('const finalCompaniesForEnrichment = allResearchRows(finalResult)');
+  const post=pipeline.indexOf('[FINAL_PRODUCTION_QUALITY_GATE]');
+  assert.ok(pre>0,"must report pre-enrichment gate");
+  assert.ok(paid>pre,"pre-enrichment quality gate precedes paid enrichment");
+  assert.ok(post>paid,"post-contact gate still rechecks later evidence");
+  assert.match(pipeline,/FINAL_INN_REDUNDANT_RETRY/);
+  assert.match(pipeline,/shouldRetryFinalInn/);
 });

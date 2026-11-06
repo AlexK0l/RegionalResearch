@@ -1,0 +1,141 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  createFullWebBudget, reserveWebBudgetBeforeCall, releaseWebBudgetReservation,
+  recordWebUsage, recordWebBudgetUsage, estimatedApiCostUsd
+} from "../src/pipeline.js";
+
+function fakeClient() {
+  return {
+    __webBudget: createFullWebBudget(),
+    __webUsage: { total: 0, by_scope: {} },
+    __tokenUsage: {
+      input_tokens: 0, cached_input_tokens: 0, output_tokens: 0,
+      reasoning_tokens: 0, total_tokens: 0
+    }
+  };
+}
+test("concurrent contact reservations cannot overspend a phase or total budget", () => {
+  const c = fakeClient();
+  const a = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  const b = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  assert.equal(a.calls, 2);
+  assert.equal(b.calls, 2);
+  assert.equal(c.__webBudget.reserved.contacts, 6);
+  assert.equal(c.__webBudget.reserved.total, 6);
+  recordWebUsage(c, "contact batch | five", 2);
+  recordWebBudgetUsage(c, "contact batch | five", 2);
+  releaseWebBudgetReservation(a);
+  assert.equal(c.__webBudget.used.contacts, 2);
+  assert.equal(c.__webBudget.reserved.contacts, 3);
+  releaseWebBudgetReservation(b);
+  assert.equal(c.__webBudget.reserved.total, 0);
+});
+test("phase cap blocks optional contacts but preserves independent identity budget", () => {
+  const c = fakeClient();
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts;
+  c.__webBudget.used.total = c.__webBudget.limits.contacts;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 2), /WEB_BUDGET_STOP:contacts/);
+  const id = reserveWebBudgetBeforeCall(c, "final inn | five", 2);
+  assert.equal(id.scope, "identity");
+  releaseWebBudgetReservation(id);
+});
+test("global budget blocks all scopes even before the model returns", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "identity | case", 2), /WEB_BUDGET_STOP:total/);
+});
+test("last two available web slots allow one model call plus its overcall buffer", () => {
+  const c = fakeClient();
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 2;
+  c.__webBudget.used.total = 0;
+  const res = reserveWebBudgetBeforeCall(c, "contact web | company", 2);
+  assert.equal(res.calls, 1);
+  assert.equal(res.reservedCalls, 2);
+  releaseWebBudgetReservation(res);
+  assert.equal(c.__webBudget.reserved.total, 0);
+});
+test("token costs count towards the same $25 guardrail", () => {
+  const c = fakeClient();
+  c.__tokenUsage.input_tokens = 150_000_000; // $30 at the configured estimator.
+  assert.ok(estimatedApiCostUsd(c) >= 25);
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "этап 1 | discovery", 2),
+    /WEB_BUDGET_STOP:estimated_cost_usd/);
+});
+test("failed requests can release every reserved call without spending web quota", () => {
+  const c = fakeClient();
+  const res = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  releaseWebBudgetReservation(res);
+  assert.equal(c.__webBudget.reserved.total, 0);
+  assert.equal(c.__webBudget.used.total, 0);
+  const again = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  assert.equal(again.calls, 2);
+  releaseWebBudgetReservation(again);
+});
+
+test("one additional observed web call per request cannot exceed concurrent caps", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 5;
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 5;
+  c.__webUsage.total = c.__webBudget.used.total;
+  const a = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  const b = reserveWebBudgetBeforeCall(c, "contact batch | five", 2);
+  assert.equal(a.calls, 2);
+  assert.equal(a.reservedCalls, 3);
+  assert.equal(b.calls, 1);
+  assert.equal(b.reservedCalls, 2);
+  assert.equal(c.__webBudget.reserved.total, 5);
+  recordWebUsage(c, "contact batch | five", 3);
+  recordWebBudgetUsage(c, "contact batch | five", 3);
+  releaseWebBudgetReservation(a);
+  recordWebUsage(c, "contact batch | five", 2);
+  recordWebBudgetUsage(c, "contact batch | five", 2);
+  releaseWebBudgetReservation(b);
+  assert.equal(c.__webBudget.used.total, c.__webBudget.limits.total);
+  assert.equal(c.__webBudget.used.contacts, c.__webBudget.limits.contacts);
+  assert.equal(c.__webBudget.reserved.total, 0);
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 1),
+    /WEB_BUDGET_STOP:total/);
+});
+
+test("a single remaining slot is held rather than risking an extra billed call", () => {
+  const c = fakeClient();
+  c.__webBudget.used.contacts = c.__webBudget.limits.contacts - 1;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | five", 1),
+    /WEB_BUDGET_STOP:contacts/);
+});
+
+test("optional enrichment defers before taking the contact web reserve", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 70;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "enrichment batch | 5 companies", 2),
+    /WEB_BUDGET_STOP:contact_reservation/);
+  const contacts = reserveWebBudgetBeforeCall(c, "contact batch | 5 companies", 2);
+  assert.equal(contacts.calls, 2);
+  assert.equal(contacts.reservedCalls, 3);
+  releaseWebBudgetReservation(contacts);
+  assert.equal(c.__webBudget.reserved.total, 0);
+});
+
+test("contact reserve does not block identity or discovery under the same cap", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total - 60;
+  c.__webUsage.total = c.__webBudget.used.total;
+  const identity = reserveWebBudgetBeforeCall(c, "final inn | 5 companies", 2);
+  assert.equal(identity.scope, "identity");
+  releaseWebBudgetReservation(identity);
+  const discovery = reserveWebBudgetBeforeCall(c, "этап 9 | район", 2);
+  assert.equal(discovery.scope, "discovery");
+  releaseWebBudgetReservation(discovery);
+});
+
+test("the optional enrichment reserve is not an additional web budget", () => {
+  const c = fakeClient();
+  c.__webBudget.used.total = c.__webBudget.limits.total;
+  c.__webUsage.total = c.__webBudget.used.total;
+  assert.throws(() => reserveWebBudgetBeforeCall(c, "contact batch | 5 companies", 2),
+    /WEB_BUDGET_STOP:total/);
+});

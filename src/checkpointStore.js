@@ -163,6 +163,42 @@ export async function findLatestCheckpoint(region, mode = "full") {
   return metadataFromRow(row);
 }
 
+// Read-only historical source for bounded, fresh-web recall. Completed results
+// are never copied into a current CRM row. Reads do not mutate SQLite or
+// change resumability of old checkpoints.
+export async function loadRecentCompletedResearch(region, limit = 3) {
+  const value = String(region || "").trim();
+  if (!value) return [];
+  const rows = ensureDb().prepare(
+    "SELECT id, updated_at, payload FROM research_checkpoints " +
+    "WHERE region = ? AND mode = 'full' AND status = 'completed' " +
+    "ORDER BY updated_at DESC LIMIT ?"
+  ).all(value, Math.max(1, Math.min(20, Math.floor(Number(limit) || 3))));
+  return rows.flatMap(row => {
+    const checkpoint = rowToCheckpoint(row);
+    if (!checkpoint?.final_result) return [];
+    return [{
+      id: String(row.id), updated_at: String(row.updated_at),
+      final_result: checkpoint.final_result,
+      recall_attempted_inns: Array.isArray(checkpoint.historical_recall?.attempted_inns)
+        ? checkpoint.historical_recall.attempted_inns : []
+    }];
+  });
+}
+
+// Existing contact cache remains separate from historical discovery hints.
+export async function loadLatestCompletedResearch(region) {
+  const value = String(region || "").trim();
+  if (!value) return null;
+  const row = ensureDb().prepare(`
+    SELECT payload FROM research_checkpoints
+    WHERE region = ? AND mode = 'full' AND status = 'completed'
+    ORDER BY updated_at DESC LIMIT 1
+  `).get(value);
+  const checkpoint = rowToCheckpoint(row);
+  return checkpoint?.final_result || null;
+}
+
 export async function listRegionCheckpoints(region, mode = "full", limit = 10) {
   const normalizedRegion = String(region || "").trim();
   if (!normalizedRegion) return [];
@@ -241,6 +277,10 @@ export function checkpointSummary(value) {
       ? value.enrichment_completed_ids.length : 0,
     contacts_completed: Array.isArray(value.contact_completed_ids)
       ? value.contact_completed_ids.length : 0,
+    contacts_deferred: Array.isArray(value.contact_unsearched_ids)
+      ? value.contact_unsearched_ids.length : 0,
+    continuation_available: Array.isArray(value.contact_unsearched_ids) &&
+      value.contact_unsearched_ids.length > 0,
     pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };

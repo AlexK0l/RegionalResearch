@@ -7,6 +7,7 @@ import {
   COLOR_STAT_COLS,
   LEGEND_COLS
 } from "./constants.js";
+import { refreshColorStatistics } from "./offlineColorStatistics.js";
 
 const DIRECT_MAP = [
   null,
@@ -203,6 +204,29 @@ function buildLegendSheet() {
   return ws;
 }
 
+// REVIEW and EXCLUDED remain audit queues, excluded from commercial totals.
+function buildAuditQueueSheet(rows, status) {
+  const headers = ["Организация", "ИНН", "Исходный лист", "Статус", "Причина решения", "Техника/сегмент", "Источники", "Canonical ID"];
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...(rows || []).map(row => [
+    row?.["Организация"] || "", row?.["ИНН"] || "",
+    row?.__qualification_origin_sheet || row?.__quality_gate?.original_sheet || "",
+    status, row?.__decision_reason || "", row?.["Техника/сегмент"] || "",
+    (row?.__evidence?.source_urls || []).filter(value => {
+      try { const u = new URL(String(value)); return ["http:", "https:"].includes(u.protocol) && u.hostname.includes("."); }
+      catch { return false; }
+    }).join("\n"), row?.__canonical_id || ""
+  ])]);
+  ws["!cols"] = [{wch:44},{wch:17},{wch:20},{wch:12},{wch:64},{wch:56},{wch:64},{wch:18}];
+  for (let index = 0; index < (rows || []).length; index++) {
+    const comment = String(rows[index]?.__comment || "").trim();
+    if (!comment) continue;
+    const ref = XLSX.utils.encode_cell({r:index + 1,c:0});
+    ws[ref] ||= {t:"s",v:String(rows[index]?.["Организация"] || "")};
+    ws[ref].c = [{a:"RegionalResearch",t:comment}];
+  }
+  return ws;
+}
+
 export function buildWorkbookBuffer(result) {
   const wb = XLSX.utils.book_new();
 
@@ -224,7 +248,26 @@ export function buildWorkbookBuffer(result) {
   XLSX.utils.book_append_sheet(wb, buildStatisticsSheet(result.statistics || []), "Статистика");
   XLSX.utils.book_append_sheet(wb, buildColorStatisticsSheet(), "Статистика по цветам");
   XLSX.utils.book_append_sheet(wb, buildLegendSheet(), "Легенда");
+  // The commercial SAT workbook has EXACTLY six sheets even if QA queues exist.
+  // REVIEW and EXCLUDED remain in the JSON and a separate audit workbook.
 
+  // Recalculate cached statistics BEFORE exporting. Formula cells otherwise
+  // carry placeholder zeros in viewers that do not evaluate Excel formulas.
+  // This also counts blank CRM color codes once (white/unprocessed).
+  refreshColorStatistics(XLSX, wb);
+  wb.Workbook ??= {};
+  wb.Workbook.CalcPr = { ...(wb.Workbook.CalcPr || {}), fullCalcOnLoad: true };
+
+  return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+}
+
+// Separate QA workbook: no diagnostic sheets leak into the six-sheet SAT CRM.
+export function buildAuditWorkbookBuffer(result) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,
+    buildAuditQueueSheet(result?.qualification_review || [], "REVIEW"), "REVIEW");
+  XLSX.utils.book_append_sheet(wb,
+    buildAuditQueueSheet(result?.qualification_excluded || [], "EXCLUDED"), "EXCLUDED");
   return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
 }
 

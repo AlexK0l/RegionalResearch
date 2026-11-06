@@ -24,7 +24,14 @@ test("audited 38-company A fixture respects the commercial entity policy", () =>
       }
     });
     const entityType = classifyEntityType({ "Организация": item.organization });
-    const expectedA = item.expected_a &&
+    // Historical fixture (09.10.2026) intentionally remains unchanged.
+    // Its tractor-only ПС-25Б «Армата» was previously considered A; under
+    // the current CAT road-freight product scope this is no longer sufficient.
+    // Keep the original count (23/15) in the fixture for auditability, but
+    // apply an explicit, versioned product-scope correction in this replay.
+    const tractorOnlyPolicyException =
+      item.organization === "Сельскохозяйственный производственный кооператив «Коллективное предприятие «Рыбковское»";
+    const expectedA = item.expected_a && !tractorOnlyPolicyException &&
       entityType !== "government_body" &&
       entityType !== "budget_institution";
     const actualA = decision.grade === "A";

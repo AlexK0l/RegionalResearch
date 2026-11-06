@@ -6,9 +6,21 @@
   "scripts": {
     "start": "node server.js",
     "benchmark:reference": "node scripts/benchmark-reference.js",
+    "replay:qualification": "node scripts/replay-qualification-offline.js",
+    "replay:identity": "node scripts/replay-identity-offline.js",
+    "recover:identity": "node scripts/recover-identity-offline.js",
     "local": "node --env-file=.env server.js",
     "browser:install": "playwright install chromium",
-    "test": "node --test"
+    "test": "node --test",
+    "compose:offline": "node scripts/compose-offline-crm.js",
+    "verify:inn:offline": "node scripts/apply-verified-inn-offline.js",
+    "audit:missing-inn": "node scripts/audit-missing-inn-offline.js",
+    "audit:history:offline": "node scripts/audit-historical-discovery-offline.js",
+    "consolidate:aliases": "node scripts/consolidate-reviewed-aliases.js",
+    "audit:evidence:offline": "node scripts/audit-evidence-provenance.js",
+    "integrate:reviewed:v8": "node scripts/integrate-reviewed-v8-offline.js",
+    "finalize:offline": "node scripts/finalize-research-offline.js",
+    "smoke:xlsx": "node scripts/smoke-reference-xlsx.js"
   },
   "engines": {
     "node": ">=22"

@@ -3,7 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
-import { buildWorkbookBuffer, safeFileName } from "./src/xlsx.js";
+import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
+import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
+import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
 import {
@@ -30,14 +32,35 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
-const MAX_ACTIVE_FULL_JOBS = Math.max(
-  1,
-  Math.min(2, Number(process.env.MAX_ACTIVE_FULL_JOBS || 1))
-);
-const pendingFullJobs = [];
-let activeFullJobs = 0;
+const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
 
 app.use(express.json({ limit: "32mb" }));
+
+// Set API_ACCESS_TOKEN in the deployment environment to protect paid jobs,
+// logs, checkpoints and downloads. Local development remains compatible.
+const API_ACCESS_TOKEN = String(process.env.API_ACCESS_TOKEN || "").trim();
+const PROTECT_API = Boolean(API_ACCESS_TOKEN);
+// Local app defaults to loopback so a missing API_ACCESS_TOKEN never exposes
+// paid job creation, logs or checkpoints to other devices on the network.
+// Render keeps its existing external bind behavior. LAN mode is explicit.
+const BIND_HOST = String(process.env.BIND_HOST ||
+  (process.env.RENDER ? "0.0.0.0" : "127.0.0.1")).trim();
+if (!process.env.RENDER && !PROTECT_API &&
+    !["127.0.0.1", "::1", "localhost"].includes(BIND_HOST)) {
+  throw new Error("BIND_HOST outside localhost requires API_ACCESS_TOKEN");
+}
+app.use("/api", (req, res, next) => {
+  if (req.path === "/config") return next();
+  if (!PROTECT_API) return next();
+  const authorization = String(req.get("authorization") || "");
+  const provided = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const expected = Buffer.from(API_ACCESS_TOKEN);
+  const received = Buffer.from(provided);
+  if (!provided || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    return res.status(401).json({ error: "Требуется API_ACCESS_TOKEN", code: "AUTH_REQUIRED" });
+  }
+  next();
+});
 
 const allowedOrigins = new Set(
   [
@@ -54,7 +77,7 @@ app.use((req, res, next) => {
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -86,12 +109,26 @@ app.get("/api/checkpoints", async (req, res) => {
     const mode = String(req.query.mode || "full").trim() || "full";
     if (!region) return res.status(400).json({ error: "Регион обязателен" });
 
-    const checkpoint = await findLatestCheckpoint(region, mode);
+    const history = await listRegionCheckpoints(region, mode, 5);
+    let checkpoint = await findLatestCheckpoint(region, mode);
+    if (!checkpoint) {
+      // A completed study may still contain genuinely unresearched contacts.
+      // Offer continuation from SQLite even after a browser/app restart.
+      const recent = history.find((item) => item.status === "completed");
+      if (recent) {
+        const saved = await loadCheckpoint(recent.id);
+        if (Array.isArray(saved?.contact_unsearched_ids) &&
+            saved.contact_unsearched_ids.length > 0) {
+          checkpoint = { ...checkpointSummary(saved),
+            id: recent.id, mode, status: "completed" };
+        }
+      }
+    }
     res.setHeader("Cache-Control", "no-store");
     res.json({
       exists: Boolean(checkpoint),
       checkpoint,
-      history: await listRegionCheckpoints(region, mode, 5)
+      history
     });
   } catch (error) {
     res.status(500).json({ error: error?.message || "Не удалось прочитать checkpoints" });
@@ -215,6 +252,23 @@ async function executeJob(job, apiKey) {
       const output = await runResearchPipeline({ job, apiKey });
       if (job.cancelled) throw new Error("JOB_CANCELLED");
       job.result = output;
+      // Release safety: never invalidate an earlier resumable checkpoint when
+      // a new full run is merely queued, cancelled, or fails before finishing.
+      // Only retire older resume pointers AFTER the replacement is durably saved.
+      if (job.mode === "full" || job.mode === "resume") {
+        try {
+          const persisted = await loadCheckpoint(job.id);
+          if (persisted?.phase === "completed" && persisted?.final_result) {
+            await supersedeRegionCheckpoints(job.region, "full", job.id);
+          } else {
+            console.warn("[CHECKPOINT_REPLACEMENT_DEFERRED] " +
+              JSON.stringify({job_id:job.id,reason:"completed_snapshot_not_persisted"}));
+          }
+        } catch (checkpointError) {
+          console.error("[CHECKPOINT_REPLACEMENT_ERROR] " +
+            JSON.stringify({job_id:job.id,error:checkpointError?.message || String(checkpointError)}));
+        }
+      }
       job.state = "completed";
     } catch (error) {
       if (
@@ -242,48 +296,30 @@ async function executeJob(job, apiKey) {
   });
 }
 
-function refreshFullQueuePositions() {
-  for (let index = 0; index < pendingFullJobs.length; index++) {
-    const queued = pendingFullJobs[index]?.job;
-    if (!queued || queued.cancelled) continue;
-    queued.progress = {
-      ...(queued.progress || {}),
-      phase: "queued",
-      queuePosition: index + 1,
-      activeFullJobs,
-      maxActiveFullJobs: MAX_ACTIVE_FULL_JOBS
-    };
-  }
-}
-
-function pumpFullJobQueue() {
-  while (activeFullJobs < MAX_ACTIVE_FULL_JOBS && pendingFullJobs.length) {
-    const next = pendingFullJobs.shift();
-    if (!next?.job || next.job.cancelled) continue;
-    activeFullJobs++;
-    refreshFullQueuePositions();
-    queueMicrotask(async () => {
-      try {
-        await executeJob(next.job, next.apiKey);
-      } finally {
-        activeFullJobs = Math.max(0, activeFullJobs - 1);
-        refreshFullQueuePositions();
-        pumpFullJobQueue();
-      }
-    });
-  }
-}
+const fullQueue = createFullJobQueue({
+  limit: MAX_ACTIVE_FULL_JOBS,
+  execute: executeJob
+});
 
 function queueJob(job, apiKey) {
-  const isFullResearch = job.mode === "full" || job.mode === "resume";
-  if (!isFullResearch) {
-    queueMicrotask(() => executeJob(job, apiKey));
-    return;
+  if (job.mode === "full" || job.mode === "resume") {
+    return fullQueue.enqueue(job, apiKey);
   }
+  queueMicrotask(() => executeJob(job, apiKey));
+  return { accepted: true };
+}
 
-  pendingFullJobs.push({ job, apiKey });
-  refreshFullQueuePositions();
-  pumpFullJobQueue();
+function activeRegionConflict(region, res) {
+  const existing = fullQueue.conflict(region);
+  if (!existing) return false;
+  res.status(409).json({
+    code: "REGION_JOB_ACTIVE",
+    error: "Исследование этого региона уже выполняется или ожидает в очереди",
+    existingJobId: existing.id,
+    region: existing.region,
+    state: existing.state
+  });
+  return true;
 }
 
 app.post("/api/jobs", async (req, res) => {
@@ -374,6 +410,7 @@ app.post("/api/jobs", async (req, res) => {
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
+  if (["full", "resume"].includes(mode) && activeRegionConflict(region, res)) return;
 
   if (mode === "full") {
     const existingCheckpoint = await findLatestCheckpoint(region, "full");
@@ -384,13 +421,8 @@ app.post("/api/jobs", async (req, res) => {
         checkpoint: existingCheckpoint
       });
     }
-    if (req.body?.startFresh) {
-      await supersedeRegionCheckpoints(region, "full");
-    }
-  }
-
-  if (mode === "resume" && data.sourceJobId) {
-    await supersedeRegionCheckpoints(region, "full", data.sourceJobId);
+    // startFresh intentionally keeps the older resumable payload intact:
+    // replacement happens only after successful completed checkpoint persistence.
   }
 
   const id = crypto.randomUUID();
@@ -417,6 +449,16 @@ app.post("/api/jobs", async (req, res) => {
       await saveCheckpoint(this.id, normalized);
     }
   };
+  const queued = queueJob(job, apiKey);
+  if (!queued.accepted) {
+    return res.status(409).json({
+      code: "REGION_JOB_ACTIVE",
+      error: "Исследование этого региона уже выполняется или ожидает в очереди",
+      existingJobId: queued.existing.id,
+      region: queued.existing.region,
+      state: queued.existing.state
+    });
+  }
   jobs.set(id, job);
 
   res.status(202).json({
@@ -425,7 +467,27 @@ app.post("/api/jobs", async (req, res) => {
     mode,
     resumedFrom: mode === "resume" ? data.sourceJobId || "" : ""
   });
-  queueJob(job, apiKey);
+});
+
+app.get("/api/jobs", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    queue: fullQueue.snapshot(),
+    jobs: [...jobs.values()]
+      .sort((a,b)=>b.createdAt-a.createdAt)
+      .slice(0,100)
+      .map(job=>({
+        id: job.id,
+        region: job.region,
+        mode: job.mode,
+        state: job.state,
+        phase: job.progress?.phase || "",
+        percent: Number(job.progress?.percent || 0),
+        queuePosition: Number(job.progress?.queuePosition || 0),
+        createdAt: job.createdAt,
+        hasResult: job.state === "completed" && Boolean(job.result?.result)
+      }))
+  });
 });
 
 app.get("/api/jobs/:id", (req, res) => {
@@ -434,6 +496,8 @@ app.get("/api/jobs/:id", (req, res) => {
 
   res.json({
     id: job.id,
+    region: job.region,
+    mode: job.mode,
     state: job.state,
     progress: job.progress || {},
     result: job.state === "completed"
@@ -446,11 +510,15 @@ app.get("/api/jobs/:id", (req, res) => {
           qualified_companies: job.result?.qualified_companies || [],
           replay_comparison: job.result?.replay_comparison || null,
           dedupe_comparison: job.result?.dedupe_comparison || null,
-          replay_available: Boolean(job.result?.discovery_snapshot)
+          replay_available: Boolean(job.result?.discovery_snapshot),
+          quality: job.result?.quality || null,
+          full_json_available: Boolean(job.result?.result)
         }
       : null,
     checkpoint: checkpointSummary(job.latestCheckpoint),
     resume_available: Boolean(job.latestCheckpoint),
+    continuation_available: Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
+      job.latestCheckpoint.contact_unsearched_ids.length > 0,
     log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
@@ -502,8 +570,8 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
       error: "Checkpoint создан несовместимой версией pipeline"
     });
   }
-  await supersedeRegionCheckpoints(checkpoint.region, "full", req.params.id);
-
+  // The original remains available if the new attempt fails or is cancelled.
+  if (activeRegionConflict(checkpoint.region, res)) return;
   const id = crypto.randomUUID();
   const job = {
     id,
@@ -528,6 +596,15 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
       await saveCheckpoint(this.id, normalized);
     }
   };
+  const queued = queueJob(job, apiKey);
+  if (!queued.accepted) {
+    return res.status(409).json({
+      code: "REGION_JOB_ACTIVE",
+      error: "Исследование этого региона уже выполняется или ожидает в очереди",
+      existingJobId: queued.existing.id,
+      region: queued.existing.region
+    });
+  }
   jobs.set(id, job);
   res.status(202).json({
     id,
@@ -536,7 +613,6 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
     resumedFrom: req.params.id,
     checkpoint: checkpointSummary(checkpoint)
   });
-  queueJob(job, apiKey);
 });
 
 app.get("/api/jobs/:id/snapshot", (req, res) => {
@@ -561,11 +637,11 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   if (!job.abortController?.signal?.aborted) {
     job.abortController?.abort(new Error("JOB_CANCELLED"));
   }
-  if (wasWaiting) refreshFullQueuePositions();
+  if (wasWaiting) fullQueue.cancelQueued(job.id);
   res.json({ ok: true, state: job.state });
 });
 
-app.get("/api/jobs/:id/download", (req, res) => {
+app.get("/api/jobs/:id/download", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") {
@@ -575,18 +651,77 @@ app.get("/api/jobs/:id/download", (req, res) => {
   const result = job.result?.result;
   if (!result) return res.status(500).json({ error: "Результат отсутствует" });
 
-  const buffer = buildWorkbookBuffer(result);
-  const filename = safeFileName(job.result?.region || "result");
+  try {
+    // The browser receives the sanitized reference's exact five-sheet layout.
+    // No silent fallback to the old 37-column approximation.
+    const buffer = await buildReferenceWorkbookBuffer(result);
+    const filename = safeFileName(job.result?.region || "result");
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.send(buffer);
+  } catch (error) {
+    console.error("[REFERENCE_EXPORT_FAILED]", error?.message || String(error));
+    res.status(503).json({ error:
+      "Не удалось сформировать Excel по строгому шаблону: " +
+      String(error?.message || error) });
+  }
+});
 
-  res.setHeader(
-    "Content-Type",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  );
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
-  );
+
+// REVIEW/EXCLUDED remain in a separate audit workbook, not the reference.
+app.get("/api/jobs/:id/download-audit", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Аудит ещё не готов" });
+  const result = job.result?.result;
+  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
+  const buffer = buildAuditWorkbookBuffer(result);
+  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, "_audit.xlsx");
+  res.setHeader("Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader("Cache-Control", "no-store");
   res.send(buffer);
+});
+
+app.get("/api/jobs/:id/quality", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Итоговый аудит ещё не готов" });
+  const output = job.result?.result;
+  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
+  return res.json({
+    region: job.result?.region || "",
+    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
+    review: output.qualification_review || [],
+    excluded: output.qualification_excluded || []
+  });
+});
+
+app.get("/api/jobs/:id/download-json", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Задание не найдено" });
+  if (job.state !== "completed") return res.status(409).json({ error: "Итоговый JSON ещё не готов" });
+  const output = job.result?.result;
+  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
+  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, ".json");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader("Cache-Control", "no-store");
+  return res.send(JSON.stringify({
+    region: job.result.region,
+    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
+    final_result: output
+  }, null, 2));
 });
 
 setInterval(() => {
@@ -612,8 +747,12 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: error?.message || "Внутренняя ошибка" });
 });
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`SAT research web service listening on ${port}`);
+const httpServer = app.listen(port, BIND_HOST, () => {
+  const boundPort = httpServer.address()?.port || port;
+  console.log(`SAT research web service listening on ${BIND_HOST}:${boundPort}`);
+  // The launch smoke-test exercises HTTP and SQLite without downloading or
+  // opening Chromium. Normal local launches still perform the self-test.
+  if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;
   setTimeout(async () => {
     let browser;
     try {
