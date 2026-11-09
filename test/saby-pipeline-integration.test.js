@@ -128,7 +128,7 @@ test("production stage-12 boundary checkpoints, resumes without duplicates, and 
       'completed:again.saby_completed_inns,',
       'deferred:again.saby_deferred_inns.length,',
       'phone:again.final_result.direct_buyers[1]["Телефон"],',
-      'summary:checkpointSummary(again)}));'
+      'summary:checkpointSummary(again),checkpoint:again}));'
     ].join("");
     const sqlite=run(process.execPath,["--input-type=module","-e",program,checkpointPath],{
       env:{...process.env,CHECKPOINT_DB_PATH:path.join(dir,"checkpoints.sqlite")}
@@ -140,10 +140,10 @@ test("production stage-12 boundary checkpoints, resumes without duplicates, and 
     assert.equal(restored.summary.saby_completed,1);
 
     // Restore the serialized snapshot, not the original in-memory rows.
-    const resumed=structuredClone(saved.final_result);
+    const resumed=structuredClone(restored.checkpoint.final_result);
     const secondVisits=[];
     const second=await runCheckpointedSabyStage12({
-      result:resumed,completedInns:saved.saby_completed_inns,
+      result:resumed,completedInns:restored.checkpoint.saby_completed_inns,
       env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"0",
         SABY_CHECKPOINT_EVERY:"1",SABY_DELAY_MS:"250"},
       persistCheckpoint,sessionRunner,collectCompany:async (_page,company)=>{
