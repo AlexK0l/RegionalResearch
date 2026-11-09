@@ -18,7 +18,7 @@ import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, discla
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
-import { runSabyStage12 } from "./sabyStage12.js";
+import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -9006,10 +9006,12 @@ ${JSON.stringify(gaps)}
   startStep(statuses[11]);
   statuses[11].detail = "подготовка Saby · без OpenAI-запросов";
   await progress({phase:"saby", step:12, percent:96});
-  const sabyOutcome = await runSabyStage12({
+  const sabyOutcome = await runCheckpointedSabyStage12({
     result:finalResult,
     completedInns:resumeCheckpoint?.saby_completed_inns || [],
     signal:jobSignal,
+    startedAt:stage12StartedAt,
+    persistCheckpoint,
     onProgress:async stats=>{
       statuses[11].detail = `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
       const ratio=stats.scheduled ? stats.processed/stats.scheduled : 1;
@@ -9017,15 +9019,6 @@ ${JSON.stringify(gaps)}
         percent:96+Math.floor(Math.min(1,ratio)*3),
         sabyCurrent:stats.processed, sabyTotal:stats.scheduled,
         sabyStats:stats});
-    },
-    onCheckpoint:async ({stats,completedInns,deferredInns})=>{
-      await persistCheckpoint("saby", {
-        completed_stage:9, final_result:finalResult,
-        saby_completed_inns:completedInns,
-        saby_deferred_inns:deferredInns,
-        saby_stats:stats,
-        stage12_duration_ms:Date.now()-stage12StartedAt
-      });
     }
   });
   const sabyStats=sabyOutcome.stats;
