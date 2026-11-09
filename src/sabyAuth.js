@@ -190,7 +190,14 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
 
   // The first screen may contain only "Телефон или логин" / "Phone or login".
   // Other Saby accounts show both fields at once. Both layouts are supported.
-  const user = await loginInput(page);
+  // The login form is hydrated asynchronously after DOMContentLoaded.
+  // Do not declare the field missing just because the SPA is still loading.
+  let user = null;
+  const formDeadline=Date.now()+12000;
+  while(Date.now()<formDeadline && trustedSabyLoginUrl(page.url()) && !user) {
+    user=await loginInput(page);
+    if(!user) await new Promise(resolve=>setTimeout(resolve,300));
+  }
   if (!user) return requireManual(allowManual, "Не найдено поле логина Saby");
   phase("login_field_found");
   if (!trustedSabyLoginUrl(page.url())) {
