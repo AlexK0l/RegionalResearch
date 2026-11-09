@@ -3,7 +3,7 @@
 // contacts/truck recovery, and no Google Sheets or paid OpenAI dependencies.
 import path from "node:path";
 import { chromium } from "playwright";
-import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { findSabyCompanySearch } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
@@ -197,11 +197,11 @@ async function ownContacts(page) {
     if (/\+7|(?:^|\s)8\s*\(|[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}/i.test(text)) break;
   }
   text=text.split(/Контакты связанных компаний/i,1)[0];
-  const phoneCandidates=text.match(/(?:\+7|8)\s*(?:\(\d{3,6}\)|\d{3})[\d\s()\-]{5,18}\d/g) || [];
-  const phones=[...new Set(phoneCandidates.map(normalizeRussianPhone).filter(Boolean))];
+  const phoneDetails=extractSabyPhoneDetails(text);
+  const phones=phoneDetails.map(x=>x.phone);
   const emails=[...new Set((text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g)||[])
     .map(x=>x.toLowerCase()))];
-  return {phones,emails,status:"collected"};
+  return {phones,phone_details:phoneDetails,emails,status:"collected"};
 }
 
 async function closeContactOverlay(page) {
