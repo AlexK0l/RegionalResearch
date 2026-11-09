@@ -19,30 +19,30 @@ NUMERIC={'Выручка последнего подтвержденного г�
 # Defense in depth: even when invoked directly (outside the Node exporter),
 # the strict reference XLSX contains numbers / explicit departments only.
 # This never changes template layout, styles, comments or source JSON.
-PHONE_RE=re.compile(r'(?<!\\d)(?:\\+7|7|8)(?:[\\s().-]*\\d){10}(?!\\d)')
-LOCAL_PHONE_RE=re.compile(r'(?<!\\d)(?:\\(\\d{3}\\)|\\d{3})(?:[\\s().-]*\\d){7}(?!\\d)')
+PHONE_RE=re.compile(r'(?<!\d)(?:\+7|7|8)(?:[\s().-]*\d){10}(?!\d)')
+LOCAL_PHONE_RE=re.compile(r'(?<!\d)(?:\(\d{3}\)|\d{3})(?:[\s().-]*\d){7}(?!\d)')
 DEPT_NAMES=[
- ('отдел продаж',r'отдел\\s+продаж|sales\\s+department'),
- ('отдел закупок',r'отдел\\s+закупок'),
- ('отдел снабжения',r'отдел\\s+снабжения'),
- ('отдел логистики',r'отдел\\s+логистики'),
- ('транспортный отдел',r'транспортн(?:ый|ого)\\s+отдел'),
- ('коммерческий отдел',r'коммерческ(?:ий|ого)\\s+отдел'),
- ('отдел кадров',r'отдел\\s+кадров'),
+ ('отдел продаж',r'отдел\s+продаж|sales\s+department'),
+ ('отдел закупок',r'отдел\s+закупок'),
+ ('отдел снабжения',r'отдел\s+снабжения'),
+ ('отдел логистики',r'отдел\s+логистики'),
+ ('транспортный отдел',r'транспортн(?:ый|ого)\s+отдел'),
+ ('коммерческий отдел',r'коммерческ(?:ий|ого)\s+отдел'),
+ ('отдел кадров',r'отдел\s+кадров'),
  ('бухгалтерия',r'бухгалтер(?:ия|ии)|accounting'),
  ('приёмная',r'при[её]мн(?:ая|ой)|reception'),
  ('диспетчерская',r'диспетчерск(?:ая|ой)'),
- ('сервисный отдел',r'сервисн(?:ый|ого)\\s+отдел'),
- ('отдел поддержки',r'отдел\\s+поддержки|техническ(?:ая|ой)\\s+поддержк'),
- ('склад',r'(?:^|[\\s:])склад(?:$|[\\s:.,;])'),
- ('отдел аренды',r'отдел\\s+аренды'),
- ('отдел по работе с клиентами',r'отдел\\s+по\\s+работе\\s+с\\s+клиентами'),
+ ('сервисный отдел',r'сервисн(?:ый|ого)\s+отдел'),
+ ('отдел поддержки',r'отдел\s+поддержки|техническ(?:ая|ой)\s+поддержк'),
+ ('склад',r'(?:^|[\s:])склад(?:$|[\s:.,;])'),
+ ('отдел аренды',r'отдел\s+аренды'),
+ ('отдел по работе с клиентами',r'отдел\s+по\s+работе\s+с\s+клиентами'),
  ('секретариат',r'секретариат'),
- ('юридический отдел',r'юридическ(?:ий|ого)\\s+отдел'),
+ ('юридический отдел',r'юридическ(?:ий|ого)\s+отдел'),
 ]
 
 def phone_digits(raw):
-    digits=re.sub(r'\\D','',raw)
+    digits=re.sub(r'\D','',raw)
     if len(digits)==11 and digits.startswith('8'):digits='7'+digits[1:]
     if len(digits)==10:digits='7'+digits
     return digits if len(digits)==11 and digits.startswith('7') else ''
@@ -52,13 +52,13 @@ def safe_phone_cell(value):
     parts=value if isinstance(value,list) else [value]
     found={}
     for item in parts:
-        for segment in re.split(r'[;\\r\\n]+',str(item)):
+        for segment in re.split(r'[;\r\n]+',str(item)):
             segment=segment.strip()
             if not segment:continue
             matches=list(PHONE_RE.finditer(segment))
-            if not matches and (re.search(r'тел(?:ефон)?\\.?|факс|моб\\.?|контакт|phone|call',segment,re.I) or (
-                not re.search(r'(?:^|\\W)(?:инн|огрн|кпп|inn)(?:\\W|$)',segment,re.I)
-                and re.fullmatch(r'[\\s()+\\d.-]{10,26}',segment))):
+            if not matches and (re.search(r'тел(?:ефон)?\.?|факс|моб\.?|контакт|phone|call',segment,re.I) or (
+                not re.search(r'(?:^|\W)(?:инн|огрн|кпп|inn)(?:\W|$)',segment,re.I)
+                and re.fullmatch(r'[\s()+\d.-]{10,26}',segment))):
                 matches=list(LOCAL_PHONE_RE.finditer(segment))
             labels=[label for label,rx in DEPT_NAMES if re.search(rx,segment,re.I)]
             label=labels[0] if len(labels)==1 else ''
