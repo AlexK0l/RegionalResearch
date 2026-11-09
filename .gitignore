@@ -10,3 +10,10 @@ playwright-report/
 test-results/
 .DS_Store
 Thumbs.db
+# Authenticated browser sessions and local Saby output must never be committed.
+saby_browser_profile/
+saby_profile/
+saby_diagnostics/
+saby_results/
+results_saby/
+*.saby-profile/
