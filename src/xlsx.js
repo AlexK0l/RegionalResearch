@@ -8,6 +8,7 @@ import {
   LEGEND_COLS
 } from "./constants.js";
 import { refreshColorStatistics } from "./offlineColorStatistics.js";
+import { formatPhoneCell } from "./phoneExport.js";
 
 const DIRECT_MAP = [
   null,
@@ -118,6 +119,7 @@ function strictNumber(value) {
 
 function mappedValue(row, field) {
   if (!field) return "";
+  if (field === "Телефон") return formatPhoneCell(row?.[field]);
   if (field === "Выручка последнего подтвержденного года") {
     const value = strictNumber(row?.[field]);
     return value === "" ? "" : Math.round(value);
