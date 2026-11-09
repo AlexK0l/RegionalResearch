@@ -8,6 +8,7 @@ test("exports synchronized reference workbook layout", () => {
     direct_buyers: [{
       "Организация": "ООО Тест",
       "Основание": "B — тест",
+      "Наличие транспорта": "Saby (грузовые): КамАЗ — 2 шт.",
       "Телефон": "79990000000",
       "Руководитель / ЛПР": "Иванов И.И.",
       "Управляющая компания": "не подтверждена",
@@ -50,6 +51,8 @@ test("exports synchronized reference workbook layout", () => {
   assert.equal(intermediary[0].length, 26);
   assert.equal(leasing[0].length, 27);
   assert.equal(stats[0].length, 6);
+  assert.equal(direct[0][2], "Наличие транспорта");
+  assert.equal(direct[1][2], "Saby (грузовые): КамАЗ — 2 шт.");
   assert.equal(direct[1][1], "ООО Тест");
   assert.equal(direct[1][16], 123456789);
   assert.equal(direct[1][21], 42);
