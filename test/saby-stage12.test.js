@@ -36,7 +36,7 @@ test("strict company identity rejects fuzzy names and wrong INN search results",
   assert.equal(sabySearchResultMatches("ООО Альфа",
     "ООО Альфа 7707083893 Москва","7707083893"),true);
   assert.equal(sabySearchResultMatches("ООО Альфа",
-    "ООО Альфа-Трейд 7707083893 Москва","7707083893"),true);
+    "ООО Альфа-Трейд 7707083893 Москва","7707083893"),false);
   assert.equal(sabySearchResultMatches("ООО Альфа",
     "ООО Бета 7707083893 Альфа","7707083893"),false);
 });
