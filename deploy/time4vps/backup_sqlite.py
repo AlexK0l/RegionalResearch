@@ -3,6 +3,7 @@
 import argparse
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,16 +26,36 @@ def main():
     if temporary.exists():
         raise RuntimeError("Existing partial backup: " + str(temporary))
     try:
-        with sqlite3.connect("file:" + str(source) + "?mode=ro", uri=True) as db:
-            with sqlite3.connect(str(temporary)) as dst:
+        # sqlite3.Connection's context manager commits/rolls back, but does not
+        # close the connection. Close both before publishing the backup.
+        with closing(sqlite3.connect("file:" + str(source) + "?mode=ro",
+                                     uri=True, timeout=30)) as db:
+            with closing(sqlite3.connect(str(temporary), timeout=30)) as dst:
                 db.backup(dst, pages=128, sleep=0.1)
+
+                # Backing up a WAL database can leave the destination in WAL
+                # mode. Force any copied WAL content into the standalone file,
+                # so restoring only checkpoints-*.sqlite is always sufficient.
+                journal_mode = dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                if journal_mode.lower() != "delete":
+                    raise RuntimeError("Could not finalize backup journal mode")
                 check = dst.execute("PRAGMA integrity_check").fetchone()[0]
                 if check != "ok":
                     raise RuntimeError("Integrity check failed: " + str(check))
+
+        # Verify the saved file from a *new* connection after both are closed.
+        with closing(sqlite3.connect("file:" + str(temporary) + "?mode=ro",
+                                     uri=True, timeout=30)) as verify:
+            check = verify.execute("PRAGMA integrity_check").fetchone()[0]
+            if check != "ok":
+                raise RuntimeError("Backup read-back integrity check failed: " + str(check))
+
         os.replace(temporary, filename)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            sidecar = Path(str(temporary) + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
     history = sorted(directory.glob("checkpoints-*.sqlite"), reverse=True)
     for old in history[max(1, args.keep):]:
         old.unlink()
