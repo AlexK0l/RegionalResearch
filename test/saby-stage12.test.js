@@ -218,7 +218,7 @@ test("browser failure leaves source data intact, safely defers the work",async()
 
 test("pipeline stage 12 is after final QA and has no own paid web calls",()=>{
   const source=readFileSync(new URL("../src/pipeline.js",import.meta.url),"utf8");
-  assert.match(source,/runSabyStage12\(/);
+  assert.match(source,/runCheckpointedSabyStage12\(/);
   assert.ok(source.indexOf("finalizeProductionResearch(finalResult")<
     source.lastIndexOf("runSabyStage12("));
   assert.match(source,/saby_completed_inns/);
