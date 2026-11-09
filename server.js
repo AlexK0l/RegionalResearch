@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createBrowserSessionAuth, isSameRequestOrigin } from "./src/browserSessionAuth.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -30,6 +31,8 @@ import {
 initializeFileLogging();
 
 const app = express();
+// Caddy connects from loopback; preserve the real client IP for login throttling.
+app.set("trust proxy", "loopback");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
@@ -40,10 +43,55 @@ if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS)
 
 app.use(express.json({ limit: "32mb" }));
 
+// One-browser-login mode is enabled only when WEB_LOGIN_PASSWORD_HASH is set.
+// The browser receives a signed, HttpOnly cookie; API_ACCESS_TOKEN never leaves .env.
+const failedWebLogins = new Map();
+app.get("/login", (req, res) => {
+  if (!browserAuth.enabled) return res.redirect("/");
+  res.setHeader("Cache-Control", "no-store");
+  if (browserAuth.validCookieHeader(String(req.get("cookie") || ""))) return res.redirect("/");
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.post("/api/auth/login", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!browserAuth.enabled) return res.status(404).json({error:"Browser login is disabled"});
+  if (!isSameRequestOrigin(req)) return res.status(403).json({error:"Недопустимый источник запроса"});
+
+  const ip = String(req.ip || "unknown");
+  const now = Date.now();
+  const record = failedWebLogins.get(ip);
+  const failures = record && now - record.started < 60_000 ? record : {started:now, count:0};
+  if (failures.count >= 8) return res.status(429).json({error:"Слишком много попыток. Повторите через минуту."});
+
+  if (!browserAuth.passwordMatches(req.body?.password)) {
+    failures.count += 1;
+    failedWebLogins.set(ip, failures);
+    if (failedWebLogins.size > 2000) failedWebLogins.clear();
+    return res.status(401).json({error:"Неверный пароль"});
+  }
+
+  failedWebLogins.delete(ip);
+  res.setHeader("Set-Cookie", browserAuth.makeCookie());
+  return res.json({ok:true});
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!browserAuth.enabled) return res.status(404).json({error:"Browser login is disabled"});
+  if (!isSameRequestOrigin(req)) return res.status(403).json({error:"Недопустимый источник запроса"});
+  res.setHeader("Set-Cookie", browserAuth.clearCookie());
+  return res.json({ok:true});
+});
+
 // Set API_ACCESS_TOKEN in the deployment environment to protect paid jobs,
 // logs, checkpoints and downloads. Local development remains compatible.
 const API_ACCESS_TOKEN = String(process.env.API_ACCESS_TOKEN || "").trim();
 const PROTECT_API = Boolean(API_ACCESS_TOKEN);
+const browserAuth = createBrowserSessionAuth({
+  passwordHash: process.env.WEB_LOGIN_PASSWORD_HASH || "",
+  apiToken: API_ACCESS_TOKEN
+});
 // Local app defaults to loopback so a missing API_ACCESS_TOKEN never exposes
 // paid job creation, logs or checkpoints to other devices on the network.
 // Render keeps its existing external bind behavior. LAN mode is explicit.
@@ -58,12 +106,17 @@ app.use("/api", (req, res, next) => {
   if (!PROTECT_API) return next();
   const authorization = String(req.get("authorization") || "");
   const provided = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  const expected = Buffer.from(API_ACCESS_TOKEN);
-  const received = Buffer.from(provided);
-  if (!provided || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
-    return res.status(401).json({ error: "Требуется API_ACCESS_TOKEN", code: "AUTH_REQUIRED" });
+  if (browserAuth.bearerMatches(provided)) return next();
+  if (browserAuth.enabled &&
+      browserAuth.validCookieHeader(String(req.get("cookie") || ""))) {
+    // Cookies are automatic browser credentials: mutations require same Origin.
+    if (!["GET", "HEAD"].includes(req.method) && !isSameRequestOrigin(req)) {
+      return res.status(403).json({error:"Недопустимый источник запроса", code:"AUTH_ORIGIN"});
+    }
+    return next();
   }
-  next();
+  if (browserAuth.enabled) res.setHeader("X-Auth-Mode", "browser-session");
+  return res.status(401).json({ error: "Требуется авторизация", code: "AUTH_REQUIRED" });
 });
 
 const allowedOrigins = new Set(
@@ -104,7 +157,7 @@ app.get("/health", async (_req, res) => {
 });
 
 app.get("/api/config", (_req, res) => {
-  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION });
+  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled });
 });
 
 app.get("/api/checkpoints", async (req, res) => {
@@ -743,6 +796,15 @@ setInterval(() => {
     }
   }
 }, 60 * 60 * 1000).unref();
+
+if (browserAuth.enabled) {
+  app.use((req, res, next) => {
+    if (browserAuth.validCookieHeader(String(req.get("cookie") || ""))) return next();
+    if (req.method !== "GET" && req.method !== "HEAD") return res.sendStatus(401);
+    res.setHeader("Cache-Control", "no-store");
+    return res.redirect(302, "/login");
+  });
+}
 
 app.use(express.static(path.join(__dirname, "public"), {
   extensions: ["html"],
