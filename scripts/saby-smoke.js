@@ -32,12 +32,23 @@ async function main() {
   if(args.includes("--login")) {
     await withSabyBrowser(async ({page,settings})=>{
       if(settings.login && settings.password) {
-        const auth=await authenticateSaby(page,settings,{allowManual:true});
-        if(auth.status==="authenticated" || auth.status==="existing_session") {
-          console.log("Saby: авторизация подтверждена; сессия сохранена локально.");
-          return;
+        try {
+          const auth=await authenticateSaby(page,settings,{
+            allowManual:true,
+            onPhase:code=>console.log("[SABY_AUTH] "+code)
+          });
+          if(auth.status==="authenticated" || auth.status==="existing_session") {
+            console.log("Saby: авторизация подтверждена; сессия сохранена локально.");
+            return;
+          }
+          console.log("Saby: "+(auth.message ||
+            "Для входа требуется действие в браузере."));
+        } catch {
+          // An unrecognized UI must not close the browser before the user can
+          // finish signing in or inspect the screen. Never log a raw exception.
+          console.log("[SABY_AUTH] manual_required");
+          console.log("Saby: автоматический вход прерван; войдите вручную.");
         }
-        console.log(auth.message || "Для входа в Saby требуется действие в браузере.");
       } else {
         await page.goto("https://profile.saby.ru/page/company-list-prof",
           {waitUntil:"domcontentloaded",timeout:60000});
