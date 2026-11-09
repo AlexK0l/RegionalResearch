@@ -76,6 +76,11 @@ export function fleetSummary(fleet) {
     }).join("; ");
 }
 
+function hasKnownPhone(value) {
+  return String(value || "").split(/[;,\\n]/)
+    .some(phone => Boolean(normalizeRussianPhone(phone)));
+}
+
 export function sabyEligibleRows(result) {
   const groups = [
     ...(result?.direct_buyers || []).map(row => ({row, transport:true})),
@@ -95,13 +100,13 @@ export function sabyEligibleRows(result) {
     } else if (counts.get(inn) !== 1) {
       duplicates.push(entry);
     } else if (entry.transport ||
-               !normalizeRussianPhone(entry.row?.["Телефон"])) {
+               !String(entry.row?.["Телефон"] || "").trim()) {
       eligible.push(entry);
     }
   }
   // Prioritize missing contacts and direct buyers; no additional API searches.
   eligible.sort((a,b) => {
-    const score = x => (normalizeRussianPhone(x.row["Телефон"]) ? 0 : 4) +
+    const score = x => (hasKnownPhone(x.row["Телефон"]) ? 0 : 4) +
       (x.transport ? 2 : 0);
     return score(b) - score(a);
   });
@@ -141,7 +146,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   row.__evidence = evidence;
 
   let phoneAdded = false;
-  if (!normalizeRussianPhone(row["Телефон"])) {
+  if (!String(row["Телефон"] || "").trim()) {
     const available = phones.find(phone => {
       const owners = phoneOwners.get(phone);
       return !owners || [...owners].every(owner => owner === row);
