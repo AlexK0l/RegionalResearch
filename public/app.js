@@ -217,6 +217,7 @@ function formatCheckpointPhase(phase){
     enrichment:"enrichment",
     statistics:"статистика",
     contacts:"контакты",
+    saby:"Saby — контакты и транспорт",
     completed:"завершено"
   })[phase]||phase||"неизвестный этап";
 }
