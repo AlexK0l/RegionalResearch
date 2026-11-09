@@ -187,10 +187,9 @@ test("production stage-12 boundary checkpoints, resumes without duplicates, and 
       "from openpyxl import load_workbook",
       "w=load_workbook(sys.argv[1])",
       "s=w['Прямые покупатели']",
-      "print(json.dumps({'tabs':w.sheetnames,'head':s['C1'].value,",
-      "'phone':s['G2'].value,'transport':s['C2'].value,",
-      "'comment':s['A3'].comment.text if s['A3'].comment else ''},",
-      "ensure_ascii=True))"
+      "print(json.dumps({'tabs':w.sheetnames,'head':s['C1'].value,'phone':s['G2'].value,"+
+        "'transport':s['C2'].value,'comment':"+
+        "(s['A3'].comment.text if s['A3'].comment else '')},ensure_ascii=True))"
     ].join(";");
     const excel=JSON.parse(run(python,["-c",cmd,output]).stdout.trim());
     assert.equal(excel.tabs.length,5);
