@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { withSabyBrowser } from "../src/sabyBrowser.js";
+import { authenticateSaby } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
 import { buildReferenceWorkbookBuffer } from "../src/referenceWorkbookExport.js";
 
@@ -29,15 +30,25 @@ async function main() {
     SABY_HEADLESS:args.includes("--headless")?"true":"false"};
   if(option(args,"profile"))env.SABY_PROFILE_DIR=option(args,"profile");
   if(args.includes("--login")) {
-    await withSabyBrowser(async ({page})=>{
-      await page.goto("https://profile.saby.ru/page/company-list-prof",
-        {waitUntil:"domcontentloaded",timeout:60000});
-      console.log("Войдите в Saby в открывшемся браузере, затем нажмите Enter здесь.");
+    await withSabyBrowser(async ({page,settings})=>{
+      if(settings.login && settings.password) {
+        const auth=await authenticateSaby(page,settings,{allowManual:true});
+        if(auth.status==="authenticated" || auth.status==="existing_session") {
+          console.log("Saby: авторизация подтверждена; сессия сохранена локально.");
+          return;
+        }
+        console.log(auth.message || "Для входа в Saby требуется действие в браузере.");
+      } else {
+        await page.goto("https://profile.saby.ru/page/company-list-prof",
+          {waitUntil:"domcontentloaded",timeout:60000});
+        console.log("SABY_LOGIN / SABY_PASSWORD не заданы: войдите вручную.");
+      }
+      console.log("Завершите вход или подтверждение в браузере, затем нажмите Enter здесь.");
       const rl=createInterface({input:process.stdin,output:process.stdout});
       await new Promise(resolve=>rl.question("Готово? Нажмите Enter: ",resolve));
       rl.close();
-    },{env});
-    console.log("Сессия Saby сохранена только в локальном профиле.");
+    },{env,autoLogin:false});
+    console.log("Браузер закрыт; Saby-профиль сохранён локально.");
     return;
   }
   let raw, source="single_company";
