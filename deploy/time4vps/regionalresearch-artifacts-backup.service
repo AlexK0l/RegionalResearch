@@ -1,0 +1,18 @@
+[Unit]
+Description=Daily RegionalResearch exports, logs, templates and .env backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=regionalresearch
+Group=regionalresearch
+WorkingDirectory=/opt/regionalresearch
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/regionalresearch/backups
+ExecStart=/usr/bin/python3 /opt/regionalresearch/deploy/time4vps/backup_artifacts.py --root /opt/regionalresearch --directory /var/lib/regionalresearch/backups --keep 7
