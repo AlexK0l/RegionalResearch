@@ -51,6 +51,7 @@ def safe_phone_cell(value):
     if value is None:return ''
     parts=value if isinstance(value,list) else [value]
     found={}
+    disputed=set()
     for item in parts:
         for segment in re.split(r'[;\r\n]+',str(item)):
             segment=segment.strip()
@@ -67,8 +68,10 @@ def safe_phone_cell(value):
                 if not phone:continue
                 old=found.get(phone)
                 if old is None:found[phone]=label
-                elif old and label and old!=label:found[phone]=''
-                elif not old and label:found[phone]=label
+                elif old and label and old!=label:
+                    found[phone]=''
+                    disputed.add(phone)
+                elif not old and label and phone not in disputed:found[phone]=label
     return '; '.join(phone+(' ('+dept+')' if dept else '')
                      for phone,dept in found.items())
 
