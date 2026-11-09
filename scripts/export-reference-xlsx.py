@@ -16,6 +16,65 @@ SECTIONS=[('Прямые покупатели','direct_buyers'),('Посредн
 CHECKS={'Прямые покупатели':(1,8),'Посредники':(1,2,10),'Лизинг':(1,2,10)}
 NUMERIC={'Выручка последнего подтвержденного года','Численность'}
 
+# Defense in depth: even when invoked directly (outside the Node exporter),
+# the strict reference XLSX contains numbers / explicit departments only.
+# This never changes template layout, styles, comments or source JSON.
+PHONE_RE=re.compile(r'(?<!\d)(?:\+7|7|8)(?:[\s().-]*\d){10}(?!\d)')
+LOCAL_PHONE_RE=re.compile(r'(?<!\d)(?:\(\d{3}\)|\d{3})(?:[\s().-]*\d){7}(?!\d)')
+DEPT_NAMES=[
+ ('отдел продаж',r'отдел\s+продаж|sales\s+department'),
+ ('отдел закупок',r'отдел\s+закупок'),
+ ('отдел снабжения',r'отдел\s+снабжения'),
+ ('отдел логистики',r'отдел\s+логистики'),
+ ('транспортный отдел',r'транспортн(?:ый|ого)\s+отдел'),
+ ('коммерческий отдел',r'коммерческ(?:ий|ого)\s+отдел'),
+ ('отдел кадров',r'отдел\s+кадров'),
+ ('бухгалтерия',r'бухгалтер(?:ия|ии)|accounting'),
+ ('приёмная',r'при[её]мн(?:ая|ой)|reception'),
+ ('диспетчерская',r'диспетчерск(?:ая|ой)'),
+ ('сервисный отдел',r'сервисн(?:ый|ого)\s+отдел'),
+ ('отдел поддержки',r'отдел\s+поддержки|техническ(?:ая|ой)\s+поддержк'),
+ ('склад',r'(?:^|[\s:])склад(?:$|[\s:.,;])'),
+ ('отдел аренды',r'отдел\s+аренды'),
+ ('отдел по работе с клиентами',r'отдел\s+по\s+работе\s+с\s+клиентами'),
+ ('секретариат',r'секретариат'),
+ ('юридический отдел',r'юридическ(?:ий|ого)\s+отдел'),
+]
+
+def phone_digits(raw):
+    digits=re.sub(r'\D','',raw)
+    if len(digits)==11 and digits.startswith('8'):digits='7'+digits[1:]
+    if len(digits)==10:digits='7'+digits
+    return digits if len(digits)==11 and digits.startswith('7') else ''
+
+def safe_phone_cell(value):
+    if value is None:return ''
+    parts=value if isinstance(value,list) else [value]
+    found={}
+    disputed=set()
+    for item in parts:
+        for segment in re.split(r'[;\r\n]+',str(item)):
+            segment=segment.strip()
+            if not segment:continue
+            matches=list(PHONE_RE.finditer(segment))
+            if not matches and (re.search(r'тел(?:ефон)?\.?|факс|моб\.?|контакт|phone|call',segment,re.I) or (
+                not re.search(r'(?:^|\W)(?:инн|огрн|кпп|inn)(?:\W|$)',segment,re.I)
+                and re.fullmatch(r'[\s()+\d.-]{10,26}',segment))):
+                matches=list(LOCAL_PHONE_RE.finditer(segment))
+            labels=[label for label,rx in DEPT_NAMES if re.search(rx,segment,re.I)]
+            label=labels[0] if len(labels)==1 else ''
+            for match in matches:
+                phone=phone_digits(match.group(0))
+                if not phone:continue
+                old=found.get(phone)
+                if old is None:found[phone]=label
+                elif old and label and old!=label:
+                    found[phone]=''
+                    disputed.add(phone)
+                elif not old and label and phone not in disputed:found[phone]=label
+    return '; '.join(phone+(' ('+dept+')' if dept else '')
+                     for phone,dept in found.items())
+
 def validate(wb):
     if wb.sheetnames!=SHEETS:
         raise ValueError('Reference template has incorrect sheet order: '+repr(wb.sheetnames))
@@ -27,6 +86,14 @@ def validate(wb):
         header=[str(c.value or '') for c in wb[name][1]]
         if header.count('Организация')!=1 or 'ИНН' not in header or 'Основание' not in header:
             raise ValueError('Reference template missing expected columns: '+name)
+
+def rename_transport_header(wb):
+    # Keep source header position, width, formatting, formulas and validation.
+    # The sanitized Google Sheets reference can still have the legacy label.
+    ws=wb['Прямые покупатели']
+    for cell in ws[1]:
+        if str(cell.value or '').strip()=='TORGBOX':
+            cell.value='Наличие транспорта'
 
 def clear_existing(wb):
     # The reference may contain real companies; never use it as output data.
@@ -48,6 +115,7 @@ def clear_existing(wb):
 def get_value(row,key):
     v=row.get(key)
     if v is None:return None
+    if key=='Телефон':return safe_phone_cell(v)
     if key in NUMERIC:
         if isinstance(v,(int,float)) and not isinstance(v,bool):return v
         if isinstance(v,str) and re.fullmatch(r'\s*[+-]?\d[\d ]*(?:[,.]\d+)?\s*',v):
@@ -112,6 +180,7 @@ def main():
     template,out=sys.argv[1:3]
     wb=load_workbook(template)
     validate(wb)
+    rename_transport_header(wb)
     clear_existing(wb)
     # Node writes UTF-8 bytes to stdin. Windows text pipes may default to
     # CP1251/CP866; decoding through sys.stdin would corrupt Cyrillic keys.

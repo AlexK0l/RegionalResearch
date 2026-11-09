@@ -18,6 +18,7 @@ import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, discla
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
+import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -5826,7 +5827,8 @@ const PIPELINE_PHASE_ORDER = {
   enrichment: 8,
   statistics: 9,
   contacts: 10,
-  completed: 11
+  saby: 11,
+  completed: 12
 };
 
 function cloneJson(value) {
@@ -8991,12 +8993,43 @@ ${JSON.stringify(gaps)}
   statuses[10].detail =
     `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · REVIEW: ${finalQuality.report.review_records} · QA: OK`;
   await progress({
-    phase: "completed",
-    step: 11,
-    percent: 100,
+    phase: "saby", step: 11, percent: 96,
     contactCurrent: googleCompanies.length,
-    contactTotal: googleCompanies.length,
-    contactStats
+    contactTotal: googleCompanies.length, contactStats
+  });
+
+  // Stage 12 performs browser-only, INN-verified Saby enrichment AFTER the
+  // deterministic quality gate. Trucks never promote a sales grade to A and
+  // contacts never overwrite already verified phone numbers. Disabled by
+  // default on VPS, enabled explicitly for Windows testing.
+  const stage12StartedAt = Date.now();
+  startStep(statuses[11]);
+  statuses[11].detail = "подготовка Saby · без OpenAI-запросов";
+  await progress({phase:"saby", step:12, percent:96});
+  const sabyOutcome = await runCheckpointedSabyStage12({
+    result:finalResult,
+    completedInns:resumeCheckpoint?.saby_completed_inns || [],
+    signal:jobSignal,
+    startedAt:stage12StartedAt,
+    persistCheckpoint,
+    onProgress:async stats=>{
+      statuses[11].detail = `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
+      const ratio=stats.scheduled ? stats.processed/stats.scheduled : 1;
+      await progress({phase:"saby", step:12,
+        percent:96+Math.floor(Math.min(1,ratio)*3),
+        sabyCurrent:stats.processed, sabyTotal:stats.scheduled,
+        sabyStats:stats});
+    }
+  });
+  const sabyStats=sabyOutcome.stats;
+  finishStep(statuses[11]);
+  statuses[11].detail = !sabyStats.enabled
+    ? "отключен (SABY_STAGE12_ENABLED=false)"
+    : `выполнен · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+  await progress({
+    phase:"completed", step:12, percent:100,
+    contactCurrent:googleCompanies.length,
+    contactTotal:googleCompanies.length, contactStats, sabyStats
   });
   await persistCheckpoint("completed", {
     completed_stage: 9,
@@ -9017,8 +9050,12 @@ ${JSON.stringify(gaps)}
     contact_primary_results: {},
     contact_stats: contactStats,
     contact_unsearched_ids: [...contactUnsearched],
+    saby_completed_inns: sabyOutcome.completedInns,
+    saby_deferred_inns: sabyOutcome.deferredInns,
+    saby_stats: sabyStats,
     stage10_duration_ms: Date.now() - stage10StartedAt,
-    stage11_duration_ms: Date.now() - stage11StartedAt
+    stage11_duration_ms: Date.now() - stage11StartedAt,
+    stage12_duration_ms: Date.now() - stage12StartedAt
   });
 
   return {
@@ -9052,7 +9089,8 @@ ${JSON.stringify(gaps)}
       deadlineSkipped,
       browserCircuitOpen,
       stage11DurationMs: Date.now() - stage11StartedAt
-    }
+    },
+    saby: sabyStats
   };
 }
 

@@ -26,6 +26,8 @@ test("checkpoint format validates and summarizes resume state", () => {
     enrichment_completed: 1,
     contacts_completed: 1,
     contacts_deferred: 0,
+    saby_completed: 0,
+    saby_deferred: 0,
     continuation_available: false,
     pipeline_version: 0,
     updated_at: null

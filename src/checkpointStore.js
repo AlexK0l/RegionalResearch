@@ -279,8 +279,15 @@ export function checkpointSummary(value) {
       ? value.contact_completed_ids.length : 0,
     contacts_deferred: Array.isArray(value.contact_unsearched_ids)
       ? value.contact_unsearched_ids.length : 0,
-    continuation_available: Array.isArray(value.contact_unsearched_ids) &&
-      value.contact_unsearched_ids.length > 0,
+    saby_completed: Array.isArray(value.saby_completed_inns)
+      ? value.saby_completed_inns.length : 0,
+    saby_deferred: Array.isArray(value.saby_deferred_inns)
+      ? value.saby_deferred_inns.length : 0,
+    continuation_available:
+      (Array.isArray(value.contact_unsearched_ids) &&
+       value.contact_unsearched_ids.length > 0) ||
+      (Array.isArray(value.saby_deferred_inns) &&
+       value.saby_deferred_inns.length > 0),
     pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };

@@ -4,7 +4,7 @@ import { estimateResearchEta, historicalStageDurations } from "../src/researchEt
 
 const MINUTE=60000;
 function steps() {
-  return Array.from({length:11}, (_,i)=>({
+  return Array.from({length:12}, (_,i)=>({
     step:i+1,status:"waiting",startedAt:null,completedAt:null
   }));
 }
@@ -66,13 +66,13 @@ test("queued, failed, canceled and completed jobs don't keep counting",()=>{
 });
 test("historical runs allow immediate coarse estimate with per-step real durations",()=>{
   const h=steps();
-  for(let i=0;i<11;i++)done(h[i],100000+i*MINUTE,MINUTE);
+  for(let i=0;i<12;i++)done(h[i],100000+i*MINUTE,MINUTE);
   const history=historicalStageDurations([job(h,"completed")]);
-  assert.equal(history.length,11);
+  assert.equal(history.length,12);
   assert.equal(history[0],MINUTE);
   const current=steps();current[0].status="running";current[0].startedAt=300000;
   const result=estimateResearchEta(job(current),{now:320000,history});
   assert.equal(result.status,"estimated");
-  assert.ok(result.remainingMs<11*MINUTE);
+  assert.ok(result.remainingMs<12*MINUTE);
   assert.equal(result.basis,"measured");
 });

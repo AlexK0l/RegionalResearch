@@ -20,7 +20,8 @@
     "audit:evidence:offline": "node scripts/audit-evidence-provenance.js",
     "integrate:reviewed:v8": "node scripts/integrate-reviewed-v8-offline.js",
     "finalize:offline": "node scripts/finalize-research-offline.js",
-    "smoke:xlsx": "node scripts/smoke-reference-xlsx.js"
+    "smoke:xlsx": "node scripts/smoke-reference-xlsx.js",
+    "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js"
   },
   "engines": {
     "node": ">=22"

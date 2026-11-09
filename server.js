@@ -174,8 +174,10 @@ app.get("/api/checkpoints", async (req, res) => {
       const recent = history.find((item) => item.status === "completed");
       if (recent) {
         const saved = await loadCheckpoint(recent.id);
-        if (Array.isArray(saved?.contact_unsearched_ids) &&
-            saved.contact_unsearched_ids.length > 0) {
+        if ((Array.isArray(saved?.contact_unsearched_ids) &&
+             saved.contact_unsearched_ids.length > 0) ||
+            (Array.isArray(saved?.saby_deferred_inns) &&
+             saved.saby_deferred_inns.length > 0)) {
           checkpoint = { ...checkpointSummary(saved),
             id: recent.id, mode, status: "completed" };
         }
@@ -569,6 +571,7 @@ app.get("/api/jobs/:id", (req, res) => {
           region: job.result?.region,
           counts: job.result?.counts,
           contacts: job.result?.contacts,
+          saby: job.result?.saby || null,
           mode: job.result?.mode || job.mode || "full",
           stage: job.result?.stage || job.data?.stage || null,
           qualified_companies: job.result?.qualified_companies || [],
@@ -581,8 +584,11 @@ app.get("/api/jobs/:id", (req, res) => {
       : null,
     checkpoint: checkpointSummary(job.latestCheckpoint),
     resume_available: Boolean(job.latestCheckpoint),
-    continuation_available: Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
-      job.latestCheckpoint.contact_unsearched_ids.length > 0,
+    continuation_available:
+      (Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
+       job.latestCheckpoint.contact_unsearched_ids.length > 0) ||
+      (Array.isArray(job.latestCheckpoint?.saby_deferred_inns) &&
+       job.latestCheckpoint.saby_deferred_inns.length > 0),
     log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });

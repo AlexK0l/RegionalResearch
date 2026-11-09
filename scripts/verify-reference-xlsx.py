@@ -19,7 +19,11 @@ def verify(template, output, names):
         s=source[name]
         t=produced[name]
         assert s.max_column==t.max_column==count, name+': columns'
-        assert [s.cell(1,i).value for i in range(1,count+1)]==[
+        expected_headers=[s.cell(1,i).value for i in range(1,count+1)]
+        if name=='Прямые покупатели':
+            expected_headers=['Наличие транспорта' if str(v or '').strip()=='TORGBOX' else v
+                              for v in expected_headers]
+        assert expected_headers==[
             t.cell(1,i).value for i in range(1,count+1)], name+': header order'
         assert s.freeze_panes==t.freeze_panes, name+': frozen panes'
         assert s.sheet_view.showGridLines==t.sheet_view.showGridLines, name+': gridlines'

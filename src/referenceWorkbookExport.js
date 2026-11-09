@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { sanitizedPhoneWorkbookData } from "./phoneExport.js";
 
 const script = fileURLToPath(new URL("../scripts/export-reference-xlsx.py", import.meta.url));
 const defaultTemplate = path.resolve("data/SAT_reference_template.xlsx");
@@ -36,7 +37,7 @@ export async function buildReferenceWorkbookBuffer(result, { templatePath = "" }
         else resolve();
       });
       child.stdin.on("error", () => {});
-      child.stdin.end(JSON.stringify(result || {}), "utf8");
+      child.stdin.end(JSON.stringify(sanitizedPhoneWorkbookData(result || {})), "utf8");
     });
     return await fs.readFile(output);
   } finally {

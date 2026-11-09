@@ -1,9 +1,10 @@
+import { STEPS } from "./constants.js";
 // Estimates only. Percent completion is NOT linear in elapsed time; use
 // actual stage timings and historical completed runs in this process.
 // Never treat STAGE10/11 target wall-time budgets as guaranteed deadlines.
 const MINUTE = 60000;
 const MAX_DURATION = 4 * 60 * MINUTE;
-const STAGES = 11;
+const STAGES = STEPS.length;
 const DISCOVERY = 9;
 
 function median(values) {
@@ -91,12 +92,14 @@ export function estimateResearchEta(job, {
   }
 
   const baselineLate = [defaultLateMs(env, "STAGE10_MAX_MS"),
-    defaultLateMs(env, "STAGE11_MAX_MS")];
+    defaultLateMs(env, "STAGE11_MAX_MS"),
+    defaultLateMs(env, "STAGE12_MAX_MS")];
   let remaining = 0;
   let observed = 0;
   let source = "measured";
 
   for (let i = 0; i < STAGES; i++) {
+    if (i === STAGES - 1 && String(env.SABY_STAGE12_ENABLED || "false").toLowerCase() !== "true") continue;
     const step = stages[i] || {};
     if (step.status === "done") continue;
     const historical = Number(history[i]);
