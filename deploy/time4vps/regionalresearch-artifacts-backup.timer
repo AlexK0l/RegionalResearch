@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup of RegionalResearch results and logs
+
+[Timer]
+OnCalendar=*-*-* 03:50:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=regionalresearch-artifacts-backup.service
+
+[Install]
+WantedBy=timers.target
