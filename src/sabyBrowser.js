@@ -79,13 +79,14 @@ async function findResultRows(page, inn) {
       for (let depth=0;node && depth<9;depth++,node=node.parentElement) {
         if (!visible(node)) continue;
         const r=node.getBoundingClientRect();
-        const text=norm(node.innerText||node.textContent);
+        const rawText=String(node.innerText||node.textContent||"");
+        const text=norm(rawText);
         if (r.height>190 || text.length>700) break;
         if (r.width<190 || r.height<24 || !matchesInn(text)) continue;
         if (legal.test(text) && text.replace(inn,"").trim().length>=5) {
           if (/\b(?:филиал|подразделение|представительство)\b/i.test(
             text.split(inn,1)[0])) break;
-          relevant.push({text,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
+          relevant.push({text:rawText,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
           break;
         }
       }
