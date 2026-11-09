@@ -278,8 +278,8 @@ async function truckPreview(page) {
   });
 }
 
-async function sidePanelTrucks(page,expected) {
-  return page.evaluate(expected=>{
+async function sidePanelTrucks(page,expected,action="read") {
+  return page.evaluate(({expected,action})=>{
     const clean=s=>String(s||"").replace(/\s+/g," ").trim();
     const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
       return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";};
@@ -306,6 +306,21 @@ async function sidePanelTrucks(page,expected) {
       const match=(clean(truck.textContent)+" "+clean(truck.parentElement?.innerText))
         .match(/Грузовые\s*(\d+)/i);
       if(!match||Number(match[1])!==expected)continue;
+      if(action==="expand") {
+        // Like the original Saby UI: the category can be a collapsed
+        // accordion within the open side panel. Click its short heading
+        // row, not an arbitrary coordinate of the whole panel.
+        let target=truck;
+        for(let i=0;i<4 && target.parentElement;i++) {
+          const parent=target.parentElement;
+          const rect=parent.getBoundingClientRect();
+          const label=clean(parent.innerText);
+          if(label.length>140 || rect.height>100) break;
+          target=parent;
+        }
+        target.click();
+        return {opened:true,rows:[],expanded:true};
+      }
       const next=heads.slice(heads.indexOf(truck)+1)[0]||null;
       const raw=leaf.filter(e=>e!==truck &&
         Boolean(truck.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING) &&
@@ -334,7 +349,7 @@ async function sidePanelTrucks(page,expected) {
       return {opened:true,rows};
     }
     return {opened:false,rows:[]};
-  },expected);
+  },{expected,action});
 }
 
 async function ownTrucks(page, settings) {
@@ -356,13 +371,18 @@ async function ownTrucks(page, settings) {
   let rows=preview.rows;
   if(rows.length!==preview.count) {
     const r=preview.rect;
+    let categoryExpanded=false;
     for(let attempt=0;attempt<2;attempt++){
       await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
-      const until=Date.now()+Math.min(10000,settings.timeoutMs);
+      const until=Date.now()+Math.min(12000,settings.timeoutMs);
       while(Date.now()<until) {
         const panel=await sidePanelTrucks(page,preview.count);
         if(panel.opened&&panel.rows.length>rows.length)rows=panel.rows;
         if(rows.length===preview.count)break;
+        if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
+          const opened=await sidePanelTrucks(page,preview.count,"expand");
+          categoryExpanded=Boolean(opened.expanded);
+        }
         await delay(400);
       }
       if(rows.length===preview.count)break;
