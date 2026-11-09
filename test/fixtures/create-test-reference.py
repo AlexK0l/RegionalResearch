@@ -21,6 +21,9 @@ for name,width,org,inn,basis in TABS:
   ws.cell(1,org,"Организация")
   ws.cell(1,inn,"ИНН")
   ws.cell(1,basis,"Основание")
+  # Use an existing test-template column; do not add/reorder any column.
+  # The strict exporter reads headers, not hard-coded positions.
+  ws.cell(1,7 if name=="Прямые покупатели" else 9,"Телефон")
   ws.cell(2,org,"OLD-COMPANY-MUST-BE-CLEARED")
   ws.cell(2,org).comment=Comment("OLD-COMMENT","Reference")
   ws.cell(2,inn,"0000000000")
