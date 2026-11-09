@@ -35,7 +35,7 @@ function check(template,output,data){
    "print(json.dumps([w['Прямые покупатели']['C1'].value,w['Прямые покупатели']['C2'].value],ensure_ascii=True))";
  const transport=JSON.parse(run(py,["-c",transportCmd,output],{env:utf8}).stdout.trim());
  assert.equal(transport[0],"Наличие транспорта");
- assert.match(transport[1],/Saby \\(грузовые\\):/);
+ assert.match(transport[1],/Saby \(грузовые\):/);
 }
 test("Python reads UTF-8 JSON correctly with Windows cp1251 configured",()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"sat-utf8-py-"));
