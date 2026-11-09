@@ -34,7 +34,8 @@ const e={
   resultSummary:document.querySelector("#resultSummary"),
   download:document.querySelector("#downloadBtn"),
   downloadJson:document.querySelector("#downloadJsonBtn"),
-  downloadAudit:document.querySelector("#downloadAuditBtn")
+  downloadAudit:document.querySelector("#downloadAuditBtn"),
+  logout:document.querySelector("#logoutBtn")
 };
 
 REGIONS.forEach(r=>{const o=document.createElement("option");o.value=r;e.regions.append(o)});
@@ -187,6 +188,10 @@ async function api(url,options={}){
   const data=await r.json().catch(()=>({}));
   if(!r.ok){
     if(r.status===401){
+      if(r.headers.get("x-auth-mode")==="browser-session" && API_BASE_URL===""){
+        window.location.replace("/login");
+        throw new Error("Срок входа истёк. Откройте страницу авторизации.");
+      }
       const token=window.prompt("Доступ к исследованию: введите API_ACCESS_TOKEN");
       if(token){sessionStorage.setItem("regionalresearch_api_token",token.trim()); return api(url,options);}
     }
@@ -301,7 +306,15 @@ function renderSteps(statuses){
     const li=document.createElement("li");
     if(item.status==="running")li.classList.add("active");
     if(item.status==="done")li.classList.add("done");
-    li.innerHTML='<span class="dot">'+item.step+'</span><span>'+item.name+'</span><span class="state">'+stepStateText(item)+'</span>';
+    const dot=document.createElement("span");
+    dot.className="dot";
+    dot.textContent=String(item.step??"");
+    const name=document.createElement("span");
+    name.textContent=String(item.name??"");
+    const state=document.createElement("span");
+    state.className="state";
+    state.textContent=String(stepStateText(item));
+    li.append(dot,name,state);
     e.steps.append(li);
   }
 }
@@ -762,6 +775,10 @@ async function download(format="xlsx"){
       headers:headers(false)
     });
     if(!r.ok){
+      if(r.status===401 && r.headers.get("x-auth-mode")==="browser-session"){
+        window.location.replace("/login");
+        return;
+      }
       const d=await r.json().catch(()=>({}));
       throw new Error(d.error||("HTTP "+r.status));
     }
@@ -838,6 +855,10 @@ e.cancel.onclick=cancel;
 e.download.onclick=()=>download("xlsx");
 e.downloadJson.onclick=()=>download("json");
 e.downloadAudit.onclick=()=>download("audit");
+if(e.logout)e.logout.onclick=async()=>{
+  await fetch("/api/auth/logout",{method:"POST",credentials:"same-origin"}).catch(()=>{});
+  window.location.assign("/login");
+};
 
 timerTick=setInterval(()=>{
   if(lastProgress?.statuses)renderSteps(lastProgress.statuses);
@@ -849,6 +870,7 @@ timerTick=setInterval(()=>{
   await waitForBackend();
   try{
     config=await api("/api/config");
+    if(e.logout)e.logout.hidden=!Boolean(config.webSessionAuth);
     renderSteps((config.steps||[]).map((name,i)=>({
       step:i+1,
       name,
