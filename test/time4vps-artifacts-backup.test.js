@@ -41,7 +41,9 @@ test("artifact backup archives useful files, excludes live SQLite and rotates", 
     }
     const archives = fs.readdirSync(dest).filter(n => n.endsWith(".tar.gz"));
     assert.equal(archives.length, 2, "old daily copies must be rotated");
-    assert.equal(fs.statSync(dest).mode & 0o077, 0, "backup directory must be private");
+    // POSIX mode bits are not portable: Windows reports synthetic permissions.
+    if (process.platform !== "win32")
+      assert.equal(fs.statSync(dest).mode & 0o077, 0, "backup directory must be private");
     const output = spawnSync("python3", ["-c",
       "import json,sys,tarfile; a=tarfile.open(sys.argv[1]); print(json.dumps(sorted(a.getnames())))",
       path.join(dest, archives[0])], {encoding:"utf8"});
