@@ -129,15 +129,28 @@ curl -s -o /dev/null -w '%{http_code}\n' https://research.example.org/api/jobs
 
 ## 4. Автозапуск и резервное копирование
 
+Два независимых **ежедневных** systemd timer создают резервные копии без остановки работы приложения:
+
+- `regionalresearch-backup.timer`: SQLite `Connection.backup()` с `PRAGMA integrity_check`, учётом WAL, 14 последних копий.
+- `regionalresearch-artifacts-backup.timer`: сжатый проверяемый архив `logs/`, `exports/`, файлов `data/` (кроме активной SQLite и её WAL/SHM), корневых `SAT_*.xlsx/json` и **.env**, 7 последних копий. Архив содержит ключи API, поэтому доступ к нему должен быть строго ограничен.
+
+Для уже установленного VPS скопируйте новые unit-файлы отдельно (не запускайте `install.sh` повторно: он предназначен для начальной установки):
+
 ```bash
-sudo systemctl enable --now regionalresearch-backup.timer
-sudo systemctl list-timers regionalresearch-backup.timer
-sudo systemctl start regionalresearch-backup.service
-sudo journalctl -u regionalresearch-backup.service -n 30 --no-pager
+sudo install -d -o regionalresearch -g regionalresearch -m 700 /var/lib/regionalresearch/backups
+sudo install -m 644 /opt/regionalresearch/deploy/time4vps/regionalresearch-backup.service /etc/systemd/system/regionalresearch-backup.service
+sudo install -m 644 /opt/regionalresearch/deploy/time4vps/regionalresearch-backup.timer /etc/systemd/system/regionalresearch-backup.timer
+sudo install -m 644 /opt/regionalresearch/deploy/time4vps/regionalresearch-artifacts-backup.service /etc/systemd/system/regionalresearch-artifacts-backup.service
+sudo install -m 644 /opt/regionalresearch/deploy/time4vps/regionalresearch-artifacts-backup.timer /etc/systemd/system/regionalresearch-artifacts-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now regionalresearch-backup.timer regionalresearch-artifacts-backup.timer
+sudo systemctl start regionalresearch-backup.service regionalresearch-artifacts-backup.service
+sudo systemctl list-timers 'regionalresearch*backup*'
+sudo journalctl -u regionalresearch-backup.service -u regionalresearch-artifacts-backup.service -n 40 --no-pager
 sudo ls -lh /var/lib/regionalresearch/backups
 ```
 
-Backup создаётся через SQLite `Connection.backup()`, корректно учитывает WAL и не останавливает исследования. Хранятся 14 последних резервных копий на VPS. **Для защиты от потери VPS требуется периодически копировать эти backups во внешнее хранилище**; копии только на том же сервере не защищают от потери диска/аккаунта.
+Расписание определяется часовым поясом VPS: SQLite примерно в 03:15, файлы в 03:50 с задержкой до 15 минут. `Persistent=true` компенсирует пропущенный запуск при выключенном сервере. Архив файлов проверяется полным чтением и расшифровкой gzip перед публикацией; недописанные временные файлы удаляются при ошибке. **Копии только на VPS не защищают от потери диска, аккаунта или сервера**: настройте шифрованное внешнее хранилище (например, отдельный S3/Storage VPS) и периодически выполняйте проверку восстановления. Не публикуйте резервные архивы и не передавайте их в GitHub.
 
 Если переносите текущие старые checkpoints: перед копированием сделайте согласованный SQLite backup на Windows (или остановите локальное приложение) и перенесите backup как `checkpoints.sqlite` до старта службы VPS. Не пересоздавайте базу, если хотите сохранить историю. Если она уже создана на VPS, сначала сохраните её в отдельный файл.
 
