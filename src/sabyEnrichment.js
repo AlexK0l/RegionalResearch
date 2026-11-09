@@ -120,6 +120,35 @@ function sourceValid(record, row) {
     isSabyProfileUrl(record.source_url));
 }
 
+// A new Saby address should not leave "Email: не найден" in the existing
+// Excel comment. Never displace an email already found by another source.
+function mergeCommentEmail(original, emails) {
+  const before=String(original || "").trim();
+  if (!emails.length) return before;
+  const newEmail="Email: "+emails.join(", ");
+  const missing=/^Email:[ \t]*(?:не найден(?:о)?|не установлен|не указан(?:о)?|отсутствует|нет|—|-)[ \t]*\r?$/im;
+  if (missing.test(before)) return before.replace(missing,newEmail);
+  if (!/^Email:[^\r\n]*$/im.test(before))
+    return [before,newEmail].filter(Boolean).join("\n");
+  return before;
+}
+
+// Persist only status categories for partial collection. Raw browser errors
+// could contain page text or account data and are intentionally not stored.
+function safeCollectionStatus(record) {
+  const contacts=String(record?.contacts?.status || "");
+  const trucks=String(record?.trucks?.status || "");
+  const errors=Array.isArray(record?.errors) ? record.errors : [];
+  return {
+    contacts:["collected","missing","review"].includes(contacts) ? contacts : "unknown",
+    trucks:["verified","missing","review"].includes(trucks) ? trucks : "unknown",
+    failed_sections:[...new Set(errors.map(raw=>{
+      const match=/^(contacts|trucks):/.exec(String(raw));
+      return match ? match[1] : "other";
+    }))].sort()
+  };
+}
+
 // Apply changes only to independently verified fields. Never replace a known
 // phone, never infer trailers from truck count, and never promote A/B/C grades.
 export function applySabyEnrichment(row, record, { phoneOwners = new Map(), transport = false } = {}) {
@@ -158,6 +187,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     inn: record.identity.inn,
     verified_at: String(record.collected_at || new Date().toISOString()),
     phones, phone_details:phoneDetails, emails,
+    collection:safeCollectionStatus(record),
     ...(fleet ? {trucks: {...fleet, category:"Грузовые", source:"SABY"}} : {})
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
@@ -205,8 +235,11 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     fleet ? "грузовые " + fleet.count + " шт." : "",
     record.source_url
   ].filter(Boolean).join("; ");
-  if (comment && !String(row.__comment || "").includes(comment)) {
-    row.__comment = [String(row.__comment || "").trim(), comment].filter(Boolean).join("\n");
+  const existingComment=mergeCommentEmail(row.__comment,emails);
+  if (comment && !existingComment.includes(comment)) {
+    row.__comment = [existingComment, comment].filter(Boolean).join("\n");
+  } else {
+    row.__comment = existingComment;
   }
   return {status:"ok", phoneAdded, transportAdded,
     phonesFound:phones.length, emailsFound:emails.length,
