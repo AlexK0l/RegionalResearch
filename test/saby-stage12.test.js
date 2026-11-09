@@ -61,6 +61,44 @@ test("verified Saby trucks are NOT trailers; existing TORGBOX and A/B/C grades s
   assert.equal(row["Наличие транспорта"].split("Saby (грузовые):").length,2);
 });
 
+test("Saby replaces stale 'Email: не найден' in original Excel comment without touching phone labels",()=>{
+  const row=company();
+  row.__comment="Сайт/источник: https://existing.example/\\nEmail: не найден".replace("\\n","\n");
+  const record=payload();
+  record.errors=["trucks: secret error detail not for persistence","contacts: private page text"];
+  record.trucks={status:"review"};
+  applySabyEnrichment(row,record);
+  assert.match(row.__comment,/^Email: info@example\\.ru$/m);
+  assert.doesNotMatch(row.__comment,/Email: не найден/i);
+  assert.equal(row["Телефон"],"79991234567");
+  assert.equal(row.__evidence.saby.collection.trucks,"review");
+  assert.deepEqual(row.__evidence.saby.collection.failed_sections,["contacts","trucks"]);
+  assert.doesNotMatch(JSON.stringify(row.__evidence.saby.collection),/secret error|private page/);
+  assert.ok(!("Email" in row));
+  const before=row.__comment;
+  applySabyEnrichment(row,record);
+  assert.equal(row.__comment,before);
+});
+
+test("Saby email never overwrites an existing official email in notes",()=>{
+  const row=company();
+  row.__comment="Сайт/источник: https://existing.example/\nEmail: official@example.ru";
+  const record=payload();
+  applySabyEnrichment(row,record);
+  assert.match(row.__comment,/^Email: official@example\\.ru$/m);
+  assert.match(row.__comment,/Saby:.*email info@example\\.ru/);
+  assert.equal((row.__comment.match(/^Email:/gm)||[]).length,1);
+});
+
+test("no Saby email leaves the original no-email marker unchanged",()=>{
+  const row=company();
+  row.__comment="Email: не найден";
+  const record=payload();
+  record.contacts.emails=[];
+  applySabyEnrichment(row,record);
+  assert.match(row.__comment,/^Email: не найден$/m);
+});
+
 test("bad identity or untrusted source never changes row",()=>{
   const row=company();
   const before=JSON.stringify(row);
