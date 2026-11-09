@@ -130,13 +130,17 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   // Department labels are accepted only when explicitly present beside
   // the number in the source (no inference from job titles/company industry).
   const departments = new Map();
+  const disputedDepartments=new Set();
   for (const info of Array.isArray(contacts.phone_details) ? contacts.phone_details : []) {
     const phone=normalizeRussianPhone(info?.phone);
     const label=explicitPhoneDepartment(info?.department);
     if (phone && phones.includes(phone) && label) {
       const old=departments.get(phone);
-      if (!old) departments.set(phone,label);
-      else if(old!==label) departments.set(phone,null);
+      if (!old && !disputedDepartments.has(phone)) departments.set(phone,label);
+      else if(old && old!==label) {
+        departments.set(phone,null);
+        disputedDepartments.add(phone);
+      }
     }
   }
   const phoneDetails=phones.map(phone=>({
