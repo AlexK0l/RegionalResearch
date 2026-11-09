@@ -30,7 +30,8 @@ function safeUrl(value, host, prefix) {
 }
 
 export function trustedSabyLoginUrl(url) {
-  return safeUrl(url, "online.saby.ru", "/auth");
+  return safeUrl(url, "online.saby.ru", "/auth") ||
+    safeUrl(url, "sso.saby.ru", "/auth-online");
 }
 function trustedProfileUrl(url) {
   return safeUrl(url, "profile.saby.ru", "");
@@ -76,11 +77,14 @@ async function openTrustedPage(page, url, timeoutMs) {
 async function loginInput(page) {
   const select = await firstVisible(page.locator(
     'input[autocomplete="username"],input[placeholder*="логин" i],' +
-    'input[placeholder*="телефон" i],input[name*="login" i],input[name*="username" i]'
+    'input[placeholder*="телефон" i],input[placeholder*="login" i],' +
+    'input[placeholder*="phone" i],input[aria-label*="логин" i],' +
+    'input[aria-label*="login" i],input[name*="login" i],' +
+    'input[name*="username" i]'
   ));
   if (select) return select;
   // Some Saby layouts render a labelled input without a placeholder.
-  const named = await firstVisible(page.getByRole("textbox", {name:/телефон|логин/i}));
+  const named = await firstVisible(page.getByRole("textbox", {name:/телефон|логин|phone|login/i}));
   if (named) return named;
   // Fallback only when there is exactly one visible non-password text input.
   const fallback = page.locator('input[type="text"],input[type="tel"],input:not([type])');
@@ -102,7 +106,7 @@ async function verificationPrompt(page) {
     'input[autocomplete="one-time-code"],input[placeholder*="код" i]'
   ));
   if (code) return true;
-  const marker = page.getByText(/подтвердите вход|код подтверждения|код из SMS|вход по коду|CAPTCHA|капча/i);
+  const marker = page.getByText(/подтвердите вход|код подтверждения|код из SMS|verification code|enter the code|CAPTCHA|капча/i);
   return Boolean(await firstVisible(marker));
 }
 
@@ -116,7 +120,10 @@ async function requireManual(allowManual, message) {
  * Existing sessions are preferred. Credentials are used only on the
  * canonical first-party HTTPS sign-in page and never echoed to logs.
  */
-export async function authenticateSaby(page, settings, {allowManual = false} = {}) {
+export async function authenticateSaby(page, settings, {allowManual = false, onPhase = null} = {}) {
+  // Only phase identifiers reach logs; never usernames, passwords or URLs.
+  const phase = label => { if (typeof onPhase === "function") onPhase(label); };
+  phase("start");
   const {login, password, configured} = sabyCredentials({
     SABY_LOGIN: settings.login ?? settings.SABY_LOGIN,
     SABY_PASSWORD: settings.password ?? settings.SABY_PASSWORD
@@ -125,10 +132,14 @@ export async function authenticateSaby(page, settings, {allowManual = false} = {
   const timeoutMs = Math.max(15000, Math.min(90000, Number(settings.timeoutMs) || 45000));
 
   await openTrustedPage(page, PROFILE_URL, timeoutMs);
-  if (await waitProfileSearch(page, 4500)) return {status:"existing_session"};
+  if (await waitProfileSearch(page, 4500)) {
+    phase("existing_session");
+    return {status:"existing_session"};
+  }
 
   await openTrustedPage(page, AUTH_URL, timeoutMs);
-  // A still-valid cookie may redirect directly to the authenticated UI.
+  // Saby has both online.saby.ru/auth/ and sso.saby.ru/auth-online/.
+  // Both are first-party HTTPS pages with narrow allowlisted paths.
   if (!trustedSabyLoginUrl(page.url())) {
     if (trustedProfileUrl(page.url()) && await waitProfileSearch(page, 3500)) {
       return {status:"existing_session"};
@@ -136,38 +147,69 @@ export async function authenticateSaby(page, settings, {allowManual = false} = {
     return requireManual(allowManual, "Saby открыл нестандартную страницу входа");
   }
 
+  // The first screen may contain only "Телефон или логин" / "Phone or login".
+  // Other Saby accounts show both fields at once. Both layouts are supported.
   const user = await loginInput(page);
   if (!user) return requireManual(allowManual, "Не найдено поле логина Saby");
+  phase("login_field_found");
+  if (!trustedSabyLoginUrl(page.url())) {
+    return requireManual(allowManual, "Изменился адрес формы входа Saby");
+  }
   try { await user.fill(login); }
   catch { throw new SabyAuthError("Не удалось ввести логин Saby"); }
+  phase("login_filled");
 
   let pwd = await passwordInput(page);
   if (!pwd) {
+    // Some UIs reveal the password field in response to input/change.
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline && !pwd && trustedSabyLoginUrl(page.url())) {
+      await new Promise(resolve=>setTimeout(resolve, 200));
+      pwd = await passwordInput(page);
+    }
+  }
+  if (!pwd) {
+    if (await verificationPrompt(page)) {
+      return requireManual(allowManual, "Saby запросил дополнительное подтверждение вместо пароля");
+    }
+    if (!trustedSabyLoginUrl(page.url())) {
+      return requireManual(allowManual, "Изменился адрес формы входа Saby");
+    }
+    phase("login_next");
+    // The first Enter advances to the password step, not the final login.
     try { await user.press("Enter"); }
     catch { throw new SabyAuthError("Не удалось перейти к вводу пароля Saby"); }
-    const until = Date.now() + 9000;
+    const until = Date.now() + 12000;
     while(Date.now() < until && !pwd) {
       if (!trustedSabyLoginUrl(page.url())) break;
       pwd = await passwordInput(page);
-      if (!pwd) await new Promise(resolve => setTimeout(resolve, 350));
+      if (!pwd) await new Promise(resolve => setTimeout(resolve, 300));
     }
   }
   // Recheck the URL immediately before submitting the secret.
   if (!trustedSabyLoginUrl(page.url())) {
     return requireManual(allowManual, "Saby изменил страницу входа");
   }
-  if (!pwd) return requireManual(allowManual, "Не найдено поле пароля Saby");
+  if (!pwd) return requireManual(allowManual, "Saby не показал поле пароля после ввода логина");
+  phase("password_field_found");
   try {
     await pwd.fill(password);
+    phase("password_filled");
+    // Submit only once. Repeated retries can lock a Saby account.
     await pwd.press("Enter");
+    phase("submitted");
   } catch {
     throw new SabyAuthError("Не удалось отправить форму входа Saby");
   }
 
-  const until = Date.now() + 11000;
+  const until = Date.now() + 16000;
   while(Date.now() < until) {
-    if (await profileSearchPresent(page)) return {status:"authenticated"};
+    if (await profileSearchPresent(page)) {
+      phase("authenticated");
+      return {status:"authenticated"};
+    }
     if (trustedSabyLoginUrl(page.url()) && await verificationPrompt(page)) {
+      phase("manual_confirmation");
       return requireManual(allowManual, "Saby требует дополнительного подтверждения");
     }
     if (!trustedSabyLoginUrl(page.url())) break;
@@ -178,6 +220,7 @@ export async function authenticateSaby(page, settings, {allowManual = false} = {
   // in profile.saby.ru. Confirm access by opening the actual research page.
   if (!trustedSabyLoginUrl(page.url()) &&
       !safeUrl(page.url(),"online.saby.ru","") &&
+      !safeUrl(page.url(),"sso.saby.ru","") &&
       !trustedProfileUrl(page.url())) {
     return requireManual(allowManual, "Не удалось проверить авторизацию Saby");
   }
@@ -185,6 +228,9 @@ export async function authenticateSaby(page, settings, {allowManual = false} = {
     return requireManual(allowManual, "Saby не подтвердил вход");
   }
   await openTrustedPage(page, PROFILE_URL, timeoutMs);
-  if (await waitProfileSearch(page, 5500)) return {status:"authenticated"};
+  if (await waitProfileSearch(page, 8000)) {
+    phase("authenticated");
+    return {status:"authenticated"};
+  }
   return requireManual(allowManual, "Авторизация Saby не подтверждена");
 }
