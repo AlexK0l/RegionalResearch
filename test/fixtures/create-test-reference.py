@@ -25,6 +25,7 @@ for name,width,org,inn,basis in TABS:
   ws.cell(2,org).comment=Comment("OLD-COMMENT","Reference")
   ws.cell(2,inn,"0000000000")
  if name=="Прямые покупатели":
+  ws.cell(1,3,"TORGBOX")
   ws.cell(1,10,"Цвет усл. форматирование")
   ws.conditional_formatting.add("A2:U50",CellIsRule(operator="equal",formula=["1"],
    fill=PatternFill("solid",fgColor="C6EFCE")))
