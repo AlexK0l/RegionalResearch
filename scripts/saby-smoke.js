@@ -3,9 +3,9 @@
 // Sheets writes, and no modification of the source result or SQLite database.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createInterface } from "node:readline";
+
 import { withSabyBrowser } from "../src/sabyBrowser.js";
-import { authenticateSaby } from "../src/sabyAuth.js";
+import { authenticateSaby, waitForSabySession } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
 import { buildReferenceWorkbookBuffer } from "../src/referenceWorkbookExport.js";
 
@@ -31,35 +31,38 @@ async function main() {
   if(option(args,"profile"))env.SABY_PROFILE_DIR=option(args,"profile");
   if(args.includes("--login")) {
     await withSabyBrowser(async ({page,settings})=>{
+      const onPhase=code=>console.log("[SABY_AUTH] "+code);
       if(settings.login && settings.password) {
         try {
           const auth=await authenticateSaby(page,settings,{
-            allowManual:true,
-            onPhase:code=>console.log("[SABY_AUTH] "+code)
+            allowManual:true,onPhase
           });
           if(auth.status==="authenticated" || auth.status==="existing_session") {
-            console.log("Saby: авторизация подтверждена; сессия сохранена локально.");
+            console.log("Saby: вход подтверждён; сессия сохранена локально.");
             return;
           }
           console.log("Saby: "+(auth.message ||
-            "Для входа требуется действие в браузере."));
+            "Для входа может потребоваться действие в браузере."));
         } catch {
-          // An unrecognized UI must not close the browser before the user can
-          // finish signing in or inspect the screen. Never log a raw exception.
-          console.log("[SABY_AUTH] manual_required");
-          console.log("Saby: автоматический вход прерван; войдите вручную.");
+          // No raw Playwright errors: URLs/DOM could include sensitive data.
+          onPhase("manual_required");
+          console.log("Saby: завершите вход в открытом браузере.");
         }
       } else {
         await page.goto("https://profile.saby.ru/page/company-list-prof",
           {waitUntil:"domcontentloaded",timeout:60000});
         console.log("SABY_LOGIN / SABY_PASSWORD не заданы: войдите вручную.");
       }
-      console.log("Завершите вход или подтверждение в браузере, затем нажмите Enter здесь.");
-      const rl=createInterface({input:process.stdin,output:process.stdout});
-      await new Promise(resolve=>rl.question("Готово? Нажмите Enter: ",resolve));
-      rl.close();
+      console.log("Проверяю состояние сессии в браузере. Нажимать Enter не нужно.");
+      const check=await waitForSabySession(page,{
+        timeoutMs:90000, pollMs:700, onPhase
+      });
+      if(check.status!=="authenticated") {
+        throw new Error("Вход не подтверждён автоматически. " +
+          "Проверьте окно Saby и повторите тест; Enter больше не нужен.");
+      }
+      console.log("Saby: вход подтверждён; сессия сохранена локально.");
     },{env,autoLogin:false});
-    console.log("Браузер закрыт; Saby-профиль сохранён локально.");
     return;
   }
   let raw, source="single_company";
