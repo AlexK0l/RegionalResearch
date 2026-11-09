@@ -20,7 +20,8 @@ function locator(count, onFill=()=>{}, onPress=()=>{}) {
     };}
   };
 }
-function stubPage({signedIn=false, redirectHost=false, otp=false}={}) {
+function stubPage({signedIn=false, redirectHost=false, otp=false,
+  profileRedirectToSso=false}={}) {
   let current=PROFILE, state="anonymous_profile";
   const values={login:null,password:null,profileNavigations:0,authNavigations:0};
   const page={
@@ -29,8 +30,11 @@ function stubPage({signedIn=false, redirectHost=false, otp=false}={}) {
     async goto(url) {
       if(url===PROFILE) {
         values.profileNavigations++;
-        current=PROFILE;
-        state=signedIn?"ready_profile":"anonymous_profile";
+        current=profileRedirectToSso&&!signedIn
+          ?"https://sso.sbis.ru/auth-online/?ret=profile.saby.ru%2Fpage%2Fcompany-list-prof"
+          :PROFILE;
+        state=signedIn?"ready_profile":
+          profileRedirectToSso?"login_form":"anonymous_profile";
       }else if(url===AUTH) {
         values.authNavigations++;
         current=redirectHost?"https://evil.example/auth/":AUTH;
@@ -90,6 +94,32 @@ test("Saby password is sent only on the canonical HTTPS login page",()=>{
     "https://evil.example/auth/","https://online.saby.ru/other"]) {
     assert.equal(trustedSabyLoginUrl(url),false,url);
   }
+});
+
+test("official SBIS and Saby SSO domains are trusted only under their auth paths",()=>{
+  for(const url of [
+    "https://sso.sbis.ru/auth-online/?ret=profile.saby.ru%2F",
+    "https://sso.saby.ru/auth-online/","https://online.saby.ru/auth/"
+  ]) assert.equal(trustedSabyLoginUrl(url),true,url);
+  for(const url of [
+    "https://sso.sbis.ru/auth-other/",
+    "http://sso.sbis.ru/auth-online/",
+    "https://sso.sbis.ru.evil.example/auth-online/"
+  ]) assert.equal(trustedSabyLoginUrl(url),false,url);
+});
+
+test("profile SSO redirect retains return URL without visiting another login page",async()=>{
+  const page=stubPage({profileRedirectToSso:true});
+  const stages=[];
+  const result=await authenticateSaby(page,settings,{
+    onPhase:stage=>stages.push(stage)
+  });
+  assert.equal(result.status,"authenticated");
+  assert.equal(page.values.authNavigations,0);
+  assert.equal(page.values.login,LOGIN);
+  assert.equal(page.values.password,PASSWORD);
+  assert.ok(stages.includes("password_field_found"));
+  assert.ok(!JSON.stringify(stages).includes(PASSWORD));
 });
 
 test("existing Saby profile uses zero credential submissions",async()=>{
