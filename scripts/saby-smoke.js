@@ -22,7 +22,7 @@ async function main() {
     console.log("  npm run saby:smoke -- --login");
     console.log("  npm run saby:smoke -- --inn=7707083893 --name=\\\"ПАО Сбербанк\\\" --limit=1");
     console.log("  npm run saby:smoke -- --result=SAT_Region.json --limit=3 --xlsx");
-    console.log("  Optional: --profile=PATH --out=data/saby-smoke.json --headless");
+    console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
     return;
   }
   const env={...process.env,SABY_STAGE12_ENABLED:"true",
@@ -83,9 +83,16 @@ async function main() {
     throw new Error("JSON должен содержать direct_buyers, intermediaries и leasing");
   }
   const result=structuredClone(base);
+  const rawOffset=option(args,"offset","0");
+  if(!/^(?:0|[1-9]\d*)$/.test(rawOffset) ||
+      !Number.isSafeInteger(Number(rawOffset)) || Number(rawOffset)>20000)
+    throw new Error("--offset должен быть целым числом от 0 до 20000");
+  const offset=Number(rawOffset);
   console.log("Тестирую Saby без OpenAI и без изменения исходного JSON...");
+  if(offset)console.log("Saby: пропускаю первые "+offset+
+    " компаний отсортированной исходной выборки.");
   const response=await runSabyStage12({
-    result,env,onProgress:async stats=>{
+    result,env,offset,onProgress:async stats=>{
       console.log("Saby: "+stats.processed+"/"+stats.scheduled+
         " | проверено: "+stats.verified+" | review: "+stats.review);
     }
@@ -95,7 +102,8 @@ async function main() {
   await fs.mkdir(path.dirname(output),{recursive:true});
   if(await exists(output))throw new Error("Файл результата уже существует: "+output);
   await fs.writeFile(output,JSON.stringify({
-    source, final_result:result, saby_stage12:response.stats
+    source, final_result:result, saby_stage12:response.stats,
+    saby_smoke_selection:{offset,limit:Number(env.SABY_MAX_COMPANIES)}
   },null,2)+"\n",{flag:"wx",mode:0o600});
   let xlsx="";
   if(args.includes("--xlsx")) {
