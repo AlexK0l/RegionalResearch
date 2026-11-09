@@ -28,6 +28,14 @@ def validate(wb):
         if header.count('Организация')!=1 or 'ИНН' not in header or 'Основание' not in header:
             raise ValueError('Reference template missing expected columns: '+name)
 
+def rename_transport_header(wb):
+    # Keep source header position, width, formatting, formulas and validation.
+    # The sanitized Google Sheets reference can still have the legacy label.
+    ws=wb['Прямые покупатели']
+    for cell in ws[1]:
+        if str(cell.value or '').strip()=='TORGBOX':
+            cell.value='Наличие транспорта'
+
 def clear_existing(wb):
     # The reference may contain real companies; never use it as output data.
     for name in SHEETS:
@@ -112,6 +120,7 @@ def main():
     template,out=sys.argv[1:3]
     wb=load_workbook(template)
     validate(wb)
+    rename_transport_header(wb)
     clear_existing(wb)
     # Node writes UTF-8 bytes to stdin. Windows text pipes may default to
     # CP1251/CP866; decoding through sys.stdin would corrupt Cyrillic keys.
