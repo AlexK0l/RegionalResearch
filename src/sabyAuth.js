@@ -174,9 +174,13 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
     return {status:"existing_session"};
   }
 
-  await openTrustedPage(page, AUTH_URL, timeoutMs);
-  // Saby has both online.saby.ru/auth/ and sso.saby.ru/auth-online/.
-  // Both are first-party HTTPS pages with narrow allowlisted paths.
+  // Keep an already established, first-party SSO redirect and its
+  // `ret=profile.saby.ru/...` target. Navigating to a different login URL
+  // would throw away the return URL and can break an otherwise valid flow.
+  if (!trustedSabyLoginUrl(page.url())) {
+    await openTrustedPage(page, AUTH_URL, timeoutMs);
+  }
+  // Only the canonical Saby/SBIS sign-in paths are allowed.
   if (!trustedSabyLoginUrl(page.url())) {
     if (trustedProfileUrl(page.url()) && await waitProfileSearch(page, 3500)) {
       return {status:"existing_session"};
