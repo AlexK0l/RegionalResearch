@@ -514,6 +514,7 @@ function setProgress(p){
     research:"Исследование",
     dedupe:"Объединение и дедупликация",
     google_ai:"Поиск контактов",
+    saby:"Saby: контакты и транспорт",
     qualification:"Identity, дедупликация и A/B/C",
     completed:"Готово",
     cancelled:"Остановлено"
@@ -535,6 +536,15 @@ function setProgress(p){
       (s.ok!==undefined
         ?" · найдено: "+(s.ok||0)+", недоступно: "+(s.unavailable||0)+", не найдено: "+(s.notFound||0)
         :"");
+  }else if(p.phase==="saby"){
+    const stats=p.sabyStats||{};
+    e.statusText.textContent="Проверка контактов и грузовых автомобилей в Saby";
+    e.contactBox.hidden=false;
+    e.contactBox.textContent="Проверено: "+Number(p.sabyCurrent||0)+
+      " / "+Number(p.sabyTotal||0)+
+      " · телефоны: +"+Number(stats.phonesAdded||0)+
+      " · транспорт: +"+Number(stats.transportsAdded||0)+
+      " · на проверку: "+Number(stats.review||0);
   }else{
     e.contactBox.hidden=true;
     e.statusText.textContent=p.step?("Этап "+p.step):"";
