@@ -117,7 +117,10 @@ async function requireManual(allowManual, message) {
  * canonical first-party HTTPS sign-in page and never echoed to logs.
  */
 export async function authenticateSaby(page, settings, {allowManual = false} = {}) {
-  const {login, password, configured} = sabyCredentials(settings);
+  const {login, password, configured} = sabyCredentials({
+    SABY_LOGIN: settings.login ?? settings.SABY_LOGIN,
+    SABY_PASSWORD: settings.password ?? settings.SABY_PASSWORD
+  });
   if (!configured) return {status:"not_configured"};
   const timeoutMs = Math.max(15000, Math.min(90000, Number(settings.timeoutMs) || 45000));
 
