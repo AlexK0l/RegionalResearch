@@ -37,6 +37,7 @@ function phoneOwnersForResult(result) {
 export async function runSabyStage12({
   result,
   completedInns = [],
+  offset = 0, // smoke-test pagination only; default leaves production intact
   env = process.env,
   onProgress = async () => {},
   onCheckpoint = async () => {},
@@ -48,8 +49,10 @@ export async function runSabyStage12({
   const completed=new Set((completedInns||[]).map(sabyInn).filter(Boolean));
   const plan=sabyEligibleRows(result);
   const pending=plan.eligible.filter(x=>!completed.has(sabyInn(x.row["ИНН"])));
+  const start=Number.isSafeInteger(Number(offset)) && Number(offset)>=0 ?
+    Math.min(Number(offset),20000) : 0;
   const selected=settings.maxCompanies ?
-    pending.slice(0,settings.maxCompanies) : pending;
+    pending.slice(start,start+settings.maxCompanies) : pending.slice(start);
   const stats={
     enabled:settings.enabled,eligible:plan.eligible.length,
     invalidInnOrName:plan.invalid.length,duplicateInn:plan.duplicates.length,
