@@ -1,6 +1,7 @@
 // Pure, offline Saby data policy. Browser DOM is untrusted; do not change a CRM
 // row until legal identity and the source have both passed validation.
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { formatPhoneCell, parsePhoneEntries, explicitPhoneDepartment } from "./phoneExport.js";
 
 const LEGAL_WORDS = new Set([
   "ооо", "ао", "пао", "оао", "зао", "ип", "общество", "с",
@@ -77,8 +78,7 @@ export function fleetSummary(fleet) {
 }
 
 function hasKnownPhone(value) {
-  return String(value || "").split(/[;,\n]/)
-    .some(phone => Boolean(normalizeRussianPhone(phone)));
+  return parsePhoneEntries(value).length > 0;
 }
 
 export function sabyEligibleRows(result) {
@@ -99,8 +99,7 @@ export function sabyEligibleRows(result) {
       invalid.push(entry);
     } else if (counts.get(inn) !== 1) {
       duplicates.push(entry);
-    } else if (entry.transport ||
-               !String(entry.row?.["Телефон"] || "").trim()) {
+    } else if (entry.transport || !hasKnownPhone(entry.row?.["Телефон"])) {
       eligible.push(entry);
     }
   }
@@ -128,6 +127,21 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   const contacts = record.contacts || {};
   const phones = [...new Set((Array.isArray(contacts.phones) ? contacts.phones : [])
     .map(normalizeRussianPhone).filter(Boolean))];
+  // Department labels are accepted only when explicitly present beside
+  // the number in the source (no inference from job titles/company industry).
+  const departments = new Map();
+  for (const info of Array.isArray(contacts.phone_details) ? contacts.phone_details : []) {
+    const phone=normalizeRussianPhone(info?.phone);
+    const label=explicitPhoneDepartment(info?.department);
+    if (phone && phones.includes(phone) && label) {
+      const old=departments.get(phone);
+      if (!old) departments.set(phone,label);
+      else if(old!==label) departments.set(phone,null);
+    }
+  }
+  const phoneDetails=phones.map(phone=>({
+    phone,department:departments.get(phone)||""
+  }));
   const emails = [...new Set((Array.isArray(contacts.emails) ? contacts.emails : [])
     .map(x => String(x || "").trim().toLowerCase())
     .filter(x => /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(x)))].slice(0,10);
@@ -139,23 +153,28 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     source_url: record.source_url,
     inn: record.identity.inn,
     verified_at: String(record.collected_at || new Date().toISOString()),
-    phones, emails,
+    phones, phone_details:phoneDetails, emails,
     ...(fleet ? {trucks: {...fleet, category:"Грузовые", source:"SABY"}} : {})
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;
 
   let phoneAdded = false;
-  if (!String(row["Телефон"] || "").trim()) {
-    const available = phones.find(phone => {
+  if (!hasKnownPhone(row["Телефон"])) {
+    const available = phones.filter(phone => {
       const owners = phoneOwners.get(phone);
       return !owners || [...owners].every(owner => owner === row);
-    });
-    if (available) {
-      row["Телефон"] = available;
-      phoneAdded = true;
-      if (!phoneOwners.has(available)) phoneOwners.set(available, new Set());
-      phoneOwners.get(available).add(row);
+    }).slice(0,12);
+    if (available.length) {
+      row["Телефон"] = formatPhoneCell(available.map(phone => {
+        const label=departments.get(phone);
+        return phone+(label?" ("+label+")":"");
+      }));
+      phoneAdded = Boolean(row["Телефон"]);
+      for (const phone of available) {
+        if (!phoneOwners.has(phone)) phoneOwners.set(phone, new Set());
+        phoneOwners.get(phone).add(row);
+      }
     }
   }
 
