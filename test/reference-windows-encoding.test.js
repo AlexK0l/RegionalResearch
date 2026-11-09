@@ -31,6 +31,11 @@ function check(template,output,data){
  const values=JSON.parse(run(py,["-c",cmd,output],{env:utf8}).stdout.trim());
  assert.deepEqual(values,names);
  assert.ok(values.every(value=>!value.includes("OLD-COMPANY")));
+ const transportCmd="import sys,json;from openpyxl import load_workbook;w=load_workbook(sys.argv[1]);"+
+   "print(json.dumps([w['Прямые покупатели']['C1'].value,w['Прямые покупатели']['C2'].value],ensure_ascii=True))";
+ const transport=JSON.parse(run(py,["-c",transportCmd,output],{env:utf8}).stdout.trim());
+ assert.equal(transport[0],"Наличие транспорта");
+ assert.match(transport[1],/Saby \\(грузовые\\):/);
 }
 test("Python reads UTF-8 JSON correctly with Windows cp1251 configured",()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"sat-utf8-py-"));
