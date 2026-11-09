@@ -68,7 +68,7 @@ test("Saby replaces stale 'Email: не найден' in original Excel comment w
   record.errors=["trucks: secret error detail not for persistence","contacts: private page text"];
   record.trucks={status:"review"};
   applySabyEnrichment(row,record);
-  assert.match(row.__comment,/^Email: info@example\\.ru$/m);
+  assert.match(row.__comment,/^Email: info@example\.ru$/m);
   assert.doesNotMatch(row.__comment,/Email: не найден/i);
   assert.equal(row["Телефон"],"79991234567");
   assert.equal(row.__evidence.saby.collection.trucks,"review");
@@ -85,8 +85,8 @@ test("Saby email never overwrites an existing official email in notes",()=>{
   row.__comment="Сайт/источник: https://existing.example/\nEmail: official@example.ru";
   const record=payload();
   applySabyEnrichment(row,record);
-  assert.match(row.__comment,/^Email: official@example\\.ru$/m);
-  assert.match(row.__comment,/Saby:.*email info@example\\.ru/);
+  assert.match(row.__comment,/^Email: official@example\.ru$/m);
+  assert.match(row.__comment,/Saby:.*email info@example\.ru/);
   assert.equal((row.__comment.match(/^Email:/gm)||[]).length,1);
 });
 
