@@ -871,6 +871,7 @@ timerTick=setInterval(()=>{
   try{
     config=await api("/api/config");
     if(e.logout)e.logout.hidden=!Boolean(config.webSessionAuth);
+    if(config.webSessionAuth)sessionStorage.removeItem("regionalresearch_api_token");
     renderSteps((config.steps||[]).map((name,i)=>({
       step:i+1,
       name,
