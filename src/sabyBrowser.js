@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
 import { findSabyCompanySearch } from "./sabySearch.js";
+import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
@@ -104,51 +105,6 @@ async function findResultRows(page, inn) {
   }, inn);
 }
 
-async function verifyOpenCard(page, inn, expectedName) {
-  const snapshot = await page.evaluate(() => {
-    const vis = e => {
-      const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-      return r.width>0 && r.height>0 && s.visibility!=="hidden" && s.display!=="none";
-    };
-    const candidates=[...document.querySelectorAll(
-      "main,article,[class*='company'],[class*='card']")];
-    const cardBlocks=candidates.filter(e=>{
-      const r=e.getBoundingClientRect();
-      return vis(e) && r.width>250 && r.height>140;
-    }).map(e=>(e.innerText||"").slice(0,2500)).slice(0,80);
-    const headings=[...document.querySelectorAll("h1,h2,h3,[role='heading']")]
-      .filter(vis).map(e=>(e.innerText||"").trim()).filter(Boolean).slice(0,80);
-    const body=(document.body?.innerText||"").slice(0,18000);
-    return {cardBlocks,headings,body};
-  });
-  const rx = new RegExp("ИНН\\s*[:№#]?\\s*" + inn + "(?!\\d)");
-  // The INN must belong to an opened company card, not merely search history.
-  if (!snapshot.cardBlocks.some(text => rx.test(text)) ||
-      !snapshot.body.includes("Контакты")) {
-    throw new SabyReview("Открытая карточка с подтверждённым ИНН не найдена");
-  }
-  const names = snapshot.headings.filter(name =>
-    sabyNameMatches(expectedName, name));
-  if (names.length === 0) {
-    // On some Saby layouts the legal name is a plain text node rather than
-    // a semantic h1/h2 heading. Require an exact visible label.
-    const exact = await page.evaluate(name => {
-      const norm=s=>String(s||"").toLowerCase().replace(/ё/g,"е")
-        .replace(/[^a-zа-я0-9]+/gu," ").trim().replace(/\s+/g," ");
-      const requested=norm(name);
-      return [...document.querySelectorAll("main *,article *")].some(e=>{
-        if (e.children.length) return false;
-        const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-        return r.width>0 && r.height>0 && s.display!=="none" &&
-          norm(e.textContent)===requested;
-      });
-    }, expectedName);
-    if (!exact) throw new SabyReview("Название открытой карточки не совпадает");
-    return expectedName;
-  }
-  return names[0];
-}
-
 async function openCompany(page, row, settings) {
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
@@ -182,17 +138,50 @@ async function openCompany(page, row, settings) {
   }
   if(rows.length!==1) throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
   const r=rows[0].rect;
+  const listingUrl=page.url();
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
-  const cardUntil=Date.now()+Math.min(15000,settings.timeoutMs);
-  let lastError="";
+  const startCard=Date.now();
+  const cardUntil=startCard+Math.min(18000,settings.timeoutMs);
+  let last={ok:false,reason:"not_detail_page",detail:{route:"list"}};
+  let reClicked=false;
   while(Date.now()<cardUntil) {
     try {
-      const verifiedName=await verifyOpenCard(page,inn,name);
-      return {inn,name:verifiedName,verified:true};
-    } catch(error) { lastError=error.message; }
+      const outcome=await verifySabyCard(page,inn,name);
+      last=outcome;
+      if(outcome.ok) {
+        console.info("[SABY_CARD] identity_verified");
+        return {inn,name:outcome.verifiedName,verified:true};
+      }
+    } catch {
+      // Rendering may be in progress during the route transition.
+      last={ok:false,reason:"detail_loading",
+        detail:{route:sabyCardRoute(page.url())}};
+    }
+
+    // Some Saby layouts do not handle clicks near the row's top edge.
+    // One bounded second click is permitted only if the SAME unique
+    // company still appears in the search results on the original route.
+    if(!reClicked && Date.now()-startCard>4500 &&
+       page.url()===listingUrl && sabyCardRoute(page.url())==="list") {
+      reClicked=true;
+      const again=(await findResultRows(page,inn)).filter(item=>
+        sabySearchResultMatches(name,item.text,inn));
+      if(again.length===1) {
+        const box=again[0].rect;
+        console.info("[SABY_CARD] retry_result_click");
+        await page.mouse.click(
+          box.x+Math.min(95,box.w*.20),
+          box.y+Math.min(38,box.h*.5)
+        );
+      }
+    }
     await delay(450);
   }
-  throw new SabyReview("Saby: карточка не подтверждена: "+lastError);
+  console.warn("[SABY_CARD_DIAG] "+JSON.stringify(safeCardDiagnostic(last,{
+    clicked:true,
+    navigationObserved:page.url()!==listingUrl
+  })));
+  throw new SabyReview("Saby: карточка не подтверждена: "+last.reason);
 }
 
 async function ownContacts(page) {
