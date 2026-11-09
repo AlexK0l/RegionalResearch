@@ -61,10 +61,52 @@ async function profileSearchPresent(page) {
   )));
 }
 
+// A successful Saby Profile session is sometimes shown as a company-list
+// application without a conventional input[type=search] (responsive/new DOM).
+// Verify the actual company-list URL and a substantive app, not only a field.
+export async function sabyProfileSessionReady(page) {
+  if (!trustedProfileUrl(page.url())) return false;
+  if (await profileSearchPresent(page)) return true;
+  if (typeof page.evaluate !== "function") return false;
+  try {
+    return Boolean(await page.evaluate(() => {
+      if (location.protocol !== "https:" ||
+          location.hostname !== "profile.saby.ru" ||
+          !location.pathname.startsWith("/page/company-list-prof")) return false;
+      const body = document.body;
+      if (!body) return false;
+      const visible = el => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 &&
+          style.visibility !== "hidden" && style.display !== "none";
+      };
+      const loginFields = [
+        ...document.querySelectorAll(
+          'input[type="password"],input[autocomplete="username"],' +
+          'input[autocomplete="one-time-code"],' +
+          'input[placeholder*="Phone or login" i],input[placeholder*="Телефон или логин" i]'
+        )
+      ].some(visible);
+      if (loginFields) return false;
+      const text = String(body.innerText || "").trim().slice(0,10000);
+      if (text.length < 50) return false;
+      const hasCompanyContext = /компан|организац|company|companies|профил|сведения|деятельност/i.test(text);
+      const hasApp = Boolean(document.querySelector(
+        'main,article,[role="main"],[class*="company"],[class*="Company"],' +
+        '[class*="search"],[class*="Search"],[data-qa*="company"],[data-testid*="company"]'
+      ));
+      return hasCompanyContext && hasApp;
+    }));
+  } catch {
+    return false;
+  }
+}
+
 async function waitProfileSearch(page, timeoutMs) {
   const limit = Date.now() + timeoutMs;
   do {
-    if (await profileSearchPresent(page)) return true;
+    if (await sabyProfileSessionReady(page)) return true;
     await new Promise(resolve => setTimeout(resolve, 350));
   } while (Date.now() < limit);
   return false;
@@ -256,7 +298,7 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
 
   const until = Date.now() + 16000;
   while(Date.now() < until) {
-    if (await profileSearchPresent(page)) {
+    if (await sabyProfileSessionReady(page)) {
       phase("authenticated");
       return {status:"authenticated"};
     }
@@ -309,7 +351,7 @@ export async function waitForSabySession(page, {
       return {status:"browser_closed"};
     }
     try {
-      if (await profileSearchPresent(page)) {
+      if (await sabyProfileSessionReady(page)) {
         phase("authenticated");
         return {status:"authenticated"};
       }
