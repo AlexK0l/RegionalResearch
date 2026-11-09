@@ -33,7 +33,7 @@ test("without reliable department evidence phone has no fabricated title",()=>{
 
 test("when department labels conflict we do not attribute the number to either",()=>{
   assert.equal(formatPhoneCell(
-    "78122673097 (бухгалтерия); 78122673097 (отдел продаж)"
+    "78122673097 (бухгалтерия); 78122673097 (отдел продаж); 78122673097 (бухгалтерия)"
   ),"78122673097");
 });
 
