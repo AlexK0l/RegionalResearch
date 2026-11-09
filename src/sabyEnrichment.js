@@ -31,7 +31,7 @@ export function sabyNameMatches(expected, observed) {
 // may contain city, CEO, activity. Do not confuse "Альфа" with "Альфа-Трейд".
 export function sabySearchResultMatches(expected, candidateText, inn) {
   const prefix = String(candidateText || "").split(String(inn), 1)[0];
-  const firstLine = prefix.split(/[\\n\\r|·]/, 1)[0].trim();
+  const firstLine = prefix.split(/[\n\r|·]/, 1)[0].trim();
   return sabyNameMatches(expected, firstLine);
 }
 
@@ -77,7 +77,7 @@ export function fleetSummary(fleet) {
 }
 
 function hasKnownPhone(value) {
-  return String(value || "").split(/[;,\\n]/)
+  return String(value || "").split(/[;,\n]/)
     .some(phone => Boolean(normalizeRussianPhone(phone)));
 }
 
