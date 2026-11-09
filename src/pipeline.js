@@ -5827,7 +5827,8 @@ const PIPELINE_PHASE_ORDER = {
   enrichment: 8,
   statistics: 9,
   contacts: 10,
-  completed: 11
+  saby: 11,
+  completed: 12
 };
 
 function cloneJson(value) {
