@@ -30,8 +30,11 @@ function safeUrl(value, host, prefix) {
 }
 
 export function trustedSabyLoginUrl(url) {
+  // The company profile redirects to the legacy, first-party SSO host on
+  // some deployments. Trust *only* these exact HTTPS hosts and auth paths.
   return safeUrl(url, "online.saby.ru", "/auth") ||
-    safeUrl(url, "sso.saby.ru", "/auth-online");
+    safeUrl(url, "sso.saby.ru", "/auth-online") ||
+    safeUrl(url, "sso.sbis.ru", "/auth-online");
 }
 function trustedProfileUrl(url) {
   return safeUrl(url, "profile.saby.ru", "");
@@ -99,6 +102,40 @@ async function loginInput(page) {
 
 async function passwordInput(page) {
   return firstVisible(page.locator('input[type="password"],input[autocomplete="current-password"]'));
+}
+
+// Some Saby sign-in pages use a small arrow alongside "Phone or login"
+// instead of a submit button. Try exactly one visible control in the input
+// wrapper; never click navigation tabs or an arbitrary coordinate.
+async function advanceLogin(page, user) {
+  if (typeof user.locator === "function") {
+    let parent = user;
+    for (let depth=0; depth<3; depth++) {
+      parent = parent.locator("xpath=..");
+      if (!parent || typeof parent.locator !== "function") break;
+      const controls = parent.locator('button,[role="button"],input[type="submit"]');
+      let count = 0;
+      try { count = await controls.count(); } catch { break; }
+      if (count !== 1) continue;
+      const control = controls.nth(0);
+      if (!await control.isVisible().catch(()=>false)) continue;
+      let suitable = true;
+      try {
+        suitable = await parent.evaluate(el=>{
+          const r=el.getBoundingClientRect();
+          return r.width>0 && r.width<=800 && r.height>0 && r.height<=200;
+        });
+      } catch { suitable = false; }
+      if (!suitable) continue;
+      try {
+        await control.click({timeout:4000});
+        return "arrow_button";
+      } catch { break; }
+    }
+  }
+  // Standard keyboard submit is still needed for older Saby layouts.
+  await user.press("Enter");
+  return "enter";
 }
 
 async function verificationPrompt(page) {
@@ -176,9 +213,11 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
       return requireManual(allowManual, "Изменился адрес формы входа Saby");
     }
     phase("login_next");
-    // The first Enter advances to the password step, not the final login.
-    try { await user.press("Enter"); }
-    catch { throw new SabyAuthError("Не удалось перейти к вводу пароля Saby"); }
+    // Advance once using the input's adjacent arrow or Enter.
+    try {
+      const method=await advanceLogin(page,user);
+      phase("login_advanced_"+method);
+    } catch { throw new SabyAuthError("Не удалось перейти к вводу пароля Saby"); }
     const until = Date.now() + 12000;
     while(Date.now() < until && !pwd) {
       if (!trustedSabyLoginUrl(page.url())) break;
@@ -221,6 +260,7 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
   if (!trustedSabyLoginUrl(page.url()) &&
       !safeUrl(page.url(),"online.saby.ru","") &&
       !safeUrl(page.url(),"sso.saby.ru","") &&
+      !safeUrl(page.url(),"sso.sbis.ru","") &&
       !trustedProfileUrl(page.url())) {
     return requireManual(allowManual, "Не удалось проверить авторизацию Saby");
   }
