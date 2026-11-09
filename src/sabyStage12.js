@@ -1,6 +1,6 @@
 // Stage 12: optional, bounded Saby enrichment after final research QA.
 // No OpenAI requests. Never creates new organizations or changes A/B/C grades.
-import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { parsePhoneEntries } from "./phoneExport.js";
 import { applySabyEnrichment, sabyEligibleRows, sabyInn } from "./sabyEnrichment.js";
 import { withSabyBrowser, collectSabyCompany } from "./sabyBrowser.js";
 
@@ -26,9 +26,7 @@ function phoneOwnersForResult(result) {
   const rows=[...(result?.direct_buyers||[]),
     ...(result?.intermediaries||[]),...(result?.leasing||[])];
   for(const row of rows) {
-    for (const raw of String(row?.["Телефон"]||"").split(/[;,\n]/)) {
-      const phone=normalizeRussianPhone(raw);
-      if (!phone) continue;
+    for (const {phone} of parsePhoneEntries(row?.["Телефон"])) {
       if (!map.has(phone)) map.set(phone,new Set());
       map.get(phone).add(row);
     }
