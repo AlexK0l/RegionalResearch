@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { authenticateSaby, sabyCredentials, trustedSabyLoginUrl,
-  SabyAuthError } from "../src/sabyAuth.js";
+  sabyProfileSessionReady, waitForSabySession, SabyAuthError } from "../src/sabyAuth.js";
 import { sabyBrowserSettings } from "../src/sabyBrowser.js";
 
 const LOGIN="researcher@example.org";
@@ -158,6 +158,40 @@ test("Saby OTP is never bypassed or retried, and logged errors contain no passwo
   assert.ok(!JSON.stringify(auth).includes(PASSWORD));
   await assert.rejects(authenticateSaby(stubPage({otp:true}),settings),
     error => error instanceof SabyAuthError && !error.message.includes(PASSWORD));
+});
+
+test("new company-list UI with no input[type=search] confirms the logged-in session",async()=>{
+  const page=stubPage();
+  const original=page.locator.bind(page);
+  page.locator=selector=>selector.includes('input[type="search"]')
+    ?locator(0):original(selector);
+  // The fallback is only consulted on the first-party company-list URL.
+  page.evaluate=async()=>page.url()===PROFILE &&
+    page.values.password===PASSWORD;
+  const result=await authenticateSaby(page,settings);
+  assert.equal(result.status,"authenticated");
+  assert.equal(await sabyProfileSessionReady(page),true);
+  const phases=[];
+  const wait=await waitForSabySession(page,{
+    timeoutMs:150,pollMs:20,onPhase:p=>phases.push(p)
+  });
+  assert.equal(wait.status,"authenticated");
+  assert.deepEqual(phases,["authenticated"]);
+});
+
+test("an SSO/login page never passes company-list readiness check",async()=>{
+  const page=stubPage();
+  await page.goto(AUTH);
+  page.evaluate=async()=>true;
+  assert.equal(await sabyProfileSessionReady(page),false);
+  const result=await waitForSabySession(page,{timeoutMs:120,pollMs:20});
+  assert.equal(result.status,"timeout");
+});
+
+test("Windows login smoke does not request terminal Enter and waits for the session",()=>{
+  const script=fs.readFileSync(new URL("../scripts/saby-smoke.js",import.meta.url),"utf8");
+  assert.match(script,/waitForSabySession/);
+  assert.doesNotMatch(script,/createInterface|Готово\\? Нажмите Enter/);
 });
 
 test("Windows smoke command loads the private .env without passing credentials on CLI",()=>{
