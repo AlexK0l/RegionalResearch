@@ -55,7 +55,9 @@ async function firstVisible(locator) {
 async function profileSearchPresent(page) {
   if (!trustedProfileUrl(page.url())) return false;
   return Boolean(await firstVisible(page.locator(
-    'input[type="search"],input[placeholder*="Поиск"],input[placeholder*="поиск"]'
+    'input[type="search"],input[role="searchbox"],[role="searchbox"],' +
+    'input[placeholder*="Поиск" i],input[placeholder*="Search" i],' +
+    'input[aria-label*="Поиск" i],input[aria-label*="Search" i]'
   )));
 }
 
@@ -284,4 +286,54 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
     return {status:"authenticated"};
   }
   return requireManual(allowManual, "Авторизация Saby не подтверждена");
+}
+
+
+// Observe the browser while the human completes 2FA or while Saby finishes a
+// slow post-login redirect. No console input or extra credential submissions.
+// Never navigate while the login/challenge page is visible: doing so would
+// interrupt a human verification. Only probe the profile after a successful
+// transition to a known non-authenticated-interface domain.
+export async function waitForSabySession(page, {
+  timeoutMs = 120000,
+  pollMs = 750,
+  onPhase = null
+} = {}) {
+  const cap = Math.max(100, Math.min(Number(timeoutMs) || 120000, 300000));
+  const interval = Math.max(20, Math.min(Number(pollMs) || 750, 3000));
+  const phase = label => { if (typeof onPhase === "function") onPhase(label); };
+  const until = Date.now() + cap;
+  let lastProbe = 0;
+  while (Date.now() < until) {
+    if (typeof page.isClosed === "function" && page.isClosed()) {
+      return {status:"browser_closed"};
+    }
+    try {
+      if (await profileSearchPresent(page)) {
+        phase("authenticated");
+        return {status:"authenticated"};
+      }
+      const current = page.url();
+      // Non-login Saby destination may mean a successful authentication.
+      // Verify by opening the actual target. Do not disrupt an SSO/MFA page.
+      const knownCabinet = (
+        safeUrl(current, "online.saby.ru", "") ||
+        safeUrl(current, "sso.sbis.ru", "") ||
+        safeUrl(current, "sso.saby.ru", "")
+      ) && !trustedSabyLoginUrl(current);
+      if (knownCabinet && Date.now() - lastProbe > 7000) {
+        lastProbe = Date.now();
+        await openTrustedPage(page, PROFILE_URL, Math.min(15000,cap));
+        if (await waitProfileSearch(page, 3500)) {
+          phase("authenticated");
+          return {status:"authenticated"};
+        }
+      }
+    } catch {
+      // Browser navigation may be underway; retry until the bounded deadline.
+    }
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+  phase("verification_timeout");
+  return {status:"timeout"};
 }
