@@ -4,6 +4,7 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { findSabyCompanySearch } from "./sabySearch.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
@@ -154,12 +155,18 @@ async function openCompany(page, row, settings) {
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия");
   await page.goto(BASE, {waitUntil:"domcontentloaded",timeout:settings.timeoutMs});
   if (!isSabyProfileUrl(page.url())) throw new SabyReview("Переадресация вне Saby");
-  const search = await visibleLocator(page.locator(
-    'input[type="search"],input[placeholder*="Поиск"],input[placeholder*="поиск"]'
-  ));
-  if (!search) throw new SabyReview("Поиск Saby недоступен: проверьте вход в профиль");
-  await search.fill(inn);
-  await search.press("Enter");
+  const found=await findSabyCompanySearch(page,{
+    timeoutMs:Math.min(15000,settings.timeoutMs)
+  });
+  if(!found.field) {
+    // No screenshots, DOM text, form values or credentials in diagnostics.
+    console.warn("[SABY_SEARCH_DIAG] "+JSON.stringify(found.diagnostic));
+    throw new SabyReview("Поле поиска компаний Saby не распознано ("+
+      found.reason+"); статус входа проверен отдельно");
+  }
+  console.info("[SABY_SEARCH] "+found.method);
+  await found.field.fill(inn);
+  await found.field.press("Enter");
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
   let rows=[];
   while(Date.now()<until) {
