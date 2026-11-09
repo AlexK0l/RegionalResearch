@@ -6,6 +6,7 @@ import { previousContactCacheEnabled } from "../src/researchCostPolicy.js";
 const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
 const costPolicy = readFileSync(new URL("../src/researchCostPolicy.js", import.meta.url), "utf8");
 const server = readFileSync(new URL("../server.js", import.meta.url), "utf8");
+const browserSessionAuth = readFileSync(new URL("../src/browserSessionAuth.js", import.meta.url), "utf8");
 const ui = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const checkpoints = readFileSync(new URL("../src/checkpointStore.js", import.meta.url), "utf8");
 const benchmark = readFileSync(new URL("../scripts/benchmark-reference.js", import.meta.url), "utf8");
@@ -34,7 +35,8 @@ test("INN provenance survives merging and invalid evidence triggers a web lookup
 
 test("paid API can be protected by a configured bearer token", () => {
   assert.match(server, /API_ACCESS_TOKEN/);
-  assert.match(server, /timingSafeEqual/);
+  assert.match(server, /browserAuth\.bearerMatches\(provided\)/);
+  assert.match(browserSessionAuth, /timingSafeEqual/);
   assert.match(ui, /regionalresearch_api_token/);
 });
 
