@@ -135,8 +135,8 @@ test("Windows smoke command loads the private .env without passing credentials o
   assert.match(pkg.scripts["saby:smoke"],/--env-file-if-exists=\.env/);
   assert.doesNotMatch(pkg.scripts["saby:smoke"],/SABY_PASSWORD=/);
   const gitignore=fs.readFileSync(new URL("../.gitignore",import.meta.url),"utf8");
-  assert.match(gitignore,/(?:^|\n)\.env(?:\n|$)/);
+  assert.match(gitignore,/(?:^|\r?\n)\.env(?:\r?\n|$)/);
   const example=fs.readFileSync(new URL("../.env.example",import.meta.url),"utf8");
-  assert.match(example,/(?:^|\n)SABY_LOGIN=/);
-  assert.match(example,/(?:^|\n)SABY_PASSWORD=/);
+  assert.match(example,/(?:^|\r?\n)SABY_LOGIN=/);
+  assert.match(example,/(?:^|\r?\n)SABY_PASSWORD=/);
 });
