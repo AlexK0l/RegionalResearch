@@ -4,6 +4,7 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 
@@ -17,7 +18,9 @@ const bound = (v, min, max, fallback) => Number.isFinite(Number(v)) ?
   Math.max(min, Math.min(max, Math.floor(Number(v)))) : fallback;
 
 export function sabyBrowserSettings(env = process.env) {
+  const {login, password} = sabyCredentials(env);
   return {
+    login, password,
     profileDir: path.resolve(String(env.SABY_PROFILE_DIR || "data/saby-profile")),
     headless: String(env.SABY_HEADLESS || "false").toLowerCase() === "true",
     channel: String(env.SABY_BROWSER_CHANNEL || "").trim(),
@@ -29,7 +32,7 @@ export function sabyBrowserSettings(env = process.env) {
 let sessionQueue = Promise.resolve();
 // A persistent Chrome/Chromium user data directory cannot be opened by two
 // processes at once. This serializes overlapping regional studies in Node.
-export async function withSabyBrowser(task, {env = process.env} = {}) {
+export async function withSabyBrowser(task, {env = process.env, autoLogin = true} = {}) {
   let release;
   const predecessor = sessionQueue;
   sessionQueue = new Promise(resolve => { release = resolve; });
@@ -45,6 +48,9 @@ export async function withSabyBrowser(task, {env = process.env} = {}) {
     });
     const page = context.pages()[0] || await context.newPage();
     page.setDefaultTimeout(6000);
+    if (autoLogin && settings.login && settings.password) {
+      await authenticateSaby(page, settings);
+    }
     return await task({page, context, settings});
   } finally {
     if (context) await context.close().catch(() => {});
