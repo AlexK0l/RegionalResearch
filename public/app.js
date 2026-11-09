@@ -236,10 +236,12 @@ function renderRegionCheckpoint(checkpoint){
     ?new Date(checkpoint.updated_at).toLocaleString("ru-RU")
     :"неизвестно";
   const batch=Number(checkpoint.completed_final_batches||0);
+  const missingContacts=Number(checkpoint.contacts_deferred||0);
+  const missingSaby=Number(checkpoint.saby_deferred||0);
   const sourceText=checkpoint.source==="browser"?"браузер":"backend / SQLite";
   e.regionCheckpointText.textContent=
     (checkpoint.status==="completed"
-      ?"Исследование завершено, но "+Number(checkpoint.contacts_deferred||0)+" компаний осталось без проверки контактов · "
+      ?"Исследование завершено; осталось проверить: контакты "+missingContacts+", Saby "+missingSaby+" · "
       :"Есть незавершённое исследование · ")+formatCheckpointPhase(checkpoint.phase)+
     " · завершено discovery-этапов: "+Number(checkpoint.completed_stage||0)+
     (batch?" · final batches: "+batch:"")+
@@ -249,7 +251,11 @@ function renderRegionCheckpoint(checkpoint){
   e.regionCheckpointBox.hidden=false;
   e.regionResume.disabled=checkpoint.compatible===false;
   e.start.textContent="Начать новое исследование";
-  e.regionResume.textContent=checkpoint.status==="completed"?"Продолжить недоисследованные контакты":"Продолжить с checkpoint";
+  e.regionResume.textContent=checkpoint.status!=="completed"
+    ?"Продолжить с checkpoint"
+    :missingSaby&&missingContacts
+      ?"Продолжить контакты и Saby"
+      :missingSaby?"Продолжить проверку Saby":"Продолжить недоисследованные контакты";
 }
 
 async function refreshRegionCheckpoint(){
