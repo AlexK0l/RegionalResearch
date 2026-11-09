@@ -27,14 +27,12 @@ export function sabyNameMatches(expected, observed) {
     source.every((token, index) => token === actual[index]);
 }
 
-// The scraped search result may have a city or director AFTER the legal name.
-// Never accept a middle-of-string match or a generic similar-looking name.
+// The first line of a Saby search row is the legal name; subsequent lines
+// may contain city, CEO, activity. Do not confuse "Альфа" with "Альфа-Трейд".
 export function sabySearchResultMatches(expected, candidateText, inn) {
   const prefix = String(candidateText || "").split(String(inn), 1)[0];
-  const wanted = sabyNameTokens(expected);
-  const actual = sabyNameTokens(prefix);
-  return wanted.length > 0 && actual.length >= wanted.length &&
-    wanted.every((token, index) => token === actual[index]);
+  const firstLine = prefix.split(/[\\n\\r|·]/, 1)[0].trim();
+  return sabyNameMatches(expected, firstLine);
 }
 
 export function isSabyProfileUrl(value) {
