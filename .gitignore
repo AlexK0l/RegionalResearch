@@ -17,3 +17,9 @@ saby_diagnostics/
 saby_results/
 results_saby/
 *.saby-profile/
+
+# Sensitive Google and Saby credentials from legacy automation archives.
+service-account.json
+credentials.json
+token.json
+saby_browser_profile/
