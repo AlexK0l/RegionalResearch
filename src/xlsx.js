@@ -12,7 +12,7 @@ import { refreshColorStatistics } from "./offlineColorStatistics.js";
 const DIRECT_MAP = [
   null,
   "Организация",
-  null,
+  "Наличие транспорта",
   "Основание",
   null,
   null,
