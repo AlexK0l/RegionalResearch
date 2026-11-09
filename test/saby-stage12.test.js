@@ -169,6 +169,43 @@ test("stage 12 checks one selected INN, checkpoints, and resumes without another
   assert.equal(second.stats.scheduled,0);
 });
 
+test("batch offset selects the next 10 identities without rescanning previous ten",async()=>{
+  const rows=Array.from({length:25},(_,i)=>
+    company("ООО Тест "+i,String(7700000000+i)));
+  const visited=[];
+  const out=await runSabyStage12({
+    result:base(rows),offset:10,
+    env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"10",
+      SABY_CIRCUIT_AFTER:"3",SABY_DELAY_MS:"250"},
+    sessionRunner:fakeSession,
+    collectCompany:async(_page,row)=>{
+      visited.push(row["ИНН"]);
+      return payload({inn:row["ИНН"],name:row["Организация"],count:0,phones:[]});
+    }
+  });
+  assert.equal(out.stats.scheduled,10);
+  assert.equal(out.stats.verified,10);
+  assert.deepEqual(visited,rows.slice(10,20).map(r=>r["ИНН"]));
+  assert.equal(out.stats.deferred,15);
+});
+
+test("batch offset zero preserves production stage 12 selection order",async()=>{
+  const rows=Array.from({length:3},(_,i)=>
+    company("ООО Тест "+i,String(7700000000+i)));
+  const visited=[];
+  await runSabyStage12({
+    result:base(rows),env:{SABY_STAGE12_ENABLED:"true",
+      SABY_MAX_COMPANIES:"1",SABY_DELAY_MS:"250"},
+    sessionRunner:fakeSession,
+    collectCompany:async(_page,row)=>{
+      visited.push(row["ИНН"]);
+      return payload({inn:row["ИНН"],name:row["Организация"],
+        count:0,phones:[]});
+    }
+  });
+  assert.deepEqual(visited,[rows[0]["ИНН"]]);
+});
+
 test("browser failure leaves source data intact, safely defers the work",async()=>{
   const row=company(),result=base([row]);
   const out=await runSabyStage12({result,env:{SABY_STAGE12_ENABLED:"true"},
