@@ -59,19 +59,20 @@ export async function runSabyStage12({
     scheduled:selected.length,processed:0,verified:0,review:0,
     phonesAdded:0,transportsAdded:0,vehiclesVerified:0,
     partialResults:0,circuitOpen:false,browserError:"",
-    deferred:pending.length
+    deferred:settings.enabled ? pending.length : 0
   };
-  if (!settings.enabled) return {stats,completedInns:[...completed]};
-  if (!selected.length) return {stats,completedInns:[...completed]};
+  if (!settings.enabled) return {stats,completedInns:[...completed],deferredInns:[]};
+  if (!selected.length) return {stats,completedInns:[...completed],deferredInns:[]};
 
   const phoneOwners=phoneOwnersForResult(result);
   const startedAt=Date.now();
   let consecutive=0;
 
   const flush=async () => {
-    stats.deferred=pending.length-stats.processed+
-      stats.review; // review rows remain eligible for another manual attempt
-    await onCheckpoint({stats:{...stats},completedInns:[...completed]});
+    const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
+      .filter(inn=>!completed.has(inn));
+    stats.deferred=deferredInns.length;
+    await onCheckpoint({stats:{...stats},completedInns:[...completed],deferredInns});
   };
 
   try {
@@ -127,5 +128,7 @@ export async function runSabyStage12({
     }));
   }
   await flush();
-  return {stats,completedInns:[...completed]};
+  const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
+    .filter(inn=>!completed.has(inn));
+  return {stats,completedInns:[...completed],deferredInns};
 }
