@@ -63,6 +63,7 @@ export function parsePhoneEntries(value) {
   const segments=(Array.isArray(value)?value:[value])
     .flatMap(part=>String(part ?? "").split(/[;\r\n]+/));
   const entries=new Map();
+  const disputedDepartments=new Set();
   for (const raw of segments) {
     const segment=raw.trim();
     if (!segment) continue;
@@ -74,9 +75,12 @@ export function parsePhoneEntries(value) {
       if(!prior) {
         entries.set(phone,{phone,department});
       } else if (prior.department!==department) {
-        // A conflicting explicit label must not be guessed.
-        if(prior.department && department) prior.department="";
-        else if(department && !prior.department) prior.department=department;
+        // Once different labels are seen, do not assign any department later.
+        if(prior.department && department) {
+          prior.department="";
+          disputedDepartments.add(phone);
+        } else if(department && !prior.department &&
+                  !disputedDepartments.has(phone)) prior.department=department;
       }
     }
   }
@@ -112,11 +116,15 @@ export function extractSabyPhoneDetails(text) {
     });
   }
   const result=new Map();
+  const disputedDepartments=new Set();
   for(const entry of found) {
     const prior=result.get(entry.phone);
-    if(!prior || (!prior.department&&entry.department))result.set(entry.phone,entry);
+    if(!prior)result.set(entry.phone,{...entry});
     else if(prior.department&&entry.department&&prior.department!==entry.department) {
       prior.department="";
+      disputedDepartments.add(entry.phone);
+    } else if(!prior.department&&entry.department&&!disputedDepartments.has(entry.phone)){
+      prior.department=entry.department;
     }
   }
   return [...result.values()];
