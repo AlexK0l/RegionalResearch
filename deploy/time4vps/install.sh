@@ -59,6 +59,8 @@ fi
 install -m 644 "$APP_DIR/deploy/time4vps/regionalresearch.service" /etc/systemd/system/regionalresearch.service
 install -m 644 "$APP_DIR/deploy/time4vps/regionalresearch-backup.service" /etc/systemd/system/regionalresearch-backup.service
 install -m 644 "$APP_DIR/deploy/time4vps/regionalresearch-backup.timer" /etc/systemd/system/regionalresearch-backup.timer
+install -m 644 "$APP_DIR/deploy/time4vps/regionalresearch-artifacts-backup.service" /etc/systemd/system/regionalresearch-artifacts-backup.service
+install -m 644 "$APP_DIR/deploy/time4vps/regionalresearch-artifacts-backup.timer" /etc/systemd/system/regionalresearch-artifacts-backup.timer
 systemctl daemon-reload
 echo "Base setup complete. Paid research NOT started."
 echo "Next: read $APP_DIR/deploy/time4vps/README.md, upload .env and Excel template,"
