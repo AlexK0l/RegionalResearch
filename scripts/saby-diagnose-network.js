@@ -68,7 +68,7 @@ function safeCompany(record) {
 function observeNetwork(context,page) {
   const endpoints=new Map(),statusCounts={},types={}, pending=[];
   let total=0,thirdPartyResponses=0,failedRequests=0,
-    pageErrors=0,consoleErrors=0,probeResponses=0;
+    pageErrors=0,consoleErrors=0,probeResponses=0,serviceWorkerResponses=0;
   const webSockets={opened:0,incoming_frames:0,incoming_bytes:0,
     contact_markers:false,fleet_markers:false};
 
@@ -100,6 +100,7 @@ function observeNetwork(context,page) {
     bump(statusCounts,String(status));bump(types,type);
     const key=safeNetworkEndpoint(response.url());
     if(!key){thirdPartyResponses++;return;}
+    if(response.fromServiceWorker())serviceWorkerResponses++;
     const method=request.method();
     const identity=key.host+":"+key.route+":"+type+":"+method;
     let entry=endpoints.get(identity);
@@ -113,7 +114,7 @@ function observeNetwork(context,page) {
     entry.count++;
     bump(entry.status_counts,String(status));
     const ct=String(response.headers()["content-type"]||"").toLowerCase();
-    if(!["xhr","fetch"].includes(type) || probeResponses>=180 ||
+    if(!["xhr","fetch","document"].includes(type) || probeResponses>=180 ||
        (!/json|text|javascript|xml/.test(ct)) ||
        Number(response.headers()["content-length"]||0)>2000000) return;
     probeResponses++;
@@ -137,13 +138,14 @@ function observeNetwork(context,page) {
     async finish() {
       await Promise.race([Promise.allSettled(pending),sleep(4000)]);
       const entries=[...endpoints.values()]
-        .filter(x=>["xhr","fetch"].includes(x.type))
+        .filter(x=>["xhr","fetch","document"].includes(x.type))
         .sort((a,b)=>(b.count-a.count)||a.route.localeCompare(b.route));
       return {total_responses:total,third_party_responses:thirdPartyResponses,
         response_status_counts:statusCounts,resource_type_counts:types,
         failed_first_party_requests:failedRequests,
         browser_page_errors:pageErrors,browser_console_errors:consoleErrors,
         web_sockets:webSockets,
+        responses_from_service_worker:serviceWorkerResponses,
         probed_api_bodies:probeResponses,
         endpoints:entries.slice(0,250)
       };
@@ -186,6 +188,16 @@ async function runMode(mode) {
     SABY_HEADLESS:String(mode.headless),SABY_BROWSER_CHANNEL:mode.channel};
   try{
     await withSabyBrowser(async ({page,context,settings})=>{
+      // Disable HTTP cache per mode without clearing cookies/localStorage.
+      // Saby uses a persistent authenticated profile, but cached responses
+      // would otherwise make two browser modes impossible to compare fairly.
+      let cacheDisabled=false;
+      try {
+        const session=await context.newCDPSession(page);
+        await session.send("Network.setCacheDisabled",{cacheDisabled:true});
+        cacheDisabled=true;
+      } catch { /* Diagnostics still proceed if CDP is unavailable. */ }
+      outMode.http_cache_disabled=cacheDisabled;
       const recorder=observeNetwork(context,page);
       try{
         const record=await collectSabyCompany(page,{"ИНН":INN,"Организация":name},settings);
@@ -230,7 +242,7 @@ async function main() {
   for(const mode of MODES)results.push(await runMode(mode));
   const report={
     schema_version:1,
-    disclaimer:"No raw Saby HTTP bodies/URLs/credentials/cookies or company data included",
+    disclaimer:"No raw response bodies, URLs, credentials, cookies or identifying company details; only aggregate counts, hashes and booleans",
     modes:results,
     comparisons:{
       shell_vs_new:compareSabyNetwork(results[0].network,results[1].network),
