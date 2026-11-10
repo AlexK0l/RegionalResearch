@@ -206,6 +206,59 @@ test("batch offset zero preserves production stage 12 selection order",async()=>
   assert.deepEqual(visited,[rows[0]["ИНН"]]);
 });
 
+test("Saby identity with both detail sections missing stays deferred and cannot mutate CRM",async()=>{
+  const row=company(), before=structuredClone(row), snapshots=[];
+  const record=payload();
+  record.contacts={status:"missing",phones:[],emails:[]};
+  record.trucks={status:"missing"};
+  const out=await runSabyStage12({
+    result:base([row]),env:{SABY_STAGE12_ENABLED:"true",
+      SABY_MAX_COMPANIES:"1",SABY_CHECKPOINT_EVERY:"1"},
+    sessionRunner:fakeSession,
+    collectCompany:async()=>record,
+    onCheckpoint:async snap=>snapshots.push(snap)
+  });
+  assert.equal(out.stats.processed,1);
+  assert.equal(out.stats.verified,0);
+  assert.equal(out.stats.review,1);
+  assert.equal(out.stats.phonesAdded,0);
+  assert.equal(out.stats.transportsAdded,0);
+  assert.deepEqual(out.completedInns,[]);
+  assert.deepEqual(out.deferredInns,["7707083893"]);
+  assert.deepEqual(snapshots.at(-1).deferredInns,["7707083893"]);
+  assert.deepEqual(row,before);
+});
+
+test("intermediary is not completed from a truck section when required contacts are missing",async()=>{
+  const row=company(),before=structuredClone(row);
+  const record=payload();
+  record.contacts={status:"missing",phones:[],emails:[]};
+  const result={direct_buyers:[],intermediaries:[row],leasing:[],statistics:[]};
+  const out=await runSabyStage12({
+    result,env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>record
+  });
+  assert.equal(out.stats.verified,0);
+  assert.equal(out.stats.review,1);
+  assert.deepEqual(out.deferredInns,["7707083893"]);
+  assert.deepEqual(row,before);
+});
+
+test("verified empty contact section is distinct from a missing section",async()=>{
+  const row=company();
+  const record=payload();
+  record.contacts={status:"collected",phones:[],emails:[]};
+  record.trucks={status:"missing"};
+  const out=await runSabyStage12({
+    result:base([row]),env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>record
+  });
+  assert.equal(out.stats.verified,1);
+  assert.equal(out.stats.review,0);
+  assert.deepEqual(out.completedInns,["7707083893"]);
+  assert.deepEqual(out.deferredInns,[]);
+});
+
 test("browser failure leaves source data intact, safely defers the work",async()=>{
   const row=company(),result=base([row]);
   const out=await runSabyStage12({result,env:{SABY_STAGE12_ENABLED:"true"},
