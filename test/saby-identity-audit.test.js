@@ -58,7 +58,7 @@ test("source-full vs Saby-short is candidate, never automatically verified",()=>
   assert.equal(auditCompareName(full,"Сапк, АО"),"short_name_candidate");
   assert.equal(auditCompareName(full,official),"normalized_equal");
   assert.equal(auditCompareName("ООО Ромашка","АО Ромашка"),"legal_form_conflict");
-  assert.equal(auditCompareName("ООО Ромашка","ООО Ромашка-Регион"),"short_name_candidate");
+  assert.equal(auditCompareName("ООО Ромашка","ООО Ромашка-Регион"),"partial_overlap");
   assert.equal(auditCompareName(full,""),"not_available");
   assert.equal(auditCompareName("ООО АЛЬФА БЕТА ВЕКТОР","ООО АБВ"),
     "initials_candidate");
