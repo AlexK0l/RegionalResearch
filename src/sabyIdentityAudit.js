@@ -9,12 +9,12 @@ const lineList=text=>String(text||"").slice(0,135000)
   .split(/[\r\n]+/).map(compact).filter(Boolean);
 const fieldLimit=value=>compact(value).slice(0,250);
 const legalTypes=[
-  ["ПАО",/^(?:ПАО|ПУБЛИЧНОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)\b/i],
-  ["ОАО",/^(?:ОАО|ОТКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)\b/i],
-  ["ЗАО",/^(?:ЗАО|ЗАКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)\b/i],
-  ["ООО",/^(?:ООО|ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ\s+ОТВЕТСТВЕННОСТЬЮ)\b/i],
-  ["АО",/^(?:АО|АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)\b/i],
-  ["ИП",/^(?:ИП|ИНДИВИДУАЛЬНЫЙ\s+ПРЕДПРИНИМАТЕЛЬ)\b/i]
+  ["ПАО",/^(?:ПАО|ПУБЛИЧНОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
+  ["ОАО",/^(?:ОАО|ОТКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
+  ["ЗАО",/^(?:ЗАО|ЗАКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
+  ["ООО",/^(?:ООО|ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ\s+ОТВЕТСТВЕННОСТЬЮ)(?=$|[\s"«„(])/i],
+  ["АО",/^(?:АО|АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
+  ["ИП",/^(?:ИП|ИНДИВИДУАЛЬНЫЙ\s+ПРЕДПРИНИМАТЕЛЬ)(?=$|[\s"«„(])/i]
 ];
 export function auditLegalForm(name) {
   const text=compact(name).replace(/^[«"']+|[»"']+$/g,"");
@@ -188,4 +188,20 @@ export function auditCompareIdentity(source,observation) {
     result.reason="title_or_requisites_unverified";
   }
   return result;
+}
+
+/** All source records, including duplicates, invalid INNs and rows with
+ * existing phones. Saby Stage12 eligibility filters are NOT used. */
+export function auditSourceRows(raw) {
+  const base=raw?.final_result||raw?.result||raw;
+  if(!base||!Array.isArray(base.direct_buyers)||
+     !Array.isArray(base.intermediaries)||!Array.isArray(base.leasing))
+    throw Error("JSON должен содержать массивы direct_buyers, intermediaries, leasing");
+  const list=[];
+  for(const group of ["direct_buyers","intermediaries","leasing"]) {
+    base[group].forEach((row,i)=>{
+      list.push({index:list.length+1,group,group_row:i+1,row});
+    });
+  }
+  return list;
 }
