@@ -22,7 +22,9 @@
     "finalize:offline": "node scripts/finalize-research-offline.js",
     "smoke:xlsx": "node scripts/smoke-reference-xlsx.js",
     "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js",
-    "saby:identity-audit": "node --env-file-if-exists=.env scripts/saby-identity-audit.js"
+    "saby:identity-audit": "node --env-file-if-exists=.env scripts/saby-identity-audit.js",
+    "saby:identity-probe": "node --env-file-if-exists=.env scripts/saby-identity-probe.js",
+    "saby:missing-inn-queue": "node --env-file-if-exists=.env scripts/saby-missing-inn-queue.js"
   },
   "engines": {
     "node": ">=22"
