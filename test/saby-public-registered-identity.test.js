@@ -45,6 +45,9 @@ test("public requisites extract full official name from labelled registered bloc
   assert.deepEqual(extractSabyPublicRequisites(
     "Связанные компании\nНазвание\n"+full+"\nИНН\n"+inn+"\nКПП\n"+kpp),[]);
   assert.deepEqual(extractSabyPublicRequisites(
+    "Реквизиты\nО компании\nНазвание\n"+short+
+    "\nИНН\n"+inn+"\nКПП\n"+kpp),[]);
+  assert.deepEqual(extractSabyPublicRequisites(
     "Реквизиты\nНазвание\n"+full+"\nИНН\n7700000000\nКПП\n"+kpp),
     [{name:full,inn:"7700000000",kpp,ogrn:""}]);
 });
