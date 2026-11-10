@@ -83,6 +83,7 @@ def main():
                 item["index"], item["organization"], candidate["inn"],
                 candidate["checksum_valid"], candidate["rejected_claim"],
                 len(candidate["existing_owners"]),
+                candidate.get("ownership_risk", ""),
                 [x["kind"] for x in candidate["sources"]],
                 [x["source_url"] for x in candidate["sources"] if x["source_url"]],
                 candidate["existing_owners"],
@@ -91,9 +92,9 @@ def main():
     sheet(wb, "Кандидаты", [
         "№", "Название", "ИНН-кандидат", "Контрольные цифры",
         "Есть опровержение", "Уже используется у строк",
-        "Типы сохранённых доказательств", "Источник/карточка",
-        "Наличие в других строках", "Ограничение"
-    ], candidate_rows, wide=(1, 6, 7, 8, 9))
+        "Риск принадлежности ИНН", "Типы сохранённых доказательств",
+        "Источник/карточка", "Наличие в других строках", "Ограничение"
+    ], candidate_rows, wide=(1, 6, 7, 8, 9, 10))
 
     summary = report["summary"]
     metrics = [

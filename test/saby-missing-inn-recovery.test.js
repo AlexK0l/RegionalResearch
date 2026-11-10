@@ -109,3 +109,28 @@ test("standalone queue CLI creates JSON/XLSX/ZIP without modifying source",()=>{
     fs.rmSync(dir,{recursive:true,force:true});
   }
 });
+
+
+test("occupied candidate from a different company is NOT a missing firm INN",()=>{
+  const raw={direct_buyers:[
+    {"Организация":"ООО «АБСОЛЮТ ЛИЗИНГ»","ИНН":"",
+      __evidence:{notes:["Контрагент, ИНН 6732243122"]}},
+    {"Организация":"ООО «ТМГ ИНДУСТРИЯ»","ИНН":"6732243122"}
+  ],intermediaries:[],leasing:[]};
+  const output=buildMissingInnRecoveryQueue(raw);
+  assert.equal(output.rows[0].decision,"candidate_inn_used_by_other_company");
+  assert.equal(output.rows[0].candidates[0].ownership_risk,
+    "different_name_owner");
+  assert.equal(output.rows[0].auto_filled,false);
+});
+
+test("same short title with conflicting legal forms cannot be accepted as a duplicate",()=>{
+  const raw={direct_buyers:[
+    {"Организация":"ЗАО «Золотая нива»","ИНН":""},
+    {"Организация":"ООО «Золотая нива»","ИНН":"6726024309"}
+  ],intermediaries:[],leasing:[]};
+  const output=buildMissingInnRecoveryQueue(raw);
+  assert.equal(output.rows[0].decision,"candidate_legal_form_conflict");
+  assert.equal(output.rows[0].candidates[0].ownership_risk,
+    "legal_form_conflict");
+});
