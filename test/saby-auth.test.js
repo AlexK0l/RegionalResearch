@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { authenticateSaby, sabyCredentials, trustedSabyLoginUrl,
-  sabyProfileSessionReady, waitForSabySession, SabyAuthError } from "../src/sabyAuth.js";
+  sabyProfileSessionReady, waitForSabySession, sabyLoginDiagnostic, SabyAuthError } from "../src/sabyAuth.js";
 import { sabyBrowserSettings } from "../src/sabyBrowser.js";
 
 const LOGIN="researcher@example.org";
@@ -21,9 +21,9 @@ function locator(count, onFill=()=>{}, onPress=()=>{}) {
   };
 }
 function stubPage({signedIn=false, redirectHost=false, otp=false,
-  profileRedirectToSso=false}={}) {
+  profileRedirectToSso=false, namedSubmit=false}={}) {
   let current=PROFILE, state="anonymous_profile";
-  const values={login:null,password:null,profileNavigations:0,authNavigations:0};
+  const values={login:null,password:null,profileNavigations:0,authNavigations:0,buttonClicks:0,enterSubmissions:0};
   const page={
     values,
     url(){return current;},
@@ -54,6 +54,7 @@ function stubPage({signedIn=false, redirectHost=false, otp=false,
         return locator(state==="password_form"?1:0,
           value=>{values.password=value;},
           key=>{if(key==="Enter"){
+            values.enterSubmissions++;
             if(otp){state="otp";}
             else {
               signedIn=true;state="cabinet";
@@ -66,7 +67,23 @@ function stubPage({signedIn=false, redirectHost=false, otp=false,
       }
       return locator(0);
     },
-    getByRole(){return locator(0);},
+    getByRole(role, opts) {
+      if (role==="button" && namedSubmit && state==="password_form" &&
+          opts?.name?.test("Войти")) {
+        return {async count(){return 1;},nth(){return {
+          async isVisible(){return true;},
+          async click(){
+            values.buttonClicks++;
+            if(otp) state="otp";
+            else {
+              signedIn=true; state="cabinet";
+              current="https://online.saby.ru/page/dashboard";
+            }
+          }
+        };}};
+      }
+      return locator(0);
+    },
     getByText(){return locator(0);}
   };
   return page;
@@ -203,4 +220,49 @@ test("Windows smoke command loads the private .env without passing credentials o
   const example=fs.readFileSync(new URL("../.env.example",import.meta.url),"utf8");
   assert.match(example,/(?:^|\r?\n)SABY_LOGIN=/);
   assert.match(example,/(?:^|\r?\n)SABY_PASSWORD=/);
+});
+
+test("visible named sign-in button is clicked instead of pressing Enter twice",async()=>{
+  const page=stubPage({namedSubmit:true});
+  const phases=[];
+  const auth=await authenticateSaby(page,settings,{onPhase:p=>phases.push(p)});
+  assert.equal(auth.status,"authenticated");
+  assert.equal(page.values.buttonClicks,1);
+  assert.equal(page.values.enterSubmissions,0);
+  assert.ok(phases.includes("password_submitted_named_button"));
+  assert.equal(page.values.password,PASSWORD);
+});
+
+test("fallback Enter submits exactly once when explicit sign-in button is absent",async()=>{
+  const page=stubPage();
+  const phases=[];
+  const auth=await authenticateSaby(page,settings,{onPhase:p=>phases.push(p)});
+  assert.equal(auth.status,"authenticated");
+  assert.equal(page.values.enterSubmissions,1);
+  assert.equal(page.values.buttonClicks,0);
+  assert.ok(phases.includes("password_submitted_enter"));
+});
+
+test("diagnostic discloses only trusted route and safe flags",async()=>{
+  const page=stubPage();
+  await page.goto(AUTH);
+  page.evaluate=async()=>({
+    login_visible:true,password_visible:true,otp_visible:false,
+    error_visible:false,challenge_visible:false,
+    password:PASSWORD,content:"private text",url:"https://evil.test/"
+  });
+  const diag=await sabyLoginDiagnostic(page);
+  assert.deepEqual(diag,{
+    route:"auth",login_visible:true,password_visible:true,
+    otp_visible:false,error_visible:false,challenge_visible:false
+  });
+  assert.ok(!JSON.stringify(diag).includes(PASSWORD));
+  await page.goto(PROFILE);
+  assert.deepEqual(await sabyLoginDiagnostic(page),{route:"profile"});
+});
+
+test("smoke timeout reports safe diagnostic without writing sensitive page data",()=>{
+  const script=fs.readFileSync(new URL("../scripts/saby-smoke.js",import.meta.url),"utf8");
+  assert.match(script,/\[SABY_AUTH_DIAG\]/);
+  assert.match(script,/sabyLoginDiagnostic\(page\)/);
 });
