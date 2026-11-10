@@ -148,6 +148,70 @@ async function passwordInput(page) {
   return firstVisible(page.locator('input[type="password"],input[autocomplete="current-password"]'));
 }
 
+/**
+ * Prefer an explicit sign-in control for Saby's password step. Some newer
+ * SSO pages do not submit on Enter. Never click an unrelated control or
+ * attempt a second submission after clicking.
+ */
+async function submitPassword(page, passwordField) {
+  const button = await firstVisible(page.getByRole("button", {
+    name:/^(?:войти|войти в систему|вход|log ?in|sign ?in|sign in to saby)$/i
+  }));
+  if (button) {
+    await button.click({timeout:4000});
+    return "named_button";
+  }
+  if (typeof passwordField.locator === "function") {
+    const form = passwordField.locator("xpath=ancestor::form[1]");
+    const submits = form.locator('button[type="submit"],input[type="submit"]');
+    if (await submits.count().catch(()=>0) === 1) {
+      const submit = await firstVisible(submits);
+      if (submit) {
+        await submit.click({timeout:4000});
+        return "form_submit";
+      }
+    }
+  }
+  await passwordField.press("Enter");
+  return "enter";
+}
+
+/**
+ * Only safe booleans and first-party route category; never emit page content,
+ * field values, URLs, cookies, screenshots or credentials.
+ */
+export async function sabyLoginDiagnostic(page) {
+  const url=typeof page.url==="function" ? page.url() : "";
+  const route=trustedSabyLoginUrl(url) ? "auth" :
+    trustedProfileUrl(url) ? "profile" : "other";
+  const diagnostic={route};
+  if (route!=="auth" || typeof page.evaluate!=="function") return diagnostic;
+  try {
+    const flags=await page.evaluate(()=>{
+      const visible=el=>{
+        if(!el) return false;
+        const r=el.getBoundingClientRect(),s=getComputedStyle(el);
+        return r.width>0 && r.height>0 &&
+          s.display!=="none" && s.visibility!=="hidden";
+      };
+      const has=selector=>[...document.querySelectorAll(selector)].some(visible);
+      const text=String(document.body?.innerText||"").slice(0,6000);
+      return {
+        login_visible:has('input[autocomplete="username"],input[name*="login" i]'),
+        password_visible:has('input[type="password"]'),
+        otp_visible:has('input[autocomplete="one-time-code"],input[placeholder*="код" i]'),
+        error_visible:has('[role="alert"],[aria-invalid="true"],[class*="error"],[class*="Error"]'),
+        challenge_visible:/подтвердите вход|код подтверждения|код из sms|verification code|captcha|капча/i.test(text)
+      };
+    });
+    for (const key of ["login_visible","password_visible","otp_visible","error_visible","challenge_visible"])
+      diagnostic[key]=flags?.[key]===true;
+  } catch {
+    diagnostic.dom_unavailable=true;
+  }
+  return diagnostic;
+}
+
 // Some Saby sign-in pages use a small arrow alongside "Phone or login"
 // instead of a submit button. Try exactly one visible control in the input
 // wrapper; never click navigation tabs or an arbitrary coordinate.
@@ -290,13 +354,17 @@ export async function authenticateSaby(page, settings, {allowManual = false, onP
     await pwd.fill(password);
     phase("password_filled");
     // Submit only once. Repeated retries can lock a Saby account.
-    await pwd.press("Enter");
+    if (!trustedSabyLoginUrl(page.url())) {
+      return requireManual(allowManual, "Изменился адрес формы входа Saby");
+    }
+    const method=await submitPassword(page,pwd);
+    phase("password_submitted_"+method);
     phase("submitted");
   } catch {
     throw new SabyAuthError("Не удалось отправить форму входа Saby");
   }
 
-  const until = Date.now() + 16000;
+  const until = Date.now() + Math.max(16000, Math.min(45000, timeoutMs));
   while(Date.now() < until) {
     if (await sabyProfileSessionReady(page)) {
       phase("authenticated");
