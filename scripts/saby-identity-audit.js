@@ -9,7 +9,7 @@ import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {withSabyBrowser} from "../src/sabyBrowser.js";
 import {sabyInn,sabyNameTokens} from "../src/sabyEnrichment.js";
-import {auditCompareIdentity} from "../src/sabyIdentityAudit.js";
+import {auditCompareIdentity,auditSourceRows} from "../src/sabyIdentityAudit.js";
 import {auditSabyCompany} from "../src/sabyIdentityAuditBrowser.js";
 
 const own=(obj,key)=>Object.prototype.hasOwnProperty.call(obj,key);
@@ -40,19 +40,6 @@ async function atomicJson(file,data) {
   await fs.writeFile(temp,JSON.stringify(data,null,2)+"\n",
     {flag:"wx",mode:0o600});
   await fs.rename(temp,file);
-}
-export function sourceRows(raw) {
-  const base=raw?.final_result||raw?.result||raw;
-  if(!base||!Array.isArray(base.direct_buyers)||
-     !Array.isArray(base.intermediaries)||!Array.isArray(base.leasing))
-    throw Error("JSON должен содержать массивы direct_buyers, intermediaries, leasing");
-  const list=[];
-  for(const group of ["direct_buyers","intermediaries","leasing"]) {
-    base[group].forEach((row,i)=>{
-      list.push({index:list.length+1,group,group_row:i+1,row});
-    });
-  }
-  return list;
 }
 async function journalRows(journal,meta,{repair=false}={}) {
   let data=await fs.readFile(journal);
@@ -159,7 +146,7 @@ async function main() {
   if(!option(args,"result"))throw Error("Укажите --result=/path/SAT_Region.json");
   const source=await fs.readFile(input);
   const parsed=JSON.parse(source.toString("utf8"));
-  const entries=sourceRows(parsed);
+  const entries=auditSourceRows(parsed);
   const sourceHash=crypto.createHash("sha256").update(source).digest("hex");
   const prefix=path.resolve(option(args,"out-prefix",path.join("exports",
     "saby-identity-audit-"+new Date().toISOString().slice(0,10))));
@@ -228,6 +215,16 @@ async function main() {
   try {
     for(let start=0;start<pending.length&&!interrupted;start+=batchSize){
       const block=pending.slice(start,start+batchSize);
+      // No browser session is needed for invalid source identities.
+      // This is important for offline audit/export regression tests too.
+      if(block.every(entry=>!sabyInn(entry.row?.["ИНН"]) ||
+         !sabyNameTokens(entry.row?.["Организация"]).length)){
+        for(const entry of block){
+          if(interrupted)break;
+          await persist(entry,{});
+        }
+        continue;
+      }
       // Browser context is restarted every batch to bound Playwright SPA
       // memory; the authorised profile persists across batches.
       await withSabyBrowser(async ({page})=>{
