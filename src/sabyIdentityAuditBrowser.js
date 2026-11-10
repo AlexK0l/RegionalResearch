@@ -99,7 +99,7 @@ export async function auditSabyCompany(page,source,{
     let match={row:null,kind:"not_found",count:0,names:[]};
     const until=Date.now()+resultTimeoutMs;
     do {
-      match=auditSelectSearchResult(await findResultRows(page,inn),inn,name);
+      match=auditSelectSearchResult(await findResultRows(page,inn,{includeInnOnly:true}),inn,name);
       if(match.row || match.kind.startsWith("ambiguous"))break;
       await pause(450);
     } while(Date.now()<until);
