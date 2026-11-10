@@ -105,3 +105,46 @@ full regional search. If the page is empty or presents a browser challenge,
 do not bypass it or claim registered identity. If the registered fields
 render but no parser result is produced, adapt parsing with safe bounded
 DOM field evidence. Production Stage12 remains unchanged.
+
+## 2026-11-10: proof that field labels render but narrow parser misses them
+
+VPS public single-card result for source row 8, INN 7725104641, KPP 504301001:
+HTTP 200, 10,658 visible characters, 387,630 DOM text characters, 2 H1
+headings, all four labels `Реквизиты`, `Название`, `ИНН`, `КПП`
+visible, no browser challenge, yet `requisites_unavailable`.
+
+This contradicts the previous hypothesis of a blank browser page. The
+public Saby profile displays a separate registered `Реквизиты` section
+with `Название`, `ИНН`, `КПП` (also confirmed from the public source).
+The original parser required the very first line after `Реквизиты` to
+be `Название`, with unusually strict number punctuation. That condition
+is too fragile for responsive/lazy UI layout.
+
+The revised parser requires all three independently labelled values to
+be observed **within a single bounded registered block**; it accepts
+intervening subheadings, reordered fields, inline or adjacent values,
+trailing semicolons and spacing, and rejects multiple conflicting values.
+It stops before unrelated `О компании`, `Контакты` and associated-company
+sections. A bounded, privacy-safe `diagnostic.requisite_layout` list
+reports field offsets/counts without recording arbitrary company data.
+
+One final **single-card** live check after main is updated, writing a
+new output filename, is required before the registration-name matching
+policy can be promoted to production Stage12:
+
+```bash
+sudo -u regionalresearch env -u DISPLAY \
+  HOME=/var/lib/regionalresearch \
+  PLAYWRIGHT_BROWSERS_PATH=/home/regionalresearch/.cache/ms-playwright \
+  npm --prefix /opt/regionalresearch run saby:public-requisites-check -- \
+  --result=/opt/regionalresearch/SAT_Смоленская_область.json \
+  --audit=/opt/regionalresearch/exports/saby-identity-smolensk-20261110.comparison.json \
+  --indexes=8 --headless \
+  --profile=/home/regionalresearch/saby-auth-test/data/cold-profile-20261110 \
+  --out=/opt/regionalresearch/exports/saby-public-requisites-parsed-8-20261110.json
+```
+
+Only when the same public profile yields one confirmed registered block
+with correct exact INN/KPP and an accepted full/short name link can this
+case be marked `verified`. Even then do not silently trust historical
+renames, cross-company name matches, or change the production workbook.

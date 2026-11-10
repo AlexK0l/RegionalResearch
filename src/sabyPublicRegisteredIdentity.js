@@ -31,52 +31,112 @@ export function canonicalSabyPublicRoute(url,expectedInn,expectedKpp) {
       u.pathname===new URL(canonical).pathname;
   } catch {return false;}
 }
-function field(lines,from,to,labels) {
-  for(let i=from;i<Math.min(to,lines.length);i++) {
-    const line=lines[i];
-    const marker=labels.some(label=>line===label);
-    if(marker)return compact(lines[i+1]||"");
-    for(const label of labels) {
-      const match=new RegExp("^"+label+"\\s*[:：]\\s*(.+)$","iu").exec(line);
-      if(match)return compact(match[1]);
+// Saby has several "Реквизиты" labels: menu, About summary, registered
+// details. A labelled INN + KPP in About is NEVER full legal-name proof.
+const requisiteHeading=/^(?:Реквизиты|Регистрационные реквизиты)\s*:?\s*$/iu;
+const sectionBoundary=/^(?:О компании|Контакты|Владельцы|Связанные лица|Связанные компании|Филиалы|Адрес|Регистрация компании|Регистрация в государственных органах|Автопарк компании|Лицензии|Проверки|Суды|Торги|Кредитоспособность|События|Реквизиты)\s*$/iu;
+const nameLabels=[
+  "Юридическое наименование","Наименование организации",
+  "Полное наименование","Полное название","Название организации",
+  "Название"
+];
+const registeredFields=[
+  ["name",nameLabels],["inn",["ИНН"]],["kpp",["КПП"]],["ogrn",["ОГРН"]]
+];
+function labelledValue(line,aliases) {
+  const value=compact(line).replace(/^[\-–—•]\s*/u,"");
+  for(const label of aliases) {
+    if(value.toLowerCase()===label.toLowerCase())
+      return {inline:false,value:""};
+    if(value.toLowerCase().startsWith(label.toLowerCase())){
+      const suffix=value.slice(label.length);
+      // Colon, dash, or explicitly separated column. Prevent matching
+      // longer labels as prefix of unrelated names.
+      if(/^\s*[:：–—-]\s*\S/u.test(suffix))
+        return {inline:true,value:compact(suffix.replace(/^\s*[:：–—-]\s*/u,""))};
+      if(/^\s+\S/u.test(suffix))
+        return {inline:true,value:compact(suffix)};
     }
   }
-  return "";
+  return null;
 }
-/**
- * Only a true 'Реквизиты' heading directly followed by 'Название' counts:
- * stray page navigation, 'О компании', about text, related organisations,
- * mentions in news or links cannot establish registered legal title.
- */
-export function extractSabyPublicRequisites(text) {
-  const lines=linesOf(text),found=new Map();
-  for(let i=0;i<lines.length;i++){
-    if(lines[i]!=="Реквизиты")continue;
-    // The registered-name field must be the very FIRST field after the
-    // heading. A navigation link 'Реквизиты' near an 'О компании' summary
-    // is not the actual registered requisites section.
-    const maxName=Math.min(i+2,lines.length);
-    const name=field(lines,i+1,maxName,[
-      "Название","Полное название","Полное наименование",
-      "Наименование организации","Юридическое наименование"
-    ]);
-    if(!legalName(name))continue;
-    // The requisites block must include both LABELLED INN and KPP, in a
-    // narrow range after the title, never a number scraped elsewhere.
-    const from=i+2;
-    let to=Math.min(i+26,lines.length);
-    for(let j=from;j<to;j++){
-      if(/^(?:Контакты|О компании|Владельцы|Связанные компании|Автопарк компании|Реквизиты|Лицензии)$/iu.test(lines[j])) {
-        to=j;break;
+function normalizedRegistryNumber(value,lengths) {
+  const normalized=compact(value)
+    .replace(/[.;,]\s*$/u,"")
+    .replace(/[\s\u00a0\u202f]/gu,"");
+  return lengths.includes(normalized.length) && /^\d+$/u.test(normalized) ?
+    normalized : "";
+}
+function readRegisteredBlock(lines,from,to) {
+  const observed={name:[],inn:[],kpp:[],ogrn:[]};
+  const offsets={name:-1,inn:-1,kpp:-1,ogrn:-1};
+  for(let i=from;i<to;i++) {
+    for(const [key,aliases] of registeredFields) {
+      const matched=labelledValue(lines[i],aliases);
+      if(!matched)continue;
+      if(offsets[key]===-1)offsets[key]=i-from;
+      let raw=matched.inline?matched.value:compact(lines[i+1]||"");
+      if(!matched.inline) {
+        // Never take the next field or a new section as the value.
+        if(i+1>=to || sectionBoundary.test(raw) ||
+           registeredFields.some(([,other])=>labelledValue(raw,other)))continue;
       }
+      raw=compact(raw);
+      if(key==="name"){
+        if(!legalName(raw))continue;
+      } else {
+        raw=normalizedRegistryNumber(raw,
+          key==="inn"?[10,12]:key==="kpp"?[9]:[13,15]);
+        if(!raw)continue;
+      }
+      if(!observed[key].includes(raw))observed[key].push(raw);
     }
-    const inn=field(lines,from,to,["ИНН"]);
-    const kpp=field(lines,from,to,["КПП"]);
-    const ogrn=field(lines,from,to,["ОГРН"]);
-    if(!sabyInn(inn)||!isKpp(kpp))continue;
+  }
+  return {observed,offsets};
+}
+function candidateBlocks(text) {
+  const lines=linesOf(text),blocks=[];
+  for(let i=0;i<lines.length && blocks.length<24;i++){
+    if(!requisiteHeading.test(lines[i]))continue;
+    const from=i+1;
+    let to=Math.min(lines.length,from+70);
+    for(let j=from;j<to;j++){
+      if(sectionBoundary.test(lines[j])){to=j;break;}
+    }
+    const {observed,offsets}=readRegisteredBlock(lines,from,to);
+    blocks.push({observed,offsets,window:to-from});
+  }
+  return blocks;
+}
+export function diagnoseSabyPublicRequisiteLayout(text) {
+  // Only structural counters and offsets: never leak company text or PII.
+  const blocks=candidateBlocks(text);
+  return {
+    anchors:blocks.length,
+    field_layouts:blocks.slice(0,8).map(({observed,offsets,window})=>({
+      lines_scanned:window,
+      name_offset:offsets.name,inn_offset:offsets.inn,
+      kpp_offset:offsets.kpp,
+      name_values:observed.name.length,
+      inn_values:observed.inn.length,
+      kpp_values:observed.kpp.length,
+      ambiguous:observed.name.length>1||
+        observed.inn.length>1||observed.kpp.length>1
+    }))
+  };
+}
+export function extractSabyPublicRequisites(text) {
+  const found=new Map();
+  for(const {observed} of candidateBlocks(text)) {
+    // Never stitch values from different sections or different companies.
+    // Conflicting duplicate names, INNs or KPPs in a block fail closed.
+    if(observed.name.length!==1||observed.inn.length!==1||
+       observed.kpp.length!==1||observed.ogrn.length>1)continue;
     const candidate={
-      name,inn,kpp,ogrn:/^(?:\d{13}|\d{15})$/.test(ogrn)?ogrn:""
+      name:observed.name[0],inn:sabyInn(observed.inn[0]),
+      kpp:observed.kpp[0],ogrn:observed.ogrn[0]||""
     };
+    if(!candidate.inn)continue;
     found.set(JSON.stringify(candidate),candidate);
   }
   return [...found.values()].slice(0,12);
@@ -202,6 +262,8 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
         };
       });
       diagnostic=safeSabyPublicLoadDiagnostic(observation,status);
+      diagnostic.requisite_layout=diagnoseSabyPublicRequisiteLayout(
+        safeSabyVisibleRequisitesText(observation.body));
       if(status && status!==200)
         return {status:"review",reason:"http_status_not_ok",diagnostic};
       if(diagnostic.challenge_observed)
