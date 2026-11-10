@@ -125,9 +125,11 @@ test("untrusted redirected page never upgrades identity",async()=>{
 
 test("missing KPP never opens a public browser tab",async()=>{
   const {page,stats}=fakeCard({raw:"ИНН "+inn});
-  const result=await verifySabyPublicLegalName(page,inn,full);
+  const result=await verifySabyPublicLegalName(page,inn,full,{
+    discoverProfile:async()=>({status:"missing",candidate:null,count:0})
+  });
   assert.equal(result.ok,false);
-  assert.equal(result.reason,"kpp_unavailable");
+  assert.equal(result.reason,"public_search_missing");
   assert.deepEqual(stats(),{opened:0,closed:0});
 });
 
@@ -164,5 +166,45 @@ test("observed network KPP conflicting with card KPP fails closed",async()=>{
   });
   assert.equal(result.ok,false);
   assert.equal(result.reason,"ambiguous_kpp");
+  assert.deepEqual(stats(),{opened:0,closed:0});
+});
+
+test("first-party public search discovered route must still independently verify requisites",async()=>{
+  const {page,stats}=fakeCard({raw:"ИНН "+inn});
+  const result=await verifySabyPublicLegalName(page,inn,full,{
+    discoverProfile:async()=>({
+      status:"unique",candidate:{
+        url:"https://saby.ru/profile/"+inn+"-"+kpp,kpp
+      },count:1
+    })
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.verifiedName,legal);
+  assert.deepEqual(stats(),{opened:1,closed:1});
+});
+
+test("public search cannot inject untrusted or mismatched candidate KPP",async()=>{
+  const {page,stats}=fakeCard({raw:"ИНН "+inn});
+  for(const candidate of [
+    {url:"https://evil.example/profile/"+inn+"-"+kpp,kpp},
+    {url:"https://saby.ru/profile/6700018767-"+kpp,kpp},
+    {url:"https://saby.ru/profile/"+inn+"-670001002",kpp}
+  ]) {
+    const out=await verifySabyPublicLegalName(page,inn,full,{
+      discoverProfile:async()=>({status:"unique",candidate,count:1})
+    });
+    assert.equal(out.ok,false);
+    assert.equal(out.reason,"public_search_unverified");
+  }
+  assert.deepEqual(stats(),{opened:0,closed:0});
+});
+
+test("public search ambiguity never overrides absence of private KPP",async()=>{
+  const {page,stats}=fakeCard({raw:"ИНН "+inn});
+  const out=await verifySabyPublicLegalName(page,inn,full,{
+    discoverProfile:async()=>({status:"ambiguous",candidate:null,count:2})
+  });
+  assert.equal(out.ok,false);
+  assert.equal(out.reason,"public_search_ambiguous");
   assert.deepEqual(stats(),{opened:0,closed:0});
 });
