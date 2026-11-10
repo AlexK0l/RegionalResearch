@@ -6,6 +6,7 @@ import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { findSabyCompanySearch, chooseSabyCompanyCandidate } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
+import { verifySabyPublicLegalName } from "./sabyRegisteredIdentity.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches,
@@ -218,6 +219,7 @@ async function openCompany(page, row, settings) {
   const cardUntil=startCard+Math.min(18000,settings.timeoutMs);
   let last={ok:false,reason:"not_detail_page",detail:{route:"list"}};
   let reClicked=false;
+  let publicRequisitesAttempted=false;
   while(Date.now()<cardUntil) {
     try {
       const outcome=await verifySabyCard(page,inn,name);
@@ -225,6 +227,25 @@ async function openCompany(page, row, settings) {
       if(outcome.ok) {
         console.info("[SABY_CARD] identity_verified");
         return {inn,name:outcome.verifiedName,verified:true};
+      }
+      // Public Saby requisites show the FULL registered legal title even
+      // when the account-specific contractor card only shows a short alias.
+      // Verify BOTH exact INN/KPP and official name on the same Saby record.
+      // This fallback is limited to one attempt per company and never
+      // upgrades identity from a matching INN or a guessed acronym alone.
+      if(!publicRequisitesAttempted &&
+         outcome.reason==="legal_name_not_verified" &&
+         outcome.detail?.hasScopedInn &&
+         Date.now()-startCard>2000) {
+        publicRequisitesAttempted=true;
+        const official=await verifySabyPublicLegalName(page,inn,name);
+        if(official.ok) {
+          console.info("[SABY_CARD] registered_legal_name_verified");
+          return {inn,name:official.verifiedName,verified:true};
+        }
+        console.warn("[SABY_REQUISITES_DIAG] "+JSON.stringify({
+          reason:official.reason
+        }));
       }
     } catch {
       // Rendering may be in progress during the route transition.
