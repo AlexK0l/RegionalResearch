@@ -128,6 +128,36 @@ export function compareSabyPublicRequisites({
   return result;
 }
 
+// Diagnostic is a small allowlist of counts/flags. Never return arbitrary
+// page content, contacts, cookies, user account details or raw HTML.
+export function safeSabyPublicLoadDiagnostic(snapshot,httpStatus=0) {
+  const body=String(snapshot?.body||"");
+  const lines=body.split(/[\r\n]+/).map(compact).filter(Boolean);
+  const has=reg=>lines.some(x=>reg.test(x));
+  return {
+    http_status:Number.isSafeInteger(httpStatus)?httpStatus:0,
+    visible_text_chars:Math.max(0,Number(snapshot?.bodyChars)||body.length),
+    dom_text_chars:Math.max(0,Number(snapshot?.domTextChars)||0),
+    h1_count:Math.max(0,Number(snapshot?.h1Count)||0),
+    h1_has_text:Boolean(compact(snapshot?.title)),
+    requisites_heading_visible:has(/^Реквизиты$/iu),
+    registered_name_label_visible:has(/^(?:Название|Полное название|Полное наименование|Наименование организации|Юридическое наименование)(?:\s*[:：].*)?$/iu),
+    inn_label_visible:has(/^ИНН(?:\s*[:：].*)?$/iu),
+    kpp_label_visible:has(/^КПП(?:\s*[:：].*)?$/iu),
+    challenge_observed:/(?:captcha|капча|подтвердите.{0,35}(?:человек|робот)|проверка.{0,25}робот|access denied)/iu.test(body)
+  };
+}
+
+// Requisites can be physically near the END of a long page; preserve
+// multiple distinct headings when the public profile contains huge charts.
+export function safeSabyVisibleRequisitesText(text) {
+  const value=String(text||"");
+  if(value.length<=190000)return value;
+  const matches=[...value.matchAll(/(?:^|[\r\n])\s*Реквизиты\s*(?=[\r\n]|$)/gu)];
+  if(!matches.length)return value.slice(-190000);
+  return matches.slice(-12).map(m=>value.slice(m.index,m.index+6500)).join("\n");
+}
+
 /** Read a canonical public profile in a separate tab, preserve original tab.
  * Return only allowlisted fields; never persist HTML, page text, cookies,
  * contact details, or remote addresses.
@@ -140,36 +170,78 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
   if(typeof page?.context!=="function")
     return {status:"review",reason:"browser_context_unavailable"};
   let tab;
+  let diagnostic=null;
   try {
     tab=await page.context().newPage();
-    await tab.goto(url,{
+    const response=await tab.goto(url,{
       waitUntil:"domcontentloaded",timeout:Math.min(20000,timeoutMs)
     });
+    const status=Number(response?.status?.()||0);
     if(!canonicalSabyPublicRoute(tab.url(),inn,kpp))
       return {status:"review",reason:"public_route_untrusted"};
     let observation;
-    for(let attempt=0;attempt<4;attempt++){
+    const maxAttempts=Math.max(2,Math.min(12,Math.ceil(timeoutMs/1000)));
+    for(let attempt=0;attempt<maxAttempts;attempt++){
+      if(!canonicalSabyPublicRoute(tab.url(),inn,kpp))
+        return {status:"review",reason:"public_route_untrusted",diagnostic};
       observation=await tab.evaluate(()=>{
-        const short=String(
-          document.querySelector("h1")?.innerText||"").trim().slice(0,220);
-        // Raw body text is confined to the browser page and transient
-        // parsing; never logged, returned or saved.
+        const headings=[...document.querySelectorAll("h1")];
+        const short=headings.map(e=>String(e.innerText||e.textContent||"").trim())
+          .find(Boolean)||"";
+        // Only public visible text is used for proof. Other DOM text is
+        // reduced to a length number; no raw response is returned/logged.
+        const body=String(document.body?.innerText||"");
+        const candidate=body.length>250000 ?
+          body.slice(0,40000)+"\n"+body.slice(-200000) : body;
         return {
-          title:short,
-          body:String(document.body?.innerText||"").slice(0,200000)
+          title:short.slice(0,220),
+          body:candidate,
+          bodyChars:body.length,
+          domTextChars:String(document.body?.textContent||"").length,
+          h1Count:headings.length
         };
       });
-      const records=extractSabyPublicRequisites(observation.body);
-      const assessment=compareSabyPublicRequisites({
-        expectedInn:inn,expectedKpp:kpp,expectedName:sourceName,
-        publicTitle:observation.title,records,url:tab.url()
-      });
-      if(records.length || attempt===3)return assessment;
-      await tab.waitForTimeout(650);
+      diagnostic=safeSabyPublicLoadDiagnostic(observation,status);
+      if(status && status!==200)
+        return {status:"review",reason:"http_status_not_ok",diagnostic};
+      if(diagnostic.challenge_observed)
+        return {status:"review",reason:"public_page_challenge",diagnostic};
+      const records=extractSabyPublicRequisites(
+        safeSabyVisibleRequisitesText(observation.body));
+      if(records.length){
+        return {
+          ...compareSabyPublicRequisites({
+            expectedInn:inn,expectedKpp:kpp,expectedName:sourceName,
+            publicTitle:observation.title,records,url:tab.url()
+          }),
+          diagnostic
+        };
+      }
+      // Saby public pages can mount sections much later than
+      // DOMContentLoaded. A single navigation-tab scroll can trigger lazy
+      // section mounting, without requesting a different company.
+      if(attempt===3&&typeof tab.getByRole==="function") {
+        try {
+          const tabLink=tab.getByRole("link",{
+            name:"Реквизиты",exact:true
+          });
+          if(await tabLink.count()===1 &&
+             await tabLink.isVisible().catch(()=>false))
+            await tabLink.click({timeout:2500}).catch(()=>{});
+        } catch { /* Optional scroll only; never a verification input. */ }
+      }
+      if(attempt+1<maxAttempts)
+        await tab.waitForTimeout(900);
     }
-    return {status:"review",reason:"requisites_unavailable"};
+    // No proof: make the reason explain which stage was absent.
+    const reason=diagnostic?.visible_text_chars<60?"public_body_empty":
+      !diagnostic?.requisites_heading_visible?"requisites_section_not_rendered":
+      !diagnostic?.registered_name_label_visible?"registered_name_not_rendered":
+      "requisites_unavailable";
+    return {status:"review",reason,diagnostic};
   } catch {
-    return {status:"review",reason:"public_page_unavailable"};
+    return {status:"review",reason:"public_page_unavailable",
+      ...(diagnostic?{diagnostic}:{})};
   } finally {
     if(tab)await tab.close().catch(()=>{});
   }
