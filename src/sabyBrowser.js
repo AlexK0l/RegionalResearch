@@ -7,6 +7,7 @@ import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { findSabyCompanySearch } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
+import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 
@@ -461,7 +462,7 @@ async function ownTrucks(page, settings) {
   return {status:"verified",count:preview.count,vehicles:rows};
 }
 
-export async function collectSabyCompany(page, row, settings = sabyBrowserSettings()) {
+async function collectSabyCompanyAttempt(page, row, settings) {
   const identity=await openCompany(page,row,settings);
   // A verified legal name and INN does not imply detail widgets are hydrated.
   await waitForDetailSections(page, Math.min(7000,settings.timeoutMs||45000));
@@ -483,6 +484,15 @@ export async function collectSabyCompany(page, row, settings = sabyBrowserSettin
       await safeSabySectionDiagnostic(page)));
   }
   return result;
+}
+
+export async function collectSabyCompany(page, row, settings = sabyBrowserSettings()) {
+  return recoverSabyMissingSections(
+    ()=>collectSabyCompanyAttempt(page,row,settings), {
+      wait:()=>delay(650),
+      onRetry:()=>console.warn("[SABY_RETRY] both_detail_sections_missing_reopen_once"),
+      onRetryError:()=>console.warn("[SABY_RETRY] reopen_failed_deferred")
+    });
 }
 
 export async function collectSabyOnce(row,{env=process.env}={}) {
