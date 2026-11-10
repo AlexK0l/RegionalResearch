@@ -3,6 +3,8 @@
 // this was lost during the JS port and broke otherwise authenticated sessions.
 //
 // Never type an INN into credential, verification, or ambiguous fields.
+import {sabyInn,sabySearchResultMatches} from "./sabyEnrichment.js";
+
 const SEARCH_HINTS = /поиск|найти|search|назван|организац|компан|company|ИНН|ОГРН|реквизит|контрагент/i;
 const AUTH_HINTS = /парол|password|username|user.?name|логин|phone or login|телефон или логин|verification|одноразов|captcha|капча|код подтвержд|one.time.code/i;
 const STRICT_SELECTOR = [
@@ -112,4 +114,38 @@ export async function findSabyCompanySearch(page, {
     // Categorization only: do not include PII or dynamic DOM attributes.
     urlCategory:"profile-company-list"
   }};
+}
+
+
+/**
+ * A Saby result list may use a short registered name or trading alias.
+ * A single row with the exact INN can be clicked for further verification,
+ * but this function NEVER establishes identity. The detail card must still
+ * independently verify both the full expected legal name and the INN.
+ * Ambiguous rows (or missing/partial INN matches) remain unselected.
+ */
+export function chooseSabyCompanyCandidate(rows,expectedName,expectedInn) {
+  const inn=sabyInn(expectedInn);
+  if(!inn)return {status:"missing",candidate:null,candidateCount:0,exactNameCount:0};
+  const expression=new RegExp("(?:^|\\D)"+inn+"(?!\\d)");
+  const candidates=(Array.isArray(rows)?rows:[]).filter(item=>
+    item && typeof item.text==="string" && expression.test(item.text)
+  );
+  const exact=candidates.filter(item=>
+    sabySearchResultMatches(expectedName,item.text,inn)
+  );
+  if(exact.length===1) {
+    return {status:"exact_name",candidate:exact[0],
+      candidateCount:candidates.length,exactNameCount:1};
+  }
+  if(exact.length>1) {
+    return {status:"ambiguous",candidate:null,
+      candidateCount:candidates.length,exactNameCount:exact.length};
+  }
+  if(candidates.length===1) {
+    return {status:"unique_inn_only",candidate:candidates[0],
+      candidateCount:1,exactNameCount:0};
+  }
+  return {status:candidates.length?"ambiguous":"missing",candidate:null,
+    candidateCount:candidates.length,exactNameCount:0};
 }
