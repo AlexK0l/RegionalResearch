@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   extractSabyDetailRequisitePair,selectSabyInnCandidate,
+  isSabyBranchResult,SABY_BRANCH_MARKER_SOURCE,
   acceptSabyPublicIdentityFallback,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic
 } from "../src/sabyPublicIdentityFallback.js";
@@ -55,9 +56,13 @@ test("name mismatch can select exactly one search row by INN but remains candida
   const selected=selectSabyInnCandidate([row],inn,name);
   assert.equal(selected.row,row);
   assert.equal(selected.reason,"unique_inn");
-  assert.equal(selectSabyInnCandidate([
-    row,{text:"САПК филиал\n"+inn,rect:{x:320,y:0,w:270,h:80}}
-  ],inn,name).row,null);
+  const withBranch=selectSabyInnCandidate([
+    row,{text:"Филиал САПК, АО\n"+inn,rect:{x:320,y:0,w:270,h:80}}
+  ],inn,name);
+  assert.equal(withBranch.row,row);
+  assert.equal(withBranch.reason,"unique_primary_excluding_branches");
+  assert.equal(withBranch.branches,1);
+  assert.equal(withBranch.count,1);
   assert.equal(selectSabyInnCandidate([
     {text:"Группа компаний 16700018766"}
   ],inn,name).count,0);
@@ -171,4 +176,50 @@ test("page-based fallback calls canonical public verifier only when private KPP 
   assert.equal(failure.ok,false);
   assert.equal(failure.reason,"no_scoped_inn_kpp");
   assert.equal(calls,1);
+});
+
+
+test("Russian branch markers are detected with Unicode boundaries, never ASCII \\b",()=>{
+  const cases=[
+    "Филиал в Смоленске\n"+inn,
+    "ДСК Автобан, АО - филиал в Туле\nИНН "+inn,
+    "Обособленное подразделение ДСК Автобан\n"+inn,
+    "Представительство ДСК Автобан\n"+inn,
+    "Территориальное подразделение ДСК Автобан\n"+inn
+  ];
+  for(const caseText of cases) assert.equal(
+    isSabyBranchResult(caseText,inn),true,caseText);
+  for(const notBranch of [
+    "ДСК Автобан, АО\nИНН "+inn,
+    "ООО Филиалист\nИНН "+inn,
+    "Филиал ДСК Автобан\n7707083893"
+  ])assert.equal(isSabyBranchResult(notBranch,inn),false,notBranch);
+  assert.match(SABY_BRANCH_MARKER_SOURCE,/\\p\{L\}/);
+});
+
+test("multiple independent heads with one INN still require review, not first-hit guessing",()=>{
+  const rows=[
+    {text:"ДСК Автобан, АО\n"+inn,rect:{x:10,y:100,w:200,h:60}},
+    {text:"ДСК Автобан Регион, АО\n"+inn,rect:{x:10,y:200,w:200,h:60}}
+  ];
+  const selected=selectSabyInnCandidate(rows,inn,
+    "АКЦИОНЕРНОЕ ОБЩЕСТВО ДОРОЖНО-СТРОИТЕЛЬНАЯ КОМПАНИЯ АВТОБАН");
+  assert.equal(selected.row,null);
+  assert.equal(selected.reason,"ambiguous");
+  assert.equal(selected.branches,0);
+  assert.equal(selected.count,2);
+  assert.equal(selected.observed,2);
+});
+
+test("entire capped result window and branch-only result fail closed",()=>{
+  const rows=Array.from({length:20},(_,i)=>({
+    text:"Филиал "+i+" ДСК Автобан\n"+inn,
+    rect:{x:0,y:i*30,w:200,h:28}
+  }));
+  const capped=selectSabyInnCandidate(rows,inn,name);
+  assert.equal(capped.reason,"result_window_full");
+  assert.equal(capped.row,null);
+  const justBranch=selectSabyInnCandidate(rows.slice(0,2),inn,name);
+  assert.equal(justBranch.reason,"branch_only");
+  assert.equal(justBranch.row,null);
 });

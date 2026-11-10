@@ -61,12 +61,37 @@ export function extractSabyDetailRequisitePair(text,expectedInn) {
   if(distinct.size!==1)return {reason:"kpp_ambiguous",kpp:""};
   return {reason:"unique_requisite_pair",kpp:[...distinct][0]};
 }
+// JS \b recognises ASCII word characters, NOT Cyrillic letters. A former
+// \bфилиал\b search silently failed to identify real Russian branch rows.
+// Use Unicode-letter boundaries on first-party display text instead. Neither
+// branch filtering nor row count is legal-company proof by itself.
+export const SABY_BRANCH_MARKER_SOURCE=String.raw`(?:^|[^\p{L}])(?:филиал(?:а|ы|ов|е|у)?|подразделени(?:е|я|й|и|ю|ем)|представительств(?:о|а)|обособленн(?:ое|ого|ые)\s+подразделени(?:е|я|й|я))(?=$|[^\p{L}])`;
+const branchMarker=new RegExp(SABY_BRANCH_MARKER_SOURCE,"iu");
+export function isSabyBranchResult(text,inn) {
+  const actualInn=sabyInn(inn);
+  const display=String(text||"");
+  if(!actualInn || !new RegExp("(?:^|\\D)"+actualInn+"(?!\\d)").test(display))
+    return false;
+  const before=display.split(actualInn,1)[0].slice(0,400);
+  return branchMarker.test(before);
+}
 export function selectSabyInnCandidate(rows,inn,expectedName) {
-  const result=auditSelectSearchResult(rows,inn,expectedName);
-  // Ambiguity is never resolved by first hit / source-name similarity.
+  const all=Array.isArray(rows)?rows:[];
+  // The DOM detector caps results at 20. A full result window cannot
+  // prove uniqueness because later results may be hidden by that cap.
+  if(all.length>=20)
+    return {row:null,reason:"result_window_full",
+      count:all.length,observed:all.length,branches:0};
+  const main=all.filter(row=>!isSabyBranchResult(row?.text,inn));
+  const result=auditSelectSearchResult(main,inn,expectedName);
   return {
-    row:result.row||null,reason:result.kind,
-    count:result.count
+    row:result.row||null,
+    reason:!main.length&&all.length?"branch_only":
+      result.row&&main.length<all.length?"unique_primary_excluding_branches":
+        result.kind,
+    count:result.count,
+    observed:all.length,
+    branches:all.length-main.length
   };
 }
 export function acceptSabyPublicIdentityFallback({

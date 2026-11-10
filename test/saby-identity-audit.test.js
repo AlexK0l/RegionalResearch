@@ -194,7 +194,8 @@ test("audit sees legal-form-free aliases by exact INN without changing strict St
     "../src/sabyBrowser.js",import.meta.url)),"utf8");
   const auditor=fs.readFileSync(fileURLToPath(new URL(
     "../src/sabyIdentityAuditBrowser.js",import.meta.url)),"utf8");
-  assert.match(browser,/findResultRows\(page, inn, \{includeInnOnly=false\}=\{\}\)/);
+  assert.match(browser,/includeInnOnly=false,includeBranches=false/);
+  assert.match(browser,/branchSource:SABY_BRANCH_MARKER_SOURCE/);
   assert.match(browser,/legal\.test\(text\) \|\| includeInnOnly/);
   assert.match(auditor,/findResultRows\(page,inn,\{includeInnOnly:true\}\)/);
   // Strict Stage12 remains the default. Only the explicit opt-in may

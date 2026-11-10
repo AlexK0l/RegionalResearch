@@ -11,7 +11,7 @@ import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 import {selectSabyInnCandidate,verifySabyPublicNameFallback,
-  safeSabyAliasDiagnostic} from "./sabyPublicIdentityFallback.js";
+  safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -137,10 +137,13 @@ export async function safeSabySectionDiagnostic(page) {
   return out;
 }
 
-export async function findResultRows(page, inn, {includeInnOnly=false}={}) {
-  return page.evaluate(({inn,includeInnOnly}) => {
+export async function findResultRows(page, inn, {
+  includeInnOnly=false,includeBranches=false
+}={}) {
+  return page.evaluate(({inn,includeInnOnly,includeBranches,branchSource}) => {
     const norm = s => String(s || "").replace(/\s+/g," ").trim();
     const matchesInn = s => new RegExp("(^|\\D)" + inn + "(?!\\d)").test(s);
+    const branchPattern=new RegExp(branchSource,"iu");
     const visible = e => {
       const r=e.getBoundingClientRect(), s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.visibility!=="hidden" && s.display!=="none";
@@ -162,7 +165,7 @@ export async function findResultRows(page, inn, {includeInnOnly=false}={}) {
         if (r.width<190 || r.height<24 || !matchesInn(text)) continue;
         if ((legal.test(text) || includeInnOnly) &&
             text.replace(inn,"").trim().length>=5) {
-          if (/\b(?:филиал|подразделение|представительство)\b/i.test(
+          if (!includeBranches && branchPattern.test(
             text.split(inn,1)[0])) break;
           relevant.push({text:rawText,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
           break;
@@ -172,7 +175,8 @@ export async function findResultRows(page, inn, {includeInnOnly=false}={}) {
     return relevant.filter((x,i) => !relevant.some((y,j) =>
       j<i && Math.abs(x.rect.x-y.rect.x)<15 &&
       Math.abs(x.rect.y-y.rect.y)<5)).slice(0,20);
-  }, {inn,includeInnOnly});
+  }, {inn,includeInnOnly,includeBranches,
+    branchSource:SABY_BRANCH_MARKER_SOURCE});
 }
 
 async function openCompany(page, row, settings) {
@@ -197,8 +201,11 @@ async function openCompany(page, row, settings) {
   const publicFallback=settings.publicIdentityFallback===true;
   let rows=[],selection="not_found";
   async function candidates() {
+    // For optional fallback retain branch rows for Node-side
+    // classification, then exclude them BEFORE opening any candidate.
+    // Strict production search still excludes branches.
     const all=await findResultRows(page,inn,{
-      includeInnOnly:publicFallback
+      includeInnOnly:publicFallback,includeBranches:publicFallback
     });
     if(!publicFallback) {
       const strict=all.filter(item=>
@@ -212,8 +219,12 @@ async function openCompany(page, row, settings) {
   while(Date.now()<until) {
     const selected=await candidates();
     selection=selected.reason;
-    if(["ambiguous","ambiguous_exact"].includes(selected.reason))
+    if(["ambiguous","ambiguous_exact","result_window_full"].includes(selected.reason)) {
+      if(publicFallback)console.warn("[SABY_SEARCH_AMBIGUITY_DIAG] "+
+        JSON.stringify({reason:selected.reason,observed:selected.observed||0,
+          primary:selected.count||0,branches:selected.branches||0}));
       throw new SabyReview("Saby: неоднозначный результат по ИНН");
+    }
     rows=selected.row?[selected.row]:[];
     if(rows.length===1)break;
     await delay(450);
