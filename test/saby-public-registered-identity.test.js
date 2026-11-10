@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   sabyPublicProfileRoute,canonicalSabyPublicRoute,
   extractSabyPublicRequisites,compareSabyPublicRequisites,
-  verifyPublicSabyIdentity
+  verifyPublicSabyIdentity,safeSabyPublicLoadDiagnostic,
+  safeSabyVisibleRequisitesText
 } from "../src/sabyPublicRegisteredIdentity.js";
 
 const inn="7725104641",kpp="504301001",ogrn="1027739058258";
@@ -131,4 +132,119 @@ test("public browser redirects and missing registered records never verify",asyn
     assert.equal(result.status,"review");
     assert.equal(stats().closed,1);
   }
+});
+
+
+test("safe public diagnostic exposes no arbitrary content and distinguishes missing UI",()=>{
+  const metrics=safeSabyPublicLoadDiagnostic({
+    body:"Тест\nИНН\n7725104641\nРеквизиты\nКонтакты\nemail@example.com",
+    bodyChars:68,domTextChars:500,h1Count:1,title:"",
+  },200);
+  assert.equal(metrics.http_status,200);
+  assert.equal(metrics.h1_has_text,false);
+  assert.equal(metrics.requisites_heading_visible,true);
+  assert.equal(metrics.registered_name_label_visible,false);
+  assert.equal(metrics.inn_label_visible,true);
+  assert.equal(metrics.kpp_label_visible,false);
+  assert.equal(JSON.stringify(metrics).includes("7725104641"),false);
+  assert.equal(JSON.stringify(metrics).includes("email@example.com"),false);
+});
+
+test("large Saby profile preserves terminal registered requisites instead of truncating",()=>{
+  const huge="Статистика\n"+"Данные компании\n".repeat(18000)+text;
+  assert.ok(huge.length>190000);
+  assert.deepEqual(extractSabyPublicRequisites(
+    safeSabyVisibleRequisitesText(huge)),[{name:full,inn,kpp,ogrn}]);
+});
+
+test("public Saby profile waits for lazy-loaded requisites after DOMContentLoaded",async()=>{
+  let opened=0,closed=0,calls=0,waits=0;
+  const page={context:()=>({newPage:async()=>{
+    opened++;
+    return {
+      goto:async()=>({status:()=>200}),
+      url:()=>route,
+      evaluate:async()=>{
+        calls++;
+        return {
+          body:calls<=2?"Загрузка данных компании\n":
+            "ДСК Автобан\n"+text,
+          title:calls<=2?"":short,
+          bodyChars:calls<=2?23:500,
+          h1Count:calls<=2?0:1
+        };
+      },
+      waitForTimeout:async()=>{waits++;},
+      close:async()=>{closed++;}
+    };
+  }})};
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source);
+  assert.equal(result.status,"verified");
+  assert.equal(result.official_inn,inn);
+  assert.equal(result.diagnostic.h1_has_text,true);
+  assert.equal(calls,3);
+  assert.equal(waits,2);
+  assert.equal(opened,1);
+  assert.equal(closed,1);
+});
+
+test("public Saby page lacking DOM text reports load failure with no false verification",async()=>{
+  let closed=0;
+  const page={context:()=>({newPage:async()=>({
+    goto:async()=>({status:()=>200}),
+    url:()=>route,
+    evaluate:async()=>({body:"",title:"",bodyChars:0,
+      domTextChars:300,h1Count:0}),
+    waitForTimeout:async()=>{},
+    close:async()=>{closed++;}
+  })})};
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source,
+    {timeoutMs:3000});
+  assert.equal(result.status,"review");
+  assert.equal(result.reason,"public_body_empty");
+  assert.equal(result.diagnostic.dom_text_chars,300);
+  assert.equal(result.diagnostic.visible_text_chars,0);
+  assert.equal(closed,1);
+});
+
+test("public Saby page with HTTP error or challenge never verifies",async()=>{
+  for(const [status,body,reason] of [
+    [403,"", "http_status_not_ok"],
+    [200,"Проверка, что вы не робот. captcha","public_page_challenge"]
+  ]) {
+    let closed=0;
+    const page={context:()=>({newPage:async()=>({
+      goto:async()=>({status:()=>status}),
+      url:()=>route,
+      evaluate:async()=>({body,title:"",bodyChars:body.length}),
+      waitForTimeout:async()=>{},
+      close:async()=>{closed++;}
+    })})};
+    const result=await verifyPublicSabyIdentity(page,inn,kpp,source,
+      {timeoutMs:3000});
+    assert.equal(result.status,"review");
+    assert.equal(result.reason,reason);
+    assert.equal(closed,1);
+  }
+});
+
+test("public Saby missing registered name label is reported separately",async()=>{
+  let closed=0;
+  const body="ДСК Автобан\nРеквизиты\nИНН\n"+inn+
+    "\nКПП\n"+kpp+"\nОГРН\n"+ogrn;
+  const page={context:()=>({newPage:async()=>({
+    goto:async()=>({status:()=>200}),
+    url:()=>route,
+    evaluate:async()=>({body,title:short,bodyChars:body.length}),
+    waitForTimeout:async()=>{},
+    close:async()=>{closed++;}
+  })})};
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source,
+    {timeoutMs:3000});
+  assert.equal(result.status,"review");
+  assert.equal(result.reason,"registered_name_not_rendered");
+  assert.equal(result.diagnostic.requisites_heading_visible,true);
+  assert.equal(result.diagnostic.inn_label_visible,true);
+  assert.equal(result.diagnostic.kpp_label_visible,true);
+  assert.equal(closed,1);
 });
