@@ -52,7 +52,10 @@ export function extractSabyPublicRequisites(text) {
   const lines=linesOf(text),found=new Map();
   for(let i=0;i<lines.length;i++){
     if(lines[i]!=="Реквизиты")continue;
-    const maxName=Math.min(i+6,lines.length);
+    // The registered-name field must be the very FIRST field after the
+    // heading. A navigation link 'Реквизиты' near an 'О компании' summary
+    // is not the actual registered requisites section.
+    const maxName=Math.min(i+2,lines.length);
     const name=field(lines,i+1,maxName,[
       "Название","Полное название","Полное наименование",
       "Наименование организации","Юридическое наименование"
@@ -60,7 +63,13 @@ export function extractSabyPublicRequisites(text) {
     if(!legalName(name))continue;
     // The requisites block must include both LABELLED INN and KPP, in a
     // narrow range after the title, never a number scraped elsewhere.
-    const from=i+2,to=Math.min(i+36,lines.length);
+    const from=i+2;
+    let to=Math.min(i+26,lines.length);
+    for(let j=from;j<to;j++){
+      if(/^(?:Контакты|О компании|Владельцы|Связанные компании|Автопарк компании|Реквизиты|Лицензии)$/iu.test(lines[j])) {
+        to=j;break;
+      }
+    }
     const inn=field(lines,from,to,["ИНН"]);
     const kpp=field(lines,from,to,["КПП"]);
     const ogrn=field(lines,from,to,["ОГРН"]);
