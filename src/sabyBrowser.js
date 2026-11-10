@@ -7,6 +7,7 @@ import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { findSabyCompanySearch, chooseSabyCompanyCandidate } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { verifySabyPublicLegalName } from "./sabyRegisteredIdentity.js";
+import { watchSabyKppNetwork } from "./sabyKppNetwork.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches,
@@ -174,6 +175,8 @@ async function openCompany(page, row, settings) {
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия");
+  const kppNetwork=watchSabyKppNetwork(page,inn);
+  try {
   await page.goto(BASE, {waitUntil:"domcontentloaded",timeout:settings.timeoutMs});
   if (!isSabyProfileUrl(page.url())) throw new SabyReview("Переадресация вне Saby");
   const found=await findSabyCompanySearch(page,{
@@ -238,7 +241,15 @@ async function openCompany(page, row, settings) {
          outcome.detail?.hasScopedInn &&
          Date.now()-startCard>2000) {
         publicRequisitesAttempted=true;
-        const official=await verifySabyPublicLegalName(page,inn,name);
+        const observed=await kppNetwork.snapshot();
+        console.info("[SABY_KPP_DIAG] "+JSON.stringify({
+          api_responses:observed.responses,
+          json_parsed:observed.parsed,
+          exact_inn_kpp_candidates:observed.kpps.length
+        }));
+        const official=await verifySabyPublicLegalName(page,inn,name,{
+          kppHints:observed.kpps
+        });
         if(official.ok) {
           console.info("[SABY_CARD] registered_legal_name_verified");
           return {inn,name:official.verifiedName,verified:true};
@@ -276,6 +287,9 @@ async function openCompany(page, row, settings) {
     navigationObserved:page.url()!==listingUrl
   })));
   throw new SabyReview("Saby: карточка не подтверждена: "+last.reason);
+  } finally {
+    kppNetwork.stop();
+  }
 }
 
 async function ownContacts(page) {
