@@ -26,18 +26,24 @@ export function sabyKppFromCardText(text,expectedInn) {
     const line=lines[i];
     const sameLine=line.match(/ИНН\s*[/\\]\s*КПП\s*[:№#—-]?\s*(\d{10}|\d{12})\s*[/\\]\s*(\d{9})/i);
     if(sameLine?.[1]===inn)matches.add(sameLine[2]);
+    const inlineInn=/^ИНН\s*[:№#—-]?\s*(\d{10}|\d{12})$/i.exec(line);
     const marker=/^ИНН(?:\s*[:№#—-])?$/i.test(line) ||
       /^ИНН\s*[/\\]\s*КПП(?:\s*[:№#—-])?$/i.test(line);
-    if(!marker)continue;
+    if(!marker && !inlineInn)continue;
     const first=lines[i+1]||"";
-    const combined=first.match(/^(\d{10}|\d{12})\s*[/\\]\s*(\d{9})$/);
+    const combined=marker ? first.match(/^(\d{10}|\d{12})\s*[/\\]\s*(\d{9})$/) : null;
     if(combined?.[1]===inn)matches.add(combined[2]);
-    if(first!==inn)continue;
-    for(let j=i+2;j<Math.min(i+7,lines.length);j++) {
+    const observedInn=inlineInn?.[1]||(marker?first:"");
+    if(observedInn!==inn)continue;
+    const start=inlineInn?i+1:i+2;
+    for(let j=start;j<Math.min(i+8,lines.length);j++) {
+      const inlineKpp=/^КПП\s*[:№#—-]?\s*(\d{9})$/i.exec(lines[j]);
+      if(inlineKpp)matches.add(inlineKpp[1]);
       if(/^КПП(?:\s*[:№#—-])?$/i.test(lines[j]) &&
          kppValid(lines[j+1]))matches.add(lines[j+1]);
       // Stop at the next organization's registration block.
-      if(/^ИНН(?:\s*[:№#—-])?$/i.test(lines[j]))break;
+      if(/^ИНН(?:\s*[:№#—-])?$/i.test(lines[j])||
+         /^ИНН\s*[:№#—-]?\s*(?:\d{10}|\d{12})$/i.test(lines[j]))break;
     }
   }
   return matches.size===1?[...matches][0]:"";
