@@ -106,21 +106,21 @@ export async function runSabyStage12({
                 ? record.trucks.status : "unknown"
             }));
           } else {
-          const applied=applySabyEnrichment(row,record,
-            {phoneOwners,transport:entry.transport});
-          if(applied.status==="ok") {
-            completed.add(inn);
-            stats.verified++;
-            if(applied.phoneAdded) stats.phonesAdded++;
-            if(applied.transportAdded) stats.transportsAdded++;
-            if(applied.verifiedTrucks!==null)
-              stats.vehiclesVerified+=applied.verifiedTrucks;
-            if(record.errors?.length) stats.partialResults++;
-            consecutive=0;
-          } else {
-            stats.review++;
-            consecutive++;
-          }
+            const applied=applySabyEnrichment(row,record,
+              {phoneOwners,transport:entry.transport});
+            if(applied.status==="ok") {
+              completed.add(inn);
+              stats.verified++;
+              if(applied.phoneAdded) stats.phonesAdded++;
+              if(applied.transportAdded) stats.transportsAdded++;
+              if(applied.verifiedTrucks!==null)
+                stats.vehiclesVerified+=applied.verifiedTrucks;
+              if(record.errors?.length) stats.partialResults++;
+              consecutive=0;
+            } else {
+              stats.review++;
+              consecutive++;
+            }
           }
         } catch(error) {
           if(signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
