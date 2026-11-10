@@ -108,7 +108,7 @@ export function sabyOfficialNameFromRequisites(text,expectedInn,expectedKpp,expe
  * name may upgrade the name check. Never log source HTML, URL or credentials.
  */
 export async function verifySabyPublicLegalName(
-  page,inn,expectedName,{timeoutMs=13000}={}
+  page,inn,expectedName,{timeoutMs=13000,kppHints=[]}={}
 ) {
   const expectedInn=sabyInn(inn);
   if(!expectedInn||!expectedName)return {ok:false,reason:"invalid_expected_identity"};
@@ -126,7 +126,14 @@ export async function verifySabyPublicLegalName(
     const fromLink=sabyKppFromProfileLinks(hints?.links,expectedInn);
     if(fromText && fromLink && fromText!==fromLink)
       return {ok:false,reason:"ambiguous_kpp"};
-    kpp=fromText||fromLink;
+    const fromNetwork=new Set((Array.isArray(kppHints)?kppHints:[])
+      .filter(kppValid));
+    if(fromNetwork.size>1)return {ok:false,reason:"ambiguous_kpp"};
+    const networkKpp=fromNetwork.size===1?[...fromNetwork][0]:"";
+    if(networkKpp && ((fromText && fromText!==networkKpp) ||
+       (fromLink && fromLink!==networkKpp)))
+      return {ok:false,reason:"ambiguous_kpp"};
+    kpp=fromText||fromLink||networkKpp;
   } catch {return {ok:false,reason:"requisite_read_failed"};}
   const url=sabyPublicCompanyUrl(expectedInn,kpp);
   if(!url)return {ok:false,reason:"kpp_unavailable"};
