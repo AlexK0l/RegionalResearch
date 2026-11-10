@@ -21,7 +21,8 @@
     "integrate:reviewed:v8": "node scripts/integrate-reviewed-v8-offline.js",
     "finalize:offline": "node scripts/finalize-research-offline.js",
     "smoke:xlsx": "node scripts/smoke-reference-xlsx.js",
-    "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js"
+    "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js",
+    "saby:identity-audit": "node --env-file-if-exists=.env scripts/saby-identity-audit.js"
   },
   "engines": {
     "node": ">=22"
