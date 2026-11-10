@@ -92,7 +92,9 @@ export function auditLabelledInns(text) {
   return [...inns];
 }
 export function auditSearchName(rowText,inn) {
-  const first=String(rowText||"").split(/[\r\n|·]/,1)[0];
+  const beforeInn=String(rowText||"").split(String(inn),1)[0];
+  const first=beforeInn.split(/[\r\n|·]/,1)[0]
+    .replace(/(?:^|\s)ИНН\s*[:№#-]?\s*$/i,"").trim();
   const result=fieldLimit(first);
   return result===String(inn)?"":result;
 }
