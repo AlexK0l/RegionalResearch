@@ -69,8 +69,10 @@ export const SABY_BRANCH_MARKER_SOURCE=String.raw`(?:^|[^\p{L}])(?:филиал(
 const branchMarker=new RegExp(SABY_BRANCH_MARKER_SOURCE,"iu");
 export function isSabyBranchResult(text,inn) {
   const actualInn=sabyInn(inn);
-  if(!actualInn)return false;
-  const before=String(text||"").split(actualInn,1)[0].slice(0,400);
+  const display=String(text||"");
+  if(!actualInn || !new RegExp("(?:^|\\D)"+actualInn+"(?!\\d)").test(display))
+    return false;
+  const before=display.split(actualInn,1)[0].slice(0,400);
   return branchMarker.test(before);
 }
 export function selectSabyInnCandidate(rows,inn,expectedName) {
