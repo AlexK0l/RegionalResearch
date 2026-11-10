@@ -24,6 +24,7 @@
     "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js",
     "saby:identity-audit": "node --env-file-if-exists=.env scripts/saby-identity-audit.js",
     "saby:identity-probe": "node --env-file-if-exists=.env scripts/saby-identity-probe.js",
+    "saby:public-requisites-check": "node --env-file-if-exists=.env scripts/saby-public-requisites-check.js",
     "saby:missing-inn-queue": "node --env-file-if-exists=.env scripts/saby-missing-inn-queue.js"
   },
   "engines": {
