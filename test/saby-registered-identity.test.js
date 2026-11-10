@@ -138,3 +138,31 @@ test("public Saby card with unrelated registered legal name stays review",async(
   assert.equal(result.reason,"official_name_not_confirmed");
   assert.deepEqual(stats(),{opened:1,closed:1});
 });
+
+test("when account card lacks KPP, first-party observed INN/KPP may locate official Saby requisites",async()=>{
+  const {page,stats}=fakeCard({raw:"ИНН "+inn});
+  const result=await verifySabyPublicLegalName(page,inn,full,{kppHints:[kpp]});
+  assert.equal(result.ok,true);
+  assert.equal(result.verifiedName,legal);
+  assert.deepEqual(stats(),{opened:1,closed:1});
+});
+
+test("conflicting candidate KPPs cannot verify legal identity",async()=>{
+  const {page,stats}=fakeCard({raw:"ИНН "+inn});
+  const result=await verifySabyPublicLegalName(page,inn,full,{
+    kppHints:[kpp,"670001002"]
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"ambiguous_kpp");
+  assert.deepEqual(stats(),{opened:0,closed:0});
+});
+
+test("observed network KPP conflicting with card KPP fails closed",async()=>{
+  const {page,stats}=fakeCard();
+  const result=await verifySabyPublicLegalName(page,inn,full,{
+    kppHints:["670001002"]
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"ambiguous_kpp");
+  assert.deepEqual(stats(),{opened:0,closed:0});
+});
