@@ -1,6 +1,7 @@
 // Saby company identity gate. Contact and transport sections are NOT proof
 // of identity: they may load later, or be absent entirely.
 import { sabyInn, sabyNameMatches } from "./sabyEnrichment.js";
+import { sabyOfficialNameFromRequisites } from "./sabyRegisteredIdentity.js";
 
 export function sabyCardRoute(url) {
   try {
@@ -19,9 +20,11 @@ export function assessSabyCardEvidence(url, inn, expectedName, evidence) {
   const actualInn = sabyInn(inn);
   const headers = Array.isArray(evidence?.headings) ? evidence.headings : [];
   const intro = Array.isArray(evidence?.introLines) ? evidence.introLines : [];
+  const requisites=Array.isArray(evidence?.requisiteNames) ? evidence.requisiteNames : [];
   const matchingHeader = headers.find(line=>sabyNameMatches(expectedName,line));
   const matchingIntro = intro.slice(0,60).find(line=>sabyNameMatches(expectedName,line));
-  const matchingName=matchingHeader||matchingIntro||"";
+  const matchingRequisites=requisites.find(line=>sabyNameMatches(expectedName,line));
+  const matchingName=matchingHeader||matchingIntro||matchingRequisites||"";
   const hasScopedInn=Boolean(evidence?.scopedLabeledInn || evidence?.scopedExactInn);
   const hasInn=Boolean(evidence?.bodyLabeledInn || hasScopedInn);
   const detail={
@@ -54,7 +57,7 @@ export async function verifySabyCard(page,inn,expectedName) {
     const labeled=new RegExp(
       "(?:ИНН|INN)(?:\\s*[/\\\\]\\s*КПП)?\\s*[:№#—-]?\\s*"+inn+"(?!\\d)","i"
     );
-    const main=(document.body?.innerText||"").slice(0,65000);
+    const main=(document.body?.innerText||"").slice(0,130000);
     const rootBlocks=[...document.querySelectorAll(
       'main,article,[role="main"],[class*="company" i],' +
       '[class*="card" i],[class*="overview" i],[class*="info" i]'
@@ -79,8 +82,17 @@ export async function verifySabyCard(page,inn,expectedName) {
     // Require a complete line near the top of the actual company detail.
     const introLines=main.slice(0,6500).split(/[\r\n]+/)
       .map(normalize).filter(Boolean).slice(0,80);
+    // Return only bounded candidate requisites sections, not the company
+    // page, cookies or detailed contacts. Node validates the labelled INN
+    // and exact legal name before accepting any such section.
+    const allLines=main.split(/[\r\n]+/).map(normalize).filter(Boolean);
+    const requisiteSections=[];
+    for(let i=0;i<allLines.length && requisiteSections.length<3;i++){
+      if(!/^(?:Реквизиты|Регистрационные данные)$/i.test(allLines[i]))continue;
+      requisiteSections.push(allLines.slice(i,i+48).join("\n"));
+    }
     return {
-      headings,introLines,
+      headings,introLines,requisiteSections,
       bodyLabeledInn:labeled.test(normalize(main)),
       scopedLabeledInn,scopedExactInn,
       contactSectionPresent:/\bКонтакты\b/i.test(main),
@@ -88,7 +100,16 @@ export async function verifySabyCard(page,inn,expectedName) {
         (rootBlocks.length>0 || headerElements.length>0)
     };
   },{inn});
-  return assessSabyCardEvidence(url,inn,expectedName,evidence);
+  const requisiteNames=[];
+  for(const section of evidence.requisiteSections||[]){
+    const verified=sabyOfficialNameFromRequisites(
+      section,inn,"",expectedName);
+    if(verified)requisiteNames.push(verified);
+  }
+  // No raw requisite snippet is ever returned to the pipeline/logs.
+  return assessSabyCardEvidence(url,inn,expectedName,{
+    ...evidence,requisiteSections:undefined,requisiteNames
+  });
 }
 
 export function safeCardDiagnostic(assessment, extra={}) {
