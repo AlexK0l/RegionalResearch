@@ -1,13 +1,18 @@
-# Saby on Time4VPS: headed Chromium on a managed Xvfb display
+# Saby on Time4VPS: optional headed Chromium / Xvfb fallback
 
 ## Verified behavior (2026-11-10)
 
-- Linux Chromium with `--headless`: automatic sign-in and INN identity verification worked, but the contractor detail did not show either contact or fleet widgets.
-- The same account, browser cache and company in headed Chromium with `DISPLAY=:99` extracted both a phone and fleet data (`contactUpdates:1`, `transportUpdates:1`).
-- Therefore this VPS should use headed Chromium on the virtual X display. VNC is only a debugging aid, not a runtime dependency.
+- A first headless attempt unexpectedly missed both contact and fleet widgets, while a headed browser succeeded. This was **not** a stable browser-mode restriction.
+- Subsequent controlled three-mode checks (headless shell, full Chromium new headless, and headed with Xvfb), including a fresh authenticated browser profile, extracted the same phone and 31 trucks in every mode.
+- The production-code Saby-only smoke without `DISPLAY` also succeeded with contactUpdates=1, transportUpdates=1 and review=0.
+- **Use `SABY_HEADLESS=true` by default on this VPS.** This file documents the optional Xvfb fallback only if a new evidence-based diagnosis requires headed Chromium. VNC is a debugging aid, not a runtime dependency.
 - If the required widgets do not render, Stage 12 must defer the company rather than incorrectly recording a completed Saby enrichment.
 
-## Installation on the already configured VPS
+## Optional headed fallback installation
+
+**Do not apply these Xvfb steps to the already working headless VPS.**
+They deliberately set `SABY_HEADLESS=false` and override `DISPLAY`, and are
+only for reverting to a controlled graphical-mode diagnostic if needed.
 
 Do not run the one-time `install.sh` again. Make sure no research is running and download completed outputs before restarting.
 
