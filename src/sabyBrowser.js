@@ -10,6 +10,8 @@ import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
+import {selectSabyInnCandidate,verifySabyPublicNameFallback,
+  safeSabyAliasDiagnostic} from "./sabyPublicIdentityFallback.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -28,7 +30,10 @@ export function sabyBrowserSettings(env = process.env) {
     headless: String(env.SABY_HEADLESS || "false").toLowerCase() === "true",
     channel: String(env.SABY_BROWSER_CHANNEL || "").trim(),
     timeoutMs: bound(env.SABY_COMPANY_TIMEOUT_MS, 15000, 90000, 45000),
-    delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500)
+    delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500),
+    // First enabled in explicitly selected smoke tests. Production still
+    // rejects abbreviated aliases unless this opt-in is set.
+    publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true"
   };
 }
 
@@ -189,19 +194,34 @@ async function openCompany(page, row, settings) {
   await found.field.fill(inn);
   await found.field.press("Enter");
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
-  let rows=[];
-  while(Date.now()<until) {
-    rows=(await findResultRows(page,inn)).filter(item=>
-      sabySearchResultMatches(name,item.text,inn));
-    if(rows.length===1) break;
-    if(rows.length>1) {
-      // Search results sometimes duplicate DOM wrappers at the same position;
-      // physical row de-duplication is done in findResultRows.
-      throw new SabyReview("Saby: неоднозначный результат по ИНН");
+  const publicFallback=settings.publicIdentityFallback===true;
+  let rows=[],selection="not_found";
+  async function candidates() {
+    const all=await findResultRows(page,inn,{
+      includeInnOnly:publicFallback
+    });
+    if(!publicFallback) {
+      const strict=all.filter(item=>
+        sabySearchResultMatches(name,item.text,inn));
+      return {row:strict.length===1?strict[0]:null,
+        count:strict.length,reason:strict.length>1?"ambiguous":
+          strict.length===1?"strict_name":"not_found"};
     }
+    return selectSabyInnCandidate(all,inn,name);
+  }
+  while(Date.now()<until) {
+    const selected=await candidates();
+    selection=selected.reason;
+    if(["ambiguous","ambiguous_exact"].includes(selected.reason))
+      throw new SabyReview("Saby: неоднозначный результат по ИНН");
+    rows=selected.row?[selected.row]:[];
+    if(rows.length===1)break;
     await delay(450);
   }
-  if(rows.length!==1) throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
+  if(rows.length!==1)
+    throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
+  if(publicFallback)
+    console.info("[SABY_SEARCH_RESULT] "+selection+"_requires_card_verification");
   const r=rows[0].rect;
   const listingUrl=page.url();
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
@@ -209,6 +229,7 @@ async function openCompany(page, row, settings) {
   const cardUntil=startCard+Math.min(18000,settings.timeoutMs);
   let last={ok:false,reason:"not_detail_page",detail:{route:"list"}};
   let reClicked=false;
+  let publicFallbackAttempted=false;
   while(Date.now()<cardUntil) {
     try {
       const outcome=await verifySabyCard(page,inn,name);
@@ -223,16 +244,35 @@ async function openCompany(page, row, settings) {
         detail:{route:sabyCardRoute(page.url())}};
     }
 
+    // Once per candidate, after the detail has hydrated enough to show
+    // its own scoped INN. A mismatched title is allowed ONLY if registered
+    // name, exact INN and KPP on the public profile are independently tied
+    // to this authenticated private card. The fallback never accepts a
+    // mere unique-INN search row, and is disabled by default.
+    if(publicFallback && !publicFallbackAttempted &&
+       Date.now()-startCard>2800 &&
+       last.reason==="legal_name_not_verified" &&
+       last.detail?.hasScopedInn===true) {
+      publicFallbackAttempted=true;
+      const checked=await verifySabyPublicNameFallback(
+        page,inn,name,last);
+      console.info("[SABY_PUBLIC_ALIAS_DIAG] "+
+        JSON.stringify(safeSabyAliasDiagnostic(checked)));
+      if(checked.ok){
+        console.info("[SABY_CARD] registered_alias_verified");
+        return checked.identity;
+      }
+    }
+
     // Some Saby layouts do not handle clicks near the row's top edge.
     // One bounded second click is permitted only if the SAME unique
     // company still appears in the search results on the original route.
     if(!reClicked && Date.now()-startCard>4500 &&
        page.url()===listingUrl && sabyCardRoute(page.url())==="list") {
       reClicked=true;
-      const again=(await findResultRows(page,inn)).filter(item=>
-        sabySearchResultMatches(name,item.text,inn));
-      if(again.length===1) {
-        const box=again[0].rect;
+      const again=await candidates();
+      if(again.row && !["ambiguous","ambiguous_exact"].includes(again.reason)) {
+        const box=again.row.rect;
         console.info("[SABY_CARD] retry_result_click");
         await page.mouse.click(
           box.x+Math.min(95,box.w*.20),

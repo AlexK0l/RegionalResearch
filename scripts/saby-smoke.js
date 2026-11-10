@@ -23,11 +23,14 @@ async function main() {
     console.log("  npm run saby:smoke -- --inn=7707083893 --name=\\\"ПАО Сбербанк\\\" --limit=1");
     console.log("  npm run saby:smoke -- --result=SAT_Region.json --limit=3 --xlsx");
     console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
+    console.log("  Experimental safe matching: --public-identity-fallback (off by default)");
     return;
   }
   const env={...process.env,SABY_STAGE12_ENABLED:"true",
     SABY_MAX_COMPANIES:option(args,"limit","1"),
-    SABY_HEADLESS:args.includes("--headless")?"true":"false"};
+    SABY_HEADLESS:args.includes("--headless")?"true":"false",
+    // Explicit test flag; never enables experimental fallback on the live site.
+    SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:args.includes("--public-identity-fallback")?"true":"false"};
   if(option(args,"profile"))env.SABY_PROFILE_DIR=option(args,"profile");
   if(args.includes("--login")) {
     await withSabyBrowser(async ({page,settings})=>{

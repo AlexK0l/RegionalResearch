@@ -197,5 +197,9 @@ test("audit sees legal-form-free aliases by exact INN without changing strict St
   assert.match(browser,/findResultRows\(page, inn, \{includeInnOnly=false\}=\{\}\)/);
   assert.match(browser,/legal\.test\(text\) \|\| includeInnOnly/);
   assert.match(auditor,/findResultRows\(page,inn,\{includeInnOnly:true\}\)/);
-  assert.match(browser,/await findResultRows\(page,inn\)/);
+  // Strict Stage12 remains the default. Only the explicit opt-in may
+  // enable INN-only candidates and still requires exact registered proof.
+  assert.match(browser,/includeInnOnly:publicFallback/);
+  assert.match(browser,/if\(!publicFallback\)/);
+  assert.match(browser,/sabySearchResultMatches\(name,item\.text,inn\)/);
 });
