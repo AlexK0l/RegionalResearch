@@ -21,6 +21,14 @@ export function sabyStage12Settings(env = process.env) {
   };
 }
 
+// A confirmed INN/name alone does not prove that Saby enrichment was read.
+// For intermediary/leasing rows the relevant section is contacts only; direct
+// buyers can additionally be completed by a verified truck section.
+function hasRelevantSection(record, transport) {
+  return record?.contacts?.status === "collected" ||
+    (transport && record?.trucks?.status === "verified");
+}
+
 function phoneOwnersForResult(result) {
   const map=new Map();
   const rows=[...(result?.direct_buyers||[]),
@@ -85,6 +93,19 @@ export async function runSabyStage12({
         const inn=sabyInn(row["ИНН"]);
         try {
           const record=await collectCompany(page,row,browserSettings);
+          if(!hasRelevantSection(record,entry.transport)) {
+            // Do not mutate the CRM row or checkpoint the company as done:
+            // a Saby card may render its legal details before contacts/trucks.
+            stats.review++;
+            consecutive++;
+            console.warn("[SABY_COLLECTION_REVIEW] "+JSON.stringify({
+              reason:"relevant_sections_unavailable",
+              contacts:["missing","review","collected"].includes(record?.contacts?.status)
+                ? record.contacts.status : "unknown",
+              trucks:["missing","review","verified"].includes(record?.trucks?.status)
+                ? record.trucks.status : "unknown"
+            }));
+          } else {
           const applied=applySabyEnrichment(row,record,
             {phoneOwners,transport:entry.transport});
           if(applied.status==="ok") {
@@ -99,6 +120,7 @@ export async function runSabyStage12({
           } else {
             stats.review++;
             consecutive++;
+          }
           }
         } catch(error) {
           if(signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
