@@ -68,6 +68,69 @@ async function visibleLocator(locator) {
   return null;
 }
 
+
+/**
+ * Identity can render before Saby asynchronously mounts contact and fleet
+ * widgets. Wait only when neither requested widget is visible, so ordinary
+ * cards are not slowed down and missing widgets never look like confirmed
+ * absence of company data.
+ */
+async function detailSections(page) {
+  return {
+    contacts:Boolean(await visibleLocator(page.getByText("Контакты",{exact:true}))),
+    trucks:Boolean(await visibleLocator(page.getByText("Автопарк компании",{exact:true})))
+  };
+}
+
+async function waitForDetailSections(page, timeoutMs=7000) {
+  const until=Date.now()+Math.max(0,Math.min(timeoutMs,10000));
+  let found=await detailSections(page);
+  while(!found.contacts&&!found.trucks&&Date.now()<until) {
+    await delay(450);
+    found=await detailSections(page);
+  }
+  return found;
+}
+
+/**
+ * First-party-only, allowlisted booleans. No page text or URLs leave the
+ * browser; never print cookies, contact numbers, emails or company details.
+ */
+export async function safeSabySectionDiagnostic(page) {
+  const route=sabyCardRoute(page.url());
+  if(route!=="detail") return {route};
+  const out={route};
+  try {
+    const sections=await detailSections(page);
+    out.exact_contacts_heading=sections.contacts;
+    out.exact_fleet_heading=sections.trucks;
+  } catch {
+    out.heading_check_failed=true;
+  }
+  if(typeof page.evaluate!=="function") return out;
+  try {
+    const flags=await page.evaluate(()=>{
+      const text=String(document.body?.innerText||"").slice(0,100000);
+      return {
+        mentions_contacts:/контакт/i.test(text),
+        mentions_phones:/телефон/i.test(text),
+        mentions_fleet:/автопарк/i.test(text),
+        mentions_trucks:/грузовые/i.test(text),
+        has_tel_link:Boolean(document.querySelector('a[href^="tel:"]')),
+        has_mail_link:Boolean(document.querySelector('a[href^="mailto:"]')),
+        substantive_page:text.trim().length>150
+      };
+    });
+    for(const key of [
+      "mentions_contacts","mentions_phones","mentions_fleet",
+      "mentions_trucks","has_tel_link","has_mail_link","substantive_page"
+    ]) out[key]=flags?.[key]===true;
+  } catch {
+    out.dom_check_failed=true;
+  }
+  return out;
+}
+
 async function findResultRows(page, inn) {
   return page.evaluate(inn => {
     const norm = s => String(s || "").replace(/\s+/g," ").trim();
@@ -400,6 +463,8 @@ async function ownTrucks(page, settings) {
 
 export async function collectSabyCompany(page, row, settings = sabyBrowserSettings()) {
   const identity=await openCompany(page,row,settings);
+  // A verified legal name and INN does not imply detail widgets are hydrated.
+  await waitForDetailSections(page, Math.min(7000,settings.timeoutMs||45000));
   const result={identity,source:"SABY",source_url:page.url(),
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
@@ -412,6 +477,10 @@ export async function collectSabyCompany(page, row, settings = sabyBrowserSettin
   } catch(error) {
     result.errors.push("trucks: "+error.message);
     result.trucks={status:"review"};
+  }
+  if(result.contacts.status==="missing" && result.trucks.status==="missing") {
+    console.warn("[SABY_SECTION_DIAG] "+JSON.stringify(
+      await safeSabySectionDiagnostic(page)));
   }
   return result;
 }
