@@ -132,8 +132,8 @@ export async function safeSabySectionDiagnostic(page) {
   return out;
 }
 
-export async function findResultRows(page, inn) {
-  return page.evaluate(inn => {
+export async function findResultRows(page, inn, {includeInnOnly=false}={}) {
+  return page.evaluate(({inn,includeInnOnly}) => {
     const norm = s => String(s || "").replace(/\s+/g," ").trim();
     const matchesInn = s => new RegExp("(^|\\D)" + inn + "(?!\\d)").test(s);
     const visible = e => {
@@ -155,7 +155,8 @@ export async function findResultRows(page, inn) {
         const text=norm(rawText);
         if (r.height>190 || text.length>700) break;
         if (r.width<190 || r.height<24 || !matchesInn(text)) continue;
-        if (legal.test(text) && text.replace(inn,"").trim().length>=5) {
+        if ((legal.test(text) || includeInnOnly) &&
+            text.replace(inn,"").trim().length>=5) {
           if (/\b(?:филиал|подразделение|представительство)\b/i.test(
             text.split(inn,1)[0])) break;
           relevant.push({text:rawText,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
@@ -166,7 +167,7 @@ export async function findResultRows(page, inn) {
     return relevant.filter((x,i) => !relevant.some((y,j) =>
       j<i && Math.abs(x.rect.x-y.rect.x)<15 &&
       Math.abs(x.rect.y-y.rect.y)<5)).slice(0,20);
-  }, inn);
+  }, {inn,includeInnOnly});
 }
 
 async function openCompany(page, row, settings) {
