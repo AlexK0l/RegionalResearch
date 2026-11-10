@@ -35,7 +35,9 @@ export function auditCompareName(expected,observed) {
      right[0].replace(/[^a-zа-я0-9]/giu,"")===acronym)
     return "initials_candidate";
   if(right.join("").length<left.join("").length &&
-     (right.length===1 || left.some(t=>t.startsWith(right[0]))))
+     ((right.length===1 && left.length>1) ||
+      (right.length===1 && right[0].length>=3 &&
+       left.some(t=>t.startsWith(right[0])))))
     return "short_name_candidate";
   if(right.some(t=>left.includes(t)))return "partial_overlap";
   return "different";
