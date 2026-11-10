@@ -4,11 +4,11 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
-import { findSabyCompanySearch } from "./sabySearch.js";
+import { findSabyCompanySearch, chooseSabyCompanyCandidate } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
-import { sabyInn, sabyNameMatches, sabySearchResultMatches,
+import { sabyInn, sabyNameMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 
 export class SabyReview extends Error {
@@ -188,20 +188,30 @@ async function openCompany(page, row, settings) {
   await found.field.fill(inn);
   await found.field.press("Enter");
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
-  let rows=[];
+  let selection={status:"missing",candidate:null,candidateCount:0,exactNameCount:0};
   while(Date.now()<until) {
-    rows=(await findResultRows(page,inn)).filter(item=>
-      sabySearchResultMatches(name,item.text,inn));
-    if(rows.length===1) break;
-    if(rows.length>1) {
-      // Search results sometimes duplicate DOM wrappers at the same position;
-      // physical row de-duplication is done in findResultRows.
-      throw new SabyReview("Saby: неоднозначный результат по ИНН");
+    selection=chooseSabyCompanyCandidate(await findResultRows(page,inn),name,inn);
+    if(selection.candidate) break;
+    if(selection.status==="ambiguous" && selection.exactNameCount>1) {
+      throw new SabyReview("Saby: неоднозначный результат по названию и ИНН");
     }
     await delay(450);
   }
-  if(rows.length!==1) throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
-  const r=rows[0].rect;
+  if(!selection.candidate) {
+    // Counts only: no raw search result text, names or page URLs.
+    console.warn("[SABY_RESULTS_DIAG] "+JSON.stringify({
+      reason:selection.status,
+      inn_candidate_count:selection.candidateCount,
+      exact_name_count:selection.exactNameCount
+    }));
+    throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
+  }
+  if(selection.status==="unique_inn_only") {
+    // Search result names can be abbreviated. The card itself still MUST
+    // prove BOTH full legal name and exact INN before data may be used.
+    console.info("[SABY_SEARCH_RESULT] unique_inn_requires_card_verification");
+  }
+  const r=selection.candidate.rect;
   const listingUrl=page.url();
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
   const startCard=Date.now();
@@ -228,10 +238,9 @@ async function openCompany(page, row, settings) {
     if(!reClicked && Date.now()-startCard>4500 &&
        page.url()===listingUrl && sabyCardRoute(page.url())==="list") {
       reClicked=true;
-      const again=(await findResultRows(page,inn)).filter(item=>
-        sabySearchResultMatches(name,item.text,inn));
-      if(again.length===1) {
-        const box=again[0].rect;
+      const again=chooseSabyCompanyCandidate(await findResultRows(page,inn),name,inn);
+      if(again.candidate) {
+        const box=again.candidate.rect;
         console.info("[SABY_CARD] retry_result_click");
         await page.mouse.click(
           box.x+Math.min(95,box.w*.20),
