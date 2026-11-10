@@ -1,6 +1,6 @@
 // Offline evidence-first queue for recovering missing source INNs.
 // Candidates are not verified and are NEVER assigned to any company row.
-import {auditSourceRows} from "./sabyIdentityAudit.js";
+import {auditSourceRows,auditLegalForm} from "./sabyIdentityAudit.js";
 import {sabyInn,sabyNameTokens} from "./sabyEnrichment.js";
 
 export function verifiedInnChecksum(raw) {
@@ -106,10 +106,32 @@ function candidateRowsFromSource(sourceEntries,allEntries) {
     for(const c of candidates){
       c.sources=[...new Map(c.sources.map(s=>[JSON.stringify(s),s])).values()];
     }
+    // A valid INN noted beside a counterparty is NOT the source firm's INN.
+    // Even a matching core name is unsafe if the legal forms disagree.
+    for(const candidate of candidates) {
+      const owners=candidate.existing_owners||[];
+      if(!owners.length){candidate.ownership_risk="not_occupied";continue;}
+      if(owners.some(owner=>nameKey(owner.organization)!==
+          nameKey(row["Организация"]))) {
+        candidate.ownership_risk="different_name_owner";continue;
+      }
+      const form=auditLegalForm(row["Организация"]);
+      if(owners.some(owner=>{
+        const other=auditLegalForm(owner.organization);
+        return form&&other&&form!==other;
+      })) {
+        candidate.ownership_risk="legal_form_conflict";continue;
+      }
+      candidate.ownership_risk="same_name_unverified_duplicate";
+    }
     const usable=candidates.filter(c=>c.checksum_valid&&!c.rejected_claim);
+    const ownerRisk=usable.length===1?usable[0].ownership_risk:"";
     const decision=usable.length===0?"external_registry_search_required":
       usable.length>1?"conflicting_candidate_inns":
-      usable[0].existing_owners.length?"possible_duplicate_or_related_company":
+      ownerRisk==="different_name_owner"?"candidate_inn_used_by_other_company":
+      ownerRisk==="legal_form_conflict"?"candidate_legal_form_conflict":
+      ownerRisk==="same_name_unverified_duplicate"?
+        "possible_duplicate_or_related_company":
       "independent_registry_confirmation_required";
     return {
       index:entry.index,section:entry.group,section_row:entry.group_row,
@@ -120,6 +142,9 @@ function candidateRowsFromSource(sourceEntries,allEntries) {
       auto_filled:false,
       next_action:decision==="external_registry_search_required"?
         "Найти точное юрлицо в ЕГРЮЛ/ЕГРИП по названию и подтверждающим данным.":
+        ["candidate_inn_used_by_other_company","candidate_legal_form_conflict"]
+          .includes(decision)?
+          "Конфликт ИНН с другой записью или правовой формой. Не присваивать. Проверить юрлицо и контрагентские связи.":
         "Независимо подтвердить ИНН, юридическое имя, ОГРН, адрес и текущий статус."
     };
   });
