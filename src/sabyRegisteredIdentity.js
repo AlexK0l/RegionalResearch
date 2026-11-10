@@ -3,6 +3,7 @@
 // The same exact INN/KPP and full legal name must appear in the registered
 // requisites section of a Saby page. No manual name-to-alias mapping.
 import {sabyInn, sabyNameMatches} from "./sabyEnrichment.js";
+import {discoverSabyPublicProfileByInn} from "./sabyPublicSearch.js";
 
 const clean=s=>String(s||"").replace(/\s+/g," ").trim();
 const linesOf=text=>String(text||"").slice(0,130000).split(/[\r\n]+/)
@@ -108,7 +109,9 @@ export function sabyOfficialNameFromRequisites(text,expectedInn,expectedKpp,expe
  * name may upgrade the name check. Never log source HTML, URL or credentials.
  */
 export async function verifySabyPublicLegalName(
-  page,inn,expectedName,{timeoutMs=13000,kppHints=[]}={}
+  page,inn,expectedName,{
+    timeoutMs=13000,kppHints=[],discoverProfile=discoverSabyPublicProfileByInn
+  }={}
 ) {
   const expectedInn=sabyInn(inn);
   if(!expectedInn||!expectedName)return {ok:false,reason:"invalid_expected_identity"};
@@ -135,6 +138,25 @@ export async function verifySabyPublicLegalName(
       return {ok:false,reason:"ambiguous_kpp"};
     kpp=fromText||fromLink||networkKpp;
   } catch {return {ok:false,reason:"requisite_read_failed"};}
+  // If the account SPA omits KPP entirely, use Saby's own public search
+  // by exact INN to discover a canonical INN-KPP profile link. This link is
+  // still only a candidate: independent official requisites remain required.
+  if(!kpp){
+    const discovered=await discoverProfile(page,expectedInn,{
+      timeoutMs:Math.min(12000,timeoutMs)
+    });
+    if(discovered?.status!=="unique" ||
+       !discovered?.candidate ||
+       sabyPublicCompanyUrl(expectedInn,discovered.candidate.kpp)!==
+         discovered.candidate.url) {
+      const code=["missing","ambiguous","search_field_missing",
+        "untrusted_search_origin","public_search_unavailable",
+        "invalid_request"].includes(discovered?.status) ?
+        discovered.status : "unverified";
+      return {ok:false,reason:"public_search_"+code};
+    }
+    kpp=discovered.candidate.kpp;
+  }
   const url=sabyPublicCompanyUrl(expectedInn,kpp);
   if(!url)return {ok:false,reason:"kpp_unavailable"};
   let publicPage;
