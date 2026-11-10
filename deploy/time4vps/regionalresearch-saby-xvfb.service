@@ -1,0 +1,18 @@
+[Unit]
+Description=RegionalResearch Saby virtual X11 display for headed Chromium
+After=local-fs.target
+
+[Service]
+Type=simple
+User=regionalresearch
+Group=regionalresearch
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1440x920x24 -nolisten tcp -noreset
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
