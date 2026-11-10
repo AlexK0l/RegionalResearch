@@ -132,7 +132,7 @@ export async function safeSabySectionDiagnostic(page) {
   return out;
 }
 
-async function findResultRows(page, inn) {
+export async function findResultRows(page, inn) {
   return page.evaluate(inn => {
     const norm = s => String(s || "").replace(/\s+/g," ").trim();
     const matchesInn = s => new RegExp("(^|\\D)" + inn + "(?!\\d)").test(s);
