@@ -4,7 +4,7 @@ import {
   sabyPublicProfileRoute,canonicalSabyPublicRoute,
   extractSabyPublicRequisites,compareSabyPublicRequisites,
   verifyPublicSabyIdentity,safeSabyPublicLoadDiagnostic,
-  safeSabyVisibleRequisitesText
+  safeSabyVisibleRequisitesText,diagnoseSabyPublicRequisiteLayout
 } from "../src/sabyPublicRegisteredIdentity.js";
 
 const inn="7725104641",kpp="504301001",ogrn="1027739058258";
@@ -246,5 +246,75 @@ test("public Saby missing registered name label is reported separately",async()=
   assert.equal(result.diagnostic.requisites_heading_visible,true);
   assert.equal(result.diagnostic.inn_label_visible,true);
   assert.equal(result.diagnostic.kpp_label_visible,true);
+  assert.equal(closed,1);
+});
+
+
+test("real-world public requisites with intervening sublabels and punctuation",()=>{
+  const cases=[
+    "Реквизиты\nОсновная информация\nПолное наименование: "+full+
+      "\nИНН: "+inn+";\nКПП: "+kpp+";\nОГРН: "+ogrn+".\nРегистрация компании",
+    "Реквизиты\nКПП\n"+kpp+"\nИНН\n"+inn+
+      "\nНазвание\n"+full+"\nОГРН\n"+ogrn+"\nКонтакты",
+    "Реквизиты:\nНаименование организации "+full+
+      "\nИНН "+inn+"\nКПП "+kpp+"\nОГРН "+ogrn,
+    "Реквизиты\nНазвание\n"+full+"\nИНН: "+inn+";\nКПП: "+kpp+";"
+  ];
+  for(const value of cases){
+    const result=extractSabyPublicRequisites(value);
+    assert.equal(result.length,1,value.slice(0,100));
+    assert.equal(result[0].name,full);
+    assert.equal(result[0].inn,inn);
+    assert.equal(result[0].kpp,kpp);
+  }
+});
+
+test("name and INN/KPP separated by unrelated company section never join",()=>{
+  const cases=[
+    "Реквизиты\nНазвание\n"+full+"\nКонтакты\nИНН\n"+inn+"\nКПП\n"+kpp,
+    "Реквизиты\nНазвание\n"+full+"\nИНН\n"+inn+
+      "\nСвязанные компании\nКПП\n"+kpp,
+    "Реквизиты\nНазвание\n"+full+"\nИНН\n"+inn+
+      "\nКПП\n"+kpp+"\nНазвание\nООО ЧУЖАЯ КОМПАНИЯ",
+    "Реквизиты\nНазвание\n"+full+"\nИНН\n"+inn+
+      "\nКПП\n"+kpp+"\nИНН\n7707083893",
+    "Реквизиты\nО компании\nНазвание\n"+full+
+      "\nИНН\n"+inn+"\nКПП\n"+kpp,
+    "Реквизиты:\n- ИНН: "+inn+";\n- КПП: "+kpp+";\nО компании\nНазвание: "+full,
+  ];
+  for(const value of cases)
+    assert.deepEqual(extractSabyPublicRequisites(value),[],value.slice(0,120));
+});
+
+test("requisite-layout diagnostics show field offsets, never INN or company name",()=>{
+  const input="Меню\nРеквизиты\nО компании\nРеквизиты\n" +
+    "Информация\nПолное наименование\n"+full+
+    "\nИНН\n"+inn+"\nКПП\n"+kpp;
+  const layout=diagnoseSabyPublicRequisiteLayout(input);
+  assert.equal(layout.anchors,2);
+  assert.equal(layout.field_layouts[0].name_values,0);
+  assert.equal(layout.field_layouts[1].name_values,1);
+  assert.equal(layout.field_layouts[1].inn_values,1);
+  assert.equal(layout.field_layouts[1].kpp_values,1);
+  assert.equal(JSON.stringify(layout).includes(full),false);
+  assert.equal(JSON.stringify(layout).includes(inn),false);
+  assert.equal(JSON.stringify(layout).includes(kpp),false);
+});
+
+test("public verifier embeds safe registered-label offsets on unavailable result",async()=>{
+  let closed=0;
+  const body="Реквизиты\nО компании\nНазвание: "+short+
+    "\nИНН: "+inn+"\nКПП: "+kpp;
+  const page={context:()=>({newPage:async()=>({
+    goto:async()=>({status:()=>200}),
+    url:()=>route,
+    evaluate:async()=>({body,title:short,bodyChars:body.length}),
+    waitForTimeout:async()=>{},
+    close:async()=>{closed++;}
+  })})};
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source,{timeoutMs:3000});
+  assert.equal(result.status,"review");
+  assert.equal(result.diagnostic.requisite_layout.anchors,1);
+  assert.equal(result.diagnostic.requisite_layout.field_layouts[0].name_values,0);
   assert.equal(closed,1);
 });
