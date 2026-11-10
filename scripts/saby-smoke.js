@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { withSabyBrowser } from "../src/sabyBrowser.js";
-import { authenticateSaby, waitForSabySession } from "../src/sabyAuth.js";
+import { authenticateSaby, waitForSabySession, sabyLoginDiagnostic } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
 import { buildReferenceWorkbookBuffer } from "../src/referenceWorkbookExport.js";
 
@@ -58,6 +58,8 @@ async function main() {
         timeoutMs:90000, pollMs:700, onPhase
       });
       if(check.status!=="authenticated") {
+        console.log("[SABY_AUTH_DIAG] "+JSON.stringify(
+          await sabyLoginDiagnostic(page)));
         throw new Error("Вход не подтверждён автоматически. " +
           "Проверьте окно Saby и повторите тест; Enter больше не нужен.");
       }
