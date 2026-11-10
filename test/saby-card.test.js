@@ -6,6 +6,8 @@ import {
   safeCardDiagnostic, verifySabyCard
 } from "../src/sabyCard.js";
 
+import {safeSabySectionDiagnostic} from "../src/sabyBrowser.js";
+
 const INN="6027087063";
 const NAME="ООО «Дорстройсервис»";
 const DETAIL="https://profile.saby.ru/page/contractor-info?anchor=about&tab=all&page=public";
@@ -84,4 +86,36 @@ test("diagnostics never expose company identifiers or original DOM text",()=>{
   assert.match(browser,/\[SABY_CARD_DIAG\]/);
   assert.match(browser,/verifySabyCard\(/);
   assert.doesNotMatch(browser,/verifyOpenCard\(/);
+});
+
+test("Saby section diagnostics contain only booleans even if the DOM returns private data",async()=>{
+  const page={
+    url:()=>DETAIL,
+    getByText:()=>({async count(){return 0;}}),
+    evaluate:async()=>({
+      mentions_contacts:true,mentions_phones:true,
+      mentions_fleet:true,mentions_trucks:true,
+      has_tel_link:true,has_mail_link:true,substantive_page:true,
+      raw_phones:"79000000000",private_company:NAME,source_url:DETAIL
+    })
+  };
+  const diag=await safeSabySectionDiagnostic(page);
+  assert.deepEqual(diag,{
+    route:"detail",exact_contacts_heading:false,exact_fleet_heading:false,
+    mentions_contacts:true,mentions_phones:true,
+    mentions_fleet:true,mentions_trucks:true,
+    has_tel_link:true,has_mail_link:true,substantive_page:true
+  });
+  assert.ok(!JSON.stringify(diag).includes("79000000000"));
+  assert.ok(!JSON.stringify(diag).includes(NAME));
+  assert.ok(!JSON.stringify(diag).includes("profile.saby.ru"));
+});
+
+test("Saby section diagnostics refuse to inspect non-detail pages",async()=>{
+  const page={
+    url:()=>LIST,
+    getByText:()=>{throw Error("not a detail page");},
+    evaluate:()=>{throw Error("must not inspect content");}
+  };
+  assert.deepEqual(await safeSabySectionDiagnostic(page),{route:"list"});
 });

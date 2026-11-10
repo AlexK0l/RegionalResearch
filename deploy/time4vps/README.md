@@ -169,6 +169,10 @@ sudo systemctl start regionalresearch
 
 При обновлении `.env`, `data/` и `logs/` не перезаписываются Git: они в `.gitignore`. В случае аварии: `sudo journalctl -u regionalresearch -n 100 --no-pager`; состояние SQLite можно увидеть в `GET /health` **локально**.
 
+## 6. Saby on VPS: headed Chromium through Xvfb
+
+The Time4VPS Saby test verified that headed Chromium on Xvfb extracts contacts and the truck fleet even when headless does not. For automatic, boot-persistent setup, safe test commands and rollback see [Saby virtual display guide](../../docs/SABY_VPS_HEADED.md). Stage 12 remains opt-in, with unchanged strict XLSX output.
+
 ## Ограничения архитектуры
 
 - Job queue работает **в RAM одного процесса**. Запущенные задания после перезапуска/падения VPS не возобновляются автоматически. SQLite checkpoints сохраняются на диске, и исследование нужно вручную возобновить через интерфейс.

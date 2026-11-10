@@ -1,0 +1,14 @@
+# Install as /etc/systemd/system/regionalresearch.service.d/saby-xvfb.conf
+# on the confirmed Time4VPS host. This is an optional drop-in: the default
+# backend remains valid without Saby or a graphical display.
+[Unit]
+Requires=regionalresearch-saby-xvfb.service
+After=regionalresearch-saby-xvfb.service
+
+[Service]
+Environment=DISPLAY=:99
+Environment=SABY_HEADLESS=false
+# The existing Time4VPS browser was installed using
+# HOME=/home/regionalresearch, not the base unit HOME=/var/lib/regionalresearch.
+# Change this path if Playwright was installed elsewhere.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/regionalresearch/.cache/ms-playwright
