@@ -182,3 +182,20 @@ test("offline invalid-source audit produces real resumable JSON, XLSX and ZIP",(
     fs.rmSync(folder,{recursive:true,force:true});
   }
 });
+
+
+test("audit sees legal-form-free aliases by exact INN without changing strict Stage12 default",()=>{
+  assert.equal(auditSearchName("ГК «Атолл Групп» ИНН 6732208880","6732208880"),
+    "ГК «Атолл Групп»");
+  assert.equal(auditSelectSearchResult([
+    {text:"ГК «Атолл Групп» ИНН 6732208880",rect:{x:1,y:1}}
+  ],"6732208880","ГК «Атолл Групп»").kind,"exact_name");
+  const browser=fs.readFileSync(fileURLToPath(new URL(
+    "../src/sabyBrowser.js",import.meta.url)),"utf8");
+  const auditor=fs.readFileSync(fileURLToPath(new URL(
+    "../src/sabyIdentityAuditBrowser.js",import.meta.url)),"utf8");
+  assert.match(browser,/findResultRows\(page, inn, \{includeInnOnly=false\}=\{\}\)/);
+  assert.match(browser,/legal\.test\(text\) \|\| includeInnOnly/);
+  assert.match(auditor,/findResultRows\(page,inn,\{includeInnOnly:true\}\)/);
+  assert.match(browser,/await findResultRows\(page,inn\)/);
+});
