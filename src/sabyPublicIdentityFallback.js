@@ -4,7 +4,7 @@
 // three concordant identities: source INN, authenticated detail INN/KPP,
 // and registered name+INN/KPP on canonical first-party public profile.
 import {sabyCardRoute} from "./sabyCard.js";
-import {compareSabyPrivateDetailUrl} from "./sabyPrivateDetailUrl.js";
+import {compareSabyPrivateDetailUrl,summarizeSabyPrivateRouteDelta} from "./sabyPrivateDetailUrl.js";
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
 import {auditSelectSearchResult,auditExtractRequisites} from "./sabyIdentityAudit.js";
 import {verifyPublicSabyIdentity} from "./sabyPublicRegisteredIdentity.js";
@@ -289,7 +289,15 @@ export function safeSabyAliasDiagnostic(outcome) {
       ui_route_updated:outcome.ui_route_updated===true,
       ...(outcome.reason==="private_route_changed"?
         {route_change_reason:String(outcome.route_change_reason||"unknown")
-          .slice(0,52)}:{})
+          .slice(0,52),
+         route_delta:outcome.route_delta&&
+           outcome.route_delta.status==="observed"?{
+           status:"observed",
+           non_ui_added:Number(outcome.route_delta.non_ui_added||0),
+           non_ui_removed:Number(outcome.route_delta.non_ui_removed||0),
+           non_ui_values_changed:Number(outcome.route_delta.non_ui_values_changed||0),
+           ui_values_changed:Number(outcome.route_delta.ui_values_changed||0)
+         }:{status:"not_comparable"}}:{})
     }:{})
   };
 }
@@ -352,6 +360,7 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   let snapshot,pair,requisitesTabOpened=false,hydrationPolls=0;
   let pairStabilityConfirmed=false;
   let uiRouteUpdated=false,routeChangeReason="";
+  let routeDelta={status:"not_comparable"};
   const stillSameDetail=()=>{
     const continuity=compareSabyPrivateDetailUrl(route,page.url?.());
     if(continuity.ok){
@@ -359,6 +368,7 @@ export async function verifySabyPublicNameFallback(page,inn,name,
       return true;
     }
     routeChangeReason=continuity.reason;
+    routeDelta=summarizeSabyPrivateRouteDelta(route,page.url?.());
     return false;
   };
   const record=(reason)=>({
@@ -370,7 +380,8 @@ export async function verifySabyPublicNameFallback(page,inn,name,
     pair_stability_confirmed:pairStabilityConfirmed,
     ui_route_updated:uiRouteUpdated,
     route_change_reason:reason==="private_route_changed"?
-      routeChangeReason:""
+      routeChangeReason:"",
+    ...(reason==="private_route_changed"?{route_delta:routeDelta}:{})
   });
   try {
     snapshot=await captureSabyPrivateIdentitySnapshot(page);
