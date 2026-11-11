@@ -20,6 +20,8 @@ import {safeSabyFleetFailure,observeSabyFleetDOM}
   from "./sabyFleetDiagnostic.js";
 import {collectSabyTruckWindows} from "./sabyFleetWindows.js";
 import {openSabyFleetPanelWithHydration} from "./sabyFleetPanelOpening.js";
+import {compareSabyVerifiedFleetDetail}
+  from "./sabyFleetRouteContinuity.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -558,6 +560,24 @@ async function ownTrucks(page, settings,progress={}) {
   }
   progress.phase="vehicles";
   let rows=preview.rows;
+  // Record the independently verified contractor's route, before any
+  // fleet UI clicks. Even UI-only route changes must preserve the same
+  // opaque company ID and every non-UI query value.
+  const fleetOriginalRoute=settings.publicIdentityFallback===true?
+    page.url():null;
+  const stillSameFleetCompany=()=>{
+    if(!fleetOriginalRoute)return true;
+    const checked=compareSabyVerifiedFleetDetail(
+      fleetOriginalRoute,page.url());
+    if(!checked.ok){
+      progress.route_guard_reason=checked.reason;
+      progress.route_delta=checked.route_delta;
+    } else if(checked.ui_navigation_only){
+      progress.fleet_ui_route_updated=true;
+      progress.route_guard_reason="ui_navigation_only";
+    }
+    return checked.ok;
+  };
   if(rows.length!==preview.count && settings.publicIdentityFallback===true) {
     // Opt-in only: v14 observed a strict 220-truck count but only one
     // 40-row panel window. Keep duplicate models as separate records and
@@ -565,18 +585,23 @@ async function ownTrucks(page, settings,progress={}) {
     // is uncertain, the whole fleet remains pending.
     const r=preview.rect;
     const panelUrl=page.url();
+    let previewClicks=0;
     let categoryExpanded=false;
+    const routeChanged=()=>({opened:false,routeChanged:true,rows:[]});
     const readWindow=async()=>{
-      if(page.url()!==panelUrl)
-        return {opened:false,routeChanged:true,rows:[]};
+      if(!stillSameFleetCompany())return routeChanged();
       let panel=await sidePanelTrucks(page,preview.count,"window");
+      if(!stillSameFleetCompany())return routeChanged();
       if(panel.opened)progress.side_panel_observed=true;
       if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
         const attempt=await sidePanelTrucks(page,preview.count,"expand");
+        if(!stillSameFleetCompany())return routeChanged();
         categoryExpanded=true;
         progress.expanded=attempt.expanded===true;
         await delay(350);
+        if(!stillSameFleetCompany())return routeChanged();
         panel=await sidePanelTrucks(page,preview.count,"window");
+        if(!stillSameFleetCompany())return routeChanged();
       }
       return panel;
     };
@@ -587,9 +612,17 @@ async function ownTrucks(page, settings,progress={}) {
     // otherwise a second click might close the correctly opened panel.
     const opening=await openSabyFleetPanelWithHydration({
       clickPreview:async()=>{
-        if(page.url()!==panelUrl)return false;
+        if(!stillSameFleetCompany())return false;
+        // Reusing old mouse coordinates after a UI route change could click
+        // a different element. Accept the first same-card SPA update, but
+        // never attempt another blind toggle on an updated layout.
+        if(previewClicks>0&&page.url()!==panelUrl){
+          progress.route_guard_reason="second_click_after_ui_change_blocked";
+          return false;
+        }
+        previewClicks++;
         await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
-        return page.url()===panelUrl;
+        return stillSameFleetCompany();
       },
       readPanel:readWindow,
       observePanel:()=>observeSabyFleetDOM(page),
@@ -608,9 +641,11 @@ async function ownTrucks(page, settings,progress={}) {
         const stitched=await collectSabyTruckWindows({
           expected:preview.count,readWindow,
           advanceScroll:async()=>{
-            if(page.url()!==panelUrl)
+            if(!stillSameFleetCompany())
               return {opened:false,scroll:{moved:false}};
-            return sidePanelTrucks(page,preview.count,"advance");
+            const panel=await sidePanelTrucks(page,preview.count,"advance");
+            return stillSameFleetCompany()?
+              panel:{opened:false,scroll:{moved:false}};
           },
           wait:delay,maxWindows:Math.min(80,Math.ceil(preview.count/5)+10),
           maxMs:Math.min(70000,settings.timeoutMs*2)
@@ -650,6 +685,13 @@ async function ownTrucks(page, settings,progress={}) {
       }
       if(rows.length===preview.count)break;
     }
+  }
+  // Never commit an otherwise full fleet if the selected first-party
+  // contractor changed while the side panel was open.
+  if(!stillSameFleetCompany()){
+    progress.stitch_reason="detail_changed";
+    progress.reason="vehicle_rows_incomplete";
+    throw new SabyReview("Карточка Saby изменилась во время сбора автопарка");
   }
   if(rows.length!==preview.count ||
      rows.some(x=>!x.model||/(?:\.\.\.|…)\s*$/.test(x.model))) {
