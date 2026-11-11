@@ -13,6 +13,11 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     phase:"vehicles",reason:"vehicle_rows_incomplete",
     preview_status:"found",expected_trucks:7,
     parsed_vehicle_rows:2,window_count:4,scroll_moves:3,
+    stale_scroll_moves:2,consecutive_stale_scroll_moves:1,
+    scroll_candidates:3,scroll_selected_from_vehicle_rows:true,
+    scroll_target_contains_truck:false,scroll_target_vehicle_leaves:40,
+    scroll_target_is_panel:false,scroll_at_end:true,
+    scroll_top:650,scroll_max:650,
     stitch_reason:"scroll_not_advanced",
     panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
     fleet_ui_route_updated:true,route_guard_reason:"ui_navigation_only",
@@ -39,7 +44,13 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     truck_category_labels:2,truck_count_label:true,
     category_expand_control:true,preview_status:"found",
     expected_trucks:7,parsed_vehicle_rows:2,
-    window_count:4,scroll_moves:3,stitch_reason:"scroll_not_advanced",
+    window_count:4,scroll_moves:3,
+    stale_scroll_moves:2,consecutive_stale_scroll_moves:1,
+    scroll_candidates:3,scroll_selected_from_vehicle_rows:true,
+    scroll_target_contains_truck:false,scroll_target_vehicle_leaves:40,
+    scroll_target_is_panel:false,scroll_at_end:true,
+    scroll_top:650,scroll_max:650,
+    stitch_reason:"scroll_not_advanced",
     panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
     fleet_ui_route_updated:true,fleet_route_reason:"ui_navigation_only",
     fleet_route_delta:null,
@@ -66,6 +77,16 @@ test("unexpected untrusted values cannot inject diagnostics or fake a verified f
   assert.equal(z.truck_category_labels,30);
   assert.equal(z.window_count,null);
   assert.equal(z.scroll_moves,null);
+  assert.equal(z.stale_scroll_moves,null);
+  assert.equal(z.consecutive_stale_scroll_moves,null);
+  assert.equal(z.scroll_candidates,null);
+  assert.equal(z.scroll_selected_from_vehicle_rows,false);
+  assert.equal(z.scroll_target_contains_truck,false);
+  assert.equal(z.scroll_target_vehicle_leaves,null);
+  assert.equal(z.scroll_target_is_panel,false);
+  assert.equal(z.scroll_at_end,false);
+  assert.equal(z.scroll_top,null);
+  assert.equal(z.scroll_max,null);
   assert.equal(z.stitch_reason,"not_attempted");
   assert.equal(z.panel_open_attempts,null);
   assert.equal(z.panel_wait_polls,null);
@@ -162,4 +183,39 @@ test("new fleet URL diagnostics expose counts only, not URLs, company IDs or que
   assert.equal(invalid.fleet_route_reason,"not_observed");
   assert.equal(invalid.fleet_route_delta.non_ui_added,null);
   assert.equal(invalid.fleet_route_delta.non_ui_removed,null);
+});
+
+test("scroll diagnostic data cannot leak DOM strings or spoof invalid geometry",()=>{
+  const safe=safeSabyFleetFailure({
+    phase:"vehicles",reason:"vehicle_rows_incomplete",
+    scroll_candidates:3,scroll_target_vehicle_leaves:40,
+    scroll_max:1400,scroll_top:900,scroll_at_end:false,
+    scroll_target_contains_truck:false,
+    scroll_target_is_panel:false,
+    scroll_selected_from_vehicle_rows:true,
+    stale_scroll_moves:5,consecutive_stale_scroll_moves:2,
+    scroll_selector:"secret@company.test",
+    scroll_classes:"MY_SECRET_SELECTOR",
+    raw_model:"КАМАЗ 5490",inn:"7725104641"
+  });
+  assert.equal(safe.scroll_candidates,3);
+  assert.equal(safe.scroll_target_vehicle_leaves,40);
+  assert.equal(safe.scroll_top,900);
+  assert.equal(safe.scroll_max,1400);
+  assert.equal(safe.stale_scroll_moves,5);
+  assert.equal(safe.consecutive_stale_scroll_moves,2);
+  assert.equal(safe.scroll_selected_from_vehicle_rows,true);
+  assert.doesNotMatch(JSON.stringify(safe),
+    /secret@|MY_SECRET_SELECTOR|КАМАЗ|7725104641|scroll_classes/);
+  const corrupted=safeSabyFleetFailure({
+    scroll_candidates:"private",scroll_target_vehicle_leaves:-40,
+    scroll_top:"hidden",scroll_max:Infinity,
+    stale_scroll_moves:"1",consecutive_stale_scroll_moves:-1
+  });
+  assert.equal(corrupted.scroll_candidates,null);
+  assert.equal(corrupted.scroll_target_vehicle_leaves,null);
+  assert.equal(corrupted.scroll_top,null);
+  assert.equal(corrupted.scroll_max,null);
+  assert.equal(corrupted.stale_scroll_moves,null);
+  assert.equal(corrupted.consecutive_stale_scroll_moves,null);
 });
