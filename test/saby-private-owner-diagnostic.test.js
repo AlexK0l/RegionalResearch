@@ -98,10 +98,10 @@ test("private owner probe never visits other pages, requests contacts or changes
   assert.equal(evaluates,1);
 });
 
-test("Stage12 invokes private structure report only for an unresolved KPP in explicit opt-in mode",()=>{
+test("Stage12 invokes read-only private structure report for unresolved KPP or changed route in explicit opt-in mode",()=>{
   const browser=fs.readFileSync(
     new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
-  assert.match(browser,/publicFallbackFailureReason==="no_scoped_inn_kpp"/);
+  assert.match(browser,/\["no_scoped_inn_kpp","private_route_changed"\]\.includes\(publicFallbackFailureReason\)/);
   assert.match(browser,/diagnoseSabyPrivateOwnerStructure\(/);
   assert.match(browser,/\[SABY_PRIVATE_OWNER_DIAG\]/);
   assert.match(browser,/auditSearchName\(rows\[0\]\?\.text,inn\)/);

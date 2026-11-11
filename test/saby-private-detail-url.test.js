@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  compareSabyPrivateDetailUrl
+  compareSabyPrivateDetailUrl,summarizeSabyPrivateRouteDelta
 } from "../src/sabyPrivateDetailUrl.js";
 import {
   verifySabyPublicNameFallback,safeSabyAliasDiagnostic
@@ -162,4 +162,54 @@ test("unknown fragment or changed detail path stays rejected without reaching pu
     assert.equal(result.reason,"private_route_changed");
     assert.equal(called,0);
   }
+});
+
+test("safe non-UI query change telemetry distinguishes added, removed and replaced values",()=>{
+  const initial=base+"?contractorId=VERY_PRIVATE_A&source=internal&tab=about";
+  const current=base+"?contractorId=VERY_PRIVATE_B&token=HIDDEN&tab=requisites";
+  const outcome=summarizeSabyPrivateRouteDelta(initial,current);
+  assert.deepEqual(outcome,{
+    status:"observed",
+    non_ui_added:1,
+    non_ui_removed:1,
+    non_ui_values_changed:1,
+    ui_values_changed:1
+  });
+  const serialized=JSON.stringify(outcome);
+  assert.doesNotMatch(serialized,/VERY_PRIVATE|contractorId|token|HIDDEN|source|tab|requisites/i);
+  assert.deepEqual(summarizeSabyPrivateRouteDelta(
+    initial,"https://evil.example/page/contractor-info"),
+    {status:"not_comparable"});
+  assert.deepEqual(summarizeSabyPrivateRouteDelta(
+    initial,base+"/other-company"),
+    {status:"not_comparable"});
+});
+
+test("non-UI route change stays rejected while safe telemetry is forwarded",async()=>{
+  const start=base+"?contractorId=A&source=internal&tab=about";
+  let current=start,reads=0,publicCalls=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>{reads++;return {text:"Сапк, АО\\nИНН "+inn,headings:[short]};},
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{
+      current=base+"?contractorId=B&tab=requisites";
+    }
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+    maxHydrationPolls:2,selectedSearchTitle:short,
+    verifyPublic:async()=>{publicCalls++;return publicProof;}
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"private_route_changed");
+  assert.equal(result.route_change_reason,"non_ui_query_changed");
+  assert.equal(reads,1,"unsafe route change must not start another DOM read");
+  assert.equal(publicCalls,0);
+  const report=safeSabyAliasDiagnostic(result);
+  assert.deepEqual(report.route_delta,{
+    status:"observed",non_ui_added:0,non_ui_removed:1,
+    non_ui_values_changed:1,ui_values_changed:1
+  });
+  assert.doesNotMatch(JSON.stringify(report),
+    /contractorId|source=|internal|tab=requisites|VERY_PRIVATE/);
 });
