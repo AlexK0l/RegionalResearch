@@ -31,8 +31,9 @@ There is no basis to label the company as having zero trucks.
 
 ## Instrumentation only, NO speculative fleet recovery
 
-The collector now emits **one** `[SABY_FLEET_DIAG]` event when a fleet
-section is not confirmed. It contains fixed reason and phase codes,
+Only in an explicitly opted-in Saby-only smoke, the collector now emits
+**one** `[SABY_FLEET_DIAG]` event when a fleet section is not confirmed.
+Ordinary production Stage12 remains quiet and unchanged. It contains fixed reason and phase codes,
 and safe booleans and counters for:
 
 - whether the exact `Автопарк компании` heading is visible;
