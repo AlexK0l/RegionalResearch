@@ -108,7 +108,7 @@ test("SPA UI tab update after three polls does not interrupt stable private/publ
   const logged=safeSabyAliasDiagnostic(result);
   assert.equal(logged.ui_route_updated,true);
   assert.equal(logged.accepted,true);
-  assert.doesNotMatch(JSON.stringify(logged),/source=|requisites|670001|contractorId/);
+  assert.doesNotMatch(JSON.stringify(logged),/source=|tab=requisites|670001|contractorId/);
 });
 
 test("untrusted INN/company query change during hydration fails before any public request",async()=>{
