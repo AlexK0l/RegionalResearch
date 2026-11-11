@@ -113,7 +113,7 @@ test("collector emits fleet-specific failure only when required section incomple
   assert.match(source,/\[SABY_FLEET_DIAG\]/);
   assert.match(source,/settings\.publicIdentityFallback===true/);
   assert.match(source,/safeSabyFleetFailure\(fleetProgress,evidence\)/);
-  assert.match(source,/fleetProgress\.reason\|\|=fleetProgress\.phase==="overlay"/);
+  assert.match(source,/fleetProgress\.reason\s*\|\|=\s*fleetProgress\.phase==="overlay"/);
   assert.match(source,/await ownTrucks\(page,settings,fleetProgress\)/);
   assert.match(source,/fleetProgress\.reason/);
   assert.doesNotMatch(source,/console\.(?:warn|log|info)\([^\n]*error\.message/);
