@@ -119,6 +119,24 @@ export function recoverSabyDetailRequisitePair(text,expectedInn) {
     kpp:auditedKpps[0],basis:"audited_private_label_block"};
 }
 
+/** Only allowlisted counts. It is safe to log this even on a failed
+ * private tab expansion: no raw company text, legal numbers or contacts. */
+export function diagnoseSabyPrivateRequisiteFields(text,expectedInn) {
+  const lines=boundedLines(text);
+  const observed=auditExtractRequisites(text);
+  const expected=sabyInn(expectedInn);
+  const isLabel=key=>new RegExp("^"+key+"(?:\\s*[:：№#—-].*)?$","iu");
+  return {
+    requisites_headings:Math.min(100,lines.filter(x=>
+      /^(?:Реквизиты|Регистрационные данные)\s*:?\s*$/iu.test(x)).length),
+    labelled_inn_lines:Math.min(100,lines.filter(x=>isLabel("ИНН").test(x)).length),
+    labelled_kpp_lines:Math.min(100,lines.filter(x=>isLabel("КПП").test(x)).length),
+    audited_pairs:Math.min(100,observed.filter(r=>r.inn&&r.kpp).length),
+    audited_exact_pairs:Math.min(100,observed.filter(r=>
+      r.inn===expected&&r.kpp).length)
+  };
+}
+
 // JS \b recognises ASCII word characters, NOT Cyrillic letters. A former
 // \bфилиал\b search silently failed to identify real Russian branch rows.
 // Use Unicode-letter boundaries on first-party display text instead. Neither
@@ -256,7 +274,11 @@ export function safeSabyAliasDiagnostic(outcome) {
     reason:String(outcome?.reason||"unknown").slice(0,64),
     accepted:outcome?.ok===true,
     private_pair_basis:outcome?.ok===true?
-      String(outcome?.identity?.private_pair_basis||""): ""
+      String(outcome?.identity?.private_pair_basis||""): "",
+    ...(outcome?.private_diagnostic?{
+      private_diagnostic:outcome.private_diagnostic,
+      requisites_tab_opened:outcome.requisites_tab_opened===true
+    }:{})
   };
 }
 /**
@@ -310,12 +332,13 @@ export async function verifySabyPublicNameFallback(page,inn,name,
      cardAssessment?.reason!=="legal_name_not_verified" ||
      cardAssessment?.detail?.hasScopedInn!==true)
     return {ok:false,reason:"private_inn_not_scoped"};
-  let snapshot,pair;
+  let snapshot,pair,requisitesTabOpened=false;
   try {
     snapshot=await captureSabyPrivateIdentitySnapshot(page);
     pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
     if(!pair.kpp && pair.reason==="no_scoped_inn_kpp" &&
        await openSabyDetailRequisitesTab(page)){
+      requisitesTabOpened=true;
       const expanded=await captureSabyPrivateIdentitySnapshot(page);
       const expandedPair=recoverSabyDetailRequisitePair(expanded?.text,inn);
       if(expandedPair.kpp || expandedPair.reason!=="no_scoped_inn_kpp"){
@@ -334,11 +357,17 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   }
   if(sabyCardRoute(page.url())!=="detail")
     return {ok:false,reason:"private_route_changed"};
-  if(!pair.kpp)return {ok:false,reason:pair.reason};
+  const privateDiagnostic=diagnoseSabyPrivateRequisiteFields(
+    snapshot?.text,inn);
+  if(!pair.kpp)return {ok:false,reason:pair.reason,
+    private_diagnostic:privateDiagnostic,
+    requisites_tab_opened:requisitesTabOpened};
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
-  return acceptSabyPublicIdentityFallback({
+  const result=acceptSabyPublicIdentityFallback({
     expectedInn:inn,expectedName:name,privateRoute:route,
     cardAssessment,privateText:snapshot.text,
     privateHeadings:snapshot.headings,publicResult
   });
+  return {...result,private_diagnostic:privateDiagnostic,
+    requisites_tab_opened:requisitesTabOpened};
 }
