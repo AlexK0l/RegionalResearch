@@ -4,9 +4,25 @@
 // full URLs, personal data, or credentials are sent to logs.
 import {sabyCardRoute} from "./sabyCard.js";
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
+import {
+  recoverSabyDetailRequisitePair,diagnoseSabyPrivateRequisiteFields
+} from "./sabyPublicIdentityFallback.js";
 
 const count=n=>Number.isSafeInteger(n)&&n>=0?Math.min(n,100000):0;
-export function summarizeSabyPrivateOwnerStructure(snapshot,searchTitle) {
+// Read the same CURRENT hydrated private DOM with the existing strict and
+// audited parsers, but return only a reason, proof-basis code and counters.
+ // A single post-route snapshot is NEVER sufficient to accept a company.
+const REQUISITE_REASONS=new Set([
+  "invalid_inn","inn_conflict","kpp_ambiguous","multiple_requisites",
+  "unique_requisite_pair","no_scoped_inn_kpp","audit_inn_conflict",
+  "audit_kpp_ambiguous","audit_section_ambiguous",
+  "audit_correlated_labeled_pair"
+]);
+const REQUISITE_BASES=new Set([
+  "strict_private_block","audited_private_label_block"
+]);
+export function summarizeSabyPrivateOwnerStructure(snapshot,searchTitle,
+  expectedInn="") {
   const headings=(Array.isArray(snapshot?.headings)?
     snapshot.headings:[]).slice(0,60);
   const titles=headings
@@ -25,6 +41,27 @@ export function summarizeSabyPrivateOwnerStructure(snapshot,searchTitle) {
   ];
   const summary={};
   for(const key of numbers)summary[key]=count(snapshot?.[key]);
+  // The only raw private text below is an EPHEMERAL in-memory input for
+  // the already tested bounded parser. It must never enter the result,
+  // console, output JSON, audit log, or a persisted document.
+  const currentText=String(snapshot?.current_visible_text||"");
+  const parsed=currentText && sabyInn(expectedInn)?
+    recoverSabyDetailRequisitePair(currentText,expectedInn):null;
+  const structure=currentText && sabyInn(expectedInn)?
+    diagnoseSabyPrivateRequisiteFields(currentText,expectedInn):null;
+  const lateRequisites={
+    status:parsed?"observed":"not_observed",
+    reason:parsed&&REQUISITE_REASONS.has(parsed.reason)?
+      parsed.reason:"not_observed",
+    candidate_pair_present:Boolean(parsed?.kpp),
+    pair_basis:parsed?.kpp&&REQUISITE_BASES.has(parsed.basis)?
+      parsed.basis:"",
+    requisites_headings:count(structure?.requisites_headings),
+    labelled_inn_lines:count(structure?.labelled_inn_lines),
+    labelled_kpp_lines:count(structure?.labelled_kpp_lines),
+    audited_pairs:count(structure?.audited_pairs),
+    audited_exact_pairs:count(structure?.audited_exact_pairs)
+  };
   return {
     status:"observed_not_verified",
     ...summary,
@@ -33,7 +70,8 @@ export function summarizeSabyPrivateOwnerStructure(snapshot,searchTitle) {
     selected_heading_scoped_inn:matchedOwner.length>0,
     selected_heading_scoped_inn_count:matchedOwner.length,
     // Pure booleans/counters only: no actual titles, INNs, links or KPPs.
-    detail_region_observed:summary.main_regions>0&&summary.visible_text_chars>50
+    detail_region_observed:summary.main_regions>0&&summary.visible_text_chars>50,
+    late_requisites:lateRequisites
   };
 }
 export async function diagnoseSabyPrivateOwnerStructure(page,inn,searchTitle) {
@@ -113,6 +151,9 @@ export async function diagnoseSabyPrivateOwnerStructure(page,inn,searchTitle) {
       }
       return {
         headings,
+        // Ephemeral visible DOM text is immediately reduced to strict
+        // structural evidence in Node and NEVER returned to the caller.
+        current_visible_text:body,
         visible_text_chars:body.length,
         main_regions:regions.length,
         heading_count:headings.length,
@@ -126,7 +167,7 @@ export async function diagnoseSabyPrivateOwnerStructure(page,inn,searchTitle) {
         public_distinct_kpp_links:publicKpps.size
       };
     },{inn:sabyInn(inn)});
-    return summarizeSabyPrivateOwnerStructure(snapshot,searchTitle);
+    return summarizeSabyPrivateOwnerStructure(snapshot,searchTitle,inn);
   } catch {
     return {status:"private_dom_probe_unavailable"};
   }
