@@ -425,15 +425,23 @@ export async function verifySabyPublicNameFallback(page,inn,name,
     return record("private_route_changed");
   const privateDiagnostic=diagnoseSabyPrivateRequisiteFields(
     snapshot?.text,inn);
-  if(!pair.kpp)return {ok:false,reason:pair.reason,
-    private_diagnostic:privateDiagnostic,
-    requisites_tab_opened:requisitesTabOpened};
+  if(!pair.kpp)return record(pair.reason);
+  // Do not associate a registered public company with a stale or
+  // unrelated private title simply because both show the searched INN.
+  if(selectedSearchTitle &&
+     !(snapshot.headings||[]).some(title=>
+       sabyNameMatches(title,selectedSearchTitle)))
+    return record("selected_private_heading_disconnected");
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
+  if(page.url()!==route)return record("private_route_changed");
   const result=acceptSabyPublicIdentityFallback({
     expectedInn:inn,expectedName:name,privateRoute:route,
     cardAssessment,privateText:snapshot.text,
-    privateHeadings:snapshot.headings,publicResult
+    privateHeadings:snapshot.headings,publicResult,
+    selectedSearchTitle
   });
   return {...result,private_diagnostic:privateDiagnostic,
-    requisites_tab_opened:requisitesTabOpened};
+    requisites_tab_opened:requisitesTabOpened,
+    hydration_polls:hydrationPolls,
+    pair_stability_confirmed:pairStabilityConfirmed};
 }
