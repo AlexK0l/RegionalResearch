@@ -77,11 +77,22 @@ export function isSabyBranchResult(text,inn) {
 }
 export function selectSabyInnCandidate(rows,inn,expectedName) {
   const all=Array.isArray(rows)?rows:[];
-  // The DOM detector caps results at 20. A full result window cannot
-  // prove uniqueness because later results may be hidden by that cap.
-  if(all.length>=20)
+  const meta=all.meta||{};
+  const summary={
+    rawCandidates:meta.rawCandidates||all.length,
+    geometryDuplicates:meta.geometryDuplicates||0,
+    rejectedFragments:meta.rejectedFragments||0,
+    uniqueTitles:meta.uniqueTitles||new Set(all.map(row=>
+      String(row?.text||"").split(String(inn),1)[0].trim())).size,
+    rawCapped:meta.rawCapped===true
+  };
+  // The previous DOM detector capped its results at 20 BEFORE dropping
+  // duplicate highlighted-INN fragments. New scan results carry explicit
+  // truncation metadata after geometric deduplication. A truncated scan
+  // can never establish a unique main company.
+  if(meta.truncated===true || (!all.meta&&all.length>=20))
     return {row:null,reason:"result_window_full",
-      count:all.length,observed:all.length,branches:0};
+      count:all.length,observed:all.length,branches:0,...summary};
   const main=all.filter(row=>!isSabyBranchResult(row?.text,inn));
   const result=auditSelectSearchResult(main,inn,expectedName);
   return {
@@ -91,7 +102,8 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
         result.kind,
     count:result.count,
     observed:all.length,
-    branches:all.length-main.length
+    branches:all.length-main.length,
+    ...summary
   };
 }
 export function acceptSabyPublicIdentityFallback({
