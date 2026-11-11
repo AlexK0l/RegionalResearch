@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  extractSabyDetailRequisitePair,selectSabyInnCandidate,
+  extractSabyDetailRequisitePair,recoverSabyDetailRequisitePair,
+  selectSabyInnCandidate,
   sabySearchRowInnEvidence,
   isSabyBranchResult,SABY_BRANCH_MARKER_SOURCE,
   acceptSabyPublicIdentityFallback,verifySabyPublicNameFallback,
@@ -106,7 +107,8 @@ test("confirmed registered full title and private short Saby title can accept al
   assert.equal(result.identity.kpp,kpp);
   assert.equal(result.identity.verification,"registered_public_requisites");
   const diagnostic=safeSabyAliasDiagnostic(result);
-  assert.deepEqual(diagnostic,{accepted:true,reason:"registered_alias_verified"});
+  assert.deepEqual(diagnostic,{accepted:true,reason:"registered_alias_verified",
+    private_pair_basis:"strict_private_block"});
   const str=JSON.stringify(diagnostic);
   assert.equal(str.includes(inn),false);
   assert.equal(str.includes(name),false);
@@ -317,4 +319,123 @@ test("a legitimate main with another INN mentioned in its row stays review",()=>
   assert.equal(result.row,null);
   assert.equal(result.foreignInnRows,1);
   assert.equal(result.primaryCandidates,0);
+});
+
+
+test("audited private requisites recovery accepts labelled INN/KPP with intermediate About heading",()=>{
+  const text=[
+    "ДСК Автобан, АО",
+    "Реквизиты",
+    "О компании",
+    "Организация",
+    "Автобан, АО",
+    ...Array.from({length:40},(_,i)=>"Показатель "+i),
+    "ИНН",inn,
+    "КПП",kpp
+  ].join("\n");
+  const original=extractSabyDetailRequisitePair(text,inn);
+  assert.equal(original.kpp,"");
+  assert.equal(original.reason,"no_scoped_inn_kpp");
+  const rescued=recoverSabyDetailRequisitePair(text,inn);
+  assert.equal(rescued.kpp,kpp);
+  assert.equal(rescued.reason,"audit_correlated_labeled_pair");
+  assert.equal(rescued.basis,"audited_private_label_block");
+  const result=acceptSabyPublicIdentityFallback({
+    expectedInn:inn,expectedName:name,privateRoute,
+    cardAssessment:assessment,privateText:text,
+    privateHeadings:[title],publicResult:verifiedPublic
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.identity.kpp,kpp);
+  assert.equal(result.identity.private_pair_basis,
+    "audited_private_label_block");
+});
+
+test("audited recovery must reject unrelated KPP and competing scoped registration numbers",()=>{
+  for(const bad of [
+    "Реквизиты\nО компании\nИНН\n"+inn+
+      "\nСвязанные компании\nКПП\n"+kpp,
+    "Реквизиты\nО компании\nИНН\n"+inn+
+      "\nКонтакты\nКПП\n"+kpp,
+    "Реквизиты\nО компании\nИНН\n"+inn+
+      "\nКПП\n"+kpp+"\nКПП\n670001002",
+    "Реквизиты\nО компании\nИНН\n"+inn+
+      "\nИНН\n7707083893\nКПП\n"+kpp,
+    "Контакты\nИНН\n"+inn+"\nКПП\n"+kpp,
+    "Реквизиты\nО компании\nИНН\n7707083893+
+      "\nКПП\n"+kpp,
+    "Реквизиты\nО компании\nИНН\n"+inn+
+      "\nКПП\n"+kpp+"\nРеквизиты\nИНН\n"+inn+
+      "\nКПП\n670001002"
+  ]) {
+    const recovered=recoverSabyDetailRequisitePair(bad,inn);
+    assert.equal(recovered.kpp,"",bad);
+  }
+});
+
+test("private requisites tab may mount labelled INN/KPP after one bounded same-origin click",async()=>{
+  const initial="САПК, АО\nО компании\nИНН "+inn;
+  const expanded="САПК, АО\nРеквизиты\nИНН\n"+inn+
+    "\nКПП\n"+kpp;
+  let calls=0,clicked=0,publicChecks=0,waitCalls=0;
+  const locator={
+    count:async()=>1,
+    nth:()=>({
+      isVisible:async()=>true,
+      click:async()=>{clicked++;}
+    })
+  };
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>{
+      calls++;
+      return {text:calls===1?initial:expanded,headings:[title]};
+    },
+    getByRole:(role,opts)=>{
+      assert.equal(role,"tab");
+      assert.deepEqual(opts,{name:"Реквизиты",exact:true});
+      return locator;
+    },
+    waitForTimeout:async()=>{waitCalls++;}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async(_,actualInn,actualKpp)=>{
+      publicChecks++;
+      assert.equal(actualInn,inn);
+      assert.equal(actualKpp,kpp);
+      return verifiedPublic;
+    }
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.identity.private_pair_basis,"strict_private_block");
+  assert.equal(clicked,1);
+  assert.equal(calls,2);
+  assert.equal(publicChecks,1);
+  assert.equal(waitCalls,1);
+});
+
+test("tab navigation away from Saby detail must reject private identity",async()=>{
+  const initial="САПК, АО\nО компании\nИНН "+inn;
+  let current=privateRoute;
+  let publicChecks=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>({text:initial,headings:[title]}),
+    getByRole:()=>({
+      count:async()=>1,
+      nth:()=>({
+        isVisible:async()=>true,
+        click:async()=>{current="https://profile.saby.ru/page/company-list-prof";}
+      })
+    })
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async()=>{
+      publicChecks++;
+      throw Error("must not request public detail");
+    }
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"private_route_changed");
+  assert.equal(publicChecks,0);
 });
