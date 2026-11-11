@@ -6,6 +6,9 @@ import {sabyCardRoute} from "./sabyCard.js";
 // UI navigation params already occur on legitimate Saby contractor-info
 // routes, e.g. ?anchor=about&tab=all&page=public. Everything else must
 // remain exactly the same, including any opaque contractor identifiers.
+// Saby's known ?source=internal navigation marker may disappear after SPA
+// hydration. Only that exact one-way removal is safe to tolerate, and only
+// inside the opt-in fallback; it never establishes legal identity.
 const UI_QUERY_KEYS=new Set([
   "anchor","tab","page","section","subtab","view","panel","mode"
 ]);
@@ -24,6 +27,13 @@ function safeDetail(url) {
 const values=(url,key)=>url.searchParams.getAll(key).slice().sort();
 const sameValues=(a,b)=>a.length===b.length &&
   a.every((value,i)=>value===b[i]);
+// Narrow Saby navigation marker: ignore only disappearance of the exact
+// existing source=internal marker. Never accept a new/changed source value,
+// unknown key, company/INN/KPP identifier or an arbitrary removed parameter.
+const isKnownMarkerRemoval=(before,after,key)=>
+  key==="source" &&
+  sameValues(values(before,key),["internal"]) &&
+  values(after,key).length===0;
 function uiFragment(value) {
   if(!value)return true;
   let fragment;
@@ -35,8 +45,9 @@ function uiFragment(value) {
 /**
  * Only the same HTTPS profile.saby.ru contractor-info path may remain
  * under observation. Known UI query fields and known navigation fragment
- * names can vary. Unknown fields, IDs, INN, KPP, nested state and new
- * contractor-info path segments are all fail-closed. Even a safe URL
+ * names can vary; an exact source=internal marker may be removed once.
+ * Any other unknown field, identity ID, INN, KPP, nested state, or changed
+ * contractor-info path remains fail-closed. Even an allowed navigation
  * change is NOT proof of legal identity: private labelled INN/KPP and
  * canonical public registered name+INN/KPP are still required.
  */
@@ -54,7 +65,7 @@ export function compareSabyPrivateDetailUrl(initialUrl,currentUrl) {
   let uiParamsChanged=0;
   for(const key of keys) {
     if(sameValues(values(before,key),values(after,key)))continue;
-    if(!UI_QUERY_KEYS.has(key))
+    if(!UI_QUERY_KEYS.has(key) && !isKnownMarkerRemoval(before,after,key))
       return {ok:false,reason:"non_ui_query_changed"};
     uiParamsChanged++;
   }
