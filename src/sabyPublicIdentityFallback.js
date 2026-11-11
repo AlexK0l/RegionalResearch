@@ -128,7 +128,8 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
   };
   // Fail closed on genuinely truncated evidence even if a plausible main
   // candidate was seen: unseen later cards could be competing entities.
-  if(meta.truncated===true || meta.rawCapped===true)
+  if(meta.truncated===true || meta.rawCapped===true ||
+     (!all.meta && all.length>=20))
     return {row:null,reason:"result_window_full",count:main.length,...summary};
   // Apply the existing 20-row ambiguity cap to candidate HEAD OFFICES,
   // not to all related-company and branch rows returned by Saby.
