@@ -333,13 +333,27 @@ async function captureSabyPrivateIdentitySnapshot(page) {
   });
 }
 export async function verifySabyPublicNameFallback(page,inn,name,
-  cardAssessment,{verifyPublic=verifyPublicSabyIdentity}={}) {
+  cardAssessment,{
+    verifyPublic=verifyPublicSabyIdentity,
+    selectedSearchTitle="",
+    maxHydrationPolls=17,
+    hydrationIntervalMs=950
+  }={}) {
   const route=typeof page?.url==="function"?page.url():"";
   if(sabyCardRoute(route)!=="detail" ||
      cardAssessment?.reason!=="legal_name_not_verified" ||
      cardAssessment?.detail?.hasScopedInn!==true)
     return {ok:false,reason:"private_inn_not_scoped"};
-  let snapshot,pair,requisitesTabOpened=false;
+  let snapshot,pair,requisitesTabOpened=false,hydrationPolls=0;
+  let pairStabilityConfirmed=false;
+  const record=(reason)=>({
+    ok:false,reason,
+    private_diagnostic:diagnoseSabyPrivateRequisiteFields(
+      snapshot?.text||"",inn),
+    requisites_tab_opened:requisitesTabOpened,
+    hydration_polls:hydrationPolls,
+    pair_stability_confirmed:pairStabilityConfirmed
+  });
   try {
     snapshot=await captureSabyPrivateIdentitySnapshot(page);
     pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
