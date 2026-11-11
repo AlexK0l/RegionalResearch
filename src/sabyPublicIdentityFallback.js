@@ -228,7 +228,7 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
 }
 export function acceptSabyPublicIdentityFallback({
   expectedInn,expectedName,privateRoute,cardAssessment,
-  privateText,privateHeadings,publicResult
+  privateText,privateHeadings,publicResult,selectedSearchTitle=""
 }) {
   const reject=(reason)=>({ok:false,reason,
     identity:null});
@@ -251,6 +251,11 @@ export function acceptSabyPublicIdentityFallback({
   // The private detail heading MUST be independently tied to one of them.
   const titles=(Array.isArray(privateHeadings)?privateHeadings:[])
     .map(x=>String(x||"").trim()).filter(Boolean).slice(0,18);
+  // The current authenticated heading must still identify the clicked
+  // search company; a related-company page is not sufficient.
+  if(selectedSearchTitle && !titles.some(x=>
+      sabyNameMatches(x,selectedSearchTitle)))
+    return reject("selected_private_heading_disconnected");
   const publicName=String(publicResult.public_short_name||"");
   const registered=String(publicResult.official_name||"");
   const privateName=titles.find(x=>
@@ -277,7 +282,9 @@ export function safeSabyAliasDiagnostic(outcome) {
       String(outcome?.identity?.private_pair_basis||""): "",
     ...(outcome?.private_diagnostic?{
       private_diagnostic:outcome.private_diagnostic,
-      requisites_tab_opened:outcome.requisites_tab_opened===true
+      requisites_tab_opened:outcome.requisites_tab_opened===true,
+      hydration_polls:Number(outcome.hydration_polls||0),
+      pair_stability_confirmed:outcome.pair_stability_confirmed===true
     }:{})
   };
 }
@@ -326,13 +333,27 @@ async function captureSabyPrivateIdentitySnapshot(page) {
   });
 }
 export async function verifySabyPublicNameFallback(page,inn,name,
-  cardAssessment,{verifyPublic=verifyPublicSabyIdentity}={}) {
+  cardAssessment,{
+    verifyPublic=verifyPublicSabyIdentity,
+    selectedSearchTitle="",
+    maxHydrationPolls=17,
+    hydrationIntervalMs=950
+  }={}) {
   const route=typeof page?.url==="function"?page.url():"";
   if(sabyCardRoute(route)!=="detail" ||
      cardAssessment?.reason!=="legal_name_not_verified" ||
      cardAssessment?.detail?.hasScopedInn!==true)
     return {ok:false,reason:"private_inn_not_scoped"};
-  let snapshot,pair,requisitesTabOpened=false;
+  let snapshot,pair,requisitesTabOpened=false,hydrationPolls=0;
+  let pairStabilityConfirmed=false;
+  const record=(reason)=>({
+    ok:false,reason,
+    private_diagnostic:diagnoseSabyPrivateRequisiteFields(
+      snapshot?.text||"",inn),
+    requisites_tab_opened:requisitesTabOpened,
+    hydration_polls:hydrationPolls,
+    pair_stability_confirmed:pairStabilityConfirmed
+  });
   try {
     snapshot=await captureSabyPrivateIdentitySnapshot(page);
     pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
@@ -342,32 +363,97 @@ export async function verifySabyPublicNameFallback(page,inn,name,
       const expanded=await captureSabyPrivateIdentitySnapshot(page);
       const expandedPair=recoverSabyDetailRequisitePair(expanded?.text,inn);
       if(expandedPair.kpp || expandedPair.reason!=="no_scoped_inn_kpp"){
-        // New detail headings can be terse; retain only first-party names
-        // collected before and after opening the requisites surface.
-        snapshot={
-          text:expanded.text,
-          headings:[...new Set([...(snapshot.headings||[]),
-            ...(expanded.headings||[])])].slice(0,18)
-        };
+        // Only the currently visible private company headings are valid.
+        // Never combine stale names from a previous SPA render with
+        // another company's newly visible INN/KPP values.
+        snapshot=expanded;
         pair=expandedPair;
       }
     }
+    // Saby's SPA can mount the selected company's true requisites much
+    // later than its heading and linked-group INN list. The old one-shot
+    // read occurred at ~3 s; in the live v6 trace the KPP and requisites
+    // appeared only in a later observation. Poll ONLY the same detail.
+    if(!pair.kpp && pair.reason==="no_scoped_inn_kpp" &&
+       typeof page.waitForTimeout==="function"){
+      const polls=Math.min(18,Math.max(0,Number(maxHydrationPolls)||0));
+      const interval=Math.min(1800,Math.max(100,
+        Number(hydrationIntervalMs)||950));
+      for(let i=0;i<polls && !pair.kpp;i++){
+        await page.waitForTimeout(interval);
+        hydrationPolls++;
+        if(page.url()!==route)return record("private_route_changed");
+        const updated=await captureSabyPrivateIdentitySnapshot(page);
+        if(page.url()!==route)return record("private_route_changed");
+        snapshot=updated;
+        pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+        if(pair.kpp){
+          // Validate stability of the SAME scoped INN/KPP pair in a
+          // second snapshot, not a transient related-company rendering.
+          await page.waitForTimeout(550);
+          if(page.url()!==route)return record("private_route_changed");
+          const confirmed=await captureSabyPrivateIdentitySnapshot(page);
+          const second=recoverSabyDetailRequisitePair(confirmed?.text,inn);
+          snapshot=confirmed;
+          if(!second.kpp || second.kpp!==pair.kpp)
+            return record("private_kpp_not_stable");
+          pair=second;
+          pairStabilityConfirmed=true;
+          break;
+        }
+        if(pair.reason!=="no_scoped_inn_kpp")break;
+        // A real requisites tab may appear after the first few render
+        // passes. Never click more than ONE such first-party control.
+        if(i===7 && !requisitesTabOpened &&
+           await openSabyDetailRequisitesTab(page)){
+          requisitesTabOpened=true;
+          if(page.url()!==route)return record("private_route_changed");
+          snapshot=await captureSabyPrivateIdentitySnapshot(page);
+          pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+          if(pair.kpp)break;
+          if(pair.reason!=="no_scoped_inn_kpp")break;
+        }
+      }
+    }
   } catch {
-    return {ok:false,reason:"private_dom_unavailable"};
+    return record("private_dom_unavailable");
   }
-  if(sabyCardRoute(page.url())!=="detail")
-    return {ok:false,reason:"private_route_changed"};
+  if(page.url()!==route || sabyCardRoute(page.url())!=="detail")
+    return record("private_route_changed");
+  // If a requisites tab appeared DURING polling, its first value must
+  // also survive an independent fresh snapshot before verification.
+  if(hydrationPolls>0 && pair.kpp && !pairStabilityConfirmed){
+    try{
+      await page.waitForTimeout(550);
+      if(page.url()!==route)return record("private_route_changed");
+      const stable=await captureSabyPrivateIdentitySnapshot(page);
+      const second=recoverSabyDetailRequisitePair(stable?.text,inn);
+      snapshot=stable;
+      if(!second.kpp || second.kpp!==pair.kpp)
+        return record("private_kpp_not_stable");
+      pair=second;
+      pairStabilityConfirmed=true;
+    }catch{return record("private_dom_unavailable");}
+  }
   const privateDiagnostic=diagnoseSabyPrivateRequisiteFields(
     snapshot?.text,inn);
-  if(!pair.kpp)return {ok:false,reason:pair.reason,
-    private_diagnostic:privateDiagnostic,
-    requisites_tab_opened:requisitesTabOpened};
+  if(!pair.kpp)return record(pair.reason);
+  // Do not associate a registered public company with a stale or
+  // unrelated private title simply because both show the searched INN.
+  if(selectedSearchTitle &&
+     !(snapshot.headings||[]).some(title=>
+       sabyNameMatches(title,selectedSearchTitle)))
+    return record("selected_private_heading_disconnected");
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
+  if(page.url()!==route)return record("private_route_changed");
   const result=acceptSabyPublicIdentityFallback({
     expectedInn:inn,expectedName:name,privateRoute:route,
     cardAssessment,privateText:snapshot.text,
-    privateHeadings:snapshot.headings,publicResult
+    privateHeadings:snapshot.headings,publicResult,
+    selectedSearchTitle
   });
   return {...result,private_diagnostic:privateDiagnostic,
-    requisites_tab_opened:requisitesTabOpened};
+    requisites_tab_opened:requisitesTabOpened,
+    hydration_polls:hydrationPolls,
+    pair_stability_confirmed:pairStabilityConfirmed};
 }

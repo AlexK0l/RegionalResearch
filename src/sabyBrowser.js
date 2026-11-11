@@ -264,7 +264,9 @@ async function openCompany(page, row, settings) {
        last.detail?.hasScopedInn===true) {
       publicFallbackAttempted=true;
       const checked=await verifySabyPublicNameFallback(
-        page,inn,name,last);
+        page,inn,name,last,{
+          selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+        });
       publicFallbackFailureReason=String(checked?.reason||"");
       console.info("[SABY_PUBLIC_ALIAS_DIAG] "+
         JSON.stringify(safeSabyAliasDiagnostic(checked)));

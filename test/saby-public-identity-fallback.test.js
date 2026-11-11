@@ -462,3 +462,168 @@ test("private requisites diagnostics contain only numeric/boolean counters, no c
   assert.equal(report.requisites_tab_opened,true);
   assert.deepEqual(report.private_diagnostic,diagnostic);
 });
+
+
+test("hydrating Saby private detail waits for KPP and validates the same pair twice",async()=>{
+  const initial="САПК, АО\nО компании\nИНН: "+inn+
+    "\nСвязанные компании\nИНН 7707083893";
+  let reads=0,polls=0,publicCalls=0;
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>{
+      reads++;
+      return {text:reads<=2?initial:privateText,headings:[title]};
+    },
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{polls++;}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async(_page,gotInn,gotKpp,gotName)=>{
+      publicCalls++;
+      assert.equal(gotInn,inn);
+      assert.equal(gotKpp,kpp);
+      assert.equal(gotName,name);
+      return verifiedPublic;
+    },
+    selectedSearchTitle:title,
+    maxHydrationPolls:4
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.reason,"registered_alias_verified");
+  assert.equal(result.hydration_polls,2);
+  assert.equal(result.pair_stability_confirmed,true);
+  assert.equal(result.requisites_tab_opened,false);
+  assert.equal(reads,4);
+  assert.equal(publicCalls,1);
+  assert.equal(polls,3);
+  assert.equal(result.private_diagnostic.labelled_kpp_lines,1);
+});
+
+test("a late KPP paired with a DIFFERENT current company heading is not accepted",async()=>{
+  let reads=0,publicCalls=0;
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>({
+      text:(++reads)===1?"САПК, АО\nИНН "+inn:privateText,
+      headings:reads===1?[title]:["Другая организация, ООО"]
+    }),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async()=>{publicCalls++;return verifiedPublic;},
+    selectedSearchTitle:title,maxHydrationPolls:3
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"selected_private_heading_disconnected");
+  assert.equal(result.pair_stability_confirmed,true);
+  assert.equal(publicCalls,0);
+});
+
+test("private KPP changing between hydration snapshots is rejected without public request",async()=>{
+  let reads=0,publicCalls=0;
+  const otherKpp="670001002";
+  const changed=privateText.replace("\nКПП\n"+kpp,"\nКПП\n"+otherKpp);
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>({
+      text:(++reads)===1?"САПК, АО\nИНН: "+inn:
+        reads===2?privateText:changed,
+      headings:[title]
+    }),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async()=>{publicCalls++;return verifiedPublic;},
+    maxHydrationPolls:3,selectedSearchTitle:title
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"private_kpp_not_stable");
+  assert.equal(result.pair_stability_confirmed,false);
+  assert.equal(publicCalls,0);
+});
+
+test("hydration never retries through conflicting INN/KPP labels",async()=>{
+  let reads=0,publicCalls=0;
+  const conflicting="Реквизиты\nИНН\n"+inn+
+    "\nКПП\n"+kpp+"\nИНН\n7707083893";
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>({
+      text:(++reads)===1?"САПК, АО\nИНН: "+inn:conflicting,
+      headings:[title]
+    }),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    verifyPublic:async()=>{publicCalls++;return verifiedPublic;},
+    maxHydrationPolls:5
+  });
+  assert.equal(result.ok,false);
+  assert.ok(["multiple_requisites","audit_inn_conflict",
+    "audit_section_ambiguous"].includes(result.reason),result.reason);
+  assert.equal(result.hydration_polls,1);
+  assert.equal(reads,2);
+  assert.equal(publicCalls,0);
+});
+
+test("hydration route navigation fails closed without further DOM reads",async()=>{
+  let route=privateRoute,reads=0,publicCalls=0;
+  const page={
+    url:()=>route,
+    evaluate:async()=>{reads++;return {
+      text:"САПК, АО\nИНН "+inn,headings:[title]};
+    },
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{
+      route="https://profile.saby.ru/page/company-list-prof";
+    }
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    maxHydrationPolls:5,
+    verifyPublic:async()=>{publicCalls++;return verifiedPublic;}
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"private_route_changed");
+  assert.equal(reads,1);
+  assert.equal(publicCalls,0);
+});
+
+test("bounded hydration timeout preserves REVIEW and reports latest structure only",async()=>{
+  let reads=0,polls=0,publicCalls=0;
+  const late="САПК, АО\nРеквизиты\nИНН\n"+inn;
+  const page={
+    url:()=>privateRoute,
+    evaluate:async()=>{reads++;return {text:late,headings:[title]};},
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{polls++;}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,name,assessment,{
+    maxHydrationPolls:3,selectedSearchTitle:title,
+    verifyPublic:async()=>{publicCalls++;return verifiedPublic;}
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"no_scoped_inn_kpp");
+  assert.equal(result.hydration_polls,3);
+  assert.equal(result.private_diagnostic.labelled_kpp_lines,0);
+  assert.equal(result.private_diagnostic.requisites_headings,1);
+  assert.equal(reads,4);
+  assert.equal(polls,3);
+  assert.equal(publicCalls,0);
+});
+
+test("selected private company must match search result even when public proof matches",()=>{
+  const outcome=acceptSabyPublicIdentityFallback({
+    expectedInn:inn,expectedName:name,privateRoute,
+    cardAssessment:assessment,privateText,
+    privateHeadings:[title],publicResult:verifiedPublic,
+    selectedSearchTitle:"Другая организация, ООО"
+  });
+  assert.equal(outcome.ok,false);
+  assert.equal(outcome.reason,"selected_private_heading_disconnected");
+  const browser=fs.readFileSync(
+    new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
+  assert.match(browser,/selectedSearchTitle:auditSearchName\(rows\[0\]\?\.text,inn\)/);
+});
