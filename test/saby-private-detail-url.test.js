@@ -213,3 +213,86 @@ test("non-UI route change stays rejected while safe telemetry is forwarded",asyn
   assert.doesNotMatch(JSON.stringify(report),
     /contractorId|source=|internal|tab=requisites|VERY_PRIVATE/);
 });
+
+test("only exact loss of source=internal is tolerated; company and unknown keys still block",()=>{
+  const original=base+"?source=internal&contractorId=ABC&tab=about";
+  const after=base+"?contractorId=ABC&tab=about";
+  const permitted=compareSabyPrivateDetailUrl(original,after);
+  assert.equal(permitted.ok,true);
+  assert.equal(permitted.reason,"ui_navigation_only");
+  assert.equal(permitted.ui_params_changed,1);
+  const forbidden=[
+    [base+"?source=other&contractorId=ABC&tab=about",original],
+    [base+"?source=internal&contractorId=ABC&tab=about",after],
+    [base+"?source=internal&contractorId=ABC&tab=about",
+      base+"?contractorId=DEF&tab=about"],
+    [original,base+"?tab=about"],
+    [base+"?source=other&contractorId=ABC",base+"?contractorId=ABC"],
+    [base+"?source=internal&source=other",base],
+    [base+"?source=internal&companyId=OLD",base+"?companyId=NEW"],
+    [base+"?source=internal&inn="+inn,base+"?inn=7707083893"],
+    [base+"?source=internal&kpp="+kpp,base+"?kpp=770701001"],
+    [base+"?source=internal&unknown=state",base]
+  ];
+  for(const [from,to] of forbidden) {
+    const verdict=compareSabyPrivateDetailUrl(from,to);
+    assert.equal(verdict.ok,false,from+" -> "+to);
+    assert.equal(verdict.reason,"non_ui_query_changed");
+  }
+});
+
+test("known navigation marker can disappear during late private hydration, but full proof is still required",async()=>{
+  const initial=base+"?contractorId=UNCHANGED&source=internal&tab=about";
+  const after=base+"?contractorId=UNCHANGED&tab=about";
+  let current=initial,reads=0,waits=0,publicCalls=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>({
+      text:(++reads)<=3?short+"\\nИНН "+inn:validText,
+      headings:[short]
+    }),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{
+      waits++;
+      if(waits===2)current=after;
+    }
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+    maxHydrationPolls:5,selectedSearchTitle:short,
+    verifyPublic:async(_page,gotInn,gotKpp,gotName)=>{
+      publicCalls++;
+      assert.equal(gotInn,inn);
+      assert.equal(gotKpp,kpp);
+      assert.equal(gotName,long);
+      return publicProof;
+    }
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.reason,"registered_alias_verified");
+  assert.equal(result.ui_route_updated,true);
+  assert.equal(result.pair_stability_confirmed,true);
+  assert.equal(publicCalls,1);
+  assert.equal(result.identity.kpp,kpp);
+  assert.doesNotMatch(JSON.stringify(safeSabyAliasDiagnostic(result)),
+    /contractorId|UNCHANGED|source=internal|tab=about/);
+});
+
+test("source marker disappearance is never enough to accept a wrong private requisites INN",async()=>{
+  const initial=base+"?contractorId=UNCHANGED&source=internal";
+  const wrongText=[short,"Реквизиты","ИНН","7707083893","КПП",kpp,
+    "Контакты связанных компаний"].join("\\n");
+  let current=initial,publicCalls=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>({text:wrongText,headings:[short]}),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{current=base+"?contractorId=UNCHANGED";}
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+    maxHydrationPolls:4,selectedSearchTitle:short,
+    verifyPublic:async()=>{publicCalls++;return publicProof;}
+  });
+  assert.equal(result.ok,false);
+  assert.ok(["inn_conflict","audit_inn_conflict","no_scoped_inn_kpp"].includes(result.reason));
+  assert.equal(publicCalls,0);
+});
