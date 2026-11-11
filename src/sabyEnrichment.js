@@ -66,6 +66,14 @@ function verifiedTrucks(record) {
 // Saby only: recognize a persisted, first-party, company-scoped section.
 // This is not a new legal-identity verifier; a subsequent browser attempt
 // still has to verify the company before applying ANY fresh data.
+// Older Stage12 evidence stores a verified truck inventory without the
+// `status` field (unlike a fresh browser record). Require the original
+// explicit Saby category/source plus the same strict count/model validation.
+function verifiedStoredTrucks(stored) {
+  if(stored?.source!=="SABY"||stored?.category!=="Грузовые")
+    return null;
+  return verifiedTrucks({trucks:{...stored,status:"verified"}});
+}
 export function sabyStoredSectionCoverage(row,{transport=false}={}) {
   const stored=row?.__evidence?.saby;
   const sourceInn=sabyInn(row?.["ИНН"]);
@@ -73,7 +81,7 @@ export function sabyStoredSectionCoverage(row,{transport=false}={}) {
     isSabyProfileUrl(stored?.source_url) && stored?.collection);
   const contacts=trusted&&stored.collection.contacts==="collected";
   const trucks=trusted&&stored.collection.trucks==="verified"&&
-    verifiedTrucks({trucks:stored.trucks})!==null;
+    verifiedStoredTrucks(stored.trucks)!==null;
   return {trusted,contacts,trucks,
     complete:contacts&&(!transport||trucks)};
 }
@@ -237,7 +245,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     .map(x=>String(x||"").trim().toLowerCase())
     .filter(x=>/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(x)))].slice(0,10);
   const previousFleet=carry&&existingSaby.collection?.trucks==="verified"?
-    verifiedTrucks({trucks:existingSaby.trucks}):null;
+    verifiedStoredTrucks(existingSaby.trucks):null;
   const fleet=verifiedTrucks(record)||previousFleet;
   const collection=safeCollectionStatus(record);
   if(keepContacts||freshContacts)collection.contacts="collected";
@@ -254,7 +262,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     verified_at: String(record.collected_at || new Date().toISOString()),
     phones, phone_details:phoneDetails, emails,
     collection,
-    ...(fleet ? {trucks: {...fleet, category:"Грузовые", source:"SABY"}} : {})
+    ...(fleet ? {trucks: {...fleet, status:"verified",category:"Грузовые", source:"SABY"}} : {})
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;
