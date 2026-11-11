@@ -63,6 +63,54 @@ function verifiedTrucks(record) {
   return { count: fleet.count, vehicles };
 }
 
+// Saby only: recognize a persisted, first-party, company-scoped section.
+// This is not a new legal-identity verifier; a subsequent browser attempt
+// still has to verify the company before applying ANY fresh data.
+// Older Stage12 evidence stores a verified truck inventory without the
+// `status` field (unlike a fresh browser record). Require the original
+// explicit Saby category/source plus the same strict count/model validation.
+function verifiedStoredTrucks(stored) {
+  if(stored?.source!=="SABY"||stored?.category!=="Грузовые")
+    return null;
+  return verifiedTrucks({trucks:{...stored,status:"verified"}});
+}
+export function sabyStoredSectionCoverage(row,{transport=false}={}) {
+  const stored=row?.__evidence?.saby;
+  const sourceInn=sabyInn(row?.["ИНН"]);
+  const trusted=Boolean(sourceInn && stored?.inn===sourceInn &&
+    isSabyProfileUrl(stored?.source_url) && stored?.collection);
+  const contacts=trusted&&stored.collection.contacts==="collected";
+  const trucks=trusted&&stored.collection.trucks==="verified"&&
+    verifiedStoredTrucks(stored.trucks)!==null;
+  return {trusted,contacts,trucks,
+    complete:contacts&&(!transport||trucks)};
+}
+
+// Legacy v11 evidence had no KPP field. To carry verified sections across
+// a later retry, demand either the same non-empty 9-digit KPP or the same
+// first-party private card identifier. Never mix distinct Saby cards on
+// the strength of an INN alone (branches can share that INN).
+function sabyDetailId(url) {
+  try {
+    const u=new URL(String(url||""));
+    return u.protocol==="https:" && u.hostname==="profile.saby.ru" &&
+      u.pathname==="/page/contractor-info" ?
+      String(u.searchParams.get("id")||"").trim():"";
+  } catch {return "";}
+}
+function canCarrySabyEvidence(stored,record) {
+  if(!stored||stored.inn!==sabyInn(record?.identity?.inn) ||
+     !isSabyProfileUrl(stored.source_url) ||
+     !isSabyProfileUrl(record?.source_url))return false;
+  const a=String(stored.kpp||""),b=String(record?.identity?.kpp||"");
+  if(a&&b&&a!==b)return false;
+  const oldId=sabyDetailId(stored.source_url),
+    newId=sabyDetailId(record.source_url);
+  if(oldId&&newId&&oldId!==newId)return false;
+  return Boolean((/^\d{9}$/.test(a) && a===b) ||
+    (oldId&&oldId===newId));
+}
+
 export function fleetSummary(fleet) {
   if (!fleet || fleet.count === 0) return "";
   const groups = new Map();
@@ -154,19 +202,33 @@ function safeCollectionStatus(record) {
 export function applySabyEnrichment(row, record, { phoneOwners = new Map(), transport = false } = {}) {
   if (!sourceValid(record, row)) return {status:"review", reason:"identity_mismatch", phoneAdded:false, transportAdded:false};
   const contacts = record.contacts || {};
-  const phones = [...new Set((Array.isArray(contacts.phones) ? contacts.phones : [])
+  const evidence = {...(row.__evidence || {})};
+  const existingSaby = {...(evidence.saby || {})};
+  const carry=canCarrySabyEvidence(existingSaby,record);
+  const keepContacts=carry&&existingSaby.collection?.contacts==="collected";
+  const freshContacts=contacts.status==="collected";
+  // A later fleet-only retry must not erase previously verified Saby
+  // contacts. A freshly failed contacts widget is not evidence of absence.
+  const previousPhones=keepContacts&&Array.isArray(existingSaby.phones)?
+    existingSaby.phones:[];
+  const currentPhones=freshContacts&&Array.isArray(contacts.phones)?
+    contacts.phones:[];
+  const phones=[...new Set([...previousPhones,...currentPhones]
     .map(normalizeRussianPhone).filter(Boolean))];
-  // Department labels are accepted only when explicitly present beside
-  // the number in the source (no inference from job titles/company industry).
-  const departments = new Map();
-  const disputedDepartments=new Set();
-  for (const info of Array.isArray(contacts.phone_details) ? contacts.phone_details : []) {
+  // Departments are carried only when explicitly observed for this same
+  // private Saby card; conflicting labels are deliberately dropped.
+  const previousDetails=keepContacts&&Array.isArray(existingSaby.phone_details)?
+    existingSaby.phone_details:[];
+  const currentDetails=freshContacts&&Array.isArray(contacts.phone_details)?
+    contacts.phone_details:[];
+  const departments = new Map(),disputedDepartments=new Set();
+  for(const info of [...previousDetails,...currentDetails]){
     const phone=normalizeRussianPhone(info?.phone);
     const label=explicitPhoneDepartment(info?.department);
-    if (phone && phones.includes(phone) && label) {
+    if(phone&&phones.includes(phone)&&label){
       const old=departments.get(phone);
-      if (!old && !disputedDepartments.has(phone)) departments.set(phone,label);
-      else if(old && old!==label) {
+      if(!old&&!disputedDepartments.has(phone))departments.set(phone,label);
+      else if(old&&old!==label){
         departments.set(phone,null);
         disputedDepartments.add(phone);
       }
@@ -175,20 +237,32 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   const phoneDetails=phones.map(phone=>({
     phone,department:departments.get(phone)||""
   }));
-  const emails = [...new Set((Array.isArray(contacts.emails) ? contacts.emails : [])
-    .map(x => String(x || "").trim().toLowerCase())
-    .filter(x => /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(x)))].slice(0,10);
-  const fleet = verifiedTrucks(record);
-  const evidence = {...(row.__evidence || {})};
-  const existingSaby = {...(evidence.saby || {})};
+  const previousEmails=keepContacts&&Array.isArray(existingSaby.emails)?
+    existingSaby.emails:[];
+  const currentEmails=freshContacts&&Array.isArray(contacts.emails)?
+    contacts.emails:[];
+  const emails=[...new Set([...previousEmails,...currentEmails]
+    .map(x=>String(x||"").trim().toLowerCase())
+    .filter(x=>/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(x)))].slice(0,10);
+  const previousFleet=carry&&existingSaby.collection?.trucks==="verified"?
+    verifiedStoredTrucks(existingSaby.trucks):null;
+  const fleet=verifiedTrucks(record)||previousFleet;
+  const collection=safeCollectionStatus(record);
+  if(keepContacts||freshContacts)collection.contacts="collected";
+  if(fleet)collection.trucks="verified";
   evidence.saby = {
-    ...existingSaby,
+    // Never retain prior section evidence from a different Saby card.
+    ...(carry?existingSaby:{}),
     source_url: record.source_url,
     inn: record.identity.inn,
+    ...( /^\d{9}$/.test(String(record.identity.kpp||""))?
+      {kpp:String(record.identity.kpp)}:
+      (carry&&/^\d{9}$/.test(String(existingSaby.kpp||""))?
+        {kpp:String(existingSaby.kpp)}:{})),
     verified_at: String(record.collected_at || new Date().toISOString()),
     phones, phone_details:phoneDetails, emails,
-    collection:safeCollectionStatus(record),
-    ...(fleet ? {trucks: {...fleet, category:"Грузовые", source:"SABY"}} : {})
+    collection,
+    ...(fleet ? {trucks: {...fleet, status:"verified",category:"Грузовые", source:"SABY"}} : {})
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;

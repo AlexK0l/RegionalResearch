@@ -1,7 +1,8 @@
 // Stage 12: optional, bounded Saby enrichment after final research QA.
 // No OpenAI requests. Never creates new organizations or changes A/B/C grades.
 import { parsePhoneEntries } from "./phoneExport.js";
-import { applySabyEnrichment, sabyEligibleRows, sabyInn } from "./sabyEnrichment.js";
+import { applySabyEnrichment, sabyEligibleRows, sabyInn,
+  sabyStoredSectionCoverage } from "./sabyEnrichment.js";
 import { withSabyBrowser, collectSabyCompany } from "./sabyBrowser.js";
 
 const bounded = (value, fallback, min, max) => {
@@ -56,6 +57,17 @@ export async function runSabyStage12({
   const settings=sabyStage12Settings(env);
   const completed=new Set((completedInns||[]).map(sabyInn).filter(Boolean));
   const plan=sabyEligibleRows(result);
+  // Backward compatibility: older Stage12 checkpoints considered a direct
+  // buyer complete as soon as a phone was collected. Reopen only rows whose
+  // persisted Saby evidence explicitly proves that a required section was
+  // unfinished. Never guess completion from a missing evidence object.
+  for(const entry of plan.eligible){
+    const inn=sabyInn(entry.row["ИНН"]);
+    if(!completed.has(inn))continue;
+    const coverage=sabyStoredSectionCoverage(entry.row,
+      {transport:entry.transport});
+    if(coverage.trusted&&!coverage.complete)completed.delete(inn);
+  }
   const pending=plan.eligible.filter(x=>!completed.has(sabyInn(x.row["ИНН"])));
   const start=Number.isSafeInteger(Number(offset)) && Number(offset)>=0 ?
     Math.min(Number(offset),20000) : 0;
@@ -109,13 +121,29 @@ export async function runSabyStage12({
             const applied=applySabyEnrichment(row,record,
               {phoneOwners,transport:entry.transport});
             if(applied.status==="ok") {
-              completed.add(inn);
+              // Enrichment can save a verified phone without a fleet (or
+              // vice versa). Only mark the INN completed when ALL sections
+              // required for its buyer type have been verified. Otherwise
+              // leave it in the durable deferred queue for the next run.
+              const coverage=sabyStoredSectionCoverage(row,
+                {transport:entry.transport});
+              if(coverage.complete)completed.add(inn);
               stats.verified++;
               if(applied.phoneAdded) stats.phonesAdded++;
               if(applied.transportAdded) stats.transportsAdded++;
               if(applied.verifiedTrucks!==null)
                 stats.vehiclesVerified+=applied.verifiedTrucks;
-              if(record.errors?.length) stats.partialResults++;
+              if(record.errors?.length||!coverage.complete)
+                stats.partialResults++;
+              if(!coverage.complete) {
+                console.warn("[SABY_PARTIAL] "+JSON.stringify({
+                  reason:"required_section_not_verified",
+                  contacts:coverage.contacts?"collected":"pending",
+                  trucks:entry.transport?
+                    (coverage.trucks?"verified":"pending"):"not_required",
+                  deferred:true
+                }));
+              }
               consecutive=0;
             } else {
               stats.review++;

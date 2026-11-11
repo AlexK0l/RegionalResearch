@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applySabyEnrichment, sabyEligibleRows, sabySearchResultMatches,
-  sabyNameMatches } from "../src/sabyEnrichment.js";
+  sabyNameMatches, sabyStoredSectionCoverage } from "../src/sabyEnrichment.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
 import { STEPS, DIRECT_BUYER_COLS } from "../src/constants.js";
 import {readFileSync} from "node:fs";
@@ -15,7 +15,7 @@ function payload({inn="7707083893",name="ООО Тест",
   count=2,phones=["+7 (999) 123-45-67"]}={}) {
   return {identity:{inn,name,verified:true},source:"SABY",
     source_url:sourceUrl,collected_at:"2026-11-09T09:00:00Z",
-    contacts:{phones,emails:["info@example.ru"]},
+    contacts:{status:"collected",phones,emails:["info@example.ru"]},
     trucks:{status:"verified",count,
       vehicles:count===2?
       [{model:"КамАЗ 5490",year:2020},{model:"КамАЗ 5490",year:2020}]:
@@ -255,8 +255,11 @@ test("verified empty contact section is distinct from a missing section",async()
   });
   assert.equal(out.stats.verified,1);
   assert.equal(out.stats.review,0);
-  assert.deepEqual(out.completedInns,["7707083893"]);
-  assert.deepEqual(out.deferredInns,[]);
+  assert.equal(out.stats.partialResults,1);
+  assert.deepEqual(out.completedInns,[]);
+  assert.deepEqual(out.deferredInns,["7707083893"]);
+  assert.equal(row.__evidence.saby.collection.contacts,"collected");
+  assert.equal(row.__evidence.saby.collection.trucks,"missing");
 });
 
 test("browser failure leaves source data intact, safely defers the work",async()=>{
@@ -276,4 +279,153 @@ test("pipeline stage 12 is after final QA and has no own paid web calls",()=>{
     source.lastIndexOf("runCheckpointedSabyStage12("));
   assert.match(source,/saby_completed_inns/);
   assert.match(source,/stage12_duration_ms/);
+});
+
+test("one verified Saby phone is saved while unverified direct-buyer fleet stays deferred",async()=>{
+  const row=company(),result=base([row]),snapshots=[];
+  const record=payload({sourceUrl:
+    "https://profile.saby.ru/page/contractor-info?anchor=about&id=CARD_A"});
+  record.identity.kpp="770701001";
+  record.trucks={status:"review"};
+  record.errors=["trucks: private website detail, never save into evidence"];
+  const out=await runSabyStage12({
+    result,env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1",
+      SABY_CHECKPOINT_EVERY:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>record,
+    onCheckpoint:async x=>snapshots.push(x)
+  });
+  assert.equal(out.stats.verified,1,"identity and phone were verified");
+  assert.equal(out.stats.partialResults,1);
+  assert.equal(out.stats.phonesAdded,1);
+  assert.equal(out.stats.transportsAdded,0);
+  assert.equal(out.stats.deferred,1);
+  assert.deepEqual(out.completedInns,[]);
+  assert.deepEqual(out.deferredInns,["7707083893"]);
+  assert.deepEqual(snapshots.at(-1).completedInns,[]);
+  assert.deepEqual(snapshots.at(-1).deferredInns,["7707083893"]);
+  assert.equal(row["Телефон"],"79991234567");
+  assert.equal(row.__evidence.saby.collection.contacts,"collected");
+  assert.equal(row.__evidence.saby.collection.trucks,"review");
+  assert.equal(row.__evidence.saby.kpp,"770701001");
+  assert.equal(row.__evidence.saby.trucks,undefined);
+  assert.doesNotMatch(JSON.stringify(row.__evidence.saby.collection),
+    /private website detail/);
+});
+
+test("later fleet-only retry completes a buyer while preserving old verified phone and email",async()=>{
+  const row=company(),result=base([row]);
+  const detailUrl="https://profile.saby.ru/page/contractor-info?id=CARD_A";
+  const first=payload({sourceUrl:detailUrl});
+  first.identity.kpp="770701001";
+  first.trucks={status:"review"};
+  const firstOut=await runSabyStage12({
+    result,env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>first
+  });
+  assert.equal(firstOut.stats.deferred,1);
+  assert.equal(row["Телефон"],"79991234567");
+  const next=payload({sourceUrl:detailUrl});
+  next.identity.kpp="770701001";
+  next.contacts={status:"missing",phones:[],emails:[]};
+  const secondOut=await runSabyStage12({
+    result,completedInns:firstOut.completedInns,
+    env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>next
+  });
+  assert.equal(secondOut.stats.verified,1);
+  assert.equal(secondOut.stats.deferred,0);
+  assert.equal(secondOut.stats.partialResults,0);
+  assert.deepEqual(secondOut.completedInns,["7707083893"]);
+  assert.equal(row["Телефон"],"79991234567");
+  assert.deepEqual(row.__evidence.saby.phones,["79991234567"]);
+  assert.deepEqual(row.__evidence.saby.emails,["info@example.ru"]);
+  assert.equal(row.__evidence.saby.collection.contacts,"collected");
+  assert.equal(row.__evidence.saby.collection.trucks,"verified");
+  assert.match(row["Наличие транспорта"],/Saby \(грузовые\):/);
+  assert.equal(sabyStoredSectionCoverage(row,{transport:true}).complete,true);
+});
+
+test("legacy completed checkpoint with explicit missing trucks is requeued for recovery",async()=>{
+  const row=company(),result=base([row]);
+  const detailUrl="https://profile.saby.ru/page/contractor-info?id=LEGACY";
+  const first=payload({sourceUrl:detailUrl});
+  first.trucks={status:"review"};
+  applySabyEnrichment(row,first,{transport:true});
+  // v11 did not store KPP in the evidence, so recover by the same card ID.
+  assert.equal(row.__evidence.saby.kpp,undefined);
+  const next=payload({sourceUrl:detailUrl});
+  next.contacts={status:"missing",phones:[],emails:[]};
+  const calls=[];
+  const out=await runSabyStage12({
+    result,completedInns:["7707083893"],
+    env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>{calls.push(1);return next;}
+  });
+  assert.equal(calls.length,1,"old partial completion must be retried");
+  assert.equal(out.stats.previouslyCompleted,0);
+  assert.equal(out.stats.verified,1);
+  assert.equal(out.stats.deferred,0);
+  assert.deepEqual(out.completedInns,["7707083893"]);
+  assert.deepEqual(row.__evidence.saby.phones,["79991234567"]);
+  assert.equal(row.__evidence.saby.collection.trucks,"verified");
+});
+
+test("different Saby card or changed KPP must not merge previously verified sections",()=>{
+  for(const newUrl of [
+    "https://profile.saby.ru/page/contractor-info?id=CARD_B",
+    "https://profile.saby.ru/page/contractor-info?id=CARD_A"
+  ]) {
+    const row=company();
+    const first=payload({sourceUrl:
+      "https://profile.saby.ru/page/contractor-info?id=CARD_A"});
+    first.identity.kpp="770701001";
+    first.trucks={status:"review"};
+    applySabyEnrichment(row,first,{transport:true});
+    const next=payload({sourceUrl:newUrl});
+    next.identity.kpp=newUrl.endsWith("CARD_A")?"770701002":"770701001";
+    next.contacts={status:"missing",phones:[],emails:[]};
+    applySabyEnrichment(row,next,{transport:true});
+    const saved=row.__evidence.saby;
+    assert.equal(saved.collection.contacts,"missing");
+    assert.equal(saved.collection.trucks,"verified");
+    assert.deepEqual(saved.phones,[]);
+    assert.deepEqual(saved.emails,[]);
+    assert.equal(sabyStoredSectionCoverage(row,{transport:true}).complete,false);
+    // Old displayed phone is never deleted, but is not newly attributed to
+    // a different company's fleet and does not certify completion.
+    assert.equal(row["Телефон"],"79991234567");
+  }
+});
+
+test("intermediary completes from verified contacts, no vehicle section required",async()=>{
+  const row=company();
+  const record=payload();
+  record.trucks={status:"review"};
+  const result={direct_buyers:[],intermediaries:[row],leasing:[],statistics:[]};
+  const out=await runSabyStage12({
+    result,env:{SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"1"},
+    sessionRunner:fakeSession,collectCompany:async()=>record
+  });
+  assert.equal(out.stats.verified,1);
+  assert.equal(out.stats.deferred,0);
+  assert.deepEqual(out.completedInns,["7707083893"]);
+  assert.equal(sabyStoredSectionCoverage(row,{transport:false}).complete,true);
+});
+
+test("existing verified legacy Saby truck evidence without status remains complete",()=>{
+  const row=company();
+  const first=payload({sourceUrl:
+    "https://profile.saby.ru/page/contractor-info?id=OLD_FLEET"});
+  first.identity.kpp="770701001";
+  applySabyEnrichment(row,first,{transport:true});
+  assert.equal(row.__evidence.saby.trucks.status,"verified");
+  delete row.__evidence.saby.trucks.status; // Old Stage12 storage shape.
+  const coverage=sabyStoredSectionCoverage(row,{transport:true});
+  assert.equal(coverage.trusted,true);
+  assert.equal(coverage.contacts,true);
+  assert.equal(coverage.trucks,true);
+  assert.equal(coverage.complete,true);
+  // A single bad vehicle would invalidate an apparently verified legacy fleet.
+  row.__evidence.saby.trucks.vehicles=[];
+  assert.equal(sabyStoredSectionCoverage(row,{transport:true}).complete,false);
 });
