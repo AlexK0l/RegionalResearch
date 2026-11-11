@@ -46,7 +46,8 @@ test("private owner diagnostics contain only allowlisted counts, not names or re
     "public_distinct_kpp_links",
     "selected_name_in_headings","selected_heading_count",
     "selected_heading_scoped_inn",
-    "selected_heading_scoped_inn_count","detail_region_observed"
+    "selected_heading_scoped_inn_count","detail_region_observed",
+    "late_requisites"
   ]);
 });
 
@@ -107,4 +108,74 @@ test("Stage12 invokes read-only private structure report for unresolved KPP or c
   assert.match(browser,/auditSearchName\(rows\[0\]\?\.text,inn\)/);
   assert.match(browser,/publicFallback=settings\.publicIdentityFallback===true/);
   assert.match(browser,/return \{inn,name:outcome\.verifiedName,verified:true\}/);
+});
+
+test("late private labelled INN/KPP pair is only an observation; never owner verification",()=>{
+  const kpp="504301001";
+  const raw=[
+    searchTitle,"Реквизиты","ИНН",inn,"КПП",kpp,"О компании",
+    "Контакты","private.account@secret.test","7 999 123-45-67"
+  ].join("\n");
+  const input={
+    headings:[{title:searchTitle,has_scoped_inn:false}],
+    current_visible_text:raw,
+    visible_text_chars:raw.length,
+    main_regions:0,heading_count:1,h1_count:1,
+    visible_inn_labels:1,visible_kpp_labels:1,requisites_label_leaves:1
+  };
+  const out=summarizeSabyPrivateOwnerStructure(input,searchTitle,inn);
+  assert.equal(out.status,"observed_not_verified");
+  assert.equal(out.selected_name_in_headings,true);
+  assert.equal(out.selected_heading_scoped_inn,false);
+  assert.deepEqual(out.late_requisites,{
+    status:"observed",reason:"unique_requisite_pair",
+    candidate_pair_present:true,pair_basis:"strict_private_block",
+    requisites_headings:1,labelled_inn_lines:1,labelled_kpp_lines:1,
+    audited_pairs:1,audited_exact_pairs:1
+  });
+  assert.equal(Object.hasOwn(out,"verified"),false);
+  assert.doesNotMatch(JSON.stringify(out),
+    /504301001|7725104641|Автобан|secret.test|999|123-45-67|current_visible_text/);
+});
+
+test("late observed KPP paired with foreign INN remains untrusted",()=>{
+  const raw=[
+    searchTitle,"Реквизиты","ИНН","7707083893","КПП",
+    "504301001","О компании"
+  ].join("\n");
+  const out=summarizeSabyPrivateOwnerStructure({
+    current_visible_text:raw,headings:[{title:searchTitle,
+      has_scoped_inn:false}]
+  },searchTitle,inn);
+  assert.equal(out.status,"observed_not_verified");
+  assert.equal(out.late_requisites.candidate_pair_present,false);
+  assert.ok(["inn_conflict","audit_inn_conflict"].includes(
+    out.late_requisites.reason));
+  assert.doesNotMatch(JSON.stringify(out),
+    /7707083893|504301001|Автобан/);
+});
+
+test("private owner probe reduces fresh visible text in memory before returning",async()=>{
+  const kpp="504301001";
+  const privateText=[
+    searchTitle,"Реквизиты","ИНН",inn,"КПП",kpp,"О компании",
+    "private.email@secret.test"
+  ].join("\n");
+  const page={
+    url:()=>detailUrl,
+    evaluate:async(_callback,args)=>{
+      assert.equal(args.inn,inn);
+      return {
+        headings:[{title:searchTitle,has_scoped_inn:false}],
+        current_visible_text:privateText,visible_text_chars:privateText.length,
+        visible_inn_labels:1,visible_kpp_labels:1
+      };
+    }
+  };
+  const reported=await diagnoseSabyPrivateOwnerStructure(
+    page,inn,searchTitle);
+  assert.equal(reported.late_requisites.candidate_pair_present,true);
+  assert.equal(reported.status,"observed_not_verified");
+  assert.doesNotMatch(JSON.stringify(reported),
+    /504301001|7725104641|Автобан|private.email|secret.test/);
 });
