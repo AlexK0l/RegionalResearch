@@ -19,6 +19,7 @@ import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js
 import {safeSabyFleetFailure,observeSabyFleetDOM}
   from "./sabyFleetDiagnostic.js";
 import {collectSabyTruckWindows} from "./sabyFleetWindows.js";
+import {openSabyFleetPanelWithHydration} from "./sabyFleetPanelOpening.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -563,11 +564,11 @@ async function ownTrucks(page, settings,progress={}) {
     // stitch ONLY uniquely overlapping windows. If continuity or scrolling
     // is uncertain, the whole fleet remains pending.
     const r=preview.rect;
-    await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
     const panelUrl=page.url();
     let categoryExpanded=false;
     const readWindow=async()=>{
-      if(page.url()!==panelUrl)return {opened:false,rows:[]};
+      if(page.url()!==panelUrl)
+        return {opened:false,routeChanged:true,rows:[]};
       let panel=await sidePanelTrucks(page,preview.count,"window");
       if(panel.opened)progress.side_panel_observed=true;
       if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
@@ -579,8 +580,25 @@ async function ownTrucks(page, settings,progress={}) {
       }
       return panel;
     };
-    const first=await readWindow();
-    if(first.opened) {
+    // The v15 regression came from testing the DOM immediately after
+    // one click. In v14 this panel required a bounded hydration wait and
+    // sometimes a second click. Poll for genuine first-party panel
+    // evidence; retry the preview click ONLY when no panel is visible,
+    // otherwise a second click might close the correctly opened panel.
+    const opening=await openSabyFleetPanelWithHydration({
+      clickPreview:async()=>{
+        if(page.url()!==panelUrl)return false;
+        await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
+        return page.url()===panelUrl;
+      },
+      readPanel:readWindow,
+      observePanel:()=>observeSabyFleetDOM(page),
+      wait:delay,maxClicks:2,pollsPerClick:20,pollMs:400
+    });
+    progress.panel_open_attempts=opening.clicks;
+    progress.panel_wait_polls=opening.polls;
+    progress.panel_title_seen=opening.titleSeen;
+    if(opening.opened) {
       // A new side panel can preserve an old scroll position from the
       // browser profile. Always begin at top, or refuse to infer a
       // complete ordered sequence from an unknown middle window.
@@ -608,7 +626,7 @@ async function ownTrucks(page, settings,progress={}) {
         progress.stitch_reason="scroll_not_available";
       }
     } else {
-      progress.stitch_reason="panel_not_observed";
+      progress.stitch_reason=opening.reason;
     }
   } else if(rows.length!==preview.count) {
     // Unchanged Stage12 behavior for nonexperimental runs.

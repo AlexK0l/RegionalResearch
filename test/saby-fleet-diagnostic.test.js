@@ -13,7 +13,9 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     phase:"vehicles",reason:"vehicle_rows_incomplete",
     preview_status:"found",expected_trucks:7,
     parsed_vehicle_rows:2,window_count:4,scroll_moves:3,
-    stitch_reason:"scroll_not_advanced",side_panel_observed:true,expanded:true,
+    stitch_reason:"scroll_not_advanced",
+    panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
+    side_panel_observed:true,expanded:true,
     company_name:"Дорстройсервис",inn:"7725104641",
     private_email:"private-contact@example.test",
     private_page_url:detailUrl,
@@ -37,6 +39,7 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     category_expand_control:true,preview_status:"found",
     expected_trucks:7,parsed_vehicle_rows:2,
     window_count:4,scroll_moves:3,stitch_reason:"scroll_not_advanced",
+    panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
     side_panel_observed:true,expanded:true
   });
   assert.doesNotMatch(JSON.stringify(safe),
@@ -61,6 +64,9 @@ test("unexpected untrusted values cannot inject diagnostics or fake a verified f
   assert.equal(z.window_count,null);
   assert.equal(z.scroll_moves,null);
   assert.equal(z.stitch_reason,"not_attempted");
+  assert.equal(z.panel_open_attempts,null);
+  assert.equal(z.panel_wait_polls,null);
+  assert.equal(z.panel_title_seen,false);
   assert.equal(z.exact_fleet_heading,false);
   assert.equal(z.expanded,false);
   assert.equal(z.side_panel_observed,false);
