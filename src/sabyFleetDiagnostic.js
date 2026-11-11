@@ -61,7 +61,20 @@ export function safeSabyFleetFailure(report={},observed={}) {
     expected_trucks:capped(report.expected_trucks),
     parsed_vehicle_rows:capped(report.parsed_vehicle_rows),
     window_count:capped(report.window_count,96),
-    scroll_moves:capped(report.scroll_moves,96),
+    scroll_moves:capped(report.scroll_moves,128),
+    stale_scroll_moves:capped(report.stale_scroll_moves,128),
+    consecutive_stale_scroll_moves:
+      capped(report.consecutive_stale_scroll_moves,12),
+    scroll_candidates:capped(report.scroll_candidates,40),
+    scroll_selected_from_vehicle_rows:
+      report.scroll_selected_from_vehicle_rows===true,
+    scroll_target_contains_truck:report.scroll_target_contains_truck===true,
+    scroll_target_vehicle_leaves:
+      capped(report.scroll_target_vehicle_leaves,5000),
+    scroll_target_is_panel:report.scroll_target_is_panel===true,
+    scroll_at_end:report.scroll_at_end===true,
+    scroll_top:capped(report.scroll_top,10000000),
+    scroll_max:capped(report.scroll_max,10000000),
     stitch_reason:stitchReasons.has(report.stitch_reason)?
       report.stitch_reason:"not_attempted",
     panel_open_attempts:capped(report.panel_open_attempts,2),

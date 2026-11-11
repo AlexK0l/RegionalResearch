@@ -60,48 +60,67 @@ export function appendSabyTruckWindow(current,incoming,expected) {
  */
 export async function collectSabyTruckWindows({
   expected,readWindow,advanceScroll,wait=async()=>{},
-  maxWindows=48,maxMs=60000,now=()=>Date.now()
+  maxWindows=48,maxMs=60000,now=()=>Date.now(),
+  maxStaleScrolls=6,maxScrollMoves=96
 }={}) {
   if(!Number.isSafeInteger(expected)||expected<1||expected>5000||
      typeof readWindow!=="function"||typeof advanceScroll!=="function")
     return {status:"incomplete",reason:"invalid_setup",
-      rows:[],windows:0,scrollMoves:0};
+      rows:[],windows:0,scrollMoves:0,staleScrollMoves:0,
+      totalStaleScrollMoves:0};
   const until=now()+Math.max(1000,Math.min(90000,maxMs));
-  const limit=Math.max(1,Math.min(96,Math.floor(maxWindows)));
-  let rows=[],windows=0,scrollMoves=0;
-  for(let i=0;i<limit && now()<until;i++){
-    let progress=null;
-    // After a scroll, virtualized DOM may require an extra hydration tick.
-    // Never scroll again until a NEW contiguous window has been observed.
+  const windowLimit=Math.max(1,Math.min(96,Math.floor(maxWindows)));
+  const moveLimit=Math.max(1,Math.min(128,Math.floor(maxScrollMoves)));
+  const staleLimit=Math.max(0,Math.min(12,Math.floor(maxStaleScrolls)));
+  let rows=[],windows=0,scrollMoves=0,staleScrollMoves=0;
+  let totalStaleScrollMoves=0;
+  const result=(status,reason)=>({
+    status,reason,rows,windows,scrollMoves,staleScrollMoves,
+    totalStaleScrollMoves
+  });
+  while(windows<windowLimit && scrollMoves<=moveLimit && now()<until) {
+    let progress=false;
+    // A first scroll can move a panel without changing its rendered 40
+    // vehicles. For example, a lazy loader may update only near the end.
+    // Inspect the complete window after EACH move, then allow a bounded
+    // number of additional short scrolls if it is still exactly unchanged.
+    // A changed-but-noncontiguous window is always rejected immediately.
     for(let poll=0;poll<5&&now()<until;poll++){
       const panel=await readWindow();
+      if(panel?.routeChanged===true)
+        return result("incomplete","detail_changed");
       if(panel?.opened===true) {
         const merged=appendSabyTruckWindow(rows,panel.rows,expected);
         if(merged.status==="invalid")
-          return {status:"incomplete",reason:merged.reason,
-            rows,windows,scrollMoves};
+          return result("incomplete",merged.reason);
         if(merged.status==="advanced"){
           rows=merged.rows;
           windows++;
-          progress=merged;
+          progress=true;
+          staleScrollMoves=0;
           break;
         }
       }
       if(poll<4)await wait(350);
     }
-    if(!progress)
-      return {status:"incomplete",reason:"window_not_updated",
-        rows,windows,scrollMoves};
     if(rows.length===expected)
-      return {status:"complete",reason:"exact_count",
-        rows,windows,scrollMoves};
+      return result("complete","exact_count");
+    if(!progress){
+      if(!rows.length)return result("incomplete","window_not_updated");
+      staleScrollMoves++;
+      totalStaleScrollMoves++;
+      if(staleScrollMoves>staleLimit)
+        return result("incomplete","window_not_updated");
+    }
+    if(scrollMoves>=moveLimit)
+      return result("incomplete","bounded_limit");
     const scroll=await advanceScroll();
+    if(scroll?.routeChanged===true)
+      return result("incomplete","detail_changed");
     if(scroll?.opened!==true||scroll?.scroll?.moved!==true)
-      return {status:"incomplete",reason:"scroll_not_advanced",
-        rows,windows,scrollMoves};
+      return result("incomplete","scroll_not_advanced");
     scrollMoves++;
     await wait(450);
   }
-  return {status:"incomplete",reason:"bounded_limit",
-    rows,windows,scrollMoves};
+  return result("incomplete","bounded_limit");
 }

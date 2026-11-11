@@ -62,7 +62,9 @@ test("stuck virtual list cannot invent missing vehicles",async()=>{
   assert.equal(out.reason,"window_not_updated");
   assert.equal(out.rows.length,40);
   assert.equal(out.windows,1);
-  assert.equal(out.scrollMoves,1);
+  assert.equal(out.scrollMoves,7,
+    "six extra stagnant scrolls may be attempted after the first movement");
+  assert.equal(out.totalStaleScrollMoves,7);
 });
 
 test("no active scroll stops with a real partial list, never marks fleet complete",async()=>{
@@ -131,4 +133,101 @@ test("fleet virtual-window collector is opt-in and preserves ordinary Saby extra
   assert.match(src,/sidePanelTrucks\(page,preview\.count,"advance"\)/);
   assert.match(src,/sidePanelTrucks\(page,preview\.count,"reset"\)/);
   assert.match(src,/Unchanged Stage12 behavior for nonexperimental runs/);
+});
+
+
+test("220 real vehicles can load only after multiple small scrolls per DOM window",async()=>{
+  const expected=220,all=cars(expected);
+  const starts=Array.from({length:10},(_,i)=>i*20);
+  let moves=0;
+  const out=await collectSabyTruckWindows({
+    expected,maxWindows:20,maxScrollMoves:60,
+    maxStaleScrolls:4,wait:async()=>{},
+    readWindow:async()=>({
+      opened:true,
+      rows:all.slice(starts[Math.min(9,Math.floor(moves/3))],
+        starts[Math.min(9,Math.floor(moves/3))]+40)
+    }),
+    advanceScroll:async()=>{
+      moves++;
+      return {opened:true,scroll:{moved:true}};
+    }
+  });
+  assert.equal(out.status,"complete");
+  assert.equal(out.reason,"exact_count");
+  assert.equal(out.windows,10);
+  assert.equal(out.scrollMoves,27);
+  assert.equal(out.totalStaleScrollMoves,18);
+  assert.equal(out.staleScrollMoves,0);
+  assert.equal(out.rows.length,220);
+  assert.deepEqual(out.rows,all);
+});
+
+test("an unchanged panel stops after a strict bounded number of extra scrolls",async()=>{
+  let moves=0,reads=0;
+  const out=await collectSabyTruckWindows({
+    expected:220,maxStaleScrolls:3,maxWindows:60,maxScrollMoves:40,
+    wait:async()=>{},
+    readWindow:async()=>{
+      reads++;
+      return {opened:true,rows:cars(40)};
+    },
+    advanceScroll:async()=>{
+      moves++;
+      return {opened:true,scroll:{moved:true}};
+    }
+  });
+  assert.equal(out.status,"incomplete");
+  assert.equal(out.reason,"window_not_updated");
+  assert.equal(out.windows,1);
+  assert.equal(out.rows.length,40);
+  assert.equal(out.scrollMoves,4);
+  assert.equal(out.staleScrollMoves,4);
+  assert.equal(out.totalStaleScrollMoves,4);
+  assert.equal(moves,4);
+  assert.ok(reads<30);
+});
+
+test("multiple unchanged scrolls do not allow skipping even one vehicle",async()=>{
+  const expected=100,all=cars(expected);
+  let moves=0;
+  const out=await collectSabyTruckWindows({
+    expected,maxStaleScrolls:5,wait:async()=>{},
+    readWindow:async()=>({
+      opened:true,rows:moves>=3?all.slice(60,100):all.slice(0,40)
+    }),
+    advanceScroll:async()=>{
+      moves++;
+      return {opened:true,scroll:{moved:true}};
+    }
+  });
+  assert.equal(out.status,"incomplete");
+  assert.equal(out.reason,"unanchored_window");
+  assert.equal(out.rows.length,40);
+  assert.equal(out.scrollMoves,3);
+});
+
+test("an interrupted or changed private card aborts without accepting fleet",async()=>{
+  const out=await collectSabyTruckWindows({
+    expected:220,wait:async()=>{},
+    readWindow:async()=>({opened:false,routeChanged:true}),
+    advanceScroll:async()=>{
+      assert.fail("must not scroll after a private route change");
+    }
+  });
+  assert.equal(out.status,"incomplete");
+  assert.equal(out.reason,"detail_changed");
+  assert.equal(out.rows.length,0);
+  assert.equal(out.scrollMoves,0);
+});
+
+test("new experimental scroller prefers rows, without changing ordinary Stage12",()=>{
+  const source=fs.readFileSync(
+    new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
+  assert.match(source,/selected_from_vehicle_rows/);
+  assert.match(source,/rawNodes\.filter\(n=>e\.contains\(n\)\)/);
+  assert.match(source,/const windowMode=\["window","reset","advance"\]/);
+  assert.match(source,/vehicleScrolls\[0\]\?\.element\|\|oldScroller/);
+  assert.match(source,/else if\(action==="read" && rows\.length<expected\)/);
+  assert.match(source,/maxStaleScrolls/);
 });
