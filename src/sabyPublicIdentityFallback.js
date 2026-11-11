@@ -373,11 +373,56 @@ export async function verifySabyPublicNameFallback(page,inn,name,
         pair=expandedPair;
       }
     }
+    // Saby's SPA can mount the selected company's true requisites much
+    // later than its heading and linked-group INN list. The old one-shot
+    // read occurred at ~3 s; in the live v6 trace the KPP and requisites
+    // appeared only in a later observation. Poll ONLY the same detail.
+    if(!pair.kpp && pair.reason==="no_scoped_inn_kpp" &&
+       typeof page.waitForTimeout==="function"){
+      const polls=Math.min(18,Math.max(0,Number(maxHydrationPolls)||0));
+      const interval=Math.min(1800,Math.max(100,
+        Number(hydrationIntervalMs)||950));
+      for(let i=0;i<polls && !pair.kpp;i++){
+        await page.waitForTimeout(interval);
+        hydrationPolls++;
+        if(page.url()!==route)return record("private_route_changed");
+        const updated=await captureSabyPrivateIdentitySnapshot(page);
+        if(page.url()!==route)return record("private_route_changed");
+        snapshot=updated;
+        pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+        if(pair.kpp){
+          // Validate stability of the SAME scoped INN/KPP pair in a
+          // second snapshot, not a transient related-company rendering.
+          await page.waitForTimeout(550);
+          if(page.url()!==route)return record("private_route_changed");
+          const confirmed=await captureSabyPrivateIdentitySnapshot(page);
+          const second=recoverSabyDetailRequisitePair(confirmed?.text,inn);
+          snapshot=confirmed;
+          if(!second.kpp || second.kpp!==pair.kpp)
+            return record("private_kpp_not_stable");
+          pair=second;
+          pairStabilityConfirmed=true;
+          break;
+        }
+        if(pair.reason!=="no_scoped_inn_kpp")break;
+        // A real requisites tab may appear after the first few render
+        // passes. Never click more than ONE such first-party control.
+        if(i===7 && !requisitesTabOpened &&
+           await openSabyDetailRequisitesTab(page)){
+          requisitesTabOpened=true;
+          if(page.url()!==route)return record("private_route_changed");
+          snapshot=await captureSabyPrivateIdentitySnapshot(page);
+          pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+          if(pair.kpp)break;
+          if(pair.reason!=="no_scoped_inn_kpp")break;
+        }
+      }
+    }
   } catch {
-    return {ok:false,reason:"private_dom_unavailable"};
+    return record("private_dom_unavailable");
   }
-  if(sabyCardRoute(page.url())!=="detail")
-    return {ok:false,reason:"private_route_changed"};
+  if(page.url()!==route || sabyCardRoute(page.url())!=="detail")
+    return record("private_route_changed");
   const privateDiagnostic=diagnoseSabyPrivateRequisiteFields(
     snapshot?.text,inn);
   if(!pair.kpp)return {ok:false,reason:pair.reason,
