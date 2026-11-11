@@ -195,8 +195,14 @@ test("audit sees legal-form-free aliases by exact INN without changing strict St
   const auditor=fs.readFileSync(fileURLToPath(new URL(
     "../src/sabyIdentityAuditBrowser.js",import.meta.url)),"utf8");
   assert.match(browser,/includeInnOnly=false,includeBranches=false/);
-  assert.match(browser,/branchSource:SABY_BRANCH_MARKER_SOURCE/);
-  assert.match(browser,/legal\.test\(text\) \|\| includeInnOnly/);
+  assert.match(browser,/scanSabyResultDOM/);
+  assert.match(browser,/consolidateSabyResultRows/);
+  const rowScanner=fs.readFileSync(fileURLToPath(new URL(
+    "../src/sabySearchRows.js",import.meta.url)),"utf8");
+  assert.match(rowScanner,/branchSource/);
+  assert.match(rowScanner,/includeBranches/);
+  assert.match(rowScanner,/includeInnOnly/);
+  assert.match(rowScanner,/includeInnOnly/);
   assert.match(auditor,/findResultRows\(page,inn,\{includeInnOnly:true\}\)/);
   // Strict Stage12 remains the default. Only the explicit opt-in may
   // enable INN-only candidates and still requires exact registered proof.
