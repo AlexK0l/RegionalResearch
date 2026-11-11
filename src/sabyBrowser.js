@@ -22,6 +22,8 @@ import {collectSabyTruckWindows} from "./sabyFleetWindows.js";
 import {openSabyFleetPanelWithHydration} from "./sabyFleetPanelOpening.js";
 import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
+import {observeSabyFleetPagination}
+  from "./sabyFleetPaginationDiagnostic.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -697,8 +699,21 @@ async function ownTrucks(page, settings,progress={}) {
         progress.stitch_reason=stitched.reason;
         if(stitched.rows.length>rows.length)rows=stitched.rows;
         progress.parsed_vehicle_rows=rows.length;
-        if(stitched.status!=="complete")
+        if(stitched.status!=="complete"){
           progress.reason="vehicle_rows_incomplete";
+          // v18 reached the end of the ONLY vehicle-row scroller after
+          // 40 of 220 advertised trucks. Stop blind scroll retries.
+          // This is a scoped READ-ONLY observation of potential paging
+          // or load-more controls; do not infer that any control works.
+          if(progress.scroll_at_end===true &&
+             ["scroll_not_advanced","window_not_updated"].includes(
+               stitched.reason) && stillSameFleetCompany()) {
+            const pagination=await observeSabyFleetPagination(
+              page,{expected:preview.count});
+            if(stillSameFleetCompany())
+              progress.fleet_pagination=pagination;
+          }
+        }
       } else {
         progress.stitch_reason="scroll_not_available";
       }
