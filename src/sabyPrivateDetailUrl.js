@@ -69,3 +69,40 @@ export function compareSabyPrivateDetailUrl(initialUrl,currentUrl) {
     fragment_changed:fragmentChanged
   };
 }
+
+/**
+ * Read-only, value-free URL change telemetry for experimental Saby smoke.
+ * Counts are intentionally aggregated: never log key names, URL values,
+ * company IDs, INNs, credential fragments, or full URLs.
+ * This diagnostic MUST NOT be used to authorize a private route change.
+ */
+export function summarizeSabyPrivateRouteDelta(initialUrl,currentUrl) {
+  const before=safeDetail(initialUrl),after=safeDetail(currentUrl);
+  if(!before || !after || before.origin!==after.origin ||
+     before.pathname!==after.pathname)
+    return {status:"not_comparable"};
+  const counts={
+    status:"observed",non_ui_added:0,non_ui_removed:0,
+    non_ui_values_changed:0,ui_values_changed:0
+  };
+  const keys=new Set([
+    ...before.searchParams.keys(),...after.searchParams.keys()
+  ]);
+  for(const key of keys) {
+    const oldValues=values(before,key),newValues=values(after,key);
+    if(sameValues(oldValues,newValues))continue;
+    if(UI_QUERY_KEYS.has(key)) {
+      counts.ui_values_changed++;
+    } else if(!oldValues.length) {
+      counts.non_ui_added++;
+    } else if(!newValues.length) {
+      counts.non_ui_removed++;
+    } else {
+      counts.non_ui_values_changed++;
+    }
+  }
+  for(const key of [
+    "non_ui_added","non_ui_removed","non_ui_values_changed","ui_values_changed"
+  ]) counts[key]=Math.min(counts[key],64);
+  return counts;
+}
