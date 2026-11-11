@@ -251,6 +251,11 @@ export function acceptSabyPublicIdentityFallback({
   // The private detail heading MUST be independently tied to one of them.
   const titles=(Array.isArray(privateHeadings)?privateHeadings:[])
     .map(x=>String(x||"").trim()).filter(Boolean).slice(0,18);
+  // The current authenticated heading must still identify the clicked
+  // search company; a related-company page is not sufficient.
+  if(selectedSearchTitle && !titles.some(x=>
+      sabyNameMatches(x,selectedSearchTitle)))
+    return reject("selected_private_heading_disconnected");
   const publicName=String(publicResult.public_short_name||"");
   const registered=String(publicResult.official_name||"");
   const privateName=titles.find(x=>
@@ -277,7 +282,9 @@ export function safeSabyAliasDiagnostic(outcome) {
       String(outcome?.identity?.private_pair_basis||""): "",
     ...(outcome?.private_diagnostic?{
       private_diagnostic:outcome.private_diagnostic,
-      requisites_tab_opened:outcome.requisites_tab_opened===true
+      requisites_tab_opened:outcome.requisites_tab_opened===true,
+      hydration_polls:Number(outcome.hydration_polls||0),
+      pair_stability_confirmed:outcome.pair_stability_confirmed===true
     }:{})
   };
 }
