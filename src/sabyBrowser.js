@@ -12,7 +12,8 @@ import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 import {selectSabyInnCandidate,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
-import {scanSabyResultDOM,consolidateSabyResultRows} from "./sabySearchRows.js";
+import {scanSabyResultDOM,scanSabyLegacyDOM,
+  consolidateSabyResultRows} from "./sabySearchRows.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -141,8 +142,14 @@ export async function safeSabySectionDiagnostic(page) {
 export async function findResultRows(page, inn, {
   includeInnOnly=false,includeBranches=false
 }={}) {
-  // Keep DOM traversal inside the browser, but consolidate only visible
-  // same-card geometry in Node, with pure offline-tested safeguards.
+  // Keep the working production Stage12 search unchanged until opt-in
+  // Saby-only smoke validates the new DOM scanner on real site pages.
+  if(!includeInnOnly && !includeBranches)
+    return page.evaluate(scanSabyLegacyDOM,{
+      inn,branchSource:SABY_BRANCH_MARKER_SOURCE
+    });
+  // In experimental mode, DOM traversal happens inside the browser and
+  // duplicate fragments are consolidated with pure offline-tested checks.
   const scanned=await page.evaluate(scanSabyResultDOM,{
     inn,includeInnOnly,includeBranches,
     branchSource:SABY_BRANCH_MARKER_SOURCE
