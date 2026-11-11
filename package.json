@@ -22,6 +22,7 @@
     "finalize:offline": "node scripts/finalize-research-offline.js",
     "smoke:xlsx": "node scripts/smoke-reference-xlsx.js",
     "saby:smoke": "node --env-file-if-exists=.env scripts/saby-smoke.js",
+    "saby:search-structure": "node --env-file-if-exists=.env scripts/saby-search-structure.js",
     "saby:identity-audit": "node --env-file-if-exists=.env scripts/saby-identity-audit.js",
     "saby:identity-probe": "node --env-file-if-exists=.env scripts/saby-identity-probe.js",
     "saby:public-requisites-check": "node --env-file-if-exists=.env scripts/saby-public-requisites-check.js",
