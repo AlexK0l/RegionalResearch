@@ -297,7 +297,7 @@ async function openCompany(page, row, settings) {
   // A genuinely missing private KPP must NOT trigger more speculative
   // parsing or guessed public URLs. Capture only structural counters to
   // distinguish an unhydrated/wrong owner panel from an unlicensed card.
-  if(publicFallback && publicFallbackFailureReason==="no_scoped_inn_kpp"){
+  if(publicFallback && ["no_scoped_inn_kpp","private_route_changed"].includes(publicFallbackFailureReason)){
     const selectedName=auditSearchName(rows[0]?.text,inn);
     const detailStructure=await diagnoseSabyPrivateOwnerStructure(
       page,inn,selectedName);
