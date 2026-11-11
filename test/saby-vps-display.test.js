@@ -17,6 +17,8 @@ test("optional headed Saby virtual display is isolated from the core service",()
   assert.match(override,/^Environment=DISPLAY=:99$/m);
   assert.match(override,/^Environment=SABY_HEADLESS=false$/m);
   assert.match(override,/^Environment=PLAYWRIGHT_BROWSERS_PATH=/m);
+  assert.match(override,/^Environment=XDG_CONFIG_HOME=\/home\/regionalresearch\/\.config\/regionalresearch-saby$/m);
+  assert.match(override,/^Environment=XDG_CACHE_HOME=\/home\/regionalresearch\/\.cache\/regionalresearch-saby$/m);
   // No extra X11 dependency or graphical browser required by default.
   assert.doesNotMatch(base,/Xvfb|DISPLAY=|SABY_HEADLESS=/);
   assert.doesNotMatch(xvfb,/5901|x11vnc|nopw|SABY_PASSWORD/);
