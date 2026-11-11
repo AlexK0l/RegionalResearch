@@ -20,6 +20,48 @@ export function plausibleSabySearchName(text,inn) {
 }
 
 /**
+ * Preserve the existing strict production Stage12 search path exactly:
+ * unlike the experimental fallback it keeps the original rectangle
+ * collection and legacy 20-row bound. This is an intentional rollout
+ * boundary until the improved browser scanner has live acceptance proof.
+ */
+export function scanSabyLegacyDOM({inn,branchSource}) {
+  const norm=s=>String(s||"").replace(/\s+/g," ").trim();
+  const matchesInn=s=>new RegExp("(^|\\D)"+inn+"(?!\\d)").test(s);
+  const branchPattern=new RegExp(branchSource,"iu");
+  const visible=e=>{
+    const rect=e.getBoundingClientRect(),style=getComputedStyle(e);
+    return rect.width>0&&rect.height>0&&
+      style.visibility!=="hidden"&&style.display!=="none";
+  };
+  const legal=/(?:^|\W)(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)(?:\W|$)/i;
+  const relevant=[];
+  for(const element of document.querySelectorAll("body *")){
+    if(!visible(element)||!matchesInn(norm(element.textContent)))continue;
+    if([...element.children].some(child=>matchesInn(norm(child.textContent))))
+      continue;
+    let node=element;
+    for(let depth=0;node&&depth<9;depth++,node=node.parentElement) {
+      if(!visible(node))continue;
+      const rect=node.getBoundingClientRect();
+      const raw=String(node.innerText||node.textContent||"");
+      const text=norm(raw);
+      if(rect.height>190||text.length>700)break;
+      if(rect.width<190||rect.height<24||!matchesInn(text))continue;
+      if(legal.test(text)&&text.replace(inn,"").trim().length>=5){
+        if(branchPattern.test(text.split(inn,1)[0]))break;
+        relevant.push({text:raw,rect:{x:rect.x,y:rect.y,
+          w:rect.width,h:rect.height}});
+        break;
+      }
+    }
+  }
+  return relevant.filter((x,i)=>!relevant.some((y,j)=>
+    j<i&&Math.abs(x.rect.x-y.rect.x)<15&&
+    Math.abs(x.rect.y-y.rect.y)<5)).slice(0,20);
+}
+
+/**
  * Standalone Playwright page.evaluate callback: references only browser
  * built-ins plus parameters, never module closures. Visible geometry is
  * evidence of which text fragments belong to the same card.
