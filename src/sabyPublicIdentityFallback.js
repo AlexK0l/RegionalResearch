@@ -72,18 +72,25 @@ export function extractSabyDetailRequisitePair(text,expectedInn) {
 const AUDIT_SCOPE_BOUNDARY=/^(?:Реквизиты|Регистрационные данные|Контакты|Контакты и телефоны|Владельцы|Связанные компании|Связанные лица|Подразделения|Филиалы|Автопарк компании|Лицензии|Суды|Участие в торгах|Регистрация компании)\s*:?\s*$/iu;
 export function recoverSabyDetailRequisitePair(text,expectedInn) {
   const strict=extractSabyDetailRequisitePair(text,expectedInn);
-  if(strict.kpp)return {...strict,basis:"strict_private_block"};
   if(["invalid_inn","inn_conflict","kpp_ambiguous","multiple_requisites"]
      .includes(strict.reason))return strict;
   const inn=sabyInn(expectedInn);
   const audit=auditExtractRequisites(text)
     .filter(record=>sabyInn(record?.inn)&&KPP.test(record?.kpp));
-  if(!audit.length)return strict;
+  // Even a strictly extracted pair must be rejected if the broader
+  // audited detail shows another company INN/KPP. Otherwise a later
+  // "Реквизиты" block could conceal a competing branch KPP.
   if(audit.some(record=>record.inn!==inn))
     return {reason:"audit_inn_conflict",kpp:""};
   const auditedKpps=[...new Set(audit.map(record=>record.kpp))];
-  if(auditedKpps.length!==1)
+  if(auditedKpps.length>1)
     return {reason:"audit_kpp_ambiguous",kpp:""};
+  if(strict.kpp){
+    if(auditedKpps.length && auditedKpps[0]!==strict.kpp)
+      return {reason:"audit_kpp_ambiguous",kpp:""};
+    return {...strict,basis:"strict_private_block"};
+  }
+  if(!audit.length)return strict;
   const lines=boundedLines(text),scoped=[];
   for(let i=0;i<lines.length;i++){
     if(!/^(?:Реквизиты|Регистрационные данные)\s*:?\s*$/iu.test(lines[i]))
