@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   extractSabyDetailRequisitePair,selectSabyInnCandidate,
+  sabySearchRowInnEvidence,
   isSabyBranchResult,SABY_BRANCH_MARKER_SOURCE,
   acceptSabyPublicIdentityFallback,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic
@@ -222,4 +223,98 @@ test("entire capped result window and branch-only result fail closed",()=>{
   const justBranch=selectSabyInnCandidate(rows.slice(0,2),inn,name);
   assert.equal(justBranch.reason,"branch_only");
   assert.equal(justBranch.row,null);
+});
+
+
+test("registries in one result: exclude other INN, not 13-digit OGRN",()=>{
+  const exact=sabySearchRowInnEvidence(
+    "Головная организация, АО\nИНН "+inn+"\nОГРН 1026700008136",inn);
+  assert.deepEqual(exact,{
+    hasExpected:true,foreignInnCount:0,exclusiveExpected:true
+  });
+  const other=sabySearchRowInnEvidence(
+    "Контрагент, ООО\nИНН 7707083893\nСвязи: "+inn,inn);
+  assert.deepEqual(other,{
+    hasExpected:true,foreignInnCount:1,exclusiveExpected:false
+  });
+  const missing=sabySearchRowInnEvidence(
+    "Контрагент, ООО\nИНН 7707083893",inn);
+  assert.equal(missing.exclusiveExpected,false);
+  assert.equal(missing.hasExpected,false);
+  assert.equal(sabySearchRowInnEvidence(
+    "Главная компания, АО\nИНН "+inn+
+    "\nПодрядчик 7707083893\nЕщё один 7725104642",inn
+  ).foreignInnCount,2);
+});
+
+test("40 real-layout-style Saby search rows reduce to 1 head + 11 branches + 28 related",()=>{
+  const rect=i=>({x:220,y:89+i*110,w:553,h:85});
+  const rows=[
+    {text:"САПК, АО\nИНН "+inn+"\nОГРН 1026700008136",
+      rect:rect(0)}
+  ];
+  for(let i=0;i<11;i++){
+    const head=i<2?"Филиал САПК, АО, г. "+(i?"Чехов":"Тула"):
+      i<10?"САПК, АО, подразделение":
+        "САПК, АО, подразделение, г. Пушкино";
+    rows.push({text:head+"\nИНН "+inn,rect:rect(rows.length)});
+  }
+  for(let i=0;i<28;i++){
+    rows.push({
+      text:"Связанная организация "+i+", ООО\nИНН 7707083893"+
+        "\nКомпания группы "+inn,
+      rect:rect(rows.length)
+    });
+  }
+  assert.equal(rows.length,40);
+  // The report documented 40 separate clickable rows and 33 titles.
+  // Do not use the exact firm name/INN as an exception in production.
+  Object.defineProperty(rows,"meta",{value:{
+    rawCandidates:40,geometryDuplicates:0,
+    rejectedFragments:0,uniqueTitles:33,rawCapped:false,
+    truncated:false
+  }});
+  const result=selectSabyInnCandidate(rows,inn,name);
+  assert.equal(result.row,rows[0]);
+  assert.equal(result.reason,"unique_primary_after_exclusions");
+  assert.equal(result.observed,40);
+  assert.equal(result.count,1);
+  assert.equal(result.primaryCandidates,1);
+  assert.equal(result.branches,11);
+  assert.equal(result.foreignInnRows,28);
+  assert.equal(result.rawCandidates,40);
+  assert.equal(result.uniqueTitles,33);
+});
+
+test("40 results with two eligible main firms still fail closed",()=>{
+  const head=t=>({text:t+"\nИНН "+inn,
+    rect:{x:220,y:100,w:553,h:85}});
+  const rows=[head("Новая фирма, АО"),head("Новая фирма Регион, АО")];
+  for(let i=0;i<38;i++)
+    rows.push(head("Связанная "+i+", ООО\nИНН 7707083893"));
+  Object.defineProperty(rows,"meta",{value:{truncated:false,rawCapped:false}});
+  const result=selectSabyInnCandidate(rows,inn,name);
+  assert.equal(result.row,null);
+  assert.equal(result.reason,"ambiguous");
+  assert.equal(result.count,2);
+  assert.equal(result.foreignInnRows,38);
+});
+
+test("truncated 40-row scan cannot select even one plausible head",()=>{
+  const rows=[
+    {text:"САПК, АО\n"+inn,rect:{x:220,y:89,w:553,h:82}}
+  ];
+  Object.defineProperty(rows,"meta",{value:{rawCapped:false,truncated:true}});
+  const result=selectSabyInnCandidate(rows,inn,name);
+  assert.equal(result.row,null);
+  assert.equal(result.reason,"result_window_full");
+});
+
+test("a legitimate main with another INN mentioned in its row stays review",()=>{
+  const row={text:"САПК, АО\nИНН "+inn+
+    "\nСвязанные компании: 7707083893"};
+  const result=selectSabyInnCandidate([row],inn,name);
+  assert.equal(result.row,null);
+  assert.equal(result.foreignInnRows,1);
+  assert.equal(result.primaryCandidates,0);
 });
