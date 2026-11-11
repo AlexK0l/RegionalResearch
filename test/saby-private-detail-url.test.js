@@ -1,0 +1,165 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  compareSabyPrivateDetailUrl
+} from "../src/sabyPrivateDetailUrl.js";
+import {
+  verifySabyPublicNameFallback,safeSabyAliasDiagnostic
+} from "../src/sabyPublicIdentityFallback.js";
+
+const base="https://profile.saby.ru/page/contractor-info";
+const inn="6700018766",kpp="670001001";
+const short="Сапк, АО";
+const long="АО «Смоленская агропромышленная компания»";
+const registered='АКЦИОНЕРНОЕ ОБЩЕСТВО "СМОЛЕНСКАЯ АГРОПРОМЫШЛЕННАЯ КОМПАНИЯ"';
+const validText=[
+  short,"Контакты","Реквизиты",
+  "ИНН",inn,"КПП",kpp,"ОГРН","1246700008136",
+  "Контакты связанных компаний","Суды"
+].join("\n");
+const publicProof={
+  status:"verified",
+  official_inn:inn,official_kpp:kpp,official_name:registered,
+  public_short_name:short
+};
+const assessment={
+  reason:"legal_name_not_verified",detail:{hasScopedInn:true}
+};
+
+test("pure URL continuity accepts identical detail, reordered queries, safe tab changes",()=>{
+  const start=base+"?anchor=about&tab=all&page=public&contractorId=ABC";
+  const unchanged=base+"?contractorId=ABC&page=public&tab=all&anchor=about";
+  assert.deepEqual(compareSabyPrivateDetailUrl(start,unchanged),{
+    ok:true,reason:"same_detail",ui_params_changed:0,
+    fragment_changed:false
+  });
+  const tabbed=base+"?contractorId=ABC&anchor=requisites&tab=company&page=public";
+  const s=compareSabyPrivateDetailUrl(start,tabbed);
+  assert.equal(s.ok,true);
+  assert.equal(s.reason,"ui_navigation_only");
+  assert.equal(s.ui_params_changed,2);
+  assert.equal(compareSabyPrivateDetailUrl(
+    base+"?source=internal",base+"?source=internal&tab=requisites"
+  ).reason,"ui_navigation_only");
+  assert.equal(compareSabyPrivateDetailUrl(
+    base+"#about",base+"#requisites"
+  ).reason,"ui_navigation_only");
+});
+
+test("URL continuity rejects company changes, unknown query changes and untrusted paths",()=>{
+  const before=base+"?contractorId=ABC&tab=about&inn="+inn;
+  const changes=[
+    [base+"?contractorId=DEF&tab=about&inn="+inn,"non_ui_query_changed"],
+    [base+"?contractorId=ABC&tab=about&inn=7707083893","non_ui_query_changed"],
+    [base+"?contractorId=ABC&tab=about&inn="+inn+
+      "&orgToken=SECRET","non_ui_query_changed"],
+    [base+"/other-company?contractorId=ABC&inn="+inn,
+      "detail_path_changed"],
+    [base+"?contractorId=ABC&tab=about&inn="+inn+"#id=OTHER",
+      "non_ui_fragment_changed"],
+    ["https://evil.example/page/contractor-info","not_same_first_party_detail"],
+    ["https://profile.saby.ru/page/company-list-prof","not_same_first_party_detail"],
+    ["http://profile.saby.ru/page/contractor-info","not_same_first_party_detail"],
+    ["https://user:pass@profile.saby.ru/page/contractor-info",
+      "not_same_first_party_detail"]
+  ];
+  for(const [next,reason] of changes){
+    const observed=compareSabyPrivateDetailUrl(before,next);
+    assert.equal(observed.ok,false,next);
+    assert.equal(observed.reason,reason);
+    const encoded=JSON.stringify(observed);
+    assert.doesNotMatch(encoded,/SECRET|7707083893|contractorId|userinfo|inn=/);
+  }
+});
+
+test("SPA UI tab update after three polls does not interrupt stable private/public proof",async()=>{
+  const url=base+"?source=internal&tab=about";
+  let current=url,reads=0,waits=0,publicCalls=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>({
+      text:(++reads)<=3?"Сапк, АО\nИНН "+inn:validText,
+      headings:[short]
+    }),
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{
+      waits++;
+      if(waits===3)current=base+"?source=internal&tab=requisites";
+    }
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+    maxHydrationPolls:5,selectedSearchTitle:short,
+    verifyPublic:async(_page,gotInn,gotKpp,gotName)=>{
+      publicCalls++;
+      assert.equal(gotInn,inn);
+      assert.equal(gotKpp,kpp);
+      assert.equal(gotName,long);
+      return publicProof;
+    }
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.reason,"registered_alias_verified");
+  assert.equal(result.ui_route_updated,true);
+  assert.equal(result.hydration_polls,3);
+  assert.equal(result.pair_stability_confirmed,true);
+  assert.equal(result.identity.kpp,kpp);
+  assert.equal(publicCalls,1);
+  assert.equal(reads,5);
+  const logged=safeSabyAliasDiagnostic(result);
+  assert.equal(logged.ui_route_updated,true);
+  assert.equal(logged.accepted,true);
+  assert.doesNotMatch(JSON.stringify(logged),/source=|requisites|670001|contractorId/);
+});
+
+test("untrusted INN/company query change during hydration fails before any public request",async()=>{
+  const start=base+"?contractorId=ABC&tab=about";
+  let current=start,reads=0,publicCalls=0;
+  const page={
+    url:()=>current,
+    evaluate:async()=>{reads++;return {
+      text:"Сапк, АО\nИНН "+inn,headings:[short]
+    };},
+    getByRole:()=>({count:async()=>0}),
+    waitForTimeout:async()=>{
+      current=base+"?contractorId=DIFFERENT&tab=requisites";
+    }
+  };
+  const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+    maxHydrationPolls:4,selectedSearchTitle:short,
+    verifyPublic:async()=>{
+      publicCalls++;
+      throw Error("Must not read public page for wrong private company");
+    }
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"private_route_changed");
+  assert.equal(result.route_change_reason,"non_ui_query_changed");
+  assert.equal(result.hydration_polls,1);
+  assert.equal(result.ui_route_updated,false);
+  assert.equal(reads,1);
+  assert.equal(publicCalls,0);
+  const safe=safeSabyAliasDiagnostic(result);
+  assert.equal(safe.route_change_reason,"non_ui_query_changed");
+  assert.doesNotMatch(JSON.stringify(safe),/ABC|DIFFERENT|contractorId/);
+});
+
+test("unknown fragment or changed detail path stays rejected without reaching public verification",async()=>{
+  for(const changed of [
+    base+"/another-company?source=internal",
+    base+"?source=internal#other-company-guid"
+  ]){
+    let current=base+"?source=internal",called=0;
+    const page={
+      url:()=>current,
+      evaluate:async()=>({text:"Сапк, АО\nИНН "+inn,headings:[short]}),
+      getByRole:()=>({count:async()=>0}),
+      waitForTimeout:async()=>{current=changed;}
+    };
+    const result=await verifySabyPublicNameFallback(page,inn,long,assessment,{
+      maxHydrationPolls:4,verifyPublic:async()=>{called++;return publicProof;}
+    });
+    assert.equal(result.ok,false);
+    assert.equal(result.reason,"private_route_changed");
+    assert.equal(called,0);
+  }
+});
