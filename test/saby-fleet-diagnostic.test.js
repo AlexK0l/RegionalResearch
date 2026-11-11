@@ -111,6 +111,7 @@ test("collector emits fleet-specific failure only when required section incomple
     new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
   assert.match(source,/result\.trucks\.status!=="verified"/);
   assert.match(source,/\[SABY_FLEET_DIAG\]/);
+  assert.match(source,/settings\.publicIdentityFallback===true/);
   assert.match(source,/safeSabyFleetFailure\(fleetProgress,evidence\)/);
   assert.match(source,/fleetProgress\.reason\|\|=fleetProgress\.phase==="overlay"/);
   assert.match(source,/await ownTrucks\(page,settings,fleetProgress\)/);
