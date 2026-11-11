@@ -12,11 +12,9 @@ const reasons=new Set([
   "fleet_interaction_failed"
 ]);
 const phases=new Set(["overlay","heading","preview","vehicles","unknown"]);
-const capped=(v,upper=5000)=>{
-  const n=Number(v);
-  return Number.isSafeInteger(n)&&n>=0?
-    Math.min(n,upper):null;
-};
+const capped=(v,upper=5000)=>
+  typeof v==="number"&&Number.isSafeInteger(v)&&v>=0?
+    Math.min(v,upper):null;
 
 export function safeSabyFleetFailure(report={},observed={}) {
   const phase=phases.has(report.phase)?report.phase:"unknown";
