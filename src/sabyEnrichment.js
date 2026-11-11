@@ -243,7 +243,8 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   if(keepContacts||freshContacts)collection.contacts="collected";
   if(fleet)collection.trucks="verified";
   evidence.saby = {
-    ...existingSaby,
+    // Never retain prior section evidence from a different Saby card.
+    ...(carry?existingSaby:{}),
     source_url: record.source_url,
     inn: record.identity.inn,
     ...( /^\d{9}$/.test(String(record.identity.kpp||""))?
