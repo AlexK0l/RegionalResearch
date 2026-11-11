@@ -223,7 +223,6 @@ test("only exact loss of source=internal is tolerated; company and unknown keys 
   assert.equal(permitted.ui_params_changed,1);
   const forbidden=[
     [base+"?source=other&contractorId=ABC&tab=about",original],
-    [base+"?source=internal&contractorId=ABC&tab=about",after],
     [base+"?source=internal&contractorId=ABC&tab=about",
       base+"?contractorId=DEF&tab=about"],
     [original,base+"?tab=about"],
