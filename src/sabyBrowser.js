@@ -687,6 +687,7 @@ async function ownTrucks(page, settings,progress={}) {
               panel:{opened:false,routeChanged:true,scroll:{moved:false}};
           },
           wait:delay,maxWindows:Math.min(80,Math.ceil(preview.count/5)+10),
+          maxStaleScrolls:6,maxScrollMoves:96,
           maxMs:Math.min(70000,settings.timeoutMs*2)
         });
         progress.window_count=stitched.windows;
