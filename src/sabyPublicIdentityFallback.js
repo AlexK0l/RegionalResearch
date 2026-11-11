@@ -143,7 +143,8 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
         "branch_only":"no_unambiguous_head"
     ):
       result.row&&(branchRows.length>0||foreignInnRows>0)?
-        "unique_primary_after_exclusions":
+        (foreignInnRows>0?"unique_primary_after_exclusions":
+          "unique_primary_excluding_branches"):
         result.kind,
     count:result.count,
     ...summary
