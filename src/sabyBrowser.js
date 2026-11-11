@@ -14,6 +14,8 @@ import {selectSabyInnCandidate,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
 import {scanSabyResultDOM,scanSabyLegacyDOM,
   consolidateSabyResultRows} from "./sabySearchRows.js";
+import {auditSearchName} from "./sabyIdentityAudit.js";
+import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -236,6 +238,7 @@ async function openCompany(page, row, settings) {
   let last={ok:false,reason:"not_detail_page",detail:{route:"list"}};
   let reClicked=false;
   let publicFallbackAttempted=false;
+  let publicFallbackFailureReason="";
   while(Date.now()<cardUntil) {
     try {
       const outcome=await verifySabyCard(page,inn,name);
@@ -262,6 +265,7 @@ async function openCompany(page, row, settings) {
       publicFallbackAttempted=true;
       const checked=await verifySabyPublicNameFallback(
         page,inn,name,last);
+      publicFallbackFailureReason=String(checked?.reason||"");
       console.info("[SABY_PUBLIC_ALIAS_DIAG] "+
         JSON.stringify(safeSabyAliasDiagnostic(checked)));
       if(checked.ok){
@@ -287,6 +291,16 @@ async function openCompany(page, row, settings) {
       }
     }
     await delay(450);
+  }
+  // A genuinely missing private KPP must NOT trigger more speculative
+  // parsing or guessed public URLs. Capture only structural counters to
+  // distinguish an unhydrated/wrong owner panel from an unlicensed card.
+  if(publicFallback && publicFallbackFailureReason==="no_scoped_inn_kpp"){
+    const selectedName=auditSearchName(rows[0]?.text,inn);
+    const detailStructure=await diagnoseSabyPrivateOwnerStructure(
+      page,inn,selectedName);
+    console.warn("[SABY_PRIVATE_OWNER_DIAG] "+
+      JSON.stringify(detailStructure));
   }
   console.warn("[SABY_CARD_DIAG] "+JSON.stringify(safeCardDiagnostic(last,{
     clicked:true,
