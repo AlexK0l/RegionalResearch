@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   sabySearchDisplayName,plausibleSabySearchName,
-  overlappingSabyCard,consolidateSabyResultRows,scanSabyResultDOM
+  overlappingSabyCard,consolidateSabyResultRows,
+  scanSabyResultDOM,scanSabyLegacyDOM
 } from "../src/sabySearchRows.js";
 import {findResultRows} from "../src/sabyBrowser.js";
 import {selectSabyInnCandidate,SABY_BRANCH_MARKER_SOURCE} from
@@ -160,4 +161,26 @@ test("browser reads all raw fragments and preserves nonenumerable safe counts",a
   assert.equal(out.meta.geometryDuplicates,1);
   assert.equal(out.meta.rawCandidates,2);
   assert.deepEqual(Object.keys(out),["0"]);
+});
+
+
+test("ordinary production Stage12 still uses preexisting strict DOM scanner",async()=>{
+  const ordinary=card("ДСК Автобан, АО",70);
+  const page={evaluate:async(fn,params)=>{
+    assert.equal(fn,scanSabyLegacyDOM);
+    assert.equal(params.inn,inn);
+    return [ordinary];
+  }};
+  const rows=await findResultRows(page,inn);
+  assert.equal(rows.length,1);
+  assert.equal(rows[0],ordinary);
+  assert.equal(rows.meta,undefined);
+  const flagged={evaluate:async(fn,params)=>{
+    assert.equal(fn,scanSabyResultDOM);
+    assert.equal(params.includeInnOnly,true);
+    return {rows:[ordinary],leafHits:1,rawCapped:false};
+  }};
+  const optin=await findResultRows(flagged,inn,{includeInnOnly:true});
+  assert.equal(optin.length,1);
+  assert.equal(optin.meta.distinctCards,1);
 });
