@@ -363,7 +363,7 @@ test("audited recovery must reject unrelated KPP and competing scoped registrati
     "Реквизиты\nО компании\nИНН\n"+inn+
       "\nИНН\n7707083893\nКПП\n"+kpp,
     "Контакты\nИНН\n"+inn+"\nКПП\n"+kpp,
-    "Реквизиты\nО компании\nИНН\n7707083893+
+    "Реквизиты\nО компании\nИНН\n7707083893"+
       "\nКПП\n"+kpp,
     "Реквизиты\nО компании\nИНН\n"+inn+
       "\nКПП\n"+kpp+"\nРеквизиты\nИНН\n"+inn+
