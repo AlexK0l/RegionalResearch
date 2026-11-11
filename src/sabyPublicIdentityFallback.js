@@ -4,6 +4,7 @@
 // three concordant identities: source INN, authenticated detail INN/KPP,
 // and registered name+INN/KPP on canonical first-party public profile.
 import {sabyCardRoute} from "./sabyCard.js";
+import {compareSabyPrivateDetailUrl} from "./sabyPrivateDetailUrl.js";
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
 import {auditSelectSearchResult,auditExtractRequisites} from "./sabyIdentityAudit.js";
 import {verifyPublicSabyIdentity} from "./sabyPublicRegisteredIdentity.js";
@@ -284,7 +285,11 @@ export function safeSabyAliasDiagnostic(outcome) {
       private_diagnostic:outcome.private_diagnostic,
       requisites_tab_opened:outcome.requisites_tab_opened===true,
       hydration_polls:Number(outcome.hydration_polls||0),
-      pair_stability_confirmed:outcome.pair_stability_confirmed===true
+      pair_stability_confirmed:outcome.pair_stability_confirmed===true,
+      ui_route_updated:outcome.ui_route_updated===true,
+      ...(outcome.reason==="private_route_changed"?
+        {route_change_reason:String(outcome.route_change_reason||"unknown")
+          .slice(0,52)}:{})
     }:{})
   };
 }
@@ -346,13 +351,26 @@ export async function verifySabyPublicNameFallback(page,inn,name,
     return {ok:false,reason:"private_inn_not_scoped"};
   let snapshot,pair,requisitesTabOpened=false,hydrationPolls=0;
   let pairStabilityConfirmed=false;
+  let uiRouteUpdated=false,routeChangeReason="";
+  const stillSameDetail=()=>{
+    const continuity=compareSabyPrivateDetailUrl(route,page.url?.());
+    if(continuity.ok){
+      if(continuity.reason==="ui_navigation_only")uiRouteUpdated=true;
+      return true;
+    }
+    routeChangeReason=continuity.reason;
+    return false;
+  };
   const record=(reason)=>({
     ok:false,reason,
     private_diagnostic:diagnoseSabyPrivateRequisiteFields(
       snapshot?.text||"",inn),
     requisites_tab_opened:requisitesTabOpened,
     hydration_polls:hydrationPolls,
-    pair_stability_confirmed:pairStabilityConfirmed
+    pair_stability_confirmed:pairStabilityConfirmed,
+    ui_route_updated:uiRouteUpdated,
+    route_change_reason:reason==="private_route_changed"?
+      routeChangeReason:""
   });
   try {
     snapshot=await captureSabyPrivateIdentitySnapshot(page);
@@ -382,16 +400,16 @@ export async function verifySabyPublicNameFallback(page,inn,name,
       for(let i=0;i<polls && !pair.kpp;i++){
         await page.waitForTimeout(interval);
         hydrationPolls++;
-        if(page.url()!==route)return record("private_route_changed");
+        if(!stillSameDetail())return record("private_route_changed");
         const updated=await captureSabyPrivateIdentitySnapshot(page);
-        if(page.url()!==route)return record("private_route_changed");
+        if(!stillSameDetail())return record("private_route_changed");
         snapshot=updated;
         pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
         if(pair.kpp){
           // Validate stability of the SAME scoped INN/KPP pair in a
           // second snapshot, not a transient related-company rendering.
           await page.waitForTimeout(550);
-          if(page.url()!==route)return record("private_route_changed");
+          if(!stillSameDetail())return record("private_route_changed");
           const confirmed=await captureSabyPrivateIdentitySnapshot(page);
           const second=recoverSabyDetailRequisitePair(confirmed?.text,inn);
           snapshot=confirmed;
@@ -407,7 +425,7 @@ export async function verifySabyPublicNameFallback(page,inn,name,
         if(i===7 && !requisitesTabOpened &&
            await openSabyDetailRequisitesTab(page)){
           requisitesTabOpened=true;
-          if(page.url()!==route)return record("private_route_changed");
+          if(!stillSameDetail())return record("private_route_changed");
           snapshot=await captureSabyPrivateIdentitySnapshot(page);
           pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
           if(pair.kpp)break;
@@ -418,14 +436,14 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   } catch {
     return record("private_dom_unavailable");
   }
-  if(page.url()!==route || sabyCardRoute(page.url())!=="detail")
+  if(!stillSameDetail())
     return record("private_route_changed");
   // If a requisites tab appeared DURING polling, its first value must
   // also survive an independent fresh snapshot before verification.
   if(hydrationPolls>0 && pair.kpp && !pairStabilityConfirmed){
     try{
       await page.waitForTimeout(550);
-      if(page.url()!==route)return record("private_route_changed");
+      if(!stillSameDetail())return record("private_route_changed");
       const stable=await captureSabyPrivateIdentitySnapshot(page);
       const second=recoverSabyDetailRequisitePair(stable?.text,inn);
       snapshot=stable;
@@ -445,7 +463,7 @@ export async function verifySabyPublicNameFallback(page,inn,name,
        sabyNameMatches(title,selectedSearchTitle)))
     return record("selected_private_heading_disconnected");
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
-  if(page.url()!==route)return record("private_route_changed");
+  if(!stillSameDetail())return record("private_route_changed");
   const result=acceptSabyPublicIdentityFallback({
     expectedInn:inn,expectedName:name,privateRoute:route,
     cardAssessment,privateText:snapshot.text,
@@ -455,5 +473,6 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   return {...result,private_diagnostic:privateDiagnostic,
     requisites_tab_opened:requisitesTabOpened,
     hydration_polls:hydrationPolls,
-    pair_stability_confirmed:pairStabilityConfirmed};
+    pair_stability_confirmed:pairStabilityConfirmed,
+    ui_route_updated:uiRouteUpdated};
 }
