@@ -16,6 +16,8 @@ import {scanSabyResultDOM,scanSabyLegacyDOM,
   consolidateSabyResultRows} from "./sabySearchRows.js";
 import {auditSearchName} from "./sabyIdentityAudit.js";
 import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js";
+import {safeSabyFleetFailure,observeSabyFleetDOM}
+  from "./sabyFleetDiagnostic.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -506,9 +508,14 @@ async function sidePanelTrucks(page,expected,action="read") {
   },{expected,action});
 }
 
-async function ownTrucks(page, settings) {
+async function ownTrucks(page, settings,progress={}) {
+  progress.phase="heading";
   const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
-  if(!heading) return {status:"missing"};
+  if(!heading) {
+    progress.reason="fleet_heading_missing";
+    return {status:"missing"};
+  }
+  progress.phase="preview";
   let preview=await truckPreview(page);
   if(preview.status==="missing") {
     await heading.click({timeout:4000}).catch(()=>{});
@@ -519,9 +526,20 @@ async function ownTrucks(page, settings) {
       await delay(350);
     }
   }
-  if(preview.status!=="found") throw new SabyReview("Грузовой автопарк не определён однозначно");
+  progress.preview_status=preview.status;
+  if(preview.status!=="found"){
+    progress.reason=preview.status==="ambiguous"?
+      "truck_preview_ambiguous":"truck_preview_missing";
+    throw new SabyReview("Грузовой автопарк не определён однозначно");
+  }
+  progress.expected_trucks=preview.count;
+  progress.parsed_vehicle_rows=preview.rows.length;
   if(preview.count===0) return {status:"verified",count:0,vehicles:[]};
-  if(preview.count<0 || preview.count>5000) throw new SabyReview("Некорректное число грузовых");
+  if(preview.count<0 || preview.count>5000) {
+    progress.reason="truck_count_invalid";
+    throw new SabyReview("Некорректное число грузовых");
+  }
+  progress.phase="vehicles";
   let rows=preview.rows;
   if(rows.length!==preview.count) {
     const r=preview.rect;
@@ -531,11 +549,14 @@ async function ownTrucks(page, settings) {
       const until=Date.now()+Math.min(12000,settings.timeoutMs);
       while(Date.now()<until) {
         const panel=await sidePanelTrucks(page,preview.count);
+        if(panel.opened) progress.side_panel_observed=true;
         if(panel.opened&&panel.rows.length>rows.length)rows=panel.rows;
+        progress.parsed_vehicle_rows=rows.length;
         if(rows.length===preview.count)break;
         if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
           const opened=await sidePanelTrucks(page,preview.count,"expand");
           categoryExpanded=Boolean(opened.expanded);
+          if(categoryExpanded)progress.expanded=true;
         }
         await delay(400);
       }
@@ -544,6 +565,8 @@ async function ownTrucks(page, settings) {
   }
   if(rows.length!==preview.count ||
      rows.some(x=>!x.model||/(?:\.\.\.|…)\s*$/.test(x.model))) {
+    progress.reason="vehicle_rows_incomplete";
+    progress.parsed_vehicle_rows=rows.length;
     throw new SabyReview("Неполный автопарк: заявлено "+preview.count+
       ", подтверждено "+rows.length);
   }
@@ -560,12 +583,23 @@ async function collectSabyCompanyAttempt(page, row, settings) {
     errors:[]};
   try { result.contacts=await ownContacts(page); }
   catch(error) { result.errors.push("contacts: "+error.message); }
+  const fleetProgress={phase:"overlay"};
   try {
     await closeContactOverlay(page);
-    result.trucks=await ownTrucks(page,settings);
+    fleetProgress.phase="heading";
+    result.trucks=await ownTrucks(page,settings,fleetProgress);
   } catch(error) {
-    result.errors.push("trucks: "+error.message);
+    // Raw Playwright errors may contain URLs or private DOM; diagnostics
+    // always use the fixed allowlisted code and never print the exception.
+    fleetProgress.reason ||=fleetProgress.phase==="overlay"?
+      "contact_overlay_not_closed":"fleet_interaction_failed";
+    result.errors.push("trucks: "+fleetProgress.reason);
     result.trucks={status:"review"};
+  }
+  if(result.trucks.status!=="verified") {
+    const evidence=await observeSabyFleetDOM(page);
+    console.warn("[SABY_FLEET_DIAG] "+JSON.stringify(
+      safeSabyFleetFailure(fleetProgress,evidence)));
   }
   if(result.contacts.status==="missing" && result.trucks.status==="missing") {
     console.warn("[SABY_SECTION_DIAG] "+JSON.stringify(
