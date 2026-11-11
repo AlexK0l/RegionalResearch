@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   extractSabyDetailRequisitePair,recoverSabyDetailRequisitePair,
+  diagnoseSabyPrivateRequisiteFields,
   selectSabyInnCandidate,
   sabySearchRowInnEvidence,
   isSabyBranchResult,SABY_BRANCH_MARKER_SOURCE,
@@ -438,4 +439,26 @@ test("tab navigation away from Saby detail must reject private identity",async()
   assert.equal(result.ok,false);
   assert.equal(result.reason,"private_route_changed");
   assert.equal(publicChecks,0);
+});
+
+
+test("private requisites diagnostics contain only numeric/boolean counters, no company values",()=>{
+  const text="Контакты\\noperator@example.test\\n8 (900) 123-45-67\\n" +
+    "Реквизиты\\nО компании\\nИНН "+inn+"\\nКПП: "+kpp;
+  const diagnostic=diagnoseSabyPrivateRequisiteFields(text,inn);
+  assert.equal(diagnostic.requisites_headings,1);
+  assert.equal(diagnostic.labelled_inn_lines,1);
+  assert.equal(diagnostic.labelled_kpp_lines,1);
+  assert.equal(diagnostic.audited_exact_pairs,1);
+  const output=JSON.stringify(diagnostic);
+  assert.doesNotMatch(output,/123-45-67|900|operator@example|6700018766|670001001/);
+  const report=safeSabyAliasDiagnostic({
+    ok:false,reason:"no_scoped_inn_kpp",
+    private_diagnostic:diagnostic,
+    requisites_tab_opened:true
+  });
+  assert.equal(report.accepted,false);
+  assert.equal(report.reason,"no_scoped_inn_kpp");
+  assert.equal(report.requisites_tab_opened,true);
+  assert.deepEqual(report.private_diagnostic,diagnostic);
 });
