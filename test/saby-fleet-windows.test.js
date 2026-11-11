@@ -62,7 +62,9 @@ test("stuck virtual list cannot invent missing vehicles",async()=>{
   assert.equal(out.reason,"window_not_updated");
   assert.equal(out.rows.length,40);
   assert.equal(out.windows,1);
-  assert.equal(out.scrollMoves,1);
+  assert.equal(out.scrollMoves,7,
+    "six extra stagnant scrolls may be attempted after the first movement");
+  assert.equal(out.totalStaleScrollMoves,7);
 });
 
 test("no active scroll stops with a real partial list, never marks fleet complete",async()=>{
