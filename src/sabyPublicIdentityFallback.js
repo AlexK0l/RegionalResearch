@@ -90,7 +90,7 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
   // duplicate highlighted-INN fragments. New scan results carry explicit
   // truncation metadata after geometric deduplication. A truncated scan
   // can never establish a unique main company.
-  if(meta.truncated===true || (!all.meta&&all.length>=20))
+  if(meta.truncated===true || all.length>=20)
     return {row:null,reason:"result_window_full",
       count:all.length,observed:all.length,branches:0,...summary};
   const main=all.filter(row=>!isSabyBranchResult(row?.text,inn));
