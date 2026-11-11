@@ -55,7 +55,7 @@ export async function inspectSabySearchLayout(page,rows,inn) {
     const safeTag=el=>{
       const tag=String(el?.tagName||"").toLowerCase();
       return ["div","li","tr","a","section","article","button","td",
-        "span","p","ul","ol"].includes(tag)?tag:"other";
+        "span","p","ul","ol","nav","main","aside"].includes(tag)?tag:"other";
     };
     const visible=el=>{
       if(!el)return false;
@@ -89,12 +89,13 @@ export async function inspectSabySearchLayout(page,rows,inn) {
     return rectangles.map(rect=>{
       let chosen=null,best=Infinity;
       for(const el of all){
-        if(!visible(el))continue;
         const r=el.getBoundingClientRect();
         if(Math.abs(r.x-rect.x)>2||
            Math.abs(r.y-rect.y)>2||
            Math.abs(r.width-rect.w)>3||
            Math.abs(r.height-rect.h)>3)continue;
+        // Expensive computed style reads only for exact-geometry matches.
+        if(!visible(el))continue;
         // If several nested elements have identical geometry, prefer the
         // one with fewer innerText chars while still containing exact INN.
         const raw=String(el.innerText||el.textContent||"");
