@@ -228,7 +228,7 @@ export function selectSabyInnCandidate(rows,inn,expectedName) {
 }
 export function acceptSabyPublicIdentityFallback({
   expectedInn,expectedName,privateRoute,cardAssessment,
-  privateText,privateHeadings,publicResult
+  privateText,privateHeadings,publicResult,selectedSearchTitle=""
 }) {
   const reject=(reason)=>({ok:false,reason,
     identity:null});
