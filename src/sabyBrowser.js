@@ -177,7 +177,7 @@ async function openCompany(page, row, settings) {
   await found.field.press("Enter");
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
   const publicFallback=settings.publicIdentityFallback===true;
-  let rows=[],selection="not_found";
+  let rows=[],selection="not_found",lastSelected=null;
   async function candidates() {
     // For optional fallback retain branch rows for Node-side
     // classification, then exclude them BEFORE opening any candidate.
@@ -196,6 +196,7 @@ async function openCompany(page, row, settings) {
   }
   while(Date.now()<until) {
     const selected=await candidates();
+    lastSelected=selected;
     selection=selected.reason;
     if(["ambiguous","ambiguous_exact","result_window_full",
         "primary_window_full"].includes(selected.reason)) {
@@ -218,7 +219,7 @@ async function openCompany(page, row, settings) {
   if(rows.length!==1)
     throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
   if(publicFallback){
-    const final=await candidates();
+    const final=lastSelected||{};
     console.info("[SABY_SEARCH_FILTER_DIAG] "+JSON.stringify({
       observed:final.observed||0,branches:final.branches||0,
       foreign_inn_rows:final.foreignInnRows||0,
