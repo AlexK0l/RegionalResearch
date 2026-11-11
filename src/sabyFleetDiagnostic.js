@@ -1,6 +1,8 @@
 // Saby fleet read-only diagnostics. DOM and URL values are never logged.
 // This does not grant a verified fleet or alter the browser collection path.
 import {sabyCardRoute} from "./sabyCard.js";
+import {safeSabyFleetPaginationSignals}
+  from "./sabyFleetPaginationDiagnostic.js";
 
 const reasons=new Set([
   "contact_overlay_not_closed",
@@ -84,6 +86,8 @@ export function safeSabyFleetFailure(report={},observed={}) {
     fleet_route_reason:routeReasons.has(report.route_guard_reason)?
       report.route_guard_reason:"not_observed",
     fleet_route_delta:safeRouteDelta(report.route_delta),
+    fleet_pagination:report.fleet_pagination?
+      safeSabyFleetPaginationSignals(report.fleet_pagination):null,
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };
