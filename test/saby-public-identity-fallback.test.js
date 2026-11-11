@@ -443,8 +443,8 @@ test("tab navigation away from Saby detail must reject private identity",async()
 
 
 test("private requisites diagnostics contain only numeric/boolean counters, no company values",()=>{
-  const text="Контакты\\noperator@example.test\\n8 (900) 123-45-67\\n" +
-    "Реквизиты\\nО компании\\nИНН "+inn+"\\nКПП: "+kpp;
+  const text="Контакты\noperator@example.test\n8 (900) 123-45-67\n" +
+    "Реквизиты\nО компании\nИНН "+inn+"\nКПП: "+kpp;
   const diagnostic=diagnoseSabyPrivateRequisiteFields(text,inn);
   assert.equal(diagnostic.requisites_headings,1);
   assert.equal(diagnostic.labelled_inn_lines,1);
