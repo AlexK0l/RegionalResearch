@@ -18,6 +18,7 @@ import {auditSearchName} from "./sabyIdentityAudit.js";
 import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js";
 import {safeSabyFleetFailure,observeSabyFleetDOM}
   from "./sabyFleetDiagnostic.js";
+import {collectSabyTruckWindows} from "./sabyFleetWindows.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -501,8 +502,23 @@ async function sidePanelTrucks(page,expected,action="read") {
         return vis(e)&&e.scrollHeight>e.clientHeight+15&&/(auto|scroll)/.test(s.overflowY);
       });
       const scroller=scrolls.findLast(e=>e.contains(truck))||scrolls[scrolls.length-1];
-      if(scroller&&rows.length<expected)scroller.scrollTop+=Math.max(200,scroller.clientHeight*.75);
-      return {opened:true,rows};
+      let scroll={available:false,moved:false};
+      if(scroller) {
+        const before=scroller.scrollTop;
+        const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
+        if(action==="reset")scroller.scrollTop=0;
+        else if(action==="advance") {
+          const step=Math.max(45,Math.floor(scroller.clientHeight*.60));
+          scroller.scrollTop=Math.min(max,before+step);
+        } else if(action==="read" && rows.length<expected) {
+          // Preserve the original behavior for normal Stage12.
+          scroller.scrollTop+=Math.max(200,scroller.clientHeight*.75);
+        }
+        scroll={available:true,moved:Math.abs(scroller.scrollTop-before)>1,
+          top:before,after:scroller.scrollTop,max,
+          height:scroller.clientHeight};
+      }
+      return {opened:true,rows,scroll};
     }
     return {opened:false,rows:[]};
   },{expected,action});
@@ -541,7 +557,61 @@ async function ownTrucks(page, settings,progress={}) {
   }
   progress.phase="vehicles";
   let rows=preview.rows;
-  if(rows.length!==preview.count) {
+  if(rows.length!==preview.count && settings.publicIdentityFallback===true) {
+    // Opt-in only: v14 observed a strict 220-truck count but only one
+    // 40-row panel window. Keep duplicate models as separate records and
+    // stitch ONLY uniquely overlapping windows. If continuity or scrolling
+    // is uncertain, the whole fleet remains pending.
+    const r=preview.rect;
+    await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
+    const panelUrl=page.url();
+    let categoryExpanded=false;
+    const readWindow=async()=>{
+      if(page.url()!==panelUrl)return {opened:false,rows:[]};
+      let panel=await sidePanelTrucks(page,preview.count,"window");
+      if(panel.opened)progress.side_panel_observed=true;
+      if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
+        const attempt=await sidePanelTrucks(page,preview.count,"expand");
+        categoryExpanded=true;
+        progress.expanded=attempt.expanded===true;
+        await delay(350);
+        panel=await sidePanelTrucks(page,preview.count,"window");
+      }
+      return panel;
+    };
+    const first=await readWindow();
+    if(first.opened) {
+      // A new side panel can preserve an old scroll position from the
+      // browser profile. Always begin at top, or refuse to infer a
+      // complete ordered sequence from an unknown middle window.
+      const reset=await sidePanelTrucks(page,preview.count,"reset");
+      if(reset.opened && reset.scroll?.available) {
+        await delay(400);
+        const stitched=await collectSabyTruckWindows({
+          expected:preview.count,readWindow,
+          advanceScroll:async()=>{
+            if(page.url()!==panelUrl)
+              return {opened:false,scroll:{moved:false}};
+            return sidePanelTrucks(page,preview.count,"advance");
+          },
+          wait:delay,maxWindows:Math.min(80,Math.ceil(preview.count/5)+10),
+          maxMs:Math.min(70000,settings.timeoutMs*2)
+        });
+        progress.window_count=stitched.windows;
+        progress.scroll_moves=stitched.scrollMoves;
+        progress.stitch_reason=stitched.reason;
+        if(stitched.rows.length>rows.length)rows=stitched.rows;
+        progress.parsed_vehicle_rows=rows.length;
+        if(stitched.status!=="complete")
+          progress.reason="vehicle_rows_incomplete";
+      } else {
+        progress.stitch_reason="scroll_not_available";
+      }
+    } else {
+      progress.stitch_reason="panel_not_observed";
+    }
+  } else if(rows.length!==preview.count) {
+    // Unchanged Stage12 behavior for nonexperimental runs.
     const r=preview.rect;
     let categoryExpanded=false;
     for(let attempt=0;attempt<2;attempt++){
