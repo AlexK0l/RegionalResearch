@@ -1,0 +1,107 @@
+// Conservative ordered collection of virtualized Saby truck list windows.
+// Never use a set of vehicle models: identical model/year rows can represent
+// distinct trucks. Stitch ONLY attested contiguous DOM windows; if the
+// boundary is uncertain, leave the whole fleet unverified.
+const signature=row=>JSON.stringify([row?.model,row?.year??null]);
+const match=(a,b)=>signature(a)===signature(b);
+const same=(a,b)=>a.length===b.length&&a.every((v,i)=>match(v,b[i]));
+const validRows=(rows,expected)=>Array.isArray(rows)&&
+  rows.length<=expected&&rows.every(row=>
+    row&&typeof row.model==="string"&&row.model.trim().length>=3&&
+    row.model.length<=150&&!/(?:\.\.\.|…)\s*$/.test(row.model)&&
+    (row.year===null || row.year===undefined ||
+      (Number.isInteger(row.year)&&row.year>=1900&&row.year<=
+        new Date().getUTCFullYear()+1)));
+
+export function appendSabyTruckWindow(current,incoming,expected) {
+  if(!Number.isSafeInteger(expected)||expected<1||expected>5000 ||
+     !validRows(current,expected)||!validRows(incoming,expected))
+    return {status:"invalid",reason:"invalid_rows",rows:current};
+  if(!incoming.length)return {status:"unchanged",reason:"empty_window",rows:current};
+  if(!current.length)return {status:"advanced",rows:[...incoming],
+    added:incoming.length};
+  // Non-virtualized lists can progressively append rows; preserve their
+  // exact order, including repeated model/year values.
+  if(incoming.length>=current.length &&
+     current.every((v,i)=>match(v,incoming[i])))
+    return incoming.length===current.length?
+      {status:"unchanged",reason:"same_window",rows:current}:
+      {status:"advanced",added:incoming.length-current.length,
+        rows:[...incoming]};
+  // A window already present in the accumulated list proves nothing new.
+  for(let i=0;i<=current.length-incoming.length;i++){
+    if(incoming.every((v,j)=>match(current[i+j],v)))
+      return {status:"unchanged",reason:"same_window",rows:current};
+  }
+  // A moving viewport must overlap the PREVIOUS tail. Multiple possible
+  // boundary offsets (e.g. many identical model rows) cannot be safely
+  // disambiguated without stable row identifiers/indices: stay deferred.
+  const overlaps=[];
+  for(let k=2;k<=Math.min(current.length,incoming.length);k++) {
+    if(current.slice(-k).every((v,i)=>match(v,incoming[i])))
+      overlaps.push(k);
+  }
+  const extending=overlaps.filter(k=>k<incoming.length);
+  if(extending.length!==1)
+    return {status:"invalid",reason:extending.length?
+      "ambiguous_overlap":"unanchored_window",rows:current};
+  const overlap=extending[0];
+  const next=[...current,...incoming.slice(overlap)];
+  if(next.length>expected)
+    return {status:"invalid",reason:"count_exceeded",rows:current};
+  return {status:"advanced",rows:next,
+    added:incoming.length-overlap};
+}
+
+/**
+ * Browser interaction is injected, making no assumptions about Saby's
+ * specific scrollbar DOM. A missing/ambiguous window or nonmoving scroller
+ * is NEVER interpreted as a zero or complete fleet.
+ */
+export async function collectSabyTruckWindows({
+  expected,readWindow,advanceScroll,wait=async()=>{},
+  maxWindows=48,maxMs=60000,now=()=>Date.now()
+}={}) {
+  if(!Number.isSafeInteger(expected)||expected<1||expected>5000||
+     typeof readWindow!=="function"||typeof advanceScroll!=="function")
+    return {status:"incomplete",reason:"invalid_setup",
+      rows:[],windows:0,scrollMoves:0};
+  const until=now()+Math.max(1000,Math.min(90000,maxMs));
+  const limit=Math.max(1,Math.min(96,Math.floor(maxWindows)));
+  let rows=[],windows=0,scrollMoves=0;
+  for(let i=0;i<limit && now()<until;i++){
+    let progress=null;
+    // After a scroll, virtualized DOM may require an extra hydration tick.
+    // Never scroll again until a NEW contiguous window has been observed.
+    for(let poll=0;poll<5&&now()<until;poll++){
+      const panel=await readWindow();
+      if(panel?.opened===true) {
+        const merged=appendSabyTruckWindow(rows,panel.rows,expected);
+        if(merged.status==="invalid")
+          return {status:"incomplete",reason:merged.reason,
+            rows,windows,scrollMoves};
+        if(merged.status==="advanced"){
+          rows=merged.rows;
+          windows++;
+          progress=merged;
+          break;
+        }
+      }
+      if(poll<4)await wait(350);
+    }
+    if(!progress)
+      return {status:"incomplete",reason:"window_not_updated",
+        rows,windows,scrollMoves};
+    if(rows.length===expected)
+      return {status:"complete",reason:"exact_count",
+        rows,windows,scrollMoves};
+    const scroll=await advanceScroll();
+    if(scroll?.opened!==true||scroll?.scroll?.moved!==true)
+      return {status:"incomplete",reason:"scroll_not_advanced",
+        rows,windows,scrollMoves};
+    scrollMoves++;
+    await wait(450);
+  }
+  return {status:"incomplete",reason:"bounded_limit",
+    rows,windows,scrollMoves};
+}

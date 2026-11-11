@@ -12,6 +12,12 @@ const reasons=new Set([
   "fleet_interaction_failed"
 ]);
 const phases=new Set(["overlay","heading","preview","vehicles","unknown"]);
+const stitchReasons=new Set([
+  "exact_count","invalid_setup","invalid_rows","empty_window",
+  "same_window","unanchored_window","ambiguous_overlap",
+  "count_exceeded","window_not_updated","scroll_not_advanced",
+  "scroll_not_available","panel_not_observed","bounded_limit"
+]);
 const capped=(v,upper=5000)=>
   typeof v==="number"&&Number.isSafeInteger(v)&&v>=0?
     Math.min(v,upper):null;
@@ -35,6 +41,10 @@ export function safeSabyFleetFailure(report={},observed={}) {
       report.preview_status:"not_observed",
     expected_trucks:capped(report.expected_trucks),
     parsed_vehicle_rows:capped(report.parsed_vehicle_rows),
+    window_count:capped(report.window_count,96),
+    scroll_moves:capped(report.scroll_moves,96),
+    stitch_reason:stitchReasons.has(report.stitch_reason)?
+      report.stitch_reason:"not_attempted",
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };
