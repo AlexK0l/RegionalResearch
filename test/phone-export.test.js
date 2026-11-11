@@ -54,6 +54,7 @@ test("Saby stage 12 writes multiple distinct phones but not their source",()=>{
     collected_at:"2026-11-09T10:16:24Z",
     identity:{verified:true,inn:"7707083893",name:"ООО Тест"},
     contacts:{
+      status:"collected",
       phones:["79991112233","+7 (999) 444-55-66"],
       phone_details:[
         {phone:"79991112233",department:"Отдел продаж"},
@@ -80,7 +81,7 @@ test("known numbers are never replaced, even when Saby has a new one",()=>{
     "Телефон":"79112223344 (отдел снабжения)"};
   const record={identity:{verified:true,inn:"7707083893",name:"ООО Тест"},
     source_url:"https://profile.saby.ru/page/contractor-info",
-    contacts:{phones:["79991112233"],emails:[]}};
+    contacts:{status:"collected",phones:["79991112233"],emails:[]}};
   const outcome=applySabyEnrichment(row,record);
   assert.equal(outcome.phoneAdded,false);
   assert.equal(row["Телефон"],"79112223344 (отдел снабжения)");
