@@ -75,34 +75,76 @@ export function isSabyBranchResult(text,inn) {
   const before=display.split(actualInn,1)[0].slice(0,400);
   return branchMarker.test(before);
 }
+/**
+ * A Saby search for one INN can show the whole company group: the parent
+ * firm, branches with the parent's INN, and RELATED firms with their own
+ * distinct 10/12-digit INNs. The source INN may occur in the latter as
+ * a link to the parent and MUST NOT be treated as the row's legal INN.
+ * This extracts only whole-number registry-like identifiers. It is a
+ * conservative search-row exclusion, never registration proof.
+ */
+export function sabySearchRowInnEvidence(text,expectedInn) {
+  const expected=sabyInn(expectedInn);
+  const all=[...new Set(String(text||"")
+    .match(/(?<!\d)(?:\d{12}|\d{10})(?!\d)/gu)||[])];
+  const hasExpected=Boolean(expected)&&all.includes(expected);
+  const foreign=all.filter(value=>value!==expected);
+  return {
+    hasExpected,
+    foreignInnCount:foreign.length,
+    // A candidate carrying even ONE other INN needs independent review.
+    // An OGRN has 13 or 15 digits and is not mistaken for an INN.
+    exclusiveExpected:hasExpected&&foreign.length===0
+  };
+}
 export function selectSabyInnCandidate(rows,inn,expectedName) {
   const all=Array.isArray(rows)?rows:[];
   const meta=all.meta||{};
+  const actualInn=sabyInn(inn);
+  const candidates=all.map(row=>({
+    row,
+    evidence:sabySearchRowInnEvidence(row?.text,actualInn)
+  }));
+  const notExact=candidates.filter(x=>!x.evidence.hasExpected).length;
+  const foreignInnRows=candidates.filter(x=>
+    x.evidence.hasExpected && x.evidence.foreignInnCount>0).length;
+  const strictlyOneInn=candidates.filter(x=>x.evidence.exclusiveExpected);
+  const branchRows=strictlyOneInn.filter(x=>
+    isSabyBranchResult(x.row?.text,actualInn));
+  const main=strictlyOneInn.filter(x=>
+    !isSabyBranchResult(x.row?.text,actualInn)).map(x=>x.row);
   const summary={
-    rawCandidates:meta.rawCandidates||all.length,
-    geometryDuplicates:meta.geometryDuplicates||0,
-    rejectedFragments:meta.rejectedFragments||0,
-    uniqueTitles:meta.uniqueTitles||new Set(all.map(row=>
+    rawCandidates:meta.rawCandidates??all.length,
+    geometryDuplicates:meta.geometryDuplicates??0,
+    rejectedFragments:meta.rejectedFragments??0,
+    uniqueTitles:meta.uniqueTitles??new Set(all.map(row=>
       String(row?.text||"").split(String(inn),1)[0].trim())).size,
-    rawCapped:meta.rawCapped===true
+    rawCapped:meta.rawCapped===true,
+    observed:all.length,
+    branches:branchRows.length,
+    foreignInnRows,
+    notExact,
+    primaryCandidates:main.length
   };
-  // The previous DOM detector capped its results at 20 BEFORE dropping
-  // duplicate highlighted-INN fragments. New scan results carry explicit
-  // truncation metadata after geometric deduplication. A truncated scan
-  // can never establish a unique main company.
-  if(meta.truncated===true || all.length>=20)
-    return {row:null,reason:"result_window_full",
-      count:all.length,observed:all.length,branches:0,...summary};
-  const main=all.filter(row=>!isSabyBranchResult(row?.text,inn));
-  const result=auditSelectSearchResult(main,inn,expectedName);
+  // Fail closed on genuinely truncated evidence even if a plausible main
+  // candidate was seen: unseen later cards could be competing entities.
+  if(meta.truncated===true || meta.rawCapped===true)
+    return {row:null,reason:"result_window_full",count:main.length,...summary};
+  // Apply the existing 20-row ambiguity cap to candidate HEAD OFFICES,
+  // not to all related-company and branch rows returned by Saby.
+  if(main.length>=20)
+    return {row:null,reason:"primary_window_full",count:main.length,...summary};
+  const result=auditSelectSearchResult(main,actualInn,expectedName);
   return {
     row:result.row||null,
-    reason:!main.length&&all.length?"branch_only":
-      result.row&&main.length<all.length?"unique_primary_excluding_branches":
+    reason:!main.length&&all.length?(
+      branchRows.length>0 && foreignInnRows===0 && notExact===0?
+        "branch_only":"no_unambiguous_head"
+    ):
+      result.row&&(branchRows.length>0||foreignInnRows>0)?
+        "unique_primary_after_exclusions":
         result.kind,
     count:result.count,
-    observed:all.length,
-    branches:all.length-main.length,
     ...summary
   };
 }
