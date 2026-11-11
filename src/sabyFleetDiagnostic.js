@@ -16,7 +16,8 @@ const stitchReasons=new Set([
   "exact_count","invalid_setup","invalid_rows","empty_window",
   "same_window","unanchored_window","ambiguous_overlap",
   "count_exceeded","window_not_updated","scroll_not_advanced",
-  "scroll_not_available","panel_not_observed","bounded_limit"
+  "scroll_not_available","panel_not_observed","panel_unrecognized",
+  "preview_click_unavailable","detail_changed","bounded_limit"
 ]);
 const capped=(v,upper=5000)=>
   typeof v==="number"&&Number.isSafeInteger(v)&&v>=0?
@@ -45,6 +46,9 @@ export function safeSabyFleetFailure(report={},observed={}) {
     scroll_moves:capped(report.scroll_moves,96),
     stitch_reason:stitchReasons.has(report.stitch_reason)?
       report.stitch_reason:"not_attempted",
+    panel_open_attempts:capped(report.panel_open_attempts,2),
+    panel_wait_polls:capped(report.panel_wait_polls,50),
+    panel_title_seen:report.panel_title_seen===true,
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };
