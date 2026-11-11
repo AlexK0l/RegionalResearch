@@ -103,9 +103,9 @@ export async function inspectSabySearchLayout(page,rows,inn) {
         if(raw.length<best){chosen=el;best=raw.length;}
       }
       if(!chosen)return {matched:false};
-      const rect=chosen.getBoundingClientRect();
-      const isInViewport=rect.bottom>0&&rect.top<innerHeight &&
-        rect.right>0&&rect.left<innerWidth;
+      const box=chosen.getBoundingClientRect();
+      const isInViewport=box.bottom>0&&box.top<innerHeight &&
+        box.right>0&&box.left<innerWidth;
       let semantic=null,nav=false,dialog=false,clickable=false,
         scroller=null,ancestorDepth=0;
       for(let el=chosen;el&&ancestorDepth<9;el=el.parentElement,ancestorDepth++){
