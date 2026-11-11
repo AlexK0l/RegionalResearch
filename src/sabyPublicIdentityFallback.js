@@ -252,6 +252,50 @@ export function safeSabyAliasDiagnostic(outcome) {
       String(outcome?.identity?.private_pair_basis||""): ""
   };
 }
+/**
+ * Private Saby SPA may show the company summary before mounting requisites.
+ * One bounded click on a VISIBLE exact-tab/button/link is allowed only
+ * when exact labelled private INN/KPP are not yet available. The click
+ * stays within the same Saby detail route. No company navigation/search
+ * retry and no contact data/credentials are persisted.
+ */
+async function openSabyDetailRequisitesTab(page) {
+  if(typeof page?.getByRole!=="function")return false;
+  if(sabyCardRoute(page.url?.())!=="detail")return false;
+  for(const role of ["tab","button","link"]) {
+    let locator;
+    try { locator=page.getByRole(role,{name:"Реквизиты",exact:true}); }
+    catch {continue;}
+    const n=Math.min(4,await locator.count().catch(()=>0));
+    for(let i=0;i<n;i++){
+      const tab=locator.nth(i);
+      if(!await tab.isVisible().catch(()=>false))continue;
+      try {
+        await tab.click({timeout:2500});
+        if(sabyCardRoute(page.url())!=="detail")return false;
+        await page.waitForTimeout?.(750);
+        return true;
+      } catch { /* The first-party tab may be mounted but unclickable. */ }
+    }
+  }
+  return false;
+}
+async function captureSabyPrivateIdentitySnapshot(page) {
+  return page.evaluate(()=>{
+    const visible=e=>{
+      const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+      return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";
+    };
+    const headings=[...document.querySelectorAll(
+      'h1,h2,[role="heading"],[class*="companyName" i],' +
+      '[class*="company-name" i]'
+    )].filter(visible).slice(0,70).map(x=>
+      String(x.innerText||"").replace(/\s+/g," ").trim())
+      .filter(x=>x.length>=3&&x.length<=200).slice(0,18);
+    return {text:String(document.body?.innerText||"").slice(0,150000),
+      headings};
+  });
+}
 export async function verifySabyPublicNameFallback(page,inn,name,
   cardAssessment,{verifyPublic=verifyPublicSabyIdentity}={}) {
   const route=typeof page?.url==="function"?page.url():"";
@@ -259,26 +303,30 @@ export async function verifySabyPublicNameFallback(page,inn,name,
      cardAssessment?.reason!=="legal_name_not_verified" ||
      cardAssessment?.detail?.hasScopedInn!==true)
     return {ok:false,reason:"private_inn_not_scoped"};
-  let snapshot;
+  let snapshot,pair;
   try {
-    snapshot=await page.evaluate(()=>{
-      const visible=e=>{
-        const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-        return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";
-      };
-      const headings=[...document.querySelectorAll(
-        'h1,h2,[role="heading"],[class*="companyName" i],' +
-        '[class*="company-name" i]'
-      )].filter(visible).slice(0,70).map(x=>
-        String(x.innerText||"").replace(/\s+/g," ").trim())
-        .filter(x=>x.length>=3&&x.length<=200).slice(0,18);
-      return {text:String(document.body?.innerText||"").slice(0,150000),
-        headings};
-    });
+    snapshot=await captureSabyPrivateIdentitySnapshot(page);
+    pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+    if(!pair.kpp && pair.reason==="no_scoped_inn_kpp" &&
+       await openSabyDetailRequisitesTab(page)){
+      const expanded=await captureSabyPrivateIdentitySnapshot(page);
+      const expandedPair=recoverSabyDetailRequisitePair(expanded?.text,inn);
+      if(expandedPair.kpp || expandedPair.reason!=="no_scoped_inn_kpp"){
+        // New detail headings can be terse; retain only first-party names
+        // collected before and after opening the requisites surface.
+        snapshot={
+          text:expanded.text,
+          headings:[...new Set([...(snapshot.headings||[]),
+            ...(expanded.headings||[])])].slice(0,18)
+        };
+        pair=expandedPair;
+      }
+    }
   } catch {
     return {ok:false,reason:"private_dom_unavailable"};
   }
-  const pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
+  if(sabyCardRoute(page.url())!=="detail")
+    return {ok:false,reason:"private_route_changed"};
   if(!pair.kpp)return {ok:false,reason:pair.reason};
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
   return acceptSabyPublicIdentityFallback({
