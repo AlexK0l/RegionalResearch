@@ -197,7 +197,8 @@ async function openCompany(page, row, settings) {
   while(Date.now()<until) {
     const selected=await candidates();
     selection=selected.reason;
-    if(["ambiguous","ambiguous_exact","result_window_full"].includes(selected.reason)) {
+    if(["ambiguous","ambiguous_exact","result_window_full",
+        "primary_window_full"].includes(selected.reason)) {
       if(publicFallback)console.warn("[SABY_SEARCH_AMBIGUITY_DIAG] "+
         JSON.stringify({reason:selected.reason,observed:selected.observed||0,
           primary:selected.count||0,branches:selected.branches||0,
@@ -205,7 +206,9 @@ async function openCompany(page, row, settings) {
           geometry_duplicates:selected.geometryDuplicates||0,
           fragments_rejected:selected.rejectedFragments||0,
           unique_titles:selected.uniqueTitles||0,
-          raw_capped:selected.rawCapped===true}));
+          raw_capped:selected.rawCapped===true,
+          foreign_inn_rows:selected.foreignInnRows||0,
+          primary_candidates:selected.primaryCandidates||0}));
       throw new SabyReview("Saby: неоднозначный результат по ИНН");
     }
     rows=selected.row?[selected.row]:[];
@@ -214,8 +217,16 @@ async function openCompany(page, row, settings) {
   }
   if(rows.length!==1)
     throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
-  if(publicFallback)
+  if(publicFallback){
+    const final=await candidates();
+    console.info("[SABY_SEARCH_FILTER_DIAG] "+JSON.stringify({
+      observed:final.observed||0,branches:final.branches||0,
+      foreign_inn_rows:final.foreignInnRows||0,
+      primary_candidates:final.primaryCandidates||0,
+      reason:selection
+    }));
     console.info("[SABY_SEARCH_RESULT] "+selection+"_requires_card_verification");
+  }
   const r=rows[0].rect;
   const listingUrl=page.url();
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
