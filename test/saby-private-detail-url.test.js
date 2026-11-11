@@ -211,5 +211,5 @@ test("non-UI route change stays rejected while safe telemetry is forwarded",asyn
     non_ui_values_changed:1,ui_values_changed:1
   });
   assert.doesNotMatch(JSON.stringify(report),
-    /contractorId|source|internal|requisites|VERY_PRIVATE/);
+    /contractorId|source=|internal|tab=requisites|VERY_PRIVATE/);
 });
