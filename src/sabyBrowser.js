@@ -12,6 +12,7 @@ import { sabyInn, sabyNameMatches, sabySearchResultMatches,
   isSabyProfileUrl } from "./sabyEnrichment.js";
 import {selectSabyInnCandidate,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
+import {scanSabyResultDOM,consolidateSabyResultRows} from "./sabySearchRows.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -140,43 +141,13 @@ export async function safeSabySectionDiagnostic(page) {
 export async function findResultRows(page, inn, {
   includeInnOnly=false,includeBranches=false
 }={}) {
-  return page.evaluate(({inn,includeInnOnly,includeBranches,branchSource}) => {
-    const norm = s => String(s || "").replace(/\s+/g," ").trim();
-    const matchesInn = s => new RegExp("(^|\\D)" + inn + "(?!\\d)").test(s);
-    const branchPattern=new RegExp(branchSource,"iu");
-    const visible = e => {
-      const r=e.getBoundingClientRect(), s=getComputedStyle(e);
-      return r.width>0 && r.height>0 && s.visibility!=="hidden" && s.display!=="none";
-    };
-    const legal = /(?:^|\W)(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)(?:\W|$)/i;
-    const relevant=[];
-    // Highlighted INNs may span multiple child nodes; inspect only innermost
-    // matching DOM nodes instead of collecting whole-page text.
-    for (const element of document.querySelectorAll("body *")) {
-      if (!visible(element) || !matchesInn(norm(element.textContent))) continue;
-      if ([...element.children].some(ch => matchesInn(norm(ch.textContent)))) continue;
-      let node=element;
-      for (let depth=0;node && depth<9;depth++,node=node.parentElement) {
-        if (!visible(node)) continue;
-        const r=node.getBoundingClientRect();
-        const rawText=String(node.innerText||node.textContent||"");
-        const text=norm(rawText);
-        if (r.height>190 || text.length>700) break;
-        if (r.width<190 || r.height<24 || !matchesInn(text)) continue;
-        if ((legal.test(text) || includeInnOnly) &&
-            text.replace(inn,"").trim().length>=5) {
-          if (!includeBranches && branchPattern.test(
-            text.split(inn,1)[0])) break;
-          relevant.push({text:rawText,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
-          break;
-        }
-      }
-    }
-    return relevant.filter((x,i) => !relevant.some((y,j) =>
-      j<i && Math.abs(x.rect.x-y.rect.x)<15 &&
-      Math.abs(x.rect.y-y.rect.y)<5)).slice(0,20);
-  }, {inn,includeInnOnly,includeBranches,
-    branchSource:SABY_BRANCH_MARKER_SOURCE});
+  // Keep DOM traversal inside the browser, but consolidate only visible
+  // same-card geometry in Node, with pure offline-tested safeguards.
+  const scanned=await page.evaluate(scanSabyResultDOM,{
+    inn,includeInnOnly,includeBranches,
+    branchSource:SABY_BRANCH_MARKER_SOURCE
+  });
+  return consolidateSabyResultRows(scanned,inn);
 }
 
 async function openCompany(page, row, settings) {
@@ -222,7 +193,12 @@ async function openCompany(page, row, settings) {
     if(["ambiguous","ambiguous_exact","result_window_full"].includes(selected.reason)) {
       if(publicFallback)console.warn("[SABY_SEARCH_AMBIGUITY_DIAG] "+
         JSON.stringify({reason:selected.reason,observed:selected.observed||0,
-          primary:selected.count||0,branches:selected.branches||0}));
+          primary:selected.count||0,branches:selected.branches||0,
+          raw_candidates:selected.rawCandidates||0,
+          geometry_duplicates:selected.geometryDuplicates||0,
+          fragments_rejected:selected.rejectedFragments||0,
+          unique_titles:selected.uniqueTitles||0,
+          raw_capped:selected.rawCapped===true}));
       throw new SabyReview("Saby: неоднозначный результат по ИНН");
     }
     rows=selected.row?[selected.row]:[];
