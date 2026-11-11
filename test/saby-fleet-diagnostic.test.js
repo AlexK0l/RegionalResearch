@@ -12,7 +12,8 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
   const report={
     phase:"vehicles",reason:"vehicle_rows_incomplete",
     preview_status:"found",expected_trucks:7,
-    parsed_vehicle_rows:2,side_panel_observed:true,expanded:true,
+    parsed_vehicle_rows:2,window_count:4,scroll_moves:3,
+    stitch_reason:"scroll_not_advanced",side_panel_observed:true,expanded:true,
     company_name:"Дорстройсервис",inn:"7725104641",
     private_email:"private-contact@example.test",
     private_page_url:detailUrl,
@@ -35,6 +36,7 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     truck_category_labels:2,truck_count_label:true,
     category_expand_control:true,preview_status:"found",
     expected_trucks:7,parsed_vehicle_rows:2,
+    window_count:4,scroll_moves:3,stitch_reason:"scroll_not_advanced",
     side_panel_observed:true,expanded:true
   });
   assert.doesNotMatch(JSON.stringify(safe),
@@ -56,6 +58,9 @@ test("unexpected untrusted values cannot inject diagnostics or fake a verified f
   assert.equal(z.expected_trucks,null);
   assert.equal(z.parsed_vehicle_rows,5000);
   assert.equal(z.truck_category_labels,30);
+  assert.equal(z.window_count,null);
+  assert.equal(z.scroll_moves,null);
+  assert.equal(z.stitch_reason,"not_attempted");
   assert.equal(z.exact_fleet_heading,false);
   assert.equal(z.expanded,false);
   assert.equal(z.side_panel_observed,false);
