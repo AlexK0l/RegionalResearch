@@ -12,6 +12,12 @@ const reasons=new Set([
   "fleet_interaction_failed"
 ]);
 const phases=new Set(["overlay","heading","preview","vehicles","unknown"]);
+const routeReasons=new Set([
+  "same_detail","ui_navigation_only","stable_card_id_missing",
+  "company_card_id_changed","not_same_first_party_detail",
+  "origin_changed","detail_path_changed","non_ui_query_changed",
+  "non_ui_fragment_changed","second_click_after_ui_change_blocked"
+]);
 const stitchReasons=new Set([
   "exact_count","invalid_setup","invalid_rows","empty_window",
   "same_window","unanchored_window","ambiguous_overlap",
@@ -22,6 +28,18 @@ const stitchReasons=new Set([
 const capped=(v,upper=5000)=>
   typeof v==="number"&&Number.isSafeInteger(v)&&v>=0?
     Math.min(v,upper):null;
+function safeRouteDelta(delta) {
+  if(delta?.status==="not_comparable")
+    return {status:"not_comparable"};
+  if(delta?.status!=="observed")return null;
+  return {
+    status:"observed",
+    non_ui_added:capped(delta.non_ui_added,64),
+    non_ui_removed:capped(delta.non_ui_removed,64),
+    non_ui_values_changed:capped(delta.non_ui_values_changed,64),
+    ui_values_changed:capped(delta.ui_values_changed,64)
+  };
+}
 
 export function safeSabyFleetFailure(report={},observed={}) {
   const phase=phases.has(report.phase)?report.phase:"unknown";
@@ -49,6 +67,10 @@ export function safeSabyFleetFailure(report={},observed={}) {
     panel_open_attempts:capped(report.panel_open_attempts,2),
     panel_wait_polls:capped(report.panel_wait_polls,50),
     panel_title_seen:report.panel_title_seen===true,
+    fleet_ui_route_updated:report.fleet_ui_route_updated===true,
+    fleet_route_reason:routeReasons.has(report.route_guard_reason)?
+      report.route_guard_reason:"not_observed",
+    fleet_route_delta:safeRouteDelta(report.route_delta),
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };

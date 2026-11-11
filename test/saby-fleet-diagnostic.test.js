@@ -15,6 +15,7 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     parsed_vehicle_rows:2,window_count:4,scroll_moves:3,
     stitch_reason:"scroll_not_advanced",
     panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
+    fleet_ui_route_updated:true,route_guard_reason:"ui_navigation_only",
     side_panel_observed:true,expanded:true,
     company_name:"Дорстройсервис",inn:"7725104641",
     private_email:"private-contact@example.test",
@@ -40,6 +41,8 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     expected_trucks:7,parsed_vehicle_rows:2,
     window_count:4,scroll_moves:3,stitch_reason:"scroll_not_advanced",
     panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
+    fleet_ui_route_updated:true,fleet_route_reason:"ui_navigation_only",
+    fleet_route_delta:null,
     side_panel_observed:true,expanded:true
   });
   assert.doesNotMatch(JSON.stringify(safe),
@@ -67,6 +70,9 @@ test("unexpected untrusted values cannot inject diagnostics or fake a verified f
   assert.equal(z.panel_open_attempts,null);
   assert.equal(z.panel_wait_polls,null);
   assert.equal(z.panel_title_seen,false);
+  assert.equal(z.fleet_ui_route_updated,false);
+  assert.equal(z.fleet_route_reason,"not_observed");
+  assert.equal(z.fleet_route_delta,null);
   assert.equal(z.exact_fleet_heading,false);
   assert.equal(z.expanded,false);
   assert.equal(z.side_panel_observed,false);
@@ -128,4 +134,32 @@ test("collector emits fleet-specific failure only when required section incomple
   assert.match(source,/await ownTrucks\(page,settings,fleetProgress\)/);
   assert.match(source,/fleetProgress\.reason/);
   assert.doesNotMatch(source,/console\.(?:warn|log|info)\([^\n]*error\.message/);
+});
+
+test("new fleet URL diagnostics expose counts only, not URLs, company IDs or query names",()=>{
+  const out=safeSabyFleetFailure({
+    reason:"vehicle_rows_incomplete",phase:"vehicles",
+    route_guard_reason:"non_ui_query_changed",
+    route_delta:{status:"observed",non_ui_added:1,non_ui_removed:0,
+      non_ui_values_changed:1,ui_values_changed:2,
+      secret:"hidden=TOKEN_PRIVATE"},
+    fleet_ui_route_updated:true,
+    confidential_id:"964bc800-1cfc-11e0-a3db-00732e102283",
+    private_url:"https://profile.saby.ru/page/contractor-info?id=PRIVATE"
+  });
+  assert.equal(out.fleet_route_reason,"non_ui_query_changed");
+  assert.equal(out.fleet_ui_route_updated,true);
+  assert.deepEqual(out.fleet_route_delta,{status:"observed",
+    non_ui_added:1,non_ui_removed:0,non_ui_values_changed:1,
+    ui_values_changed:2});
+  assert.doesNotMatch(JSON.stringify(out),
+    /TOKEN_PRIVATE|confidential|964bc800|PRIVATE|contractor-info|hidden/);
+  const invalid=safeSabyFleetFailure({
+    route_guard_reason:"private_url_is_SECRET",
+    route_delta:{status:"observed",non_ui_added:"SECRET",
+      non_ui_removed:-2,non_ui_values_changed:0,ui_values_changed:0}
+  });
+  assert.equal(invalid.fleet_route_reason,"not_observed");
+  assert.equal(invalid.fleet_route_delta.non_ui_added,null);
+  assert.equal(invalid.fleet_route_delta.non_ui_removed,null);
 });
