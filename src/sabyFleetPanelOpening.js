@@ -34,6 +34,8 @@ export async function openSabyFleetPanelWithHydration({
       // DOM read: an Saby panel may hydrate several seconds after a click.
       const panel=await readPanel();
       polls++;
+      if(panel?.routeChanged===true)
+        return fail("detail_changed",clicks,polls,titleSeen);
       if(panel?.opened===true)
         return {opened:true,reason:"panel_ready",panel,
           clicks,polls,titleSeen};
