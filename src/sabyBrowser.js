@@ -482,10 +482,10 @@ async function sidePanelTrucks(page,expected,action="read") {
         return {opened:true,rows:[],expanded:true};
       }
       const next=heads.slice(heads.indexOf(truck)+1)[0]||null;
-      const raw=leaf.filter(e=>e!==truck &&
+      const rawNodes=leaf.filter(e=>e!==truck &&
         Boolean(truck.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING) &&
-        (!next||Boolean(e.compareDocumentPosition(next)&Node.DOCUMENT_POSITION_FOLLOWING)))
-        .map(e=>clean(e.textContent)).filter(Boolean);
+        (!next||Boolean(e.compareDocumentPosition(next)&Node.DOCUMENT_POSITION_FOLLOWING)));
+      const raw=rawNodes.map(e=>clean(e.textContent)).filter(Boolean);
       const rows=[];
       for(let i=0;i<raw.length;i++){
         const t=raw[i];
@@ -504,8 +504,24 @@ async function sidePanelTrucks(page,expected,action="read") {
         const s=getComputedStyle(e);
         return vis(e)&&e.scrollHeight>e.clientHeight+15&&/(auto|scroll)/.test(s.overflowY);
       });
-      const scroller=scrolls.findLast(e=>e.contains(truck))||scrolls[scrolls.length-1];
-      let scroll={available:false,moved:false};
+      // For the experimental window reader, prefer the innermost
+      // scrollable container covering MOST of the actual vehicle rows.
+      // The original selector below often chose an ancestor containing
+      // the truck HEADING but not the scrollable rows themselves.
+      // Keep that existing selector unchanged for ordinary Stage12.
+      const oldScroller=scrolls.findLast(e=>e.contains(truck))||
+        scrolls[scrolls.length-1];
+      const windowMode=["window","reset","advance"].includes(action);
+      const sufficient=Math.max(1,Math.ceil(rawNodes.length*.75));
+      const vehicleScrolls=windowMode?scrolls.map(e=>{
+        const r=e.getBoundingClientRect();
+        return {element:e,contained:rawNodes.filter(n=>e.contains(n)).length,
+          area:Math.max(1,r.width*r.height)};
+      }).filter(x=>x.contained>=sufficient &&
+        x.element.clientHeight>=90).sort((a,b)=>a.area-b.area):[];
+      const scroller=vehicleScrolls[0]?.element||oldScroller;
+      let scroll={available:false,moved:false,candidates:scrolls.length,
+        selected_from_vehicle_rows:vehicleScrolls.length>0};
       if(scroller) {
         const before=scroller.scrollTop;
         const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
@@ -518,6 +534,12 @@ async function sidePanelTrucks(page,expected,action="read") {
           scroller.scrollTop+=Math.max(200,scroller.clientHeight*.75);
         }
         scroll={available:true,moved:Math.abs(scroller.scrollTop-before)>1,
+          candidates:scrolls.length,
+          selected_from_vehicle_rows:vehicleScrolls.length>0,
+          target_contains_truck:scroller.contains(truck),
+          target_vehicle_leaves:rawNodes.filter(n=>scroller.contains(n)).length,
+          target_is_panel:scroller===panel,
+          at_end:max-scroller.scrollTop<=2,
           top:before,after:scroller.scrollTop,max,
           height:scroller.clientHeight};
       }
@@ -587,12 +609,26 @@ async function ownTrucks(page, settings,progress={}) {
     const panelUrl=page.url();
     let previewClicks=0;
     let categoryExpanded=false;
+    const noteScroll=panel=>{
+      const x=panel?.scroll;
+      if(x?.available!==true)return;
+      progress.scroll_candidates=x.candidates;
+      progress.scroll_selected_from_vehicle_rows=
+        x.selected_from_vehicle_rows===true;
+      progress.scroll_target_contains_truck=x.target_contains_truck===true;
+      progress.scroll_target_vehicle_leaves=x.target_vehicle_leaves;
+      progress.scroll_target_is_panel=x.target_is_panel===true;
+      progress.scroll_at_end=x.at_end===true;
+      progress.scroll_top=x.after;
+      progress.scroll_max=x.max;
+    };
     const routeChanged=()=>({opened:false,routeChanged:true,rows:[]});
     const readWindow=async()=>{
       if(!stillSameFleetCompany())return routeChanged();
       let panel=await sidePanelTrucks(page,preview.count,"window");
       if(!stillSameFleetCompany())return routeChanged();
       if(panel.opened)progress.side_panel_observed=true;
+      noteScroll(panel);
       if(panel.opened && panel.rows.length===0 && !categoryExpanded) {
         const attempt=await sidePanelTrucks(page,preview.count,"expand");
         if(!stillSameFleetCompany())return routeChanged();
@@ -636,7 +672,9 @@ async function ownTrucks(page, settings,progress={}) {
       // browser profile. Always begin at top, or refuse to infer a
       // complete ordered sequence from an unknown middle window.
       const reset=await sidePanelTrucks(page,preview.count,"reset");
-      if(reset.opened && reset.scroll?.available) {
+      noteScroll(reset);
+      if(reset.opened && reset.scroll?.available &&
+         stillSameFleetCompany()) {
         await delay(400);
         const stitched=await collectSabyTruckWindows({
           expected:preview.count,readWindow,
@@ -644,14 +682,17 @@ async function ownTrucks(page, settings,progress={}) {
             if(!stillSameFleetCompany())
               return {opened:false,scroll:{moved:false}};
             const panel=await sidePanelTrucks(page,preview.count,"advance");
+            noteScroll(panel);
             return stillSameFleetCompany()?
-              panel:{opened:false,scroll:{moved:false}};
+              panel:{opened:false,routeChanged:true,scroll:{moved:false}};
           },
           wait:delay,maxWindows:Math.min(80,Math.ceil(preview.count/5)+10),
           maxMs:Math.min(70000,settings.timeoutMs*2)
         });
         progress.window_count=stitched.windows;
         progress.scroll_moves=stitched.scrollMoves;
+        progress.stale_scroll_moves=stitched.totalStaleScrollMoves;
+        progress.consecutive_stale_scroll_moves=stitched.staleScrollMoves;
         progress.stitch_reason=stitched.reason;
         if(stitched.rows.length>rows.length)rows=stitched.rows;
         progress.parsed_vehicle_rows=rows.length;
