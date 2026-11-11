@@ -125,7 +125,7 @@ export function diagnoseSabyPrivateRequisiteFields(text,expectedInn) {
   const lines=boundedLines(text);
   const observed=auditExtractRequisites(text);
   const expected=sabyInn(expectedInn);
-  const isLabel=key=>new RegExp("^"+key+"(?:\\s*[:：№#—-].*)?$","iu");
+  const isLabel=key=>new RegExp("^"+key+"(?=$|[\\s:：№#—-])","iu");
   return {
     requisites_headings:Math.min(100,lines.filter(x=>
       /^(?:Реквизиты|Регистрационные данные)\s*:?\s*$/iu.test(x)).length),
