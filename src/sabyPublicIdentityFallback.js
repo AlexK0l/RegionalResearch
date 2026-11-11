@@ -363,13 +363,10 @@ export async function verifySabyPublicNameFallback(page,inn,name,
       const expanded=await captureSabyPrivateIdentitySnapshot(page);
       const expandedPair=recoverSabyDetailRequisitePair(expanded?.text,inn);
       if(expandedPair.kpp || expandedPair.reason!=="no_scoped_inn_kpp"){
-        // New detail headings can be terse; retain only first-party names
-        // collected before and after opening the requisites surface.
-        snapshot={
-          text:expanded.text,
-          headings:[...new Set([...(snapshot.headings||[]),
-            ...(expanded.headings||[])])].slice(0,18)
-        };
+        // Only the currently visible private company headings are valid.
+        // Never combine stale names from a previous SPA render with
+        // another company's newly visible INN/KPP values.
+        snapshot=expanded;
         pair=expandedPair;
       }
     }
@@ -423,6 +420,21 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   }
   if(page.url()!==route || sabyCardRoute(page.url())!=="detail")
     return record("private_route_changed");
+  // If a requisites tab appeared DURING polling, its first value must
+  // also survive an independent fresh snapshot before verification.
+  if(hydrationPolls>0 && pair.kpp && !pairStabilityConfirmed){
+    try{
+      await page.waitForTimeout(550);
+      if(page.url()!==route)return record("private_route_changed");
+      const stable=await captureSabyPrivateIdentitySnapshot(page);
+      const second=recoverSabyDetailRequisitePair(stable?.text,inn);
+      snapshot=stable;
+      if(!second.kpp || second.kpp!==pair.kpp)
+        return record("private_kpp_not_stable");
+      pair=second;
+      pairStabilityConfirmed=true;
+    }catch{return record("private_dom_unavailable");}
+  }
   const privateDiagnostic=diagnoseSabyPrivateRequisiteFields(
     snapshot?.text,inn);
   if(!pair.kpp)return record(pair.reason);
