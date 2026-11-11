@@ -5,7 +5,7 @@
 // and registered name+INN/KPP on canonical first-party public profile.
 import {sabyCardRoute} from "./sabyCard.js";
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
-import {auditSelectSearchResult} from "./sabyIdentityAudit.js";
+import {auditSelectSearchResult,auditExtractRequisites} from "./sabyIdentityAudit.js";
 import {verifyPublicSabyIdentity} from "./sabyPublicRegisteredIdentity.js";
 
 const label=(line,key)=>{
@@ -61,6 +61,57 @@ export function extractSabyDetailRequisitePair(text,expectedInn) {
   if(distinct.size!==1)return {reason:"kpp_ambiguous",kpp:""};
   return {reason:"unique_requisite_pair",kpp:[...distinct][0]};
 }
+// Secondary private-detail evidence path based on the EXISTING audit
+// requisites extractor, which captured 8 exact INN/KPP pairs in Smolensk.
+// Stage12's initial parser is more conservative than that proven audit:
+// it stops at "О компании" and scans only 45 lines. On responsive Saby
+// pages "Реквизиты" can precede "О компании" before INN/KPP labels.
+// Never use the audit alone to accept a company: corroborate it with
+// independently scanned explicit labels in ONE bounded first-party block,
+// then require public registered full name + exact INN/KPP + private title.
+const AUDIT_SCOPE_BOUNDARY=/^(?:Реквизиты|Регистрационные данные|Контакты|Контакты и телефоны|Владельцы|Связанные компании|Связанные лица|Подразделения|Филиалы|Автопарк компании|Лицензии|Суды|Участие в торгах|Регистрация компании)\s*:?\s*$/iu;
+export function recoverSabyDetailRequisitePair(text,expectedInn) {
+  const strict=extractSabyDetailRequisitePair(text,expectedInn);
+  if(strict.kpp)return {...strict,basis:"strict_private_block"};
+  if(["invalid_inn","inn_conflict","kpp_ambiguous","multiple_requisites"]
+     .includes(strict.reason))return strict;
+  const inn=sabyInn(expectedInn);
+  const audit=auditExtractRequisites(text)
+    .filter(record=>sabyInn(record?.inn)&&KPP.test(record?.kpp));
+  if(!audit.length)return strict;
+  if(audit.some(record=>record.inn!==inn))
+    return {reason:"audit_inn_conflict",kpp:""};
+  const auditedKpps=[...new Set(audit.map(record=>record.kpp))];
+  if(auditedKpps.length!==1)
+    return {reason:"audit_kpp_ambiguous",kpp:""};
+  const lines=boundedLines(text),scoped=[];
+  for(let i=0;i<lines.length;i++){
+    if(!/^(?:Реквизиты|Регистрационные данные)\s*:?\s*$/iu.test(lines[i]))
+      continue;
+    const from=i+1,limit=Math.min(lines.length,from+55);
+    let to=limit;
+    // "О компании" is sometimes a subsection heading beneath the
+    // requisites navigation label. It is not, by itself, an owner change.
+    // Contact/related-entity headings DO end the current block.
+    for(let j=from;j<limit;j++){
+      if(AUDIT_SCOPE_BOUNDARY.test(lines[j])){to=j;break;}
+    }
+    const inns=field(lines,from,to,"ИНН").filter(x=>sabyInn(x));
+    const kpps=field(lines,from,to,"КПП").filter(x=>KPP.test(x));
+    if(inns.length>1||kpps.length>1)
+      return {reason:"audit_section_ambiguous",kpp:""};
+    if(inns.length===1&&kpps.length===1)
+      scoped.push({inn:inns[0],kpp:kpps[0]});
+  }
+  if(!scoped.length)return strict;
+  if(scoped.some(pair=>pair.inn!==inn))
+    return {reason:"audit_inn_conflict",kpp:""};
+  if(scoped.some(pair=>pair.kpp!==auditedKpps[0]))
+    return {reason:"audit_kpp_ambiguous",kpp:""};
+  return {reason:"audit_correlated_labeled_pair",
+    kpp:auditedKpps[0],basis:"audited_private_label_block"};
+}
+
 // JS \b recognises ASCII word characters, NOT Cyrillic letters. A former
 // \bфилиал\b search silently failed to identify real Russian branch rows.
 // Use Unicode-letter boundaries on first-party display text instead. Neither
@@ -162,7 +213,7 @@ export function acceptSabyPublicIdentityFallback({
   if(cardAssessment?.reason!=="legal_name_not_verified" ||
      cardAssessment?.detail?.hasScopedInn!==true)
     return reject("private_inn_not_scoped");
-  const pair=extractSabyDetailRequisitePair(privateText,inn);
+  const pair=recoverSabyDetailRequisitePair(privateText,inn);
   if(!pair.kpp)return reject(pair.reason);
   if(!publicResult)return reject("public_verification_not_available");
   if(publicResult.status!=="verified" ||
@@ -188,14 +239,17 @@ export function acceptSabyPublicIdentityFallback({
       registered_name:registered,
       public_title:publicName,
       kpp:pair.kpp,
-      verification:"registered_public_requisites"
+      verification:"registered_public_requisites",
+      private_pair_basis:pair.basis||""
     }
   };
 }
 export function safeSabyAliasDiagnostic(outcome) {
   return {
     reason:String(outcome?.reason||"unknown").slice(0,64),
-    accepted:outcome?.ok===true
+    accepted:outcome?.ok===true,
+    private_pair_basis:outcome?.ok===true?
+      String(outcome?.identity?.private_pair_basis||""): ""
   };
 }
 export async function verifySabyPublicNameFallback(page,inn,name,
@@ -224,7 +278,7 @@ export async function verifySabyPublicNameFallback(page,inn,name,
   } catch {
     return {ok:false,reason:"private_dom_unavailable"};
   }
-  const pair=extractSabyDetailRequisitePair(snapshot?.text,inn);
+  const pair=recoverSabyDetailRequisitePair(snapshot?.text,inn);
   if(!pair.kpp)return {ok:false,reason:pair.reason};
   const publicResult=await verifyPublic(page,inn,pair.kpp,name);
   return acceptSabyPublicIdentityFallback({
