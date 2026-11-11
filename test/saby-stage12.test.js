@@ -411,3 +411,21 @@ test("intermediary completes from verified contacts, no vehicle section required
   assert.deepEqual(out.completedInns,["7707083893"]);
   assert.equal(sabyStoredSectionCoverage(row,{transport:false}).complete,true);
 });
+
+test("existing verified legacy Saby truck evidence without status remains complete",()=>{
+  const row=company();
+  const first=payload({sourceUrl:
+    "https://profile.saby.ru/page/contractor-info?id=OLD_FLEET"});
+  first.identity.kpp="770701001";
+  applySabyEnrichment(row,first,{transport:true});
+  assert.equal(row.__evidence.saby.trucks.status,"verified");
+  delete row.__evidence.saby.trucks.status; // Old Stage12 storage shape.
+  const coverage=sabyStoredSectionCoverage(row,{transport:true});
+  assert.equal(coverage.trusted,true);
+  assert.equal(coverage.contacts,true);
+  assert.equal(coverage.trucks,true);
+  assert.equal(coverage.complete,true);
+  // A single bad vehicle would invalidate an apparently verified legacy fleet.
+  row.__evidence.saby.trucks.vehicles=[];
+  assert.equal(sabyStoredSectionCoverage(row,{transport:true}).complete,false);
+});
