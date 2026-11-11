@@ -12,3 +12,11 @@ Environment=SABY_HEADLESS=false
 # HOME=/home/regionalresearch, not the base unit HOME=/var/lib/regionalresearch.
 # Change this path if Playwright was installed elsewhere.
 Environment=PLAYWRIGHT_BROWSERS_PATH=/home/regionalresearch/.cache/ms-playwright
+
+# Chromium Crashpad exits with SIGTRAP if the service's HOME/XDG location
+# is unavailable for config writes. Headed Chromium on this VPS has been
+# confirmed to launch after explicitly setting both writable XDG paths.
+# Create these directories as user regionalresearch with mode 0700 BEFORE
+# enabling this optional drop-in; do not put the browser profile here.
+Environment=XDG_CONFIG_HOME=/home/regionalresearch/.config/regionalresearch-saby
+Environment=XDG_CACHE_HOME=/home/regionalresearch/.cache/regionalresearch-saby
