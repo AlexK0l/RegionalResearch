@@ -596,7 +596,10 @@ async function collectSabyCompanyAttempt(page, row, settings) {
     result.errors.push("trucks: "+fleetProgress.reason);
     result.trucks={status:"review"};
   }
-  if(result.trucks.status!=="verified") {
+  // Emit extra DOM structure only for explicitly opted-in Saby smokes.
+  // Ordinary Stage12 remains quiet and unchanged.
+  if(settings.publicIdentityFallback===true &&
+     result.trucks.status!=="verified") {
     const evidence=await observeSabyFleetDOM(page);
     console.warn("[SABY_FLEET_DIAG] "+JSON.stringify(
       safeSabyFleetFailure(fleetProgress,evidence)));
