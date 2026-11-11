@@ -16,6 +16,9 @@ import {scanSabyResultDOM,scanSabyLegacyDOM,
   consolidateSabyResultRows} from "./sabySearchRows.js";
 import {auditSearchName} from "./sabyIdentityAudit.js";
 import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js";
+import {
+  verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
+} from "./sabyPostRouteIdentity.js";
 
 export class SabyReview extends Error {
   constructor(message) { super(message); this.name = "SabyReview"; }
@@ -239,6 +242,7 @@ async function openCompany(page, row, settings) {
   let reClicked=false;
   let publicFallbackAttempted=false;
   let publicFallbackFailureReason="";
+  let publicFallbackRejection=null;
   while(Date.now()<cardUntil) {
     try {
       const outcome=await verifySabyCard(page,inn,name);
@@ -268,6 +272,7 @@ async function openCompany(page, row, settings) {
           selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
         });
       publicFallbackFailureReason=String(checked?.reason||"");
+      publicFallbackRejection=checked;
       console.info("[SABY_PUBLIC_ALIAS_DIAG] "+
         JSON.stringify(safeSabyAliasDiagnostic(checked)));
       if(checked.ok){
@@ -303,6 +308,26 @@ async function openCompany(page, row, settings) {
       page,inn,selectedName);
     console.warn("[SABY_PRIVATE_OWNER_DIAG] "+
       JSON.stringify(detailStructure));
+  }
+  // The ORIGINAL alias verifier remains fail-closed on a changed unknown
+  // query key. Only after that rejection and the card's bounded wait may
+  // an independent opt-in proof bind the CURRENT selected Saby H1 to one
+  // strictly scoped, stable private INN/KPP and canonical public identity.
+  // Route continuity itself NEVER authorizes data transfer.
+  if(publicFallback &&
+     publicFallbackFailureReason==="private_route_changed" &&
+     publicFallbackRejection) {
+    const inspected=await verifySabyPostRouteOwnerIdentity(
+      page,inn,name,last,{
+        priorFailure:publicFallbackRejection,
+        selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+      });
+    console.info("[SABY_POST_ROUTE_DIAG] "+
+      JSON.stringify(safeSabyPostRouteDiagnostic(inspected)));
+    if(inspected.ok) {
+      console.info("[SABY_CARD] post_route_registered_identity_verified");
+      return inspected.identity;
+    }
   }
   console.warn("[SABY_CARD_DIAG] "+JSON.stringify(safeCardDiagnostic(last,{
     clicked:true,
