@@ -62,7 +62,7 @@ export function sabyFleetTreeProductionEnabled(env = process.env) {
   // Reject missing, malformed and out-of-range limits instead of silently
   // switching mass runs to the old, incomplete truck collector.
   const rawLimit=String(env.SABY_MAX_COMPANIES??"");
-  const allowedLimit=/^(?:0|[1-9]\\d*)$/.test(rawLimit) &&
+  const allowedLimit=/^(?:0|[1-9][0-9]*)$/.test(rawLimit) &&
     Number(rawLimit)<=20000;
   return env.SABY_SMOKE_ONLY!=="true" &&
     enabled(env.SABY_STAGE12_ENABLED) &&
