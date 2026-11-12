@@ -25,17 +25,19 @@
     <div id="regionCheckpointBox" class="contact-box" hidden>
       <div id="regionCheckpointText"></div>
       <div class="actions">
-        <button id="regionResumeBtn" class="secondary" disabled>Продолжить с checkpoint</button>
+        <button id="regionResumeBtn" class="secondary" disabled>Продолжить исследование с checkpoint</button>
+        <button id="regionSabyBtn" class="secondary" hidden disabled>Продолжить только Saby (без OpenAI)</button>
       </div>
     </div>
     <div class="actions">
       <button id="startBtn" disabled>Запустить исследование</button>
-      <button id="resumeBtn" class="secondary" hidden disabled>Продолжить с checkpoint</button>
+      <button id="resumeBtn" class="secondary" hidden disabled>Продолжить исследование с checkpoint</button>
+      <button id="sabyResumeBtn" class="secondary" hidden disabled>Продолжить только Saby (без OpenAI)</button>
       <button id="checkpointBtn" class="secondary" hidden disabled>Скачать checkpoint</button>
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261109-browser-session</p>
+    <p class="note">UI build: 20261112-saby-only-resume</p>
     <button id="logoutBtn" class="secondary" hidden>Выйти</button>
   </section>
 
@@ -84,6 +86,6 @@
     </div>
   </section>
 </main>
-<script type="module" src="/app.js?v=20261109-browser-session"></script>
+<script type="module" src="/app.js?v=20261112-saby-only-resume"></script>
 </body>
 </html>
