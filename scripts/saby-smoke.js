@@ -31,6 +31,9 @@ async function main() {
   }
   const env={...process.env,SABY_STAGE12_ENABLED:"true",
     SABY_SMOKE_ONLY:"true",
+    // Never inherit this sensitive interaction from a preexisting .env.
+    // Only an explicit --fleet-tail-click below can enable it.
+    SABY_FLEET_TAIL_CLICK_OPT_IN:"false",
     SABY_MAX_COMPANIES:option(args,"limit","1"),
     SABY_HEADLESS:args.includes("--headless")?"true":"false",
     // Explicit test flag; never enables experimental fallback on the live site.
