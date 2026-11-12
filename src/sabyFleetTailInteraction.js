@@ -200,7 +200,7 @@ export async function probeSabyFleetTailClick(page,{
   if(!sameCompany())return result("company_changed");
   try {
     clicked=true;
-    await page.mouse.click(pos.x,pos.y,{timeout:3000});
+    await page.mouse.click(pos.x,pos.y);
   }catch{return result("click_failed");}
   const baseline=JSON.stringify(baselineRows);
   const limit=Math.max(1,Math.min(10,Math.floor(polls)||8));
