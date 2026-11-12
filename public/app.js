@@ -633,8 +633,11 @@ async function poll(restoring=false){
             ", без подтверждённого ИНН "+(r.quality.without_inn_commercial||0)+"."
           :"")+
         (d.continuation_available
-          ?" Отложено без поиска: "+Number(d.checkpoint?.contacts_deferred||0)+
-            ". Доступно продолжение с checkpoint в пределах оставшегося бюджета."
+          ?" Отложено: контакты "+Number(d.checkpoint?.contacts_deferred||0)+
+            ", Saby "+Number(d.checkpoint?.saby_deferred||0)+
+            (d.mode==="saby_only"
+              ?". Можно продолжить только Saby без OpenAI."
+              :". Выберите подходящий способ продолжения.")
           :"");
       return;
     }
