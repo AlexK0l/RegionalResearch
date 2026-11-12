@@ -767,6 +767,38 @@ async function startRegionResume(){
   }
 }
 
+// Only persisted SQLite snapshots are accepted by this endpoint. No full
+// paid research pipeline is invoked, and the original checkpoint is retained.
+async function startSabyOnly(checkpointId,button){
+  if(!checkpointId)return;
+  if(button)button.disabled=true;
+  e.error.hidden=true;
+  e.error.textContent="";
+  try{
+    const d=await api("/api/jobs",{
+      method:"POST",
+      body:JSON.stringify({mode:"saby_only",checkpointId})
+    });
+    renderRegionCheckpoint(null);
+    renderRegionSabyCheckpoint(null);
+    await refreshJobs();
+    await activateJob(d.id);
+  }catch(err){
+    if(err.code==="REGION_JOB_ACTIVE"&&err.data?.existingJobId){
+      await refreshJobs();
+      await activateJob(err.data.existingJobId);
+    }else{
+      e.error.hidden=false;
+      e.error.textContent=err.code==="SABY_CHECKPOINT_STALE"
+        ?"Сохранён более новый checkpoint Saby. Выберите регион для продолжения."
+        :err.message;
+      void refreshRegionCheckpoint();
+    }
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
 async function resumeFromCheckpoint(){
   if(!currentJobId)return;
   e.error.hidden=true;
@@ -901,8 +933,10 @@ e.region.onchange=()=>{
   void refreshRegionCheckpoint();
 };
 e.regionResume.onclick=startRegionResume;
+e.regionSaby.onclick=()=>void startSabyOnly(regionSabyCheckpoint?.id,e.regionSaby);
 e.start.onclick=start;
 e.resume.onclick=resumeFromCheckpoint;
+e.sabyResume.onclick=()=>void startSabyOnly(currentJobId,e.sabyResume);
 e.checkpoint.onclick=downloadCheckpoint;
 e.cancel.onclick=cancel;
 e.download.onclick=()=>download("xlsx");
