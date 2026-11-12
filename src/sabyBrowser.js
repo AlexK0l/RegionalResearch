@@ -59,6 +59,7 @@ export function sabyBrowserSettings(env = process.env) {
     // Saby smoke with a dedicated EXPLICIT opt-in. Never production.
     fleetTailClickOptIn:
       env.SABY_SMOKE_ONLY==="true" &&
+      env.SABY_MAX_COMPANIES==="1" &&
       String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
       env.SABY_FLEET_TAIL_CLICK_OPT_IN==="true",
     // Never save browser images unless explicitly requested by the
