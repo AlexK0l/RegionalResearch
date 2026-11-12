@@ -100,8 +100,9 @@ async function main() {
   if(await exists(output))
     throw new Error("Файл результата уже существует: "+output);
   if(args.includes("--fleet-panel-screenshot")){
-    if(!jsonFile || !args.includes("--public-identity-fallback"))
-      throw new Error("Для снимка нужен --result и --public-identity-fallback");
+    if(!jsonFile || !args.includes("--public-identity-fallback") ||
+       env.SABY_MAX_COMPANIES!=="1")
+      throw new Error("Для снимка нужен --result, --limit=1 и --public-identity-fallback");
     const snapshot=sabyFleetScreenshotPath(output);
     if(await exists(snapshot))
       throw new Error("Снимок уже существует: "+snapshot);
