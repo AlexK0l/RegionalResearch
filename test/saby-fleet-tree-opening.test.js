@@ -240,11 +240,11 @@ test("two bounded clicks without actual drawer evidence fail closed",async()=>{
   assert.equal(out.titleSeen,false);
 });
 
-test("the new structural opener is only used inside explicit single-company headed smoke; legacy path remains",()=>{
+test("structural opener is restricted to the explicit smoke or separately gated production path; legacy remains",()=>{
   const source=fs.readFileSync(
     new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
   assert.match(source,
-    /settings\.fleetTailClickOptIn\?\s*await openSabyVerifiedFleetTreePanel/);
+    /const opening=shouldUseSabyFleetTree\(settings\)\?\s*await openSabyVerifiedFleetTreePanel/);
   assert.match(source,/readSabyFleetTree\(page,\{expected:preview\.count\}\)/);
   assert.match(source,/readPreview:async\(\)=>/);
   assert.match(source,/truckPreview\(page\)/);

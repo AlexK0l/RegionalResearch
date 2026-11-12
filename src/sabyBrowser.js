@@ -51,6 +51,25 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const bound = (v, min, max, fallback) => Number.isFinite(Number(v)) ?
   Math.max(min, Math.min(max, Math.floor(Number(v)))) : fallback;
 
+// The live v27 one-company proof permits a separately gated, still-off-by-
+// default production rollout. Never inherit the experimental Saby click from
+// an unrelated smoke, headless process, unlimited Stage12 batch or plain .env.
+export function sabyFleetTreeProductionEnabled(env = process.env) {
+  const enabled=value=>String(value||"false").toLowerCase()==="true";
+  return env.SABY_SMOKE_ONLY!=="true" &&
+    enabled(env.SABY_STAGE12_ENABLED) &&
+    enabled(env.SABY_FLEET_TREE_PRODUCTION_ENABLED) &&
+    enabled(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED) &&
+    !enabled(env.SABY_HEADLESS) &&
+    String(env.SABY_MAX_COMPANIES||"")==="1";
+}
+
+export function shouldUseSabyFleetTree(settings) {
+  return settings?.publicIdentityFallback===true &&
+    (settings.fleetTailClickOptIn===true ||
+      settings.fleetTreeProductionOptIn===true);
+}
+
 export function sabyBrowserSettings(env = process.env) {
   const {login, password} = sabyCredentials(env);
   return {
@@ -63,13 +82,16 @@ export function sabyBrowserSettings(env = process.env) {
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
     publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
-    // A new first-party UI click is permitted ONLY in a one-company
-    // Saby smoke with a dedicated EXPLICIT opt-in. Never production.
+    // The original smoke remains explicitly selected and cannot inherit
+    // production rollouts. Both modes keep exact company/INN/KPP guards.
     fleetTailClickOptIn:
       env.SABY_SMOKE_ONLY==="true" &&
       env.SABY_MAX_COMPANIES==="1" &&
       String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
       env.SABY_FLEET_TAIL_CLICK_OPT_IN==="true",
+    // Separately enabled production path: off by default, single company,
+    // headed Chromium, and independently verified public/private identity.
+    fleetTreeProductionOptIn:sabyFleetTreeProductionEnabled(env),
     // Never save browser images unless explicitly requested by the
     // dedicated Saby-only smoke option. Not enabled in production.
     fleetScreenshotPath:
@@ -691,7 +713,7 @@ async function ownTrucks(page, settings,progress={}) {
     // Instead probe the actual Wasaby tree and re-read the unique
     // live preview tile before EACH bounded click, even after a
     // known UI-only route change. Keep legacy behavior untouched.
-    const opening=settings.fleetTailClickOptIn?
+    const opening=shouldUseSabyFleetTree(settings)?
       await openSabyVerifiedFleetTreePanel({
         expected:preview.count,
         readTree:async()=>{
@@ -748,7 +770,7 @@ async function ownTrucks(page, settings,progress={}) {
     progress.panel_wait_polls=opening.polls;
     progress.panel_title_seen=opening.titleSeen;
     if(opening.opened) {
-      if(settings.fleetTailClickOptIn) {
+      if(shouldUseSabyFleetTree(settings)) {
         // Real user-provided Saby Wasaby DOM defines exact tree rows,
         // stable item keys and category-scoped node-footer controls.
         // Use semantic navigation, not geometrical 3-dot detection,
@@ -1010,8 +1032,8 @@ async function collectSabyCompanyAttempt(page, row, settings) {
     });
     console.warn("[SABY_FLEET_SNAPSHOT] "+JSON.stringify(snapshot));
   }
-  // Emit extra DOM structure only for explicitly opted-in Saby smokes.
-  // Ordinary Stage12 remains quiet and unchanged.
+  // The private DOM diagnostic is intentionally still smoke-only; the
+  // production rollout records review/deferred statuses but no raw DOM.
   if(settings.publicIdentityFallback===true &&
      result.trucks.status!=="verified") {
     const evidence=await observeSabyFleetDOM(page);
