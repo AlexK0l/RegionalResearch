@@ -24,6 +24,8 @@ import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
 import {observeSabyFleetPagination}
   from "./sabyFleetPaginationDiagnostic.js";
+import {captureSabyFleetPanelScreenshot}
+  from "./sabyFleetPanelSnapshot.js";
 import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
@@ -48,7 +50,13 @@ export function sabyBrowserSettings(env = process.env) {
     delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500),
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
-    publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true"
+    publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
+    // Never save browser images unless explicitly requested by the
+    // dedicated Saby-only smoke option. Not enabled in production.
+    fleetScreenshotPath:
+      String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
+      String(env.SABY_FLEET_SNAPSHOT_OPT_IN||"false").toLowerCase()==="true"?
+        String(env.SABY_FLEET_SCREENSHOT_PATH||""):""
   };
 }
 
@@ -782,6 +790,23 @@ async function collectSabyCompanyAttempt(page, row, settings) {
       "contact_overlay_not_closed":"fleet_interaction_failed";
     result.errors.push("trucks: "+fleetProgress.reason);
     result.trucks={status:"review"};
+  }
+  // Only an explicitly opted-in, authenticated one-company smoke may
+  // take a cropped image after an incomplete, fully scrolled fleet.
+  // The image never enters evidence, output JSON, logs, or GitHub.
+  if(settings.publicIdentityFallback===true &&
+     settings.fleetScreenshotPath &&
+     result.contacts.status==="collected" &&
+     result.trucks.status==="review" &&
+     fleetProgress.side_panel_observed===true &&
+     fleetProgress.scroll_at_end===true &&
+     Number.isSafeInteger(fleetProgress.expected_trucks)) {
+    const snapshot=await captureSabyFleetPanelScreenshot(page,{
+      originalUrl:result.source_url,
+      expected:fleetProgress.expected_trucks,
+      targetPath:settings.fleetScreenshotPath
+    });
+    console.warn("[SABY_FLEET_SNAPSHOT] "+JSON.stringify(snapshot));
   }
   // Emit extra DOM structure only for explicitly opted-in Saby smokes.
   // Ordinary Stage12 remains quiet and unchanged.
