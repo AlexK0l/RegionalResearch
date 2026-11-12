@@ -24,6 +24,7 @@ import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
 import {observeSabyFleetPagination}
   from "./sabyFleetPaginationDiagnostic.js";
+import {observeSabyFleetTail} from "./sabyFleetTailDiagnostic.js";
 import {captureSabyFleetPanelScreenshot}
   from "./sabyFleetPanelSnapshot.js";
 import {
@@ -718,8 +719,25 @@ async function ownTrucks(page, settings,progress={}) {
                stitched.reason) && stillSameFleetCompany()) {
             const pagination=await observeSabyFleetPagination(
               page,{expected:preview.count});
-            if(stillSameFleetCompany())
+            if(stillSameFleetCompany()){
               progress.fleet_pagination=pagination;
+              // v20 displayed three blue dots between the last truck
+              // row and the next vehicle category, although the standard
+              // pagination probe saw no recognized control. Inspect the
+              // dot widget ONLY READ-ONLY, then compare row counts after
+              // a single bounded passive wait (no clicks, no scrolling).
+              if(pagination.status==="observed" &&
+                 pagination.next_page_controls===0 &&
+                 pagination.show_more_controls===0 &&
+                 pagination.load_more_controls===0 &&
+                 pagination.numbered_page_controls===0){
+                const tail=await observeSabyFleetTail(page,{
+                  expected:preview.count,waitMs:11000,wait:delay
+                });
+                if(stillSameFleetCompany())
+                  progress.fleet_tail=tail;
+              }
+            }
           }
         }
       } else {
