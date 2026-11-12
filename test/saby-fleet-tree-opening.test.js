@@ -24,7 +24,8 @@ test("real v26 regression: after an allowed same-company SPA URL update, remeasu
     expected:220,
     readTree:async()=>{
       reads++;
-      return drawer?{status:"observed",expected:220,rows:[]}:
+      return drawer?{status:"observed",expected:220,
+        rows:[{key:"22014723",label:"FAW CA3250, 2024"}]}:
         {status:"invalid",reason:"tree_missing"};
     },
     readPreview:async()=>{
@@ -57,7 +58,8 @@ test("if Saby's exact tree is already open, do NOT click the tile and close it",
   let targets=0,clicks=0;
   const out=await openSabyVerifiedFleetTreePanel({
     expected:220,readTree:async()=>({
-      status:"observed",expected:220,rows:[]
+      status:"observed",expected:220,
+      rows:[{key:"22014723",label:"FAW CA3250, 2024"}]
     }),
     readPreview:async()=>{targets++;return live(100);},
     clickPreview:async()=>{clicks++;return true;},
@@ -69,6 +71,30 @@ test("if Saby's exact tree is already open, do NOT click the tile and close it",
   assert.equal(targets,0);
   assert.equal(clicks,0);
   assert.equal(out.titleSeen,true);
+});
+
+test("the panel title appears before vehicle rows: wait for hydration, never toggle",async()=>{
+  let reads=0,previews=0,clicks=0;
+  const out=await openSabyVerifiedFleetTreePanel({
+    expected:220,
+    readTree:async()=>{
+      reads++;
+      return {
+        status:"observed",expected:220,
+        rows:reads>=4?[{key:"22014723",label:"FAW CA3250, 2024"}]:[]
+      };
+    },
+    readPreview:async()=>{previews++;return live(100);},
+    clickPreview:async()=>{clicks++;return true;},
+    panelVisible:async()=>true,
+    sameCompany:()=>true,wait:async()=>{},
+    pollsPerClick:5
+  });
+  assert.equal(out.opened,true);
+  assert.equal(out.clicks,0);
+  assert.equal(reads,4);
+  assert.equal(clicks,0);
+  assert.equal(previews,0);
 });
 
 test("a visible but still unrecognized right drawer must never be toggled closed",async()=>{
