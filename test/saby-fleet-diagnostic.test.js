@@ -53,7 +53,7 @@ test("bounded diagnostic reveals only allowlisted fleet stage, not private DOM o
     stitch_reason:"scroll_not_advanced",
     panel_open_attempts:2,panel_wait_polls:7,panel_title_seen:true,
     fleet_ui_route_updated:true,fleet_route_reason:"ui_navigation_only",
-    fleet_route_delta:null,fleet_pagination:null,
+    fleet_route_delta:null,fleet_pagination:null,fleet_tail:null,
     side_panel_observed:true,expanded:true
   });
   assert.doesNotMatch(JSON.stringify(safe),
@@ -95,6 +95,7 @@ test("unexpected untrusted values cannot inject diagnostics or fake a verified f
   assert.equal(z.fleet_route_reason,"not_observed");
   assert.equal(z.fleet_route_delta,null);
   assert.equal(z.fleet_pagination,null);
+  assert.equal(z.fleet_tail,null);
   assert.equal(z.exact_fleet_heading,false);
   assert.equal(z.expanded,false);
   assert.equal(z.side_panel_observed,false);
