@@ -121,6 +121,7 @@ export async function collectSabyFleetTailBatches({
     tailChecks++;
     const tail=await observeTail(rows.length);
     if(!sameCompany())return result("company_changed");
+    if(now()>=deadline)return result("time_limit");
     if(tail?.status!=="observed"||
        tail?.sample_before?.truck_row_count!==rows.length||
        tail?.sample_after?.truck_row_count!==rows.length||
