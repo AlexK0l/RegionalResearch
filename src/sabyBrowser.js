@@ -30,6 +30,8 @@ import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
 import {collectSabyFleetTailBatches}
   from "./sabyFleetTailBatches.js";
+import {SABY_NON_VEHICLE_LABEL_PATTERN}
+  from "./sabyVehicleLabels.js";
 import {captureSabyFleetPanelScreenshot}
   from "./sabyFleetPanelSnapshot.js";
 import {
@@ -415,7 +417,8 @@ async function closeContactOverlay(page) {
 }
 
 async function truckPreview(page) {
-  return page.evaluate(() => {
+  return page.evaluate(({nonVehiclePattern}) => {
+    const excluded=new RegExp(nonVehiclePattern,"iu");
     const clean=s=>String(s||"").replace(/\s+/g," ").trim();
     const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
       return r.width>0&&r.height>0&&s.display!=="none"&&s.visibility!=="hidden";};
@@ -447,7 +450,10 @@ async function truckPreview(page) {
         else if(i+1<raw.length && /^(?:19|20)\d{2}(?:\s*г\.?)?$/.test(raw[i+1])) {
           year=Number(raw[++i].match(/\d{4}/)[0]);
         }
-        if(/[a-zа-яё]/iu.test(model)&&model.length<=150) {
+        // VIN/plate descriptions are attributes of a truck, never a
+        // separate vehicle. A model with an unknown year is valid.
+        if(/[a-zа-яё]/iu.test(model)&&model.length<=150 &&
+           !excluded.test(model)) {
           rows.push({model,year});
         }
       }
@@ -458,12 +464,18 @@ async function truckPreview(page) {
       x.count===y.count && Math.abs(x.rect.x-y.rect.x)<3 && Math.abs(x.rect.y-y.rect.y)<3));
     return unique.length===1?{status:"found",...unique[0]}:
       {status:unique.length?"ambiguous":"missing"};
-  });
+  },{nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
 }
 
 async function sidePanelTrucks(page,expected,action="read") {
-  return page.evaluate(({expected,action})=>{
+  return page.evaluate(({expected,action,nonVehiclePattern})=>{
     const clean=s=>String(s||"").replace(/\s+/g," ").trim();
+    const excluded=new RegExp(nonVehiclePattern,"iu");
+    // Identical model labels in different rows remain different trucks.
+    // The same rule is used by tail geometry and the row assembler.
+    const vehicleLabel=t=>t.length>=3&&t.length<=150&&
+      /[a-zа-яё]/iu.test(t)&&!excluded.test(t)&&
+      !/(?:\.\.\.|…)\s*$/.test(t);
     const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
       return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";};
     const cats=/^(Легковые|Коммерческие|Грузовые|Автобусы|Спецтехника|Прицепы|Мотоциклы)(?:\s+\d+)?$/i;
@@ -513,15 +525,14 @@ async function sidePanelTrucks(page,expected,action="read") {
       for(let i=0;i<raw.length;i++){
         const t=raw[i];
         if(cats.test(t))break;
-        if(/^\d+$/.test(t)||/^(Грузовые|Показать|Еще|Ещё|Свернуть|Всего)/i.test(t) ||
-           t.length<3 || t.length>150)continue;
+        if(!vehicleLabel(t))continue;
         let model=t,year=null;
         const m=t.match(/^(.+?)[,;]\s*((?:19|20)\d{2})(?:\s*г\.?)?$/);
         if(m){model=clean(m[1]);year=Number(m[2]);}
         else if(i+1<raw.length&&/^(?:19|20)\d{2}(?:\s*г\.?)?$/.test(raw[i+1])){
           year=Number(raw[++i].match(/\d{4}/)[0]);
         }
-        if(/[a-zа-яё]/iu.test(model))rows.push({model,year});
+        if(vehicleLabel(model))rows.push({model,year});
       }
       const scrolls=[panel,...panel.querySelectorAll("*")].filter(e=>{
         const s=getComputedStyle(e);
@@ -569,7 +580,7 @@ async function sidePanelTrucks(page,expected,action="read") {
       return {opened:true,rows,scroll};
     }
     return {opened:false,rows:[]};
-  },{expected,action});
+  },{expected,action,nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
 }
 
 async function ownTrucks(page, settings,progress={}) {

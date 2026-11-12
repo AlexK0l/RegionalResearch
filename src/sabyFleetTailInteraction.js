@@ -3,6 +3,8 @@
 // pointer-cursor element after 40/220 trucks. Clicking is never enabled
 // in ordinary production Stage12 and never infers missing vehicle rows.
 import {sabyCardRoute} from "./sabyCard.js";
+import {SABY_NON_VEHICLE_LABEL_PATTERN}
+  from "./sabyVehicleLabels.js";
 import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
 
@@ -55,8 +57,12 @@ export async function locateSabyFleetTailClick(page,{expected,rowsBefore}={}){
      rowsBefore>=expected||sabyCardRoute(page?.url?.())!=="detail")
     return {status:"target_missing"};
   try {
-    const observed=await page.evaluate(({expected,rowsBefore})=>{
+    const observed=await page.evaluate(({expected,rowsBefore,nonVehiclePattern})=>{
       const norm=s=>String(s||"").replace(/\s+/g," ").trim();
+      const excluded=new RegExp(nonVehiclePattern,"iu");
+      const vehicleLabel=t=>t.length>=3&&t.length<=150&&
+        /[a-zа-яё]/iu.test(t)&&!excluded.test(t)&&
+        !/(?:\.\.\.|…)\s*$/.test(t);
       const visible=e=>{
         if(!e?.getBoundingClientRect)return false;
         const b=e.getBoundingClientRect(),st=getComputedStyle(e);
@@ -98,9 +104,10 @@ export async function locateSabyFleetTailClick(page,{expected,rowsBefore}={}){
           Node.DOCUMENT_POSITION_FOLLOWING)&&
         Boolean(e.compareDocumentPosition(next)&
           Node.DOCUMENT_POSITION_FOLLOWING);
+      // DOM order is checked but a valid truck may have no year,
+      // and its VIN/plate line is not a separate vehicle.
       const models=leaves.filter(e=>betweenHeads(e)&&
-        /^.{3,150}[,;]\s*(?:19|20)\d{2}(?:\s*г\.?)?$/.test(
-          norm(e.textContent)));
+        vehicleLabel(norm(e.textContent)));
       if(models.length!==rowsBefore)return {status:"target_missing"};
       const scrollers=[panel,...panel.querySelectorAll("*")].filter(e=>{
         const st=getComputedStyle(e);
@@ -166,7 +173,8 @@ export async function locateSabyFleetTailClick(page,{expected,rowsBefore}={}){
       if(animated)return {status:"target_blocked"};
       if(!pointer)return {status:"target_not_pointer"};
       return {status:"ready",x,y};
-    },{expected,rowsBefore});
+    },{expected,rowsBefore,
+       nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
     if(observed?.status==="ready"&&
        Number.isSafeInteger(observed.x)&&
        Number.isSafeInteger(observed.y))

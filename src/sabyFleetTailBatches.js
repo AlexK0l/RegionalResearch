@@ -6,6 +6,8 @@
 // exhausted row scrollbar and the stationary three-dot control.
 // No clicking in standard production Stage12.
 import {appendSabyTruckWindow} from "./sabyFleetWindows.js";
+import {safeSabyFleetTailComparison}
+  from "./sabyFleetTailDiagnostic.js";
 
 const bounded=(x,max)=>Number.isSafeInteger(x)&&x>=0?
   Math.min(x,max):null;
@@ -28,6 +30,11 @@ export function safeSabyFleetTailBatchReport(raw={}){
     additional_scroll_moves:bounded(raw?.additional_scroll_moves,48),
     rounds:bounded(raw?.rounds,3),
     tail_checks:bounded(raw?.tail_checks,3),
+    last_tail:raw?.last_tail?
+      safeSabyFleetTailComparison(
+        raw.last_tail.sample_before,
+        raw.last_tail.sample_after,
+        raw.last_tail.waited_ms):null,
     last_click_status:[
       "rows_extended","rows_replaced","rows_unchanged","panel_closed",
       "target_missing","target_ambiguous","target_not_at_end",
@@ -52,13 +59,14 @@ export async function collectSabyFleetTailBatches({
   let rows=Array.isArray(initialRows)?[...initialRows]:[];
   const startCount=rows.length;
   let extraClicks=0,scrollMoves=0,rounds=0,tailChecks=0;
-  let lastClickStatus="not_attempted";
+  let lastClickStatus="not_attempted",lastTail=null;
   const result=(reason,completed=false)=>({
     ...safeSabyFleetTailBatchReport({
       status:completed?"complete":"incomplete",reason,
       rows_before:startCount,rows_after:rows.length,
       extra_clicks:extraClicks,additional_scroll_moves:scrollMoves,
-      rounds,tail_checks:tailChecks,last_click_status:lastClickStatus
+      rounds,tail_checks:tailChecks,last_click_status:lastClickStatus,
+      last_tail:lastTail
     }),
     rows
   });
@@ -120,6 +128,7 @@ export async function collectSabyFleetTailBatches({
     // pass all the existing nonanimated three-dot interaction checks.
     tailChecks++;
     const tail=await observeTail(rows.length);
+    lastTail=tail;
     if(!sameCompany())return result("company_changed");
     if(now()>=deadline)return result("time_limit");
     if(tail?.status!=="observed"||
