@@ -26,9 +26,11 @@ async function main() {
     console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
     console.log("  Experimental safe matching: --public-identity-fallback (off by default)");
     console.log("  Private local fleet-panel image: --fleet-panel-screenshot (opt-in, only with --result and fallback)");
+    console.log("  ONE guarded three-dot fleet-tail click: --fleet-tail-click (only --result, --limit=1, fallback, headed)");
     return;
   }
   const env={...process.env,SABY_STAGE12_ENABLED:"true",
+    SABY_SMOKE_ONLY:"true",
     SABY_MAX_COMPANIES:option(args,"limit","1"),
     SABY_HEADLESS:args.includes("--headless")?"true":"false",
     // Explicit test flag; never enables experimental fallback on the live site.
@@ -99,6 +101,12 @@ async function main() {
     path.join("data","saby-smoke-"+Date.now()+".json")));
   if(await exists(output))
     throw new Error("Файл результата уже существует: "+output);
+  if(args.includes("--fleet-tail-click")){
+    if(!jsonFile||!args.includes("--public-identity-fallback")||
+       env.SABY_MAX_COMPANIES!=="1"||args.includes("--headless"))
+      throw new Error("Для --fleet-tail-click нужны --result, --limit=1, --public-identity-fallback и headed Chromium");
+    env.SABY_FLEET_TAIL_CLICK_OPT_IN="true";
+  }
   if(args.includes("--fleet-panel-screenshot")){
     if(!jsonFile || !args.includes("--public-identity-fallback") ||
        env.SABY_MAX_COMPANIES!=="1")
