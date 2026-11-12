@@ -205,6 +205,36 @@ app.get("/api/checkpoints", async (req, res) => {
         }
       }
     }
+    // A newer Saby-only child can complete the deferred firms while the
+    // immutable full-study checkpoint still says they were pending. Overlay
+    // only summary counters from its matching root; NEVER rewrite the source.
+    if (checkpoint?.id) {
+      const [childMeta]=await listRegionCheckpoints(region,"saby",1);
+      if (childMeta && childMeta.status!=="superseded" &&
+          Date.parse(childMeta.updated_at||"")>
+            Date.parse(checkpoint.updated_at||"")) {
+        const child=await loadCheckpoint(childMeta.id);
+        if (child?.saby_continuation_root_job_id===checkpoint.id &&
+            child.source_mode==="saby" &&
+            Number(child.pipeline_version||PIPELINE_VERSION)===PIPELINE_VERSION &&
+            Array.isArray(child.saby_deferred_inns) &&
+            Array.isArray(child.saby_completed_inns)) {
+          const fullSnapshot=await loadCheckpoint(checkpoint.id);
+          const fullSummary=checkpointSummary(fullSnapshot);
+          const contactsDeferred=Number(
+            fullSummary?.contacts_deferred??checkpoint.contacts_deferred??0);
+          const sabyDeferred=child.saby_deferred_inns.length;
+          checkpoint={
+            ...checkpoint,
+            contacts_deferred:contactsDeferred,
+            saby_deferred:sabyDeferred,
+            saby_completed:child.saby_completed_inns.length,
+            continuation_available:contactsDeferred>0||sabyDeferred>0,
+            updated_at:childMeta.updated_at
+          };
+        }
+      }
+    }
     res.setHeader("Cache-Control", "no-store");
     res.json({
       exists: Boolean(checkpoint),
