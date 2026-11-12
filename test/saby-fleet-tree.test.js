@@ -272,10 +272,11 @@ test("all log/report fields are sanitized: no item IDs, models, VIN, phones or c
     /PRIVATE|KAMAZ|SECRET|79000000000|profile_url/);
 });
 
-test("semantic code stays behind explicit smoke-only flag; standard production Stage12 unchanged",()=>{
+test("semantic collector requires explicit smoke or gated production selection; legacy mode remains",()=>{
   const src=fs.readFileSync(
     new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
-  assert.match(src,/if\(settings\.fleetTailClickOptIn\) \{/);
+  assert.match(src,/if\(shouldUseSabyFleetTree\(settings\)\) \{/);
+  assert.match(src,/fleetTreeProductionOptIn:sabyFleetTreeProductionEnabled\(env\)/);
   assert.match(src,/collectSabyFleetTree\(page/);
   assert.match(src,/structured\.status==="complete"/);
   assert.match(src,/Unchanged Stage12 behavior for nonexperimental runs/);
