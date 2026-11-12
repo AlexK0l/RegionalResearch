@@ -5,6 +5,8 @@ import {safeSabyFleetPaginationSignals}
   from "./sabyFleetPaginationDiagnostic.js";
 import {safeSabyFleetTailComparison}
   from "./sabyFleetTailDiagnostic.js";
+import {safeSabyFleetTailClickReport}
+  from "./sabyFleetTailInteraction.js";
 
 const reasons=new Set([
   "contact_overlay_not_closed",
@@ -21,6 +23,10 @@ const routeReasons=new Set([
   "company_card_id_changed","not_same_first_party_detail",
   "origin_changed","detail_path_changed","non_ui_query_changed",
   "non_ui_fragment_changed","second_click_after_ui_change_blocked"
+]);
+const tailMergeReasons=new Set([
+  "invalid_rows","ambiguous_overlap","unanchored_window",
+  "count_exceeded","no_verified_extension"
 ]);
 const stitchReasons=new Set([
   "exact_count","invalid_setup","invalid_rows","empty_window",
@@ -95,6 +101,10 @@ export function safeSabyFleetFailure(report={},observed={}) {
         report.fleet_tail.sample_before,
         report.fleet_tail.sample_after,
         report.fleet_tail.waited_ms):null,
+    fleet_tail_click:report.fleet_tail_click?
+      safeSabyFleetTailClickReport(report.fleet_tail_click):null,
+    tail_merge_reason:tailMergeReasons.has(report.tail_merge_reason)?
+      report.tail_merge_reason:"not_attempted",
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };
