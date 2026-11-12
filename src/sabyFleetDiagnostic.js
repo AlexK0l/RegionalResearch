@@ -3,6 +3,8 @@
 import {sabyCardRoute} from "./sabyCard.js";
 import {safeSabyFleetPaginationSignals}
   from "./sabyFleetPaginationDiagnostic.js";
+import {safeSabyFleetTailComparison}
+  from "./sabyFleetTailDiagnostic.js";
 
 const reasons=new Set([
   "contact_overlay_not_closed",
@@ -88,6 +90,11 @@ export function safeSabyFleetFailure(report={},observed={}) {
     fleet_route_delta:safeRouteDelta(report.route_delta),
     fleet_pagination:report.fleet_pagination?
       safeSabyFleetPaginationSignals(report.fleet_pagination):null,
+    fleet_tail:report.fleet_tail?
+      safeSabyFleetTailComparison(
+        report.fleet_tail.sample_before,
+        report.fleet_tail.sample_after,
+        report.fleet_tail.waited_ms):null,
     side_panel_observed:report.side_panel_observed===true,
     expanded:report.expanded===true
   };
