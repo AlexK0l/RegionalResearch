@@ -28,7 +28,7 @@ export function safeSabyFleetTailSignals(value={}) {
   };
 }
 
-export function safeSabyFleetTailComparison(before,after,waitMs) {
+export function safeSabyFleetTailComparison(before={},after={},waitMs=0) {
   return {
     status:before.status==="observed"&&after.status==="observed"?
       "observed":"incomplete_observation",
