@@ -226,7 +226,8 @@ test("sanitized multi-batch diagnostics never expose company IDs or vehicle mode
   assert.deepEqual(safe,{
     status:"complete",reason:"exact_count",rows_before:102,
     rows_after:220,extra_clicks:2,additional_scroll_moves:9,
-    rounds:2,tail_checks:2,last_click_status:"rows_extended"
+    rounds:2,tail_checks:2,last_click_status:"rows_extended",
+    last_tail:null
   });
   assert.doesNotMatch(JSON.stringify(safe),
     /КАМАЗ|7725104641|SECRET|session|nested|Дорстройсервис/i);
