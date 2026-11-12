@@ -30,6 +30,8 @@ import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
 import {collectSabyFleetTailBatches}
   from "./sabyFleetTailBatches.js";
+import {collectSabyFleetTree}
+  from "./sabyFleetTree.js";
 import {SABY_NON_VEHICLE_LABEL_PATTERN}
   from "./sabyVehicleLabels.js";
 import {captureSabyFleetPanelScreenshot}
@@ -702,6 +704,32 @@ async function ownTrucks(page, settings,progress={}) {
     progress.panel_wait_polls=opening.polls;
     progress.panel_title_seen=opening.titleSeen;
     if(opening.opened) {
+      if(settings.fleetTailClickOptIn) {
+        // Real user-provided Saby Wasaby DOM defines exact tree rows,
+        // stable item keys and category-scoped node-footer controls.
+        // Use semantic navigation, not geometrical 3-dot detection,
+        // scroll heuristics or arbitrary model-text-leaf counts.
+        const structured=await collectSabyFleetTree(page,{
+          expected:preview.count,originalUrl:fleetOriginalRoute,
+          wait:delay,maxClicks:20,maxMs:175000
+        });
+        const {vehicles:verifiedVehicles,...safeTree}=structured;
+        progress.fleet_tree=safeTree;
+        if(structured.status==="complete" &&
+           Array.isArray(verifiedVehicles) &&
+           verifiedVehicles.length===preview.count &&
+           stillSameFleetCompany()){
+          rows=verifiedVehicles;
+          progress.parsed_vehicle_rows=rows.length;
+          progress.stitch_reason="exact_count";
+        } else {
+          // Never promote old text-leaf estimates to a full fleet.
+          rows=[];
+          progress.parsed_vehicle_rows=safeTree.rows??0;
+          progress.reason="vehicle_rows_incomplete";
+          progress.stitch_reason="structured_incomplete";
+        }
+      } else {
       // A new side panel can preserve an old scroll position from the
       // browser profile. Always begin at top, or refuse to infer a
       // complete ordered sequence from an unknown middle window.
@@ -853,6 +881,7 @@ async function ownTrucks(page, settings,progress={}) {
         }
       } else {
         progress.stitch_reason="scroll_not_available";
+      }
       }
     } else {
       progress.stitch_reason=opening.reason;
