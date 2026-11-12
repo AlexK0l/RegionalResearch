@@ -2,13 +2,14 @@
 // Never use a set of vehicle models: identical model/year rows can represent
 // distinct trucks. Stitch ONLY attested contiguous DOM windows; if the
 // boundary is uncertain, leave the whole fleet unverified.
+import {isSabyTruckVehicleLabel} from "./sabyVehicleLabels.js";
+
 const signature=row=>JSON.stringify([row?.model,row?.year??null]);
 const match=(a,b)=>signature(a)===signature(b);
 const same=(a,b)=>a.length===b.length&&a.every((v,i)=>match(v,b[i]));
 const validRows=(rows,expected)=>Array.isArray(rows)&&
   rows.length<=expected&&rows.every(row=>
-    row&&typeof row.model==="string"&&row.model.trim().length>=3&&
-    row.model.length<=150&&!/(?:\.\.\.|…)\s*$/.test(row.model)&&
+    row&&isSabyTruckVehicleLabel(row.model)&&
     (row.year===null || row.year===undefined ||
       (Number.isInteger(row.year)&&row.year>=1900&&row.year<=
         new Date().getUTCFullYear()+1)));
