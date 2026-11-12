@@ -51,17 +51,25 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const bound = (v, min, max, fallback) => Number.isFinite(Number(v)) ?
   Math.max(min, Math.min(max, Math.floor(Number(v)))) : fallback;
 
-// The live v27 one-company proof permits a separately gated, still-off-by-
-// default production rollout. Never inherit the experimental Saby click from
-// an unrelated smoke, headless process, unlimited Stage12 batch or plain .env.
+// Live v27 proved the structured Wasaby tree on one company. Ordinary Stage12
+// may process a bounded batch or all eligible companies only when its separate
+// production opt-in, headed browser and strict registered identity are set.
+// The smoke-only click remains isolated, and defaults never enable Stage12.
 export function sabyFleetTreeProductionEnabled(env = process.env) {
   const enabled=value=>String(value||"false").toLowerCase()==="true";
+  // 0 means all eligible companies within the Stage12 deadline; all nonzero
+  // limits are explicit safe integers, matching sabyStage12Settings().
+  // Reject missing, malformed and out-of-range limits instead of silently
+  // switching mass runs to the old, incomplete truck collector.
+  const rawLimit=String(env.SABY_MAX_COMPANIES??"");
+  const allowedLimit=/^(?:0|[1-9]\\d*)$/.test(rawLimit) &&
+    Number(rawLimit)<=20000;
   return env.SABY_SMOKE_ONLY!=="true" &&
     enabled(env.SABY_STAGE12_ENABLED) &&
     enabled(env.SABY_FLEET_TREE_PRODUCTION_ENABLED) &&
     enabled(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED) &&
     !enabled(env.SABY_HEADLESS) &&
-    String(env.SABY_MAX_COMPANIES||"")==="1";
+    allowedLimit;
 }
 
 export function shouldUseSabyFleetTree(settings) {
@@ -89,12 +97,14 @@ export function sabyBrowserSettings(env = process.env) {
       env.SABY_MAX_COMPANIES==="1" &&
       String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
       env.SABY_FLEET_TAIL_CLICK_OPT_IN==="true",
-    // Separately enabled production path: off by default, single company,
-    // headed Chromium, and independently verified public/private identity.
+    // Separately enabled production path: off by default, sequential across
+    // eligible companies, headed Chromium, verified public/private identity.
     fleetTreeProductionOptIn:sabyFleetTreeProductionEnabled(env),
     // Never save browser images unless explicitly requested by the
     // dedicated Saby-only smoke option. Not enabled in production.
     fleetScreenshotPath:
+      env.SABY_SMOKE_ONLY==="true" &&
+      env.SABY_MAX_COMPANIES==="1" &&
       String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
       String(env.SABY_FLEET_SNAPSHOT_OPT_IN||"false").toLowerCase()==="true"?
         String(env.SABY_FLEET_SCREENSHOT_PATH||""):""
