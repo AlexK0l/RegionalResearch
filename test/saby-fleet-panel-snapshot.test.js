@@ -131,7 +131,7 @@ test("screenshot failure and browser errors do not expose text, URL, company IDs
   assert.doesNotMatch(JSON.stringify(out),/user@|7725104641|private/);
 });
 
-test("image capture is strictly opt-in, runs after legally verified collection, and doesn't enter JSON",()=>{
+test("image capture is strictly opt-in, runs after legally verified collection, and doesn't enter JSON",async()=>{
   const smokeText=await fs.readFile(file("scripts/saby-smoke.js"),"utf8");
   const browserText=await fs.readFile(file("src/sabyBrowser.js"),"utf8");
   assert.match(smokeText,/args\.includes\("--fleet-panel-screenshot"\)/);
