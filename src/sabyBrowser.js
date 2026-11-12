@@ -28,6 +28,8 @@ import {observeSabyFleetPagination}
 import {observeSabyFleetTail} from "./sabyFleetTailDiagnostic.js";
 import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
+import {collectSabyFleetTailBatches}
+  from "./sabyFleetTailBatches.js";
 import {captureSabyFleetPanelScreenshot}
   from "./sabyFleetPanelSnapshot.js";
 import {
@@ -769,8 +771,63 @@ async function ownTrucks(page, settings,progress={}) {
                           // only exactly all expected rows may complete.
                           rows=merge.rows;
                           progress.parsed_vehicle_rows=rows.length;
-                          if(rows.length===preview.count)
+                          if(rows.length===preview.count){
                             progress.stitch_reason="exact_count";
+                          } else {
+                            // v22 real VPS: one validated click grew the
+                            // list from 40 to 102 and pushed the scroller
+                            // back before the new end (523 / 1893).
+                            // Repeated clicks require fresh full-prefix,
+                            // company ID, tail geometry and passive stability
+                            // proofs for EACH next batch. Hard cap: 3 MORE.
+                            const extra=await collectSabyFleetTailBatches({
+                              expected:preview.count,initialRows:rows,
+                              sameCompany:stillSameFleetCompany,
+                              readWindow,
+                              advanceScroll:async()=>{
+                                if(!stillSameFleetCompany())
+                                  return {routeChanged:true,opened:false};
+                                const panel=await sidePanelTrucks(
+                                  page,preview.count,"advance");
+                                noteScroll(panel);
+                                return stillSameFleetCompany()?panel:
+                                  {routeChanged:true,opened:false};
+                              },
+                              observeTail:async()=>{
+                                if(!stillSameFleetCompany())return null;
+                                const fresh=await observeSabyFleetTail(page,{
+                                  expected:preview.count,
+                                  waitMs:11000,wait:delay
+                                });
+                                return stillSameFleetCompany()?fresh:null;
+                              },
+                              clickTail:async(baselineRows,freshTail)=>{
+                                if(!stillSameFleetCompany())
+                                  return {status:"company_changed"};
+                                const response=await probeSabyFleetTailClick(
+                                  page,{
+                                    originalUrl:fleetOriginalRoute,
+                                    expected:preview.count,
+                                    baselineRows,freshTail,
+                                    tail:freshTail,readPanel:readWindow,
+                                    wait:delay
+                                  });
+                                if(stillSameFleetCompany())
+                                  progress.fleet_tail_click=response;
+                                return response;
+                              },
+                              wait:delay,maxExtraClicks:3,maxScrollMoves:48,
+                              maxMovesPerRound:20,maxMs:85000
+                            });
+                            // Safe counters only. Raw vehicle models never
+                            // enter the diagnostic progress/log object.
+                            const {rows:nextRows,...batchDiag}=extra;
+                            progress.fleet_tail_batches=batchDiag;
+                            rows=nextRows;
+                            progress.parsed_vehicle_rows=rows.length;
+                            if(extra.status==="complete")
+                              progress.stitch_reason="exact_count";
+                          }
                         } else {
                           progress.tail_merge_reason=merge.reason||
                             "no_verified_extension";
