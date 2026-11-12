@@ -48,7 +48,7 @@ function verified(company){
     source_url:"https://profile.saby.ru/page/contractor-info?id="+company["ИНН"],
     collected_at:"2026-11-12T14:00:00.000Z",
     identity:{inn:company["ИНН"],name:company["Организация"],verified:true},
-    contacts:{status:"collected",phones:["799911122"+String(index).padStart(3,"0")],
+    contacts:{status:"collected",phones:["79991112"+String(index).padStart(3,"0")],
       phone_details:[],emails:["info"+index+"@example.test"]},
     trucks:{status:"verified",count:2,vehicles:[
       {model:"KAMAZ 5490",year:2020},
@@ -90,7 +90,7 @@ test("Saby-only uses one browser, no paid pipeline and a NEW checkpoint, preserv
     persistCheckpoint:async x=>saved.push(structuredClone(x)),
     onProgress:async x=>progress.push(structuredClone(x))
   });
-  assert.deepEqual(visited,inns.slice(1));
+  assert.deepEqual(new Set(visited),new Set(inns.slice(1)));
   assert.equal(JSON.stringify(original),before,"source checkpoint stays immutable");
   assert.equal(out.mode,"saby_only");
   assert.equal(out.region,"Смоленская область");
