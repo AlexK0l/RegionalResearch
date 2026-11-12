@@ -3,6 +3,8 @@
 // three blue dots there, but neither a button nor a loading role was
 // identified. Never click the unidentified widget or print DOM/CSS strings.
 import {sabyCardRoute} from "./sabyCard.js";
+import {SABY_NON_VEHICLE_LABEL_PATTERN}
+  from "./sabyVehicleLabels.js";
 
 const bounded=(n,cap=5000)=>typeof n==="number"&&
   Number.isSafeInteger(n)&&n>=0?Math.min(n,cap):null;
@@ -52,8 +54,15 @@ export async function observeSabyFleetTail(
     return fail("not_detail");
   const observe=async()=>{
     try {
-      const result=await page.evaluate(({expected})=>{
+      const result=await page.evaluate(({expected,nonVehiclePattern})=>{
         const norm=s=>String(s||"").replace(/\s+/g," ").trim();
+        const excluded=new RegExp(nonVehiclePattern,"iu");
+        // Recognize REAL truck model labels, including a model
+        // without a year, but never count VIN / registration
+        // metadata as separate vehicle rows.
+        const vehicleLabel=t=>t.length>=3&&t.length<=150&&
+          /[a-zа-яё]/iu.test(t)&&!excluded.test(t)&&
+          !/(?:\.\.\.|…)\s*$/.test(t);
         const visible=el=>{
           if(!el?.getBoundingClientRect)return false;
           const b=el.getBoundingClientRect(),s=getComputedStyle(el);
@@ -96,11 +105,12 @@ export async function observeSabyFleetTail(
           return !next||Boolean(e.compareDocumentPosition(next)&
             Node.DOCUMENT_POSITION_FOLLOWING);
         };
-        // Model-year leaves are inferred only for counting: no text or
-        // model name ever leaves the browser evaluate() call.
+        // Count the SAME model-label leaves as sidePanelTrucks;
+        // VIN/plate leaves are vehicle attributes. The old regex
+        // required a trailing year, so v24's yearless KAMAZ entry
+        // caused 102 parsed rows != 101 model/year leaves.
         const modelLeaves=leaves.filter(e=>inTrucks(e)&&
-          /^.{3,150}[,;]\s*(?:19|20)\d{2}(?:\s*г\.?)?$/.test(
-            norm(e.textContent)));
+          vehicleLabel(norm(e.textContent)));
         const total=modelLeaves.length;
         if(!next||!modelLeaves.length)
           return {status:"gap_not_visible",panel_matches:matching.length,
@@ -172,7 +182,7 @@ export async function observeSabyFleetTail(
           dot_more_class:moreClass,
           gap_interactive_elements:interactives.length
         };
-      },{expected});
+      },{expected,nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
       return safeSabyFleetTailSignals(result);
     } catch {
       return safeSabyFleetTailSignals({status:"unavailable"});
