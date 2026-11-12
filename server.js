@@ -453,6 +453,15 @@ app.post("/api/jobs", async (req, res) => {
       error:"Этот checkpoint не готов для продолжения только Saby"
     });
     region=String(checked.checkpoint.region).trim();
+    // A new Saby-only child checkpoint may have completed these companies.
+    // Never let an older snapshot overwrite or replay newer verified records.
+    const newest=await latestSabyCheckpointForRegion(region);
+    if (!newest || newest.id!==checkpointId) {
+      return res.status(409).json({
+        code:"SABY_CHECKPOINT_STALE",
+        error:"Для региона существует более новый checkpoint Saby"
+      });
+    }
     data={region,checkpoint:checked.checkpoint,sourceJobId:checkpointId};
   }
 
