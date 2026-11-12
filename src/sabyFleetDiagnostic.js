@@ -7,6 +7,8 @@ import {safeSabyFleetTailComparison}
   from "./sabyFleetTailDiagnostic.js";
 import {safeSabyFleetTailClickReport}
   from "./sabyFleetTailInteraction.js";
+import {safeSabyFleetTailBatchReport}
+  from "./sabyFleetTailBatches.js";
 
 const reasons=new Set([
   "contact_overlay_not_closed",
@@ -103,6 +105,8 @@ export function safeSabyFleetFailure(report={},observed={}) {
         report.fleet_tail.waited_ms):null,
     fleet_tail_click:report.fleet_tail_click?
       safeSabyFleetTailClickReport(report.fleet_tail_click):null,
+    fleet_tail_batches:report.fleet_tail_batches?
+      safeSabyFleetTailBatchReport(report.fleet_tail_batches):null,
     tail_merge_reason:tailMergeReasons.has(report.tail_merge_reason)?
       report.tail_merge_reason:"not_attempted",
     side_panel_observed:report.side_panel_observed===true,
