@@ -31,24 +31,36 @@ test("production requires EVERY separate explicit safety gate",()=>{
   assert.equal(sabyFleetTreeProductionEnabled(production),true);
   for(const key of [
     "SABY_STAGE12_ENABLED",
-    "SABY_MAX_COMPANIES",
     "SABY_HEADLESS",
     "SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED",
     "SABY_FLEET_TREE_PRODUCTION_ENABLED"
   ]) {
     const changed={...production};
-    changed[key]=key==="SABY_HEADLESS"?"true":
-      key==="SABY_MAX_COMPANIES"?"0":"false";
+    changed[key]=key==="SABY_HEADLESS"?"true":"false";
     assert.equal(sabyFleetTreeProductionEnabled(changed),false,key);
     assert.equal(shouldUseSabyFleetTree(sabyBrowserSettings(changed)),
       false,key);
   }
-  assert.equal(sabyFleetTreeProductionEnabled({
-    ...production,SABY_MAX_COMPANIES:"10"
-  }),false);
-  assert.equal(sabyFleetTreeProductionEnabled({
-    ...production,SABY_MAX_COMPANIES:"2"
-  }),false);
+});
+
+test("bulk 0 means all pending companies, positive limits use the same verified collector",()=>{
+  for(const maxCompanies of ["0","1","2","10","20000"]) {
+    const env={...production,SABY_MAX_COMPANIES:maxCompanies};
+    assert.equal(sabyFleetTreeProductionEnabled(env),true,maxCompanies);
+    assert.equal(shouldUseSabyFleetTree(sabyBrowserSettings(env)),true,
+      maxCompanies);
+  }
+});
+
+test("malformed, absent or outside Stage12 bounds never enable the new bulk tree",()=>{
+  for(const maxCompanies of [undefined,"","-1","01"," 1","1.5","2x",
+    "20001","9999999999999999"]) {
+    const env={...production,SABY_MAX_COMPANIES:maxCompanies};
+    assert.equal(sabyFleetTreeProductionEnabled(env),false,
+      String(maxCompanies));
+    assert.equal(shouldUseSabyFleetTree(sabyBrowserSettings(env)),false,
+      String(maxCompanies));
+  }
 });
 
 test("an explicit production gate activates real tree without inheriting smoke flags",()=>{
@@ -100,6 +112,19 @@ test("structural collector is behind the common guarded branch, legacy fallback 
   assert.match(src,/Unchanged Stage12 behavior for nonexperimental runs/);
   assert.match(src,/if\(structured\.status==="complete"/);
   assert.match(src,/stillSameFleetCompany\(\)/);
+});
+
+test("private fleet screenshots remain available ONLY to explicit smoke, not bulk production",()=>{
+  const risky={...production,SABY_MAX_COMPANIES:"0",
+    SABY_FLEET_SNAPSHOT_OPT_IN:"true",
+    SABY_FLEET_SCREENSHOT_PATH:"/tmp/must-not-save.png"};
+  assert.equal(sabyBrowserSettings(risky).fleetScreenshotPath,"");
+  assert.equal(sabyBrowserSettings({...risky,SABY_MAX_COMPANIES:"1"})
+    .fleetScreenshotPath,"");
+  const smoke={...risky,SABY_MAX_COMPANIES:"1",SABY_SMOKE_ONLY:"true",
+    SABY_FLEET_TAIL_CLICK_OPT_IN:"true"};
+  assert.equal(sabyBrowserSettings(smoke).fleetScreenshotPath,
+    "/tmp/must-not-save.png");
 });
 
 test("the production opt-in defaults to false in the environment example",()=>{
