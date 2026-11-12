@@ -234,6 +234,13 @@ test("experimental click is smoke-only, explicit, headed, not default Stage12",(
   assert.match(source,/Unchanged Stage12 behavior for nonexperimental runs/);
   assert.match(smoke,/args\.includes\("--fleet-tail-click"\)/);
   assert.match(smoke,/env\.SABY_MAX_COMPANIES!=="1"/);
+  assert.match(smoke,/SABY_FLEET_TAIL_CLICK_OPT_IN:"false"/);
+  assert.equal(sabyBrowserSettings({
+    SABY_SMOKE_ONLY:"true",
+    SABY_MAX_COMPANIES:"2",
+    SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:"true",
+    SABY_FLEET_TAIL_CLICK_OPT_IN:"true"
+  }).fleetTailClickOptIn,false);
   assert.match(smoke,/args\.includes\("--headless"\)/);
   assert.equal(sabyBrowserSettings({
     SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:"true",
@@ -241,6 +248,7 @@ test("experimental click is smoke-only, explicit, headed, not default Stage12",(
   }).fleetTailClickOptIn,false);
   assert.equal(sabyBrowserSettings({
     SABY_SMOKE_ONLY:"true",
+    SABY_MAX_COMPANIES:"1",
     SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:"true",
     SABY_FLEET_TAIL_CLICK_OPT_IN:"true"
   }).fleetTailClickOptIn,true);
