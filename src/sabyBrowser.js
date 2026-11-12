@@ -30,8 +30,10 @@ import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
 import {collectSabyFleetTailBatches}
   from "./sabyFleetTailBatches.js";
-import {collectSabyFleetTree}
+import {collectSabyFleetTree,readSabyFleetTree}
   from "./sabyFleetTree.js";
+import {openSabyVerifiedFleetTreePanel}
+  from "./sabyFleetTreeOpening.js";
 import {SABY_NON_VEHICLE_LABEL_PATTERN}
   from "./sabyVehicleLabels.js";
 import {captureSabyFleetPanelScreenshot}
@@ -682,7 +684,49 @@ async function ownTrucks(page, settings,progress={}) {
     // sometimes a second click. Poll for genuine first-party panel
     // evidence; retry the preview click ONLY when no panel is visible,
     // otherwise a second click might close the correctly opened panel.
-    const opening=await openSabyFleetPanelWithHydration({
+    // Experimental Saby-only tree reads need their own opener. The
+    // old opener reuses initial mouse coordinates and rejects a safe
+    // same-company SPA UI route update before retrying: real v26 on VPS
+    // stopped at preview_click_unavailable with fleet_tree=null.
+    // Instead probe the actual Wasaby tree and re-read the unique
+    // live preview tile before EACH bounded click, even after a
+    // known UI-only route change. Keep legacy behavior untouched.
+    const opening=settings.fleetTailClickOptIn?
+      await openSabyVerifiedFleetTreePanel({
+        expected:preview.count,
+        readTree:async()=>{
+          if(!stillSameFleetCompany())
+            return {status:"invalid",reason:"detail_changed"};
+          return readSabyFleetTree(page,{expected:preview.count});
+        },
+        readPreview:async()=>{
+          if(!stillSameFleetCompany())return {status:"missing"};
+          return truckPreview(page);
+        },
+        clickPreview:async live=>{
+          if(!stillSameFleetCompany())return false;
+          const r=live.rect;
+          const viewport=page.viewportSize()||{width:1440,height:920};
+          // The target was freshly read from the left-side preview;
+          // never click behind an overlay, outside the viewport or
+          // inside the unrelated right-side details panel.
+          if(r.x<0||r.y<0||r.x+r.w>viewport.width*.68||
+             r.y+r.h>viewport.height)return false;
+          await page.mouse.click(r.x+r.w*.5,r.y+r.h*.45);
+          return stillSameFleetCompany();
+        },
+        panelVisible:async()=>{
+          if(!stillSameFleetCompany())return false;
+          const title=await visibleLocator(page.locator(
+            '.controls-StackTemplate-content '+
+            '.controls-StackTemplate__caption [title="Автопарк"]'
+          ));
+          return Boolean(title);
+        },
+        sameCompany:stillSameFleetCompany,
+        wait:delay,maxClicks:2,pollsPerClick:20,pollMs:400
+      })
+      :await openSabyFleetPanelWithHydration({
       clickPreview:async()=>{
         if(!stillSameFleetCompany())return false;
         // Reusing old mouse coordinates after a UI route change could click
