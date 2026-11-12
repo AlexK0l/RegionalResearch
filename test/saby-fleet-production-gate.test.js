@@ -96,7 +96,7 @@ test("structural collector is behind the common guarded branch, legacy fallback 
   assert.match(src,/if\(shouldUseSabyFleetTree\(settings\)\)/);
   assert.match(src,/await openSabyVerifiedFleetTreePanel\(/);
   assert.match(src,/await collectSabyFleetTree\(/);
-  assert.match(src,/if\(settings\.publicIdentityFallback===true\)/);
+  assert.match(src,/rows\.length!==preview\.count && settings\.publicIdentityFallback===true/);
   assert.match(src,/Unchanged Stage12 behavior for nonexperimental runs/);
   assert.match(src,/if\(structured\.status==="complete"/);
   assert.match(src,/stillSameFleetCompany\(\)/);
