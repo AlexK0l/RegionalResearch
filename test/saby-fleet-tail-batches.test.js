@@ -29,7 +29,7 @@ function makeLoader({initial=102,clickCounts=[164,220],
     readWindow:async()=>{
       reads++;
       return {opened:true,rows:replaceAt===clicks?
-        all.slice(100,100+count):all.slice(0,count),
+        all.slice(110,110+count):all.slice(0,count),
         scroll:{available:true,at_end:pos>=maxScroll}};
     },
     advanceScroll:async()=>{
