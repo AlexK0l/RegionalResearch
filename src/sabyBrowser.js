@@ -18,13 +18,16 @@ import {auditSearchName} from "./sabyIdentityAudit.js";
 import {diagnoseSabyPrivateOwnerStructure} from "./sabyPrivateOwnerDiagnostic.js";
 import {safeSabyFleetFailure,observeSabyFleetDOM}
   from "./sabyFleetDiagnostic.js";
-import {collectSabyTruckWindows} from "./sabyFleetWindows.js";
+import {collectSabyTruckWindows,appendSabyTruckWindow}
+  from "./sabyFleetWindows.js";
 import {openSabyFleetPanelWithHydration} from "./sabyFleetPanelOpening.js";
 import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
 import {observeSabyFleetPagination}
   from "./sabyFleetPaginationDiagnostic.js";
 import {observeSabyFleetTail} from "./sabyFleetTailDiagnostic.js";
+import {probeSabyFleetTailClick}
+  from "./sabyFleetTailInteraction.js";
 import {captureSabyFleetPanelScreenshot}
   from "./sabyFleetPanelSnapshot.js";
 import {
@@ -52,6 +55,12 @@ export function sabyBrowserSettings(env = process.env) {
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
     publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
+    // A new first-party UI click is permitted ONLY in a one-company
+    // Saby smoke with a dedicated EXPLICIT opt-in. Never production.
+    fleetTailClickOptIn:
+      env.SABY_SMOKE_ONLY==="true" &&
+      String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true" &&
+      env.SABY_FLEET_TAIL_CLICK_OPT_IN==="true",
     // Never save browser images unless explicitly requested by the
     // dedicated Saby-only smoke option. Not enabled in production.
     fleetScreenshotPath:
@@ -734,8 +743,41 @@ async function ownTrucks(page, settings,progress={}) {
                 const tail=await observeSabyFleetTail(page,{
                   expected:preview.count,waitMs:11000,wait:delay
                 });
-                if(stillSameFleetCompany())
+                if(stillSameFleetCompany()){
                   progress.fleet_tail=tail;
+                  if(settings.fleetTailClickOptIn){
+                    // Exactly ONE click of the geometrically validated
+                    // nonanimated pointer-cursor three-dot capsule in the
+                    // gap after 40 rows; no generic pagination clicks.
+                    const clicked=await probeSabyFleetTailClick(page,{
+                      originalUrl:fleetOriginalRoute,
+                      expected:preview.count,
+                      baselineRows:stitched.rows,
+                      tail,readPanel:readWindow,wait:delay
+                    });
+                    if(stillSameFleetCompany())
+                      progress.fleet_tail_click=clicked;
+                    if(clicked.status==="rows_extended" &&
+                       stillSameFleetCompany()){
+                      const now=await readWindow();
+                      if(now.opened&&stillSameFleetCompany()){
+                        const merge=appendSabyTruckWindow(
+                          stitched.rows,now.rows,preview.count);
+                        if(merge.status==="advanced"){
+                          // Partial newly visible rows remain unverified;
+                          // only exactly all expected rows may complete.
+                          rows=merge.rows;
+                          progress.parsed_vehicle_rows=rows.length;
+                          if(rows.length===preview.count)
+                            progress.stitch_reason="exact_count";
+                        } else {
+                          progress.tail_merge_reason=merge.reason||
+                            "no_verified_extension";
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
