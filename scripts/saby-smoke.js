@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { withSabyBrowser } from "../src/sabyBrowser.js";
+import { sabyFleetScreenshotPath } from "../src/sabyFleetPanelSnapshot.js";
 import { authenticateSaby, waitForSabySession, sabyLoginDiagnostic } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
 import { buildReferenceWorkbookBuffer } from "../src/referenceWorkbookExport.js";
@@ -24,6 +25,7 @@ async function main() {
     console.log("  npm run saby:smoke -- --result=SAT_Region.json --limit=3 --xlsx");
     console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
     console.log("  Experimental safe matching: --public-identity-fallback (off by default)");
+    console.log("  Private local fleet-panel image: --fleet-panel-screenshot (opt-in, only with --result and fallback)");
     return;
   }
   const env={...process.env,SABY_STAGE12_ENABLED:"true",
@@ -93,6 +95,19 @@ async function main() {
       !Number.isSafeInteger(Number(rawOffset)) || Number(rawOffset)>20000)
     throw new Error("--offset должен быть целым числом от 0 до 20000");
   const offset=Number(rawOffset);
+  const output=path.resolve(option(args,"out",
+    path.join("data","saby-smoke-"+Date.now()+".json")));
+  if(await exists(output))
+    throw new Error("Файл результата уже существует: "+output);
+  if(args.includes("--fleet-panel-screenshot")){
+    if(!jsonFile || !args.includes("--public-identity-fallback"))
+      throw new Error("Для снимка нужен --result и --public-identity-fallback");
+    const snapshot=sabyFleetScreenshotPath(output);
+    if(await exists(snapshot))
+      throw new Error("Снимок уже существует: "+snapshot);
+    env.SABY_FLEET_SNAPSHOT_OPT_IN="true";
+    env.SABY_FLEET_SCREENSHOT_PATH=snapshot;
+  }
   console.log("Тестирую Saby без OpenAI и без изменения исходного JSON...");
   if(offset)console.log("Saby: пропускаю первые "+offset+
     " компаний отсортированной исходной выборки.");
@@ -102,8 +117,6 @@ async function main() {
         " | проверено: "+stats.verified+" | review: "+stats.review);
     }
   });
-  const output=path.resolve(option(args,"out",
-    path.join("data","saby-smoke-"+Date.now()+".json")));
   await fs.mkdir(path.dirname(output),{recursive:true});
   if(await exists(output))throw new Error("Файл результата уже существует: "+output);
   await fs.writeFile(output,JSON.stringify({
