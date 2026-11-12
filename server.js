@@ -4,6 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
+import {validateSabyOnlySource,sabyOnlyConfigReady,
+  runSabyOnlyContinuation} from "./src/sabyOnlyContinuation.js";
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
@@ -160,6 +162,26 @@ app.get("/api/config", (_req, res) => {
   res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled });
 });
 
+// One region can have a finalized full-research checkpoint plus newer
+// Saby-only child snapshots. Select the newest non-superseded source, not an
+// older full run with more deferred companies that were already completed.
+async function latestSabyCheckpointForRegion(region) {
+  if (!String(region||"").trim()) return null;
+  const [full,saby]=await Promise.all([
+    listRegionCheckpoints(region,"full",10),
+    listRegionCheckpoints(region,"saby",10)
+  ]);
+  const latest=[...full,...saby]
+    .filter(c=>c.status!=="superseded")
+    .sort((a,b)=>Date.parse(b.updated_at||"")-Date.parse(a.updated_at||""))[0];
+  if (!latest) return null;
+  const snapshot=await loadCheckpoint(latest.id);
+  const validated=validateSabyOnlySource(snapshot);
+  return validated.ok
+    ? {...latest,...checkpointSummary(snapshot),id:latest.id,available:true}
+    : null;
+}
+
 app.get("/api/checkpoints", async (req, res) => {
   try {
     const region = String(req.query.region || "").trim();
@@ -187,7 +209,8 @@ app.get("/api/checkpoints", async (req, res) => {
     res.json({
       exists: Boolean(checkpoint),
       checkpoint,
-      history
+      history,
+      saby_checkpoint:await latestSabyCheckpointForRegion(region)
     });
   } catch (error) {
     res.status(500).json({ error: error?.message || "Не удалось прочитать checkpoints" });
@@ -294,7 +317,7 @@ app.get("/api/admin/court-vector-store/:id/status", requireCourtArchiveAdmin, as
 });
 
 const JOB_MODES = new Set([
-  "full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay", "resume"
+  "full", "test12", "smoke", "quality", "stage_test", "replay", "dedupe_replay", "resume", "saby_only"
 ]);
 
 async function executeJob(job, apiKey) {
@@ -308,7 +331,15 @@ async function executeJob(job, apiKey) {
     }));
 
     try {
-      const output = await runResearchPipeline({ job, apiKey });
+      const output = job.mode === "saby_only"
+        ? await runSabyOnlyContinuation({
+            checkpoint:job.data.checkpoint,
+            sourceJobId:job.data.sourceJobId,
+            signal:job.abortController?.signal,
+            onProgress:p=>job.updateProgress(p),
+            persistCheckpoint:cp=>job.updateCheckpoint(cp)
+          })
+        : await runResearchPipeline({ job, apiKey });
       if (job.cancelled) throw new Error("JOB_CANCELLED");
       job.result = output;
       // Release safety: never invalidate an earlier resumable checkpoint when
@@ -361,7 +392,7 @@ const fullQueue = createFullJobQueue({
 });
 
 function queueJob(job, apiKey) {
-  if (job.mode === "full" || job.mode === "resume") {
+  if (job.mode === "full" || job.mode === "resume" || job.mode === "saby_only") {
     return fullQueue.enqueue(job, apiKey);
   }
   queueMicrotask(() => executeJob(job, apiKey));
@@ -396,7 +427,34 @@ app.post("/api/jobs", async (req, res) => {
     data = { region, stage };
   }
 
-  if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
+  if (!apiKey && mode !== "saby_only") return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
+
+  if (mode === "saby_only") {
+    // Only a server-side persisted SQLite checkpoint may be used. Do not
+    // accept user-posted final_result or arbitrary JSON for this no-paid path.
+    const checkpointId=String(req.body?.checkpointId||"").trim();
+    if (!/^[a-f0-9-]{36}$/i.test(checkpointId)) {
+      return res.status(400).json({
+        code:"SABY_SOURCE_JOB_REQUIRED",error:"Укажите ID сохранённого задания"
+      });
+    }
+    if (!sabyOnlyConfigReady()) {
+      return res.status(409).json({
+        code:"SABY_BULK_NOT_ENABLED",error:"Массовый сбор Saby не включён"
+      });
+    }
+    const persisted=await loadCheckpoint(checkpointId);
+    if (!persisted) return res.status(404).json({
+      code:"CHECKPOINT_NOT_FOUND",error:"Checkpoint не найден в SQLite"
+    });
+    const checked=validateSabyOnlySource(persisted);
+    if (!checked.ok) return res.status(409).json({
+      code:checked.code,
+      error:"Этот checkpoint не готов для продолжения только Saby"
+    });
+    region=String(checked.checkpoint.region).trim();
+    data={region,checkpoint:checked.checkpoint,sourceJobId:checkpointId};
+  }
 
   if (mode === "replay" || mode === "dedupe_replay") {
     const sourceJobId = String(req.body?.sourceJobId || "").trim();
@@ -469,7 +527,8 @@ app.post("/api/jobs", async (req, res) => {
   }
 
   if (!region) return res.status(400).json({ error: "Регион обязателен" });
-  if (["full", "resume"].includes(mode) && activeRegionConflict(region, res)) return;
+  if (["full", "resume", "saby_only"].includes(mode) &&
+      activeRegionConflict(region, res)) return;
 
   if (mode === "full") {
     const existingCheckpoint = await findLatestCheckpoint(region, "full");
@@ -497,7 +556,8 @@ app.post("/api/jobs", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
-    latestCheckpoint: mode === "resume" ? normalizeCheckpoint(data.checkpoint) : null,
+    latestCheckpoint: ["resume","saby_only"].includes(mode)
+      ? normalizeCheckpoint(data.checkpoint) : null,
     async updateProgress(progress) {
       this.progress = progress;
     },
@@ -524,7 +584,8 @@ app.post("/api/jobs", async (req, res) => {
     id,
     region,
     mode,
-    resumedFrom: mode === "resume" ? data.sourceJobId || "" : ""
+    resumedFrom: ["resume","saby_only"].includes(mode)
+      ? data.sourceJobId || "" : ""
   });
 });
 
