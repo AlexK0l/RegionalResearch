@@ -17,6 +17,7 @@ const otherId=original.replace(
   "264bc800-1cfc-11e0-a3db-00732e102283"
 );
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
+const pretendPath=path.join(os.tmpdir(),"saby-picture.png");
 function fakePage(url=original) {
   const calls={evaluate:0,screenshot:0,options:null};
   const page={
@@ -37,9 +38,11 @@ function fakePage(url=original) {
 }
 
 test("screenshot filename is separate from, and never replaces, the source JSON",()=>{
-  assert.equal(sabyFleetScreenshotPath("/tmp/data/v19.json"),
-    "/tmp/data/v19.fleet-panel.png");
-  assert.throws(()=>sabyFleetScreenshotPath("/tmp/data/v19"),/JSON output path/);
+  const originalPath=path.join(os.tmpdir(),"data","v19.json");
+  assert.equal(sabyFleetScreenshotPath(originalPath),
+    path.join(os.tmpdir(),"data","v19.fleet-panel.png"));
+  assert.throws(()=>sabyFleetScreenshotPath(
+    path.join(os.tmpdir(),"data","v19")) ,/JSON output path/);
 });
 
 test("saved fleet panel screenshot is cropped, private, explicit and never overwritten",async()=>{
@@ -84,7 +87,7 @@ test("screenshot refuses a different company, wrong host or unknown URL mutation
   ]){
     const {page,calls}=fakePage(url);
     const out=await captureSabyFleetPanelScreenshot(page,{
-      originalUrl:original,expected:220,targetPath:"/tmp/saby-picture.png"
+      originalUrl:original,expected:220,targetPath:pretendPath
     });
     assert.equal(out.status,"company_route_not_verified");
     assert.equal(calls.evaluate,0);
@@ -106,7 +109,7 @@ test("missing panel or invalid bounds cannot produce a screenshot",async()=>{
       screenshot:async()=>{screenshots++;return png;}
     };
     const out=await captureSabyFleetPanelScreenshot(page,{
-      originalUrl:original,expected:220,targetPath:"/tmp/saby-picture.png"
+      originalUrl:original,expected:220,targetPath:pretendPath
     });
     assert.ok(["panel_not_located","panel_bounds_invalid"].includes(out.status));
     assert.equal(screenshots,0);
@@ -122,7 +125,7 @@ test("screenshot failure and browser errors do not expose text, URL, company IDs
     screenshot:async()=>assert.fail("screenshot must not happen")
   };
   const out=await captureSabyFleetPanelScreenshot(page,{
-    originalUrl:original,expected:220,targetPath:"/tmp/saby-picture.png"
+    originalUrl:original,expected:220,targetPath:pretendPath
   });
   assert.deepEqual(out,{status:"capture_failed"});
   assert.doesNotMatch(JSON.stringify(out),/user@|7725104641|private/);
