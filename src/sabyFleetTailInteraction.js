@@ -141,8 +141,11 @@ export async function locateSabyFleetTailClick(page,{expected,rowsBefore}={}){
         return {status:"target_ambiguous"};
       const x=Math.round(c.x),y=Math.round(c.y);
       const hit=document.elementFromPoint(x,y);
-      if(!hit||!panel.contains(hit)||!betweenHeads(hit)&&
-        ![...hit.querySelectorAll?.("*")||[]].some(betweenHeads))
+      // The dots may be absolutely positioned late in the DOM. Their
+      // physical location, unique triple geometry, first-party panel
+      // ownership and pointer cursor are the required evidence; do not
+      // require the dot's DOM index to fall between category headings.
+      if(!hit||!panel.contains(hit))
         return {status:"target_blocked"};
       if(hit.closest("a[href],form,input,select,textarea"))
         return {status:"target_blocked"};
