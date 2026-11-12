@@ -135,7 +135,7 @@ test("image capture is strictly opt-in, runs after legally verified collection, 
   const smokeText=await fs.readFile(file("scripts/saby-smoke.js"),"utf8");
   const browserText=await fs.readFile(file("src/sabyBrowser.js"),"utf8");
   assert.match(smokeText,/args\.includes\("--fleet-panel-screenshot"\)/);
-  assert.match(smokeText,/--result и --public-identity-fallback/);
+  assert.match(smokeText,/--result, --limit=1 и --public-identity-fallback/);
   assert.match(smokeText,/SABY_FLEET_SNAPSHOT_OPT_IN="true"/);
   assert.match(browserText,/settings\.fleetScreenshotPath/);
   assert.match(browserText,/settings\.publicIdentityFallback===true/);
