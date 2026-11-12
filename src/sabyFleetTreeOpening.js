@@ -43,6 +43,11 @@ export async function openSabyVerifiedFleetTreePanel({
     if(tree?.status==="observed"){
       if(tree?.expected!==expected)return "panel_unrecognized";
       titleSeen=true;
+      // A newly visible category header with zero hydrated rows is
+      // still an open drawer, but not a ready vehicle tree yet.
+      // Wait without clicking its original preview again.
+      if(!Array.isArray(tree.rows)||tree.rows.length===0)
+        return "pending";
       return "panel_ready";
     }
     // A wrong company/category/count or ambiguous Saby tree is not
