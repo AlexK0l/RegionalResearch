@@ -11,6 +11,7 @@ const e={
   regionCheckpointBox:document.querySelector("#regionCheckpointBox"),
   regionCheckpointText:document.querySelector("#regionCheckpointText"),
   regionResume:document.querySelector("#regionResumeBtn"),
+  regionSaby:document.querySelector("#regionSabyBtn"),
   start:document.querySelector("#startBtn"),
   jobsSummary:document.querySelector("#jobsSummary"),
   jobsList:document.querySelector("#jobsList"),
@@ -19,6 +20,7 @@ const e={
   etaHint:document.querySelector("#etaHint"),
   refreshJobs:document.querySelector("#refreshJobsBtn"),
   resume:document.querySelector("#resumeBtn"),
+  sabyResume:document.querySelector("#sabyResumeBtn"),
   checkpoint:document.querySelector("#checkpointBtn"),
   serviceStatus:document.querySelector("#serviceStatus"),
   cancel:document.querySelector("#cancelBtn"),
@@ -47,6 +49,7 @@ let pollTimer=null;
 let timerTick=null;
 let lastProgress=null;
 let regionCheckpoint=null;
+let regionSabyCheckpoint=null;
 let regionCheckpointTimer=null;
 let jobsTimer=null;
 let lastJobs=[];
@@ -225,6 +228,7 @@ function formatCheckpointPhase(phase){
 function renderRegionCheckpoint(checkpoint){
   regionCheckpoint=checkpoint||null;
   if(checkpoint&&checkpoint.status==="completed"&&!checkpoint.continuation_available)checkpoint=null;
+  e.regionResume.hidden=false;
   if(!checkpoint){
     e.regionCheckpointBox.hidden=true;
     e.regionResume.disabled=true;
@@ -251,32 +255,47 @@ function renderRegionCheckpoint(checkpoint){
   e.regionCheckpointBox.hidden=false;
   e.regionResume.disabled=checkpoint.compatible===false;
   e.start.textContent="Начать новое исследование";
-  e.regionResume.textContent=checkpoint.status!=="completed"
-    ?"Продолжить с checkpoint"
-    :missingSaby&&missingContacts
-      ?"Продолжить контакты и Saby"
-      :missingSaby?"Продолжить проверку Saby":"Продолжить недоисследованные контакты";
+  // This action may re-enter paid stages; distinguish it from Saby-only.
+  e.regionResume.textContent="Продолжить исследование (возможны OpenAI-запросы)";
+}
+
+function renderRegionSabyCheckpoint(checkpoint){
+  regionSabyCheckpoint=checkpoint||null;
+  e.regionSaby.hidden=!checkpoint;
+  e.regionSaby.disabled=!checkpoint;
+  if(checkpoint&&e.regionCheckpointBox.hidden){
+    e.regionCheckpointBox.hidden=false;
+    e.regionResume.hidden=true;
+    e.regionCheckpointText.textContent=
+      "В SQLite сохранён незавершённый Saby · компаний осталось: "+
+      Number(checkpoint.saby_deferred||0)+
+      " · продолжение без повторения этапов 1–11 и без OpenAI";
+  }
 }
 
 async function refreshRegionCheckpoint(){
   const region=e.region.value.trim();
   if(!region){
     renderRegionCheckpoint(null);
+    renderRegionSabyCheckpoint(null);
     return;
   }
 
   const browserCheckpoint=browserCheckpointForRegion(region);
   if(!backendReady){
     renderRegionCheckpoint(browserCheckpoint);
+    renderRegionSabyCheckpoint(null);
     return;
   }
 
   try{
     const data=await api("/api/checkpoints?region="+encodeURIComponent(region)+"&mode=full");
     renderRegionCheckpoint(chooseLatestCheckpoint(data.checkpoint||null,browserCheckpoint));
+    renderRegionSabyCheckpoint(data.saby_checkpoint||null);
   }catch(err){
     console.warn("Не удалось проверить checkpoint региона на backend:",err);
     renderRegionCheckpoint(browserCheckpoint);
+    renderRegionSabyCheckpoint(null);
   }
 }
 
@@ -407,7 +426,8 @@ function renderJobs(payload){
     b.dataset.jobId=item.id;
     const name=document.createElement("span");
     name.className="jobs-name";
-    name.textContent=item.region||"Регион не указан";
+    name.textContent=(item.region||"Регион не указан")+
+      (item.mode==="saby_only"?" · только Saby":"");
     const details=document.createElement("span");
     details.className="jobs-details";
     details.textContent=jobStateText(item)+
@@ -457,6 +477,8 @@ async function activateJob(id,{changeRegion=false}={}){
   e.error.textContent="";
   e.resume.hidden=true;
   e.resume.disabled=true;
+  e.sabyResume.hidden=true;
+  e.sabyResume.disabled=true;
   e.checkpoint.hidden=true;
   e.checkpoint.disabled=true;
   renderJobs({jobs:lastJobs,queue:{limit:config?.maxActiveFullJobs||2}});
@@ -470,6 +492,7 @@ function setControlsRunning(running){
   e.cancel.disabled=!running;
   if(running){
     e.resume.disabled=true;
+    e.sabyResume.disabled=true;
     e.checkpoint.disabled=true;
   }
 }
@@ -490,9 +513,14 @@ function resetIdleState(){
   e.cancel.disabled=true;
   e.resume.hidden=true;
   e.resume.disabled=true;
+  e.sabyResume.hidden=true;
+  e.sabyResume.disabled=true;
   e.checkpoint.hidden=true;
   e.checkpoint.disabled=true;
   regionCheckpoint=null;
+  regionSabyCheckpoint=null;
+  e.regionSaby.hidden=true;
+  e.regionSaby.disabled=true;
   e.regionCheckpointBox.hidden=true;
   e.regionResume.disabled=true;
   e.start.textContent="Запустить исследование";
@@ -574,12 +602,16 @@ async function poll(restoring=false){
       void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
+    const sabyCanResume=Number(d.checkpoint?.saby_deferred||0)>0 &&
+      ["saby","completed"].includes(d.checkpoint?.phase);
     if(d.state==="completed"){
       if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
       setControlsRunning(false);
-      e.resume.hidden=!d.continuation_available;
-      e.resume.disabled=!d.continuation_available;
-      e.resume.textContent=d.continuation_available?"Продолжить недоисследованные контакты":"Продолжить с checkpoint";
+      e.resume.hidden=d.mode==="saby_only"||!d.continuation_available;
+      e.resume.disabled=d.mode==="saby_only"||!d.continuation_available;
+      e.resume.textContent="Продолжить исследование (возможны OpenAI-запросы)";
+      e.sabyResume.hidden=!sabyCanResume;
+      e.sabyResume.disabled=!sabyCanResume;
       e.checkpoint.hidden=!d.resume_available;
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
@@ -610,8 +642,10 @@ async function poll(restoring=false){
     if(d.state==="failed"||d.state==="cancelled"){
       if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
       setControlsRunning(false);
-      e.resume.hidden=!d.resume_available;
-      e.resume.disabled=!d.resume_available;
+      e.resume.hidden=d.mode==="saby_only"||!d.resume_available;
+      e.resume.disabled=d.mode==="saby_only"||!d.resume_available;
+      e.sabyResume.hidden=!sabyCanResume;
+      e.sabyResume.disabled=!sabyCanResume;
       e.checkpoint.hidden=!d.resume_available;
       e.checkpoint.disabled=!d.resume_available;
       e.statusTitle.textContent=d.state==="cancelled"?"Остановлено":"Ошибка";
@@ -639,6 +673,7 @@ async function poll(restoring=false){
 
     setControlsRunning(true);
     e.resume.hidden=true;
+    e.sabyResume.hidden=true;
     e.checkpoint.hidden=!d.resume_available;
     e.checkpoint.disabled=!d.resume_available;
   }catch(err){
@@ -673,6 +708,7 @@ async function start(){
     });
     clearBrowserCheckpoint(region);
     renderRegionCheckpoint(null);
+    renderRegionSabyCheckpoint(null);
     await refreshJobs();
     await activateJob(d.id);
   }catch(err){
