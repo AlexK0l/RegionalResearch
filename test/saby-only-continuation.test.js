@@ -102,7 +102,7 @@ test("Saby-only uses one browser, no paid pipeline and a NEW checkpoint, preserv
   assert.equal(out.saby.transportsAdded,1);
   assert.deepEqual(progress.at(-1).sabyStats,out.saby);
   assert.equal(progress.at(-1).percent,100);
-  assert.equal(saved.length,4,"start, 2 per-company checkpoints and completion");
+  assert.equal(saved.length,5,"start, 2 per-company checkpoints, Stage12 terminal flush and completed snapshot");
   assert.equal(saved[0].phase,"saby");
   assert.equal(saved.at(-1).phase,"completed");
   assert.equal(saved.at(-1).source_mode,"saby");
