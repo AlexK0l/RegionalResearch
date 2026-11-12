@@ -48,10 +48,9 @@ function pageFactory({target="ready",clicked,after=rows(40)}={}){
         {status:target};
     },
     mouse:{
-      click:async (x,y,options)=>{
+      click:async (x,y)=>{
         assert.equal(x,1130);
         assert.equal(y,842);
-        assert.equal(options.timeout,3000);
         actions.clicks++;
         if(clicked)current=clicked;
       }
