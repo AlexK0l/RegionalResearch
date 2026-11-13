@@ -266,9 +266,10 @@ function renderRegionSabyCheckpoint(checkpoint){
   if(!checkpoint)return;
   const count=Number(checkpoint.saby_deferred||0);
   const info=checkpoint.saby_bootstrap
-    ? "Готовое исследование из SQLite · подходит для проверки Saby: "+
-      count+" компаний из "+Number(checkpoint.saby_eligible||0)+
-      " кандидатов · все ранее найденные компании сохраняются"
+    ? "Готовое исследование из SQLite · компаний в исследовании: "+
+      Number(checkpoint.saby_total||0)+
+      " · для Saby отобрано: "+count+
+      " (по проверенным ИНН и необходимым разделам) · исходный результат сохраняется"
     : "В SQLite сохранён незавершённый Saby · компаний осталось: "+count;
   e.regionSaby.textContent=checkpoint.saby_bootstrap
     ? "Дополнить через Saby (без OpenAI)"
