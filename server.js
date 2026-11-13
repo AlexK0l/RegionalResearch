@@ -186,6 +186,7 @@ async function latestSabyCheckpointForRegion(region) {
         id:latest.id,available:true,
         saby_deferred:validated.pending,
         saby_eligible:validated.eligible,
+        saby_total:validated.commercialTotal,
         saby_invalid:validated.invalid,
         saby_duplicate:validated.duplicates,
         saby_bootstrap:validated.bootstrap}
