@@ -46,6 +46,9 @@ let config=null;
 let backendReady=false;
 let currentJobId=localStorage.getItem("sat_current_job")||"";
 let pollTimer=null;
+// Prevent stacked /api/jobs/:id requests if the proxy briefly stalls.
+const pollsInFlight=new Set();
+let lastPollTransportError="";
 let timerTick=null;
 let lastProgress=null;
 let regionCheckpoint=null;
@@ -601,9 +604,18 @@ function setProgress(p){
 async function poll(restoring=false){
   if(!currentJobId)return;
   const requestedJobId=currentJobId;
+  if(pollsInFlight.has(requestedJobId))return;
+  pollsInFlight.add(requestedJobId);
   try{
     const d=await api("/api/jobs/"+encodeURIComponent(requestedJobId));
     if(requestedJobId!==currentJobId)return;
+    // A transient proxy error is not a failed study. Clear the red banner
+    // when this same job is reachable again, but preserve unrelated errors.
+    if(lastPollTransportError && e.error.textContent===lastPollTransportError){
+      e.error.hidden=true;
+      e.error.textContent="";
+    }
+    lastPollTransportError="";
     selectedEta=d.eta||null;
     selectedEtaReceivedAt=Date.now();
     updateEtaDisplay();
@@ -611,7 +623,10 @@ async function poll(restoring=false){
     e.progressCard.hidden=false;
     setProgress(d.progress||{});
 
-    if(d.resume_available&&d.checkpoint){
+    // Saby-only already saves each company in durable SQLite. Repeatedly
+    // copying its entire multi-hundred-company checkpoint to sessionStorage
+    // wastes memory, serializes large JSON and adds HTTP load for no benefit.
+    if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
       void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
@@ -693,14 +708,18 @@ async function poll(restoring=false){
     e.checkpoint.hidden=!d.resume_available;
     e.checkpoint.disabled=!d.resume_available;
   }catch(err){
+    if(requestedJobId!==currentJobId)return;
     if(err?.status===404){
       const region=e.region.value.trim();
       resetIdleState();
       if(region)await refreshRegionCheckpoint();
       return;
     }
+    lastPollTransportError=String(err?.message||"Ошибка связи с сервером");
     e.error.hidden=false;
-    e.error.textContent=err.message;
+    e.error.textContent=lastPollTransportError;
+  }finally{
+    pollsInFlight.delete(requestedJobId);
   }
 }
 
