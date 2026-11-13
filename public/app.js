@@ -273,6 +273,8 @@ function renderRegionSabyCheckpoint(checkpoint){
   e.regionSaby.textContent=checkpoint.saby_bootstrap
     ? "Дополнить через Saby (без OpenAI)"
     : "Продолжить только Saby (без OpenAI)";
+  if(checkpoint.saby_bootstrap)
+    e.start.textContent="Начать новое исследование (возможны OpenAI-запросы)";
   if(e.regionCheckpointBox.hidden){
     e.regionCheckpointBox.hidden=false;
     e.regionResume.hidden=true;
