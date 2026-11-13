@@ -114,7 +114,7 @@ export async function runSabyStage12({
             // An unavailable company-specific widget is not proof of
             // systemic browser/site failure; keep this firm deferred.
             consecutive=0;
-            console.warn("[SABY_COLLECTION_REVIEW] +JSON.stringify({
+            console.warn("[SABY_COLLECTION_REVIEW] "+JSON.stringify({
               reason:"relevant_sections_unavailable",
               contacts:["missing","review","collected"].includes(record?.contacts?.status)
                 ? record.contacts.status : "unknown",
