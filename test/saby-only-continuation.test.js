@@ -6,6 +6,7 @@ import {
 } from "../src/sabyOnlyContinuation.js";
 import {PIPELINE_VERSION} from "../src/checkpointStore.js";
 import {sabyBrowserSettings} from "../src/sabyBrowser.js";
+import {applySabyEnrichment} from "../src/sabyEnrichment.js";
 
 const inns=["7707083893","7702070139","7736207543"];
 const names=["ООО Альфа","ООО Бета","ООО Гамма"];
@@ -153,6 +154,138 @@ test("next Saby-only continuation processes only deferred, preserving prior cont
   assert.equal(secondSaved.at(-1).saby_continuation_source_job_id,resumedId);
   assert.equal(JSON.stringify(secondSource),before,"child source stays immutable");
   assert.equal(validateSabyOnlySource(secondSaved.at(-1)).code,"NO_SABY_PENDING");
+});
+
+function oldCompletedResearch({disabledStage12=false}={}){
+  const cp=source();
+  delete cp.saby_completed_inns;
+  delete cp.saby_deferred_inns;
+  if(disabledStage12){
+    cp.saby_completed_inns=[];
+    cp.saby_deferred_inns=[];
+    cp.saby_stats={enabled:false,verified:0,scheduled:0,deferred:0};
+  }
+  return cp;
+}
+
+test("legacy completed full checkpoint derives pending INNs from existing verified commercial rows, without mutating source",()=>{
+  const cp=oldCompletedResearch();
+  const before=JSON.stringify(cp);
+  const plan=validateSabyOnlySource(cp);
+  assert.equal(plan.ok,true);
+  assert.equal(plan.bootstrap,true);
+  assert.equal(plan.eligible,3);
+  assert.equal(plan.pending,3);
+  assert.deepEqual(new Set(plan.checkpoint.saby_deferred_inns),new Set(inns));
+  assert.deepEqual(plan.checkpoint.saby_completed_inns,[]);
+  assert.equal(JSON.stringify(cp),before,"source must remain immutable");
+  assert.equal(cp.saby_deferred_inns,undefined);
+});
+
+test("completed full checkpoint where Saby was disabled derives work despite empty saved arrays",()=>{
+  const cp=oldCompletedResearch({disabledStage12:true});
+  const before=JSON.stringify(cp);
+  const plan=validateSabyOnlySource(cp);
+  assert.equal(plan.ok,true);
+  assert.equal(plan.bootstrap,true);
+  assert.equal(plan.pending,3);
+  assert.equal(JSON.stringify(cp),before);
+});
+
+test("historical Saby plan skips only independently VERIFIED stored Saby sections, not INN or existing phone",()=>{
+  const cp=oldCompletedResearch();
+  const first=cp.final_result.direct_buyers[0];
+  const applied=applySabyEnrichment(first,verified(first),{transport:true});
+  assert.equal(applied.status,"ok");
+  assert.equal(first.__evidence.saby.collection.contacts,"collected");
+  assert.equal(first.__evidence.saby.collection.trucks,"verified");
+  const plan=validateSabyOnlySource(cp);
+  assert.equal(plan.ok,true);
+  assert.equal(plan.eligible,3);
+  assert.equal(plan.bootstrap,true);
+  assert.equal(plan.pending,2);
+  assert.deepEqual(plan.checkpoint.saby_completed_inns,[inns[0]]);
+  assert.deepEqual(new Set(plan.checkpoint.saby_deferred_inns),
+    new Set(inns.slice(1)));
+});
+
+test("legacy planning respects exactly Stage12 eligible rows: no duplicate INN, invalid INN or completed intermediary",()=>{
+  const cp=oldCompletedResearch();
+  cp.final_result.intermediaries=[
+    {"ИНН":"7710140679","Организация":"ООО Посредник",
+      "Телефон":"74951234567"},
+    {"ИНН":"000invalid","Организация":"ООО Неизвестный","Телефон":""}
+  ];
+  cp.final_result.leasing=[{
+    "ИНН":inns[2],"Организация":"ООО Дубликат","Телефон":""
+  }];
+  const plan=validateSabyOnlySource(cp);
+  assert.equal(plan.ok,true);
+  assert.equal(plan.eligible,2);
+  assert.equal(plan.pending,2);
+  assert.equal(plan.duplicates,2);
+  assert.equal(plan.invalid,1);
+  assert.deepEqual(new Set(plan.checkpoint.saby_deferred_inns),
+    new Set(inns.slice(0,2)));
+});
+
+test("malformed, partial, already attempted or unfinalized historical Saby snapshots fail closed",()=>{
+  for(const patch of [
+    {phase:"contacts"},
+    {phase:"saby"},
+    {source_mode:"saby"},
+    {saby_completed_inns:null},
+    {saby_deferred_inns:null},
+    {saby_completed_inns:[inns[0]]},
+    {saby_stats:{enabled:true,verified:0,scheduled:0}},
+    {saby_completed_inns:[],saby_deferred_inns:[],
+      saby_stats:{enabled:true,verified:3,scheduled:3,deferred:0}}
+  ]){
+    const res=validateSabyOnlySource({...oldCompletedResearch(),...patch});
+    assert.equal(res.ok,false,JSON.stringify(patch));
+  }
+});
+
+test("old completed checkpoint starts new paid-free Stage12 child, flushes each company and preserves old snapshot",async()=>{
+  const parent=oldCompletedResearch(),before=JSON.stringify(parent),visited=[],snapshots=[];
+  const result=await runSabyOnlyContinuation({
+    checkpoint:parent,sourceJobId:originalId,env,
+    sessionRunner:fakeSession,
+    collectCompany:async (_page,company)=>{
+      visited.push(company["ИНН"]);
+      return verified(company);
+    },
+    persistCheckpoint:async cp=>snapshots.push(structuredClone(cp))
+  });
+  assert.deepEqual(new Set(visited),new Set(inns));
+  assert.equal(visited.length,3);
+  assert.equal(result.mode,"saby_only");
+  assert.equal(result.saby.verified,3);
+  assert.equal(result.saby.deferred,0);
+  assert.equal(result.saby.transportsAdded,3);
+  assert.deepEqual(snapshots[0].saby_completed_inns,[]);
+  assert.deepEqual(new Set(snapshots[0].saby_deferred_inns),new Set(inns));
+  assert.equal(snapshots.length,6,"initial, 3 per-company, terminal and completed snapshots");
+  assert.equal(snapshots.at(-1).phase,"completed");
+  assert.equal(snapshots.at(-1).source_mode,"saby");
+  assert.deepEqual(snapshots.at(-1).saby_deferred_inns,[]);
+  assert.equal(snapshots.at(-1).saby_continuation_root_job_id,originalId);
+  assert.equal(JSON.stringify(parent),before,"old full research never modified");
+  for(const row of snapshots.at(-1).final_result.direct_buyers){
+    assert.equal(row.__final_grade,"C");
+    assert.equal(row["Основание"],"C — предварительная квалификация");
+    assert.match(row["Телефон"],/^7[0-9]{10}$/);
+  }
+});
+
+test("historical Saby bootstrap metadata flows into read-only API and old study CTA",()=>{
+  const server=fs.readFileSync(new URL("../server.js",import.meta.url),"utf8");
+  const ui=fs.readFileSync(new URL("../public/app.js",import.meta.url),"utf8");
+  assert.match(server,/saby_bootstrap:validated\.bootstrap/);
+  assert.match(server,/checkpointSummary\(validated\.checkpoint\)/);
+  assert.match(ui,/checkpoint\.saby_bootstrap/);
+  assert.match(ui,/Дополнить через Saby \(без OpenAI\)/);
+  assert.match(ui,/Number\(checkpoint\.saby_deferred\|\|0\)/);
 });
 
 test("no Saby-only invocation is allowed when Stage12 bulk gate is disabled",async()=>{
