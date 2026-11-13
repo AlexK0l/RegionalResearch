@@ -178,7 +178,13 @@ async function latestSabyCheckpointForRegion(region) {
   const snapshot=await loadCheckpoint(latest.id);
   const validated=validateSabyOnlySource(snapshot);
   return validated.ok
-    ? {...latest,...checkpointSummary(snapshot),id:latest.id,available:true}
+    ? {...latest,...checkpointSummary(validated.checkpoint),
+        id:latest.id,available:true,
+        saby_deferred:validated.pending,
+        saby_eligible:validated.eligible,
+        saby_invalid:validated.invalid,
+        saby_duplicate:validated.duplicates,
+        saby_bootstrap:validated.bootstrap}
     : null;
 }
 
