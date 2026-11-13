@@ -263,13 +263,26 @@ function renderRegionSabyCheckpoint(checkpoint){
   regionSabyCheckpoint=checkpoint||null;
   e.regionSaby.hidden=!checkpoint;
   e.regionSaby.disabled=!checkpoint;
-  if(checkpoint&&e.regionCheckpointBox.hidden){
+  if(!checkpoint)return;
+  const count=Number(checkpoint.saby_deferred||0);
+  const info=checkpoint.saby_bootstrap
+    ? "Готовое исследование из SQLite · компаний в исследовании: "+
+      Number(checkpoint.saby_total||0)+
+      " · для Saby отобрано: "+count+
+      " (по проверенным ИНН и необходимым разделам) · исходный результат сохраняется"
+    : "В SQLite сохранён незавершённый Saby · компаний осталось: "+count;
+  e.regionSaby.textContent=checkpoint.saby_bootstrap
+    ? "Дополнить через Saby (без OpenAI)"
+    : "Продолжить только Saby (без OpenAI)";
+  if(checkpoint.saby_bootstrap)
+    e.start.textContent="Начать новое исследование (возможны OpenAI-запросы)";
+  if(e.regionCheckpointBox.hidden){
     e.regionCheckpointBox.hidden=false;
     e.regionResume.hidden=true;
-    e.regionCheckpointText.textContent=
-      "В SQLite сохранён незавершённый Saby · компаний осталось: "+
-      Number(checkpoint.saby_deferred||0)+
-      " · продолжение без повторения этапов 1–11 и без OpenAI";
+    e.regionCheckpointText.textContent=info+
+      " · без повторения этапов 1–11 и без OpenAI";
+  }else{
+    e.regionCheckpointText.textContent+=" · "+info;
   }
 }
 

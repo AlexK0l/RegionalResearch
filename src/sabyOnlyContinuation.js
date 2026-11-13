@@ -6,10 +6,37 @@ import {STEPS} from "./constants.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
+import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage} from "./sabyEnrichment.js";
+
+// Older completed regional studies may predate Stage12 entirely. Derive a
+// bounded Saby work plan strictly from their existing, finalized commercial
+// rows; this is never company discovery or an OpenAI operation.
+function legacySabyPlan(checkpoint, plan) {
+  const done=checkpoint.saby_completed_inns;
+  const deferred=checkpoint.saby_deferred_inns;
+  const emptyOrAbsent=value=>value===undefined ||
+    (Array.isArray(value)&&value.length===0);
+  const neverRan=checkpoint.saby_stats==null ||
+    checkpoint.saby_stats?.enabled===false;
+  if(String(checkpoint.source_mode||"full")!=="full" ||
+     checkpoint.phase!=="completed" || !neverRan ||
+     !emptyOrAbsent(done) || !emptyOrAbsent(deferred))return null;
+
+  // A phone/INN is NOT proof of Saby completion. Count only trusted,
+  // company-scoped, explicitly verified Saby section evidence.
+  const completed=[],pending=[];
+  for(const entry of plan.eligible){
+    const inn=sabyInn(entry.row["ИНН"]);
+    const coverage=sabyStoredSectionCoverage(entry.row,
+      {transport:entry.transport});
+    (coverage.trusted&&coverage.complete?completed:pending).push(inn);
+  }
+  return {completed,pending};
+}
 
 export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}={}) {
   const checkpoint=normalizeCheckpoint(value);
-  if(!checkpoint) return {ok:false,code:"CHECKPOINT_INVALID"};
+  if(!checkpoint)return {ok:false,code:"CHECKPOINT_INVALID"};
   if(Number(checkpoint.pipeline_version||pipelineVersion)!==pipelineVersion)
     return {ok:false,code:"CHECKPOINT_VERSION_MISMATCH"};
   if(!["full","saby"].includes(String(checkpoint.source_mode||"full")) ||
@@ -18,13 +45,31 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
   const result=checkpoint.final_result;
   if(!result ||
      !["direct_buyers","intermediaries","leasing","statistics"]
-       .every(key=>Array.isArray(result[key])) ||
-     !Array.isArray(checkpoint.saby_completed_inns) ||
-     !Array.isArray(checkpoint.saby_deferred_inns))
+       .every(key=>Array.isArray(result[key])))
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
+
+  const plan=sabyEligibleRows(result);
+  const legacy=legacySabyPlan(checkpoint,plan);
+  if(legacy){
+    // Only the normalized copy is amended. Original SQLite source remains
+    // byte-for-byte unchanged; child checkpoint receives the derived plan.
+    checkpoint.saby_completed_inns=legacy.completed;
+    checkpoint.saby_deferred_inns=legacy.pending;
+  }else if(!Array.isArray(checkpoint.saby_completed_inns) ||
+           !Array.isArray(checkpoint.saby_deferred_inns)){
+    return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
+  }
   if(checkpoint.saby_deferred_inns.length===0)
     return {ok:false,code:"NO_SABY_PENDING"};
-  return {ok:true,checkpoint,pending:checkpoint.saby_deferred_inns.length};
+  return {
+    ok:true,checkpoint,pending:checkpoint.saby_deferred_inns.length,
+    eligible:plan.eligible.length,
+    commercialTotal:result.direct_buyers.length+
+      result.intermediaries.length+result.leasing.length,
+    invalid:plan.invalid.length,
+    duplicates:plan.duplicates.length,
+    bootstrap:!!legacy
+  };
 }
 
 export function sabyOnlyConfigReady(env=process.env) {
