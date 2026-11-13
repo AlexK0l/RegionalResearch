@@ -40,3 +40,21 @@ test("ETA countdown updates once per second without triggering new API calls",()
   assert.match(source,/updateEtaDisplay\(\);\s*updateJobEtaLabels\(\);/);
   assert.match(source,/Пересчитываем прогноз/);
 });
+
+test("temporary API 502 never permanently masks a healthy study",()=>{
+  assert.match(source,/const pollsInFlight=new Set\(\)/);
+  assert.match(source,/if\(pollsInFlight\.has\(requestedJobId\)\)return/);
+  assert.match(source,/pollsInFlight\.add\(requestedJobId\)/);
+  assert.match(source,/pollsInFlight\.delete\(requestedJobId\)/);
+  assert.match(source,/if\(requestedJobId!==currentJobId\)return/);
+  assert.match(source,/if\(lastPollTransportError && e\.error\.textContent===lastPollTransportError\)/);
+  assert.match(source,/lastPollTransportError=""/);
+  assert.match(source,/lastPollTransportError=String\(err\?\.message/);
+  assert.match(source,/e\.error\.hidden=true/);
+});
+
+test("Saby-only checkpoint remains SQLite-backed without downloading full growing payload every poll",()=>{
+  assert.match(source,/if\(d\.mode!=="saby_only"&&d\.resume_available&&d\.checkpoint\)/);
+  assert.match(source,/void syncBrowserCheckpointFromBackend\(requestedJobId,d\.checkpoint\)/);
+  assert.match(source,/sabyResume\.onclick=/);
+});
