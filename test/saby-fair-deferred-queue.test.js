@@ -59,11 +59,15 @@ test("bulk Stage12 visits all untouched firms before retrying reviewed INNs",asy
       assert.deepEqual(visits,allVisits.slice(0,2),
         "only after all companies were tried may first reviews be retried");
     }
+    if(pass===2)
+      assert.equal(out.attemptedInns.length,6,
+        "every unresolved company is retained through a complete sweep");
     if(pass<3)allVisits.push(...visits);
     attempted=out.attemptedInns;
   }
   assert.equal(new Set(allVisits).size,6);
-  assert.equal(attempted.length,6,"durable sweep state persists reviews");
+  assert.deepEqual(attempted,ids.slice(0,2),
+    "new sweep restarts the cursor instead of permanently excluding reviews");
 });
 
 test("old Stage12 checkpoints recover fair order from trusted partial Saby evidence alone",async()=>{
