@@ -42,8 +42,15 @@ import {
   verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
 } from "./sabyPostRouteIdentity.js";
 
+// Typed review classification prevents a missing or ambiguous individual
+// contractor from tripping the circuit breaker for a site-wide failure.
+// Default is 'systemic' until the precise call site proves company-specific.
 export class SabyReview extends Error {
-  constructor(message) { super(message); this.name = "SabyReview"; }
+  constructor(message,{scope="systemic"}={}) {
+    super(message);
+    this.name="SabyReview";
+    this.scope=scope==="company"?"company":"systemic";
+  }
 }
 
 const BASE = "https://profile.saby.ru/page/company-list-prof";
@@ -232,7 +239,7 @@ export async function findResultRows(page, inn, {
 async function openCompany(page, row, settings) {
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
-  if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия");
+  if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия",{scope:"company"});
   await page.goto(BASE, {waitUntil:"domcontentloaded",timeout:settings.timeoutMs});
   if (!isSabyProfileUrl(page.url())) throw new SabyReview("Переадресация вне Saby");
   const found=await findSabyCompanySearch(page,{
@@ -282,14 +289,14 @@ async function openCompany(page, row, settings) {
           raw_capped:selected.rawCapped===true,
           foreign_inn_rows:selected.foreignInnRows||0,
           primary_candidates:selected.primaryCandidates||0}));
-      throw new SabyReview("Saby: неоднозначный результат по ИНН");
+      throw new SabyReview("Saby: неоднозначный результат по ИНН",{scope:"company"});
     }
     rows=selected.row?[selected.row]:[];
     if(rows.length===1)break;
     await delay(450);
   }
   if(rows.length!==1)
-    throw new SabyReview("Saby: однозначная организация по ИНН не найдена");
+    throw new SabyReview("Saby: однозначная организация по ИНН не найдена",{scope:"company"});
   if(publicFallback){
     const final=lastSelected||{};
     console.info("[SABY_SEARCH_FILTER_DIAG] "+JSON.stringify({
@@ -400,7 +407,7 @@ async function openCompany(page, row, settings) {
     clicked:true,
     navigationObserved:page.url()!==listingUrl
   })));
-  throw new SabyReview("Saby: карточка не подтверждена: "+last.reason);
+  throw new SabyReview("Saby: карточка не подтверждена: "+last.reason,{scope:"company"});
 }
 
 async function ownContacts(page) {

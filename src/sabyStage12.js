@@ -3,7 +3,7 @@
 import { parsePhoneEntries } from "./phoneExport.js";
 import { applySabyEnrichment, sabyEligibleRows, sabyInn,
   sabyStoredSectionCoverage } from "./sabyEnrichment.js";
-import { withSabyBrowser, collectSabyCompany } from "./sabyBrowser.js";
+import { withSabyBrowser, collectSabyCompany, SabyReview } from "./sabyBrowser.js";
 
 const bounded = (value, fallback, min, max) => {
   const n = Number(value);
@@ -79,7 +79,8 @@ export async function runSabyStage12({
     previouslyCompleted:plan.eligible.length-pending.length,
     scheduled:selected.length,processed:0,verified:0,review:0,
     phonesAdded:0,transportsAdded:0,vehiclesVerified:0,
-    partialResults:0,circuitOpen:false,browserError:"",
+    partialResults:0,companyReviews:0,systemicErrors:0,
+    circuitOpen:false,browserError:"",
     deferred:settings.enabled ? pending.length : 0
   };
   if (!settings.enabled) return {stats,completedInns:[...completed],deferredInns:[]};
@@ -109,7 +110,10 @@ export async function runSabyStage12({
             // Do not mutate the CRM row or checkpoint the company as done:
             // a Saby card may render its legal details before contacts/trucks.
             stats.review++;
-            consecutive++;
+            stats.companyReviews++;
+            // An unavailable company-specific widget is not proof of
+            // systemic browser/site failure; keep this firm deferred.
+            consecutive=0;
             console.warn("[SABY_COLLECTION_REVIEW] "+JSON.stringify({
               reason:"relevant_sections_unavailable",
               contacts:["missing","review","collected"].includes(record?.contacts?.status)
@@ -146,16 +150,27 @@ export async function runSabyStage12({
               }
               consecutive=0;
             } else {
+              // A company card identity mismatch is never permission to
+              // block the remaining unrelated businesses.
               stats.review++;
-              consecutive++;
+              stats.companyReviews++;
+              consecutive=0;
             }
           }
         } catch(error) {
           if(signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
-          consecutive++;
+          const scope=error instanceof SabyReview&&
+            error.scope==="company"?"company":"systemic";
+          if(scope==="company"){
+            stats.companyReviews++;
+            consecutive=0;
+          }else{
+            stats.systemicErrors++;
+            consecutive++;
+          }
           stats.review++;
           console.warn("[SABY_COMPANY_REVIEW] "+JSON.stringify({
-            inn,error:String(error?.message||error).slice(0,300)
+            inn,scope,error:String(error?.message||error).slice(0,300)
           }));
         }
         stats.processed++;
@@ -164,7 +179,7 @@ export async function runSabyStage12({
         if(consecutive>=settings.consecutiveErrors) {
           stats.circuitOpen=true;
           console.warn("[SABY_CIRCUIT_OPEN] "+JSON.stringify({
-            failures:consecutive,processed:stats.processed
+            failures:consecutive,processed:stats.processed,scope:"systemic"
           }));
           break;
         }
