@@ -9,6 +9,7 @@ import { runSabyStage12 } from "./sabyStage12.js";
 export async function runCheckpointedSabyStage12({
   result,
   completedInns = [],
+  attemptedInns = [],
   signal = null,
   env = process.env,
   startedAt = Date.now(),
@@ -23,13 +24,15 @@ export async function runCheckpointedSabyStage12({
     throw new TypeError("Stage 12 requires finalized commercial research result");
   }
   const options = {
-    result, completedInns, signal, env, onProgress,
-    onCheckpoint: async ({stats, completedInns: done, deferredInns}) => {
+    result, completedInns, attemptedInns, signal, env, onProgress,
+    onCheckpoint: async ({stats, completedInns: done, deferredInns,
+      attemptedInns:visited}) => {
       await persistCheckpoint("saby", {
         completed_stage: 9,
         final_result: result,
         saby_completed_inns: done,
         saby_deferred_inns: deferredInns,
+        saby_attempted_inns: visited,
         saby_stats: stats,
         stage12_duration_ms: Math.max(0, Date.now() - startedAt)
       });

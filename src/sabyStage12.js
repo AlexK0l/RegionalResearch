@@ -46,6 +46,9 @@ function phoneOwnersForResult(result) {
 export async function runSabyStage12({
   result,
   completedInns = [],
+  // Per-region fair queue cursor, durable across Saby-only child runs.
+  // A reviewed contractor is retried only after unvisited INNs are seen.
+  attemptedInns = [],
   offset = 0, // smoke-test pagination only; default leaves production intact
   env = process.env,
   onProgress = async () => {},
@@ -69,22 +72,47 @@ export async function runSabyStage12({
     if(coverage.trusted&&!coverage.complete)completed.delete(inn);
   }
   const pending=plan.eligible.filter(x=>!completed.has(sabyInn(x.row["ИНН"])));
+  const pendingIds=new Set(pending.map(x=>sabyInn(x.row["ИНН"])));
+  const attempted=new Set((Array.isArray(attemptedInns)?attemptedInns:[])
+    .map(sabyInn).filter(inn=>pendingIds.has(inn)));
+  // Old checkpoints did not persist the cursor; nevertheless previously
+  // stored first-party Saby evidence proves those firms were already seen.
+  // Never infer attempts from mere presence of a phone or an INN.
+  if(!attempted.size){
+    for(const entry of pending){
+      const inn=sabyInn(entry.row["ИНН"]);
+      const coverage=sabyStoredSectionCoverage(entry.row,
+        {transport:entry.transport});
+      if(coverage.trusted)attempted.add(inn);
+    }
+  }
+  // All remaining companies have had one attempt: begin a new sweep,
+  // without permanently excluding unresolved companies from later retries.
+  if(pending.length&&attempted.size===pending.length)attempted.clear();
+  const fresh=pending.filter(x=>!attempted.has(sabyInn(x.row["ИНН"])));
+  const retried=pending.filter(x=>attempted.has(sabyInn(x.row["ИНН"])));
+  const ordered=[...fresh,...retried];
   const start=Number.isSafeInteger(Number(offset)) && Number(offset)>=0 ?
     Math.min(Number(offset),20000) : 0;
   const selected=settings.maxCompanies ?
-    pending.slice(start,start+settings.maxCompanies) : pending.slice(start);
+    ordered.slice(start,start+settings.maxCompanies) : ordered.slice(start);
+  const freshScheduled=selected.filter(x=>
+    !attempted.has(sabyInn(x.row["ИНН"]))).length;
   const stats={
     enabled:settings.enabled,eligible:plan.eligible.length,
     invalidInnOrName:plan.invalid.length,duplicateInn:plan.duplicates.length,
     previouslyCompleted:plan.eligible.length-pending.length,
     scheduled:selected.length,processed:0,verified:0,review:0,
+    freshScheduled,retryScheduled:selected.length-freshScheduled,
     phonesAdded:0,transportsAdded:0,vehiclesVerified:0,
     partialResults:0,companyReviews:0,systemicErrors:0,
     circuitOpen:false,browserError:"",
     deferred:settings.enabled ? pending.length : 0
   };
-  if (!settings.enabled) return {stats,completedInns:[...completed],deferredInns:[]};
-  if (!selected.length) return {stats,completedInns:[...completed],deferredInns:[]};
+  if (!settings.enabled) return {stats,completedInns:[...completed],
+    deferredInns:[],attemptedInns:[...attempted]};
+  if (!selected.length) return {stats,completedInns:[...completed],
+    deferredInns:[],attemptedInns:[...attempted]};
 
   const phoneOwners=phoneOwnersForResult(result);
   const startedAt=Date.now();
@@ -94,7 +122,10 @@ export async function runSabyStage12({
     const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
       .filter(inn=>!completed.has(inn));
     stats.deferred=deferredInns.length;
-    await onCheckpoint({stats:{...stats},completedInns:[...completed],deferredInns});
+    const deferredSet=new Set(deferredInns);
+    const attemptedRemaining=[...attempted].filter(inn=>deferredSet.has(inn));
+    await onCheckpoint({stats:{...stats},completedInns:[...completed],
+      deferredInns,attemptedInns:attemptedRemaining});
   };
 
   try {
@@ -173,6 +204,10 @@ export async function runSabyStage12({
             inn,scope,error:String(error?.message||error).slice(0,300)
           }));
         }
+        // This firm has now had a real visit (including an unsuccessful
+        // company-specific review). A process crash before this point
+        // deliberately allows retrying it from its last durable checkpoint.
+        attempted.add(inn);
         stats.processed++;
         await onProgress({...stats,company:row["Организация"]});
         if(stats.processed%settings.checkpointEvery===0) await flush();
@@ -196,5 +231,7 @@ export async function runSabyStage12({
   await flush();
   const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
     .filter(inn=>!completed.has(inn));
-  return {stats,completedInns:[...completed],deferredInns};
+  const deferredSet=new Set(deferredInns);
+  return {stats,completedInns:[...completed],deferredInns,
+    attemptedInns:[...attempted].filter(inn=>deferredSet.has(inn))};
 }

@@ -9009,6 +9009,7 @@ ${JSON.stringify(gaps)}
   const sabyOutcome = await runCheckpointedSabyStage12({
     result:finalResult,
     completedInns:resumeCheckpoint?.saby_completed_inns || [],
+    attemptedInns:resumeCheckpoint?.saby_attempted_inns || [],
     signal:jobSignal,
     startedAt:stage12StartedAt,
     persistCheckpoint,
@@ -9052,6 +9053,7 @@ ${JSON.stringify(gaps)}
     contact_unsearched_ids: [...contactUnsearched],
     saby_completed_inns: sabyOutcome.completedInns,
     saby_deferred_inns: sabyOutcome.deferredInns,
+    saby_attempted_inns: sabyOutcome.attemptedInns,
     saby_stats: sabyStats,
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt,
