@@ -64,6 +64,8 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
   return {
     ok:true,checkpoint,pending:checkpoint.saby_deferred_inns.length,
     eligible:plan.eligible.length,
+    commercialTotal:result.direct_buyers.length+
+      result.intermediaries.length+result.leasing.length,
     invalid:plan.invalid.length,
     duplicates:plan.duplicates.length,
     bootstrap:!!legacy
