@@ -171,8 +171,12 @@ async function latestSabyCheckpointForRegion(region) {
     listRegionCheckpoints(region,"full",10),
     listRegionCheckpoints(region,"saby",10)
   ]);
+  // An unfinished stage-1..11 checkpoint must not hide an older completed
+  // source. Select the latest FINALIZED work, then fail closed if its Saby
+  // deferrals were already completed by a newer Saby-only child.
   const latest=[...full,...saby]
-    .filter(c=>c.status!=="superseded")
+    .filter(c=>c.status!=="superseded" &&
+      ["saby","completed"].includes(c.phase))
     .sort((a,b)=>Date.parse(b.updated_at||"")-Date.parse(a.updated_at||""))[0];
   if (!latest) return null;
   const snapshot=await loadCheckpoint(latest.id);
