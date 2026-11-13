@@ -11,7 +11,7 @@ import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage} from "./sabyEnrichme
 // Older completed regional studies may predate Stage12 entirely. Derive a
 // bounded Saby work plan strictly from their existing, finalized commercial
 // rows; this is never company discovery or an OpenAI operation.
-function legacySabyPlan(checkpoint, result, plan) {
+function legacySabyPlan(checkpoint, plan) {
   const done=checkpoint.saby_completed_inns;
   const deferred=checkpoint.saby_deferred_inns;
   const emptyOrAbsent=value=>value===undefined ||
@@ -49,7 +49,7 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
 
   const plan=sabyEligibleRows(result);
-  const legacy=legacySabyPlan(checkpoint,result,plan);
+  const legacy=legacySabyPlan(checkpoint,plan);
   if(legacy){
     // Only the normalized copy is amended. Original SQLite source remains
     // byte-for-byte unchanged; child checkpoint receives the derived plan.
