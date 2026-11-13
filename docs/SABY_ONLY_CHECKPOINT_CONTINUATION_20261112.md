@@ -22,8 +22,9 @@ It does not import the OpenAI client, invoke the research pipeline or require
   positive integer cap).
 - SQLite has a **previously finalized** full or Saby-only snapshot with
   phase `saby` or `completed`, correct pipeline version, unchanged
-  `final_result` arrays (direct_buyers, intermediaries, leasing, statistics),
-  and `saby_deferred_inns` nonempty.
+  `final_result` arrays (direct_buyers, intermediaries, leasing, statistics).
+  It must either have saved nonempty `saby_deferred_inns` **or** be a
+  completed FULL research snapshot that never ran Saby (see below).
 - The source is loaded by ID from server-side SQLite. User-supplied
   JSON/checkpoint payloads are **never** accepted by this mode.
 - No active full/resume/Saby-only job for the same region. All three modes
@@ -33,6 +34,11 @@ It does not import the OpenAI client, invoke the research pipeline or require
 
 When a checkpoint has Saby deferrals, select that region or completed/failed
 job and click **«Продолжить только Saby (без OpenAI)»**.
+
+For an **older completed regional study** that never ran Saby, select its
+region and click **«Дополнить через Saby (без OpenAI)»**. The page displays
+both the prior study's commercial row count and the smaller number of
+companies eligible for Stage 12. No new regional discovery is started.
 
 This is deliberately distinct from «Продолжить исследование (возможны
 OpenAI-запросы)». The latter can re-enter earlier stages.
@@ -59,8 +65,11 @@ GET /api/checkpoints?region=<region>&mode=full
 ```
 
 New response field `saby_checkpoint` is metadata only (ID, region, phase,
-`saby_deferred`, version); it is null unless the latest source is safe
-and has remaining Saby work.
+`saby_deferred`, version). For historical research it also includes
+`saby_bootstrap:true` and read-only `saby_total`/`saby_eligible` counts;
+it is null unless the most recent **finalized** nonsuperseded source is safe
+and has remaining Saby work. An unfinished earlier-stage job is not itself a
+finalized Saby source. Selecting this metadata does not invoke Saby.
 
 Start a Saby-only continuation with the returned ID:
 
@@ -87,6 +96,21 @@ Source validation errors return HTTP 409 with a code:
 - `SABY_CHECKPOINT_EVERY=1` writes a new Saby-only snapshot after
   **every completed company**, in addition to the initial and terminal
   snapshots. The source full checkpoint is never overwritten.
+- **Historical bootstrap** is allowed only on finalized `source_mode=full`
+  checkpoints (phase `completed`) that have no Saby execution evidence or
+  explicitly record `saby_stats.enabled=false`. Their absent/empty
+  `saby_completed_inns` and `saby_deferred_inns` are reconstructed **only in
+  the child copy** from `sabyEligibleRows` and trusted
+  `sabyStoredSectionCoverage`. It excludes missing/invalid INN, duplicated
+  INN, missing company names and intermediary/leasing rows whose contact
+  phone is already present, just as current Stage12 does. An INN or an
+  existing phone alone NEVER proves Saby completion. A partially attempted
+  Saby snapshot, malformed arrays or a Saby-only child with no deferrals
+  is NOT automatically rebootstrapped.
+- The current SQLite has historical Smolensk results. For example, the most
+  recently updated historical completed result contains 473 commercial
+  records, **not necessarily 473 eligible Saby calls**. The API computes the
+  actual pending count from retained evidence at request time.
 - `STAGE12_MAX_MS` still limits a **single** Saby-only attempt (default
   30 minutes). Remaining work stays deferred. To continue a new attempt,
   click the Saby-only button again. This change does not yet implement an
