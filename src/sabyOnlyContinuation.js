@@ -138,12 +138,14 @@ export async function runSabyOnlyContinuation({
   await persist("saby",{
     final_result:result,
     saby_completed_inns:source.saby_completed_inns,
-    saby_deferred_inns:source.saby_deferred_inns
+    saby_deferred_inns:source.saby_deferred_inns,
+    saby_attempted_inns:source.saby_attempted_inns||[]
   });
   await report({processed:0,scheduled:checked.pending});
   const options={
     result,
     completedInns:source.saby_completed_inns,
+    attemptedInns:source.saby_attempted_inns||[],
     env,signal,startedAt,
     onProgress:stats=>report(stats),
     persistCheckpoint:persist
@@ -159,6 +161,7 @@ export async function runSabyOnlyContinuation({
     final_result:result,
     saby_completed_inns:outcome.completedInns,
     saby_deferred_inns:outcome.deferredInns,
+    saby_attempted_inns:outcome.attemptedInns,
     saby_stats:outcome.stats,
     stage12_duration_ms:Date.now()-startedAt
   });
