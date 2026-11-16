@@ -3013,7 +3013,7 @@ function ensureBatchCoverage(batch, batchResult) {
   return output;
 }
 
-function applyFinalBatchDelta(batch, delta) {
+export function applyFinalBatchDelta(batch, delta) {
   const byId = new Map((delta?.items || []).map((item) => [String(item?.canonical_id || ""), item]));
   const output = { direct_buyers: [], intermediaries: [], leasing: [] };
   const allowedFields = new Set([...COLS, "__comment"]);
@@ -3269,7 +3269,7 @@ function makeQaRecords(result) {
   return records;
 }
 
-function applyFinalQa(records, qa) {
+export function applyFinalQa(records, qa) {
   const allowedSheets = new Set(["direct_buyers", "intermediaries", "leasing"]);
   const allowedFields = new Set([...COLS, "__comment", "__decision", "__decision_reason", "__evidence", "__final_grade"]);
   const removeIds = new Set(Array.isArray(qa?.remove_ids) ? qa.remove_ids.map(String) : []);
@@ -3338,7 +3338,7 @@ function applyFinalQa(records, qa) {
   return result;
 }
 
-function mergeQaRecordRows(records) {
+export function mergeQaRecordRows(records) {
   const first = records[0];
   const mergedRow = { ...(first?.row || {}) };
   const urls = [];
