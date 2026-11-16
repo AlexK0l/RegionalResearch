@@ -5319,16 +5319,12 @@ function isMissingText(value) {
 }
 
 function evidenceEmail(row) {
-  const evidence = row?.__evidence || {};
-  const texts = [
-    evidence.email,
-    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
-  ].map((value) => String(value || ""));
-  for (const text of texts) {
-    const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    if (match) return match[0];
-  }
-  return "";
+  // Free-form discovery notes frequently mention contractors, carriers,
+  // customers or tender counterparties. A random address in those notes is
+  // NOT safe proof that it belongs to this legal entity. Only explicit
+  // scoped contact fields / exact-INN Saby records / existing own company
+  // note can hydrate the visible e-mail column.
+  return formatEmailCell(row?.__evidence?.email);
 }
 
 function compactActivityDescription(row) {
