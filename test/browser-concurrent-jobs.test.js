@@ -58,3 +58,16 @@ test("Saby-only checkpoint remains SQLite-backed without downloading full growin
   assert.match(source,/void syncBrowserCheckpointFromBackend\(requestedJobId,d\.checkpoint\)/);
   assert.match(source,/sabyResume\.onclick=/);
 });
+
+test("completed Saby-only UI displays stage12 activity, not misleading source contact totals",()=>{
+  const completed=source.slice(source.indexOf('if(d.state==="completed")'),
+    source.indexOf('if(d.state==="failed"||d.state==="cancelled")'));
+  assert.match(completed,/const contactSummary=d\.mode==="saby_only"/);
+  assert.match(completed,/Number\(r\.saby\?\.processed\|\|0\)/);
+  assert.match(completed,/Number\(r\.saby\?\.verified\|\|0\)/);
+  assert.match(completed,/Number\(d\.checkpoint\?\.saby_completed\|\|0\)/);
+  assert.match(completed,/: "Проверено компаний: "/);
+  assert.match(completed,/\+contactSummary\+/);
+  assert.match(markup,/UI build: 20261116-saby-only-summary/);
+  assert.match(markup,/app\.js\?v=20261116-saby-only-summary/);
+});
