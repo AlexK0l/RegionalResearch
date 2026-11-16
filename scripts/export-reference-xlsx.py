@@ -147,7 +147,7 @@ def ensure_email_columns(wb):
         for row in range(1,ws.max_row+1):
             dest=ws.cell(row,col);src=ws.cell(row,col+1)
             if src.has_style:dest._style=copy.copy(src._style)
-            dest.number_format='@'
+            if row>1:dest.number_format='@'
         ws.cell(1,col).value=EMAIL_COL
         for dv,ranges in validations:dv.sqref=' '.join(ranges)
         ws.conditional_formatting._cf_rules.clear()
