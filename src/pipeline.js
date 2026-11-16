@@ -18,6 +18,7 @@ import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, discla
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
+import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -577,6 +578,7 @@ const DISCOVERY_SCHEMA = {
         "Город/район": { type: "string" },
         "Техника/сегмент": { type: "string" },
         "Основание": { type: "string" },
+        "Электронная почта": { type: "string" },
         "__evidence": {
           type: "object",
           additionalProperties: false,
@@ -593,6 +595,7 @@ const DISCOVERY_SCHEMA = {
         "Город/район",
         "Техника/сегмент",
         "Основание",
+        "Электронная почта",
         "__evidence"
       ]
     }
@@ -954,6 +957,7 @@ function contract(final = false) {
   "Город/район":"",
   "Техника/сегмент":"",
   "Основание":"",
+  "Электронная почта":"",
   "__evidence":{"source_urls":[],"notes":[]}
 }
 
@@ -2953,7 +2957,8 @@ function baselineRowFromCanonical(canonical) {
         .filter(Boolean)
     )];
 
-    if (col === "Телефон") row[col] = values.join("; ");
+    if (col === "Телефон" || col === "Электронная почта")
+      row[col] = col === "Телефон" ? values.join("; ") : formatEmailCell(...values);
     else if (col === "Основание" || col === "Техника/сегмент") row[col] = values.join(" | ");
     else row[col] = values[0] || "";
   }
@@ -2967,7 +2972,7 @@ function baselineRowFromCanonical(canonical) {
     `ИНН: ${row["ИНН"] || "не подтверждено"}`,
     "Деятельность: требуется финальная проверка",
     `Холдинг/УК/группа: ${row["Управляющая компания"] || "не подтверждено"}`,
-    "Email: не найден"
+    `Email: ${companyEmailCell(row)||"не найден"}`
   ].join("\n");
   return row;
 }
@@ -5355,11 +5360,10 @@ function mergeResearchComment(row, incomingComment = "") {
     pickCurrent("Холдинг/УК/группа") ||
     (manager && !/не подтвержд/i.test(manager) ? manager : "") ||
     "не подтверждено";
-  const email =
-    pickIncoming("Email") ||
-    pickCurrent("Email") ||
-    evidenceEmail(row) ||
-    "не найден";
+  // The visible cell is canonical; keep the existing comment in sync.
+  mergeCompanyEmail(row,pickIncoming("Email"),pickCurrent("Email"),
+    evidenceEmail(row));
+  const email=companyEmailCell(row)||"не найден";
 
   row.__comment = [
     `Сайт/источник: ${source}`,
