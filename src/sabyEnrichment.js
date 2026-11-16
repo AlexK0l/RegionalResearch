@@ -2,6 +2,7 @@
 // row until legal identity and the source have both passed validation.
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
 import { formatPhoneCell, parsePhoneEntries, explicitPhoneDepartment } from "./phoneExport.js";
+import { mergeCompanyEmail } from "./emailContact.js";
 
 const LEGAL_WORDS = new Set([
   "ооо", "ао", "пао", "оао", "зао", "ип", "общество", "с",
@@ -266,6 +267,9 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;
+  // This exact-INN, verified Saby card contributes e-mail to the visible
+  // CRM column even when phones or fleet evidence remain incomplete.
+  const emailAdded=mergeCompanyEmail(row,emails);
 
   let phoneAdded = false;
   if (!hasKnownPhone(row["Телефон"])) {
@@ -300,8 +304,8 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
       }
     }
   }
-  // Contact e-mails are preserved in the existing Excel comment, not a new
-  // commercial column. This keeps the reference's column count and style.
+  // Preserve the historic email line in the company note too; keep source
+  // provenance out of the visible e-mail address column.
   const comment = [
     "Saby: ИНН " + record.identity.inn + " подтверждён",
     phones.length ? "телефоны " + phones.join(", ") : "",
@@ -315,7 +319,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   } else {
     row.__comment = existingComment;
   }
-  return {status:"ok", phoneAdded, transportAdded,
+  return {status:"ok", phoneAdded, emailAdded, transportAdded,
     phonesFound:phones.length, emailsFound:emails.length,
     verifiedTrucks:fleet?.count ?? null};
 }
