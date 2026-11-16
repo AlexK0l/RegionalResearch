@@ -56,10 +56,12 @@ test("final QA patch with missing/updated email is monotonic",()=>{
 test("dedupe retains two independently verified addresses of one legal entity",()=>{
   const one={id:"q1",sheet:"direct_buyers",row:row("sales@example.ru","k1")};
   const two={id:"q2",sheet:"direct_buyers",row:row("shipping@example.ru","k2")};
+  // A legacy checkpoint may hold this email only in the company note.
+  two.row["Электронная почта"]="";
   const merged=mergeQaRecordRows([one,two]);
   assert.equal(merged.row["ИНН"],"7707083893");
   assert.equal(merged.row["Электронная почта"],
     "sales@example.ru; shipping@example.ru");
   assert.equal(one.row["Электронная почта"],"sales@example.ru");
-  assert.equal(two.row["Электронная почта"],"shipping@example.ru");
+  assert.equal(two.row["Электронная почта"],"");
 });
