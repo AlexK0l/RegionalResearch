@@ -75,6 +75,7 @@ test("Saby replaces stale 'Email: не найден' in original Excel comment w
   assert.deepEqual(row.__evidence.saby.collection.failed_sections,["contacts","trucks"]);
   assert.doesNotMatch(JSON.stringify(row.__evidence.saby.collection),/secret error|private page/);
   assert.ok(!("Email" in row));
+  assert.equal(row["Электронная почта"],"info@example.ru");
   const before=row.__comment;
   applySabyEnrichment(row,record);
   assert.equal(row.__comment,before);
