@@ -72,6 +72,19 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
   };
 }
 
+// A single Saby-only job should be able to traverse the full pending
+// regional queue. This budget is ONLY used in Saby-only continuation;
+// the paid full-research Stage12 retains the existing 30-minute default.
+// 12 hours is intentionally conservative relative to observed throughput.
+export const SABY_ONLY_DEFAULT_MAX_MS=12*60*60*1000;
+export function sabyOnlyMaxDurationMs(env=process.env) {
+  const raw=String(env.SABY_ONLY_MAX_MS??"").trim();
+  if(!/^[0-9]+$/.test(raw))return SABY_ONLY_DEFAULT_MAX_MS;
+  const value=Number(raw);
+  if(!Number.isSafeInteger(value))return SABY_ONLY_DEFAULT_MAX_MS;
+  return Math.max(30*60000,Math.min(24*60*60000,value));
+}
+
 export function sabyOnlyConfigReady(env=process.env) {
   return sabyStage12Settings(env).enabled &&
     sabyFleetTreeProductionEnabled(env);
@@ -146,7 +159,8 @@ export async function runSabyOnlyContinuation({
     result,
     completedInns:source.saby_completed_inns,
     attemptedInns:source.saby_attempted_inns||[],
-    env,signal,startedAt,
+    maxDurationMs:sabyOnlyMaxDurationMs(env),
+    env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
     onProgress:stats=>report(stats),
     persistCheckpoint:persist
   };
