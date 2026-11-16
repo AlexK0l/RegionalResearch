@@ -5105,6 +5105,7 @@ function contactSearchPrompt(row, region, kind = "contacts") {
 Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
 Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
 Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
+Если в тех же источниках встретился публичный email ЭТОГО юрлица, верни его в emails и укажи точные source_urls. Не трать отдельные web_search ради почты и не угадывай адрес.
 Не выдумывай и не дополняй цифры.
 Верни ТОЛЬКО JSON по схеме.`;
 }
@@ -5133,7 +5134,7 @@ async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
       "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
       "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
       "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
-      "Для найденных контактов обязательны точные source_urls. Не подтверждены — оставь phones=[], leader='' и status='not_found'. " +
+      "Для найденных контактов обязательны точные source_urls. Если там же есть подтверждённый email именно этого юрлица, верни его в emails без отдельных запросов. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
       "Не выполняй отдельный web_search ради каждого телефона или директора. " +
       "Верни JSON строго по схеме. Каждый id представь один раз.",
     model: TARGETED_SEARCH_MODEL,
@@ -5164,7 +5165,7 @@ async function searchContactsWithWeb({
   phoneRetryBudget = null
 }) {
   if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
-    return { status: "ok", phones: [], leader: "", official_site: "", note: "Already confirmed" };
+    return { status: "ok", phones: [], emails: [], leader: "", official_site: "", source_urls: [], note: "Already confirmed" };
   }
   const firstTimeout = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
