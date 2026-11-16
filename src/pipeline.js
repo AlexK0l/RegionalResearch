@@ -3013,7 +3013,7 @@ function ensureBatchCoverage(batch, batchResult) {
   return output;
 }
 
-function applyFinalBatchDelta(batch, delta) {
+export function applyFinalBatchDelta(batch, delta) {
   const byId = new Map((delta?.items || []).map((item) => [String(item?.canonical_id || ""), item]));
   const output = { direct_buyers: [], intermediaries: [], leasing: [] };
   const allowedFields = new Set([...COLS, "__comment"]);
@@ -3024,7 +3024,12 @@ function applyFinalBatchDelta(batch, delta) {
     if (item) {
       for (const change of Array.isArray(item.changes) ? item.changes : []) {
         const field = String(change?.field || "");
-        if (allowedFields.has(field)) row[field] = String(change?.value ?? "");
+        if (!allowedFields.has(field)) continue;
+        if (field === "Электронная почта") {
+          // Never erase an evidence-backed discovery address when the model
+          // returns an empty normalisation delta.
+          mergeCompanyEmail(row,change?.value);
+        } else row[field] = String(change?.value ?? "");
       }
       row.__decision = item.decision === "keep" ? "keep" : "review";
       row.__decision_reason = String(item.decision_reason || "");
@@ -3264,7 +3269,7 @@ function makeQaRecords(result) {
   return records;
 }
 
-function applyFinalQa(records, qa) {
+export function applyFinalQa(records, qa) {
   const allowedSheets = new Set(["direct_buyers", "intermediaries", "leasing"]);
   const allowedFields = new Set([...COLS, "__comment", "__decision", "__decision_reason", "__evidence", "__final_grade"]);
   const removeIds = new Set(Array.isArray(qa?.remove_ids) ? qa.remove_ids.map(String) : []);
@@ -3322,7 +3327,10 @@ function applyFinalQa(records, qa) {
 
   for (const record of records) {
     if (removeIds.has(record.id)) continue;
-    const row = { ...record.row, ...(patches.get(record.id) || {}) };
+    const patch=patches.get(record.id)||{};
+    const row={...record.row,...patch};
+    if(Object.hasOwn(patch,"Электронная почта"))
+      mergeCompanyEmail(row,record.row["Электронная почта"],patch["Электронная почта"]);
     const sheet = moves.get(record.id) || record.sheet;
     if (allowedSheets.has(sheet)) result[sheet].push(row);
   }
@@ -3330,7 +3338,7 @@ function applyFinalQa(records, qa) {
   return result;
 }
 
-function mergeQaRecordRows(records) {
+export function mergeQaRecordRows(records) {
   const first = records[0];
   const mergedRow = { ...(first?.row || {}) };
   const urls = [];
@@ -3366,7 +3374,9 @@ function mergeQaRecordRows(records) {
     for (const col of COLS) {
       const current = String(mergedRow[col] || "").trim();
       const incoming = String(row[col] || "").trim();
-      if (!current && incoming) mergedRow[col] = incoming;
+      if (col === "Электронная почта")
+        mergeCompanyEmail(mergedRow,companyEmailCell(row));
+      else if (!current && incoming) mergedRow[col] = incoming;
     }
 
     const segments = [mergedRow["Техника/сегмент"], row["Техника/сегмент"]]
