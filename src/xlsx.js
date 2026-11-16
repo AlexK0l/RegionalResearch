@@ -9,6 +9,7 @@ import {
 } from "./constants.js";
 import { refreshColorStatistics } from "./offlineColorStatistics.js";
 import { formatPhoneCell } from "./phoneExport.js";
+import { companyEmailCell, EMAIL_COLUMN } from "./emailContact.js";
 
 const DIRECT_MAP = [
   null,
@@ -18,6 +19,7 @@ const DIRECT_MAP = [
   null,
   null,
   null,
+  EMAIL_COLUMN,
   "Телефон",
   null,
   null,
@@ -59,6 +61,7 @@ const INTERMEDIARY_MAP = [
   "Город/район",
   "Техника/сегмент",
   "Основание",
+  EMAIL_COLUMN,
   "Телефон",
   null,
   null,
@@ -88,6 +91,7 @@ const LEASING_MAP = [
   "Город/район",
   "Техника/сегмент",
   "Основание",
+  EMAIL_COLUMN,
   "Телефон",
   null,
   null,
@@ -120,6 +124,7 @@ function strictNumber(value) {
 function mappedValue(row, field) {
   if (!field) return "";
   if (field === "Телефон") return formatPhoneCell(row?.[field]);
+  if (field === EMAIL_COLUMN) return companyEmailCell(row);
   if (field === "Выручка последнего подтвержденного года") {
     const value = strictNumber(row?.[field]);
     return value === "" ? "" : Math.round(value);
@@ -184,7 +189,7 @@ function buildColorStatisticsSheet() {
     ws[`D${row}`] = {
       t: "n",
       v: 0,
-      f: `COUNTIF('Прямые покупатели'!K:K,${row - 4})`
+      f: `COUNTIF('Прямые покупатели'!L:L,${row - 4})`
     };
   }
   ws["!cols"] = [{ wch: 22 }, { wch: 10 }, { wch: 44 }, { wch: 16 }];

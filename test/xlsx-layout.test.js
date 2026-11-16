@@ -47,15 +47,18 @@ test("exports synchronized reference workbook layout", () => {
   const leasing = XLSX.utils.sheet_to_json(wb.Sheets["Лизинг"], { header: 1, raw: true });
   const stats = XLSX.utils.sheet_to_json(wb.Sheets["Статистика"], { header: 1, raw: true });
 
-  assert.equal(direct[0].length, 37);
-  assert.equal(intermediary[0].length, 26);
-  assert.equal(leasing[0].length, 27);
+  assert.equal(direct[0].length, 38);
+  assert.equal(intermediary[0].length, 27);
+  assert.equal(leasing[0].length, 28);
   assert.equal(stats[0].length, 6);
   assert.equal(direct[0][2], "Наличие транспорта");
+  for(const header of [direct[0],intermediary[0],leasing[0]]){
+    assert.equal(header.indexOf("Электронная почта")+1,header.indexOf("Телефон"));
+  }
   assert.equal(direct[1][2], "Saby (грузовые): КамАЗ — 2 шт.");
   assert.equal(direct[1][1], "ООО Тест");
-  assert.equal(direct[1][16], 123456789);
-  assert.equal(direct[1][21], 42);
+  assert.equal(direct[1][17], 123456789);
+  assert.equal(direct[1][22], 42);
   assert.equal(intermediary[1][2], "ООО Посредник");
   assert.equal(leasing[1][2], "ООО Лизинг");
   const colors = wb.Sheets["Статистика по цветам"];

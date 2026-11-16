@@ -2,6 +2,8 @@
 // All limits are independently configurable; budgets are not quality claims.
 // A new autonomous study must not inherit phone numbers from older studies.
 // Legacy cache requires an explicit opt-in AND autonomous discovery disabled.
+import { parseEmailEntries } from "./emailContact.js";
+
 export function previousContactCacheEnabled(env = process.env) {
   const autonomous = String(env.OPENAI_AUTONOMOUS_DISCOVERY_ENABLED ?? "true")
     .toLowerCase() !== "false";
@@ -124,6 +126,7 @@ export function validBatchContactItem(item, row, expectedId) {
     ? [...new Set((Array.isArray(item.phones) ? item.phones : [])
       .map(normalizeRussianPhone).filter(Boolean))] : [];
   const leader = sources.length ? String(item.leader || "").trim().slice(0, 180) : "";
+  const emails = sources.length ? parseEmailEntries(item.emails) : [];
   const site = validHttpUrl(item.official_site) &&
     sources.some((u) => {
       try { return new URL(u).hostname.replace(/^www\./, "") ===
@@ -133,8 +136,8 @@ export function validBatchContactItem(item, row, expectedId) {
   // Empty, researched results can be cached; an omitted/mismatched response
   // is NOT a "not_found" and may need bounded structural recovery.
   return {
-    status: phones.length || leader ? "ok" : "not_found",
-    phones, leader, official_site: site,
+    status: phones.length || leader || emails.length ? "ok" : "not_found",
+    phones, emails, leader, official_site: site,
     source_urls: sources,
     note: String(item.note || "").slice(0, 500)
   };

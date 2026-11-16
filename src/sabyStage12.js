@@ -111,7 +111,7 @@ export async function runSabyStage12({
     scheduled:selected.length,processed:0,verified:0,review:0,
     freshScheduled,retryScheduled:selected.length-freshScheduled,
     maxDurationMs:settings.maxMs,deadlineReached:false,fullSweepCompleted:false,
-    phonesAdded:0,transportsAdded:0,vehiclesVerified:0,
+    phonesAdded:0,emailsAdded:0,transportsAdded:0,vehiclesVerified:0,
     partialResults:0,companyReviews:0,systemicErrors:0,
     circuitOpen:false,browserError:"",
     deferred:settings.enabled ? pending.length : 0
@@ -175,6 +175,7 @@ export async function runSabyStage12({
               if(coverage.complete)completed.add(inn);
               stats.verified++;
               if(applied.phoneAdded) stats.phonesAdded++;
+              if(applied.emailAdded) stats.emailsAdded++;
               if(applied.transportAdded) stats.transportsAdded++;
               if(applied.verifiedTrucks!==null)
                 stats.vehiclesVerified+=applied.verifiedTrucks;

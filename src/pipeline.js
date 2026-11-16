@@ -18,6 +18,7 @@ import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, discla
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
 import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
+import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -577,6 +578,7 @@ const DISCOVERY_SCHEMA = {
         "Город/район": { type: "string" },
         "Техника/сегмент": { type: "string" },
         "Основание": { type: "string" },
+        "Электронная почта": { type: "string" },
         "__evidence": {
           type: "object",
           additionalProperties: false,
@@ -593,6 +595,7 @@ const DISCOVERY_SCHEMA = {
         "Город/район",
         "Техника/сегмент",
         "Основание",
+        "Электронная почта",
         "__evidence"
       ]
     }
@@ -745,12 +748,13 @@ const CONTACT_BATCH_SCHEMA = {
           inn: { type: "string" },
           status: { type: "string", enum: ["ok", "not_found"] },
           phones: { type: "array", items: { type: "string" } },
+          emails: { type: "array", items: { type: "string" } },
           leader: { type: "string" },
           official_site: { type: "string" },
           source_urls: { type: "array", items: { type: "string" } },
           note: { type: "string" }
         },
-        required: ["id", "organization", "inn", "status", "phones", "leader", "official_site", "source_urls", "note"]
+        required: ["id", "organization", "inn", "status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
       }
     }
   }, required: ["items"]
@@ -762,11 +766,13 @@ const CONTACT_SEARCH_SCHEMA = {
   properties: {
     status: { type: "string", enum: ["ok", "not_found"] },
     phones: { type: "array", items: { type: "string" } },
+    emails: { type: "array", items: { type: "string" } },
     leader: { type: "string" },
     official_site: { type: "string" },
+    source_urls: { type: "array", items: { type: "string" } },
     note: { type: "string" }
   },
-  required: ["status", "phones", "leader", "official_site", "note"]
+  required: ["status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
 };
 
 const PHONE_VERIFY_SCHEMA = {
@@ -954,6 +960,7 @@ function contract(final = false) {
   "Город/район":"",
   "Техника/сегмент":"",
   "Основание":"",
+  "Электронная почта":"",
   "__evidence":{"source_urls":[],"notes":[]}
 }
 
@@ -2953,7 +2960,8 @@ function baselineRowFromCanonical(canonical) {
         .filter(Boolean)
     )];
 
-    if (col === "Телефон") row[col] = values.join("; ");
+    if (col === "Телефон" || col === "Электронная почта")
+      row[col] = col === "Телефон" ? values.join("; ") : formatEmailCell(...values);
     else if (col === "Основание" || col === "Техника/сегмент") row[col] = values.join(" | ");
     else row[col] = values[0] || "";
   }
@@ -2967,7 +2975,7 @@ function baselineRowFromCanonical(canonical) {
     `ИНН: ${row["ИНН"] || "не подтверждено"}`,
     "Деятельность: требуется финальная проверка",
     `Холдинг/УК/группа: ${row["Управляющая компания"] || "не подтверждено"}`,
-    "Email: не найден"
+    `Email: ${companyEmailCell(row)||"не найден"}`
   ].join("\n");
   return row;
 }
@@ -5097,6 +5105,7 @@ function contactSearchPrompt(row, region, kind = "contacts") {
 Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
 Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
 Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
+Если в тех же источниках встретился публичный email ЭТОГО юрлица, верни его в emails и укажи точные source_urls. Не трать отдельные web_search ради почты и не угадывай адрес.
 Не выдумывай и не дополняй цифры.
 Верни ТОЛЬКО JSON по схеме.`;
 }
@@ -5109,6 +5118,7 @@ function compactContactBatchTarget(row) {
     inn: normalizeInn(row?.["ИНН"]),
     city: String(row?.["Город/район"] || "").slice(0, 110),
     need_phone: !hasConfirmedPhone(row),
+    need_email: !companyEmailCell(row),
     need_leader: !hasConfirmedLeader(row),
     official_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .filter((url) => /^https?:\/\//i.test(String(url))).slice(0, 2)
@@ -5124,7 +5134,7 @@ async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
       "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
       "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
       "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
-      "Для найденных контактов обязательны точные source_urls. Не подтверждены — оставь phones=[], leader='' и status='not_found'. " +
+      "Для найденных контактов обязательны точные source_urls. Если там же есть подтверждённый email именно этого юрлица, верни его в emails без отдельных запросов. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
       "Не выполняй отдельный web_search ради каждого телефона или директора. " +
       "Верни JSON строго по схеме. Каждый id представь один раз.",
     model: TARGETED_SEARCH_MODEL,
@@ -5155,7 +5165,7 @@ async function searchContactsWithWeb({
   phoneRetryBudget = null
 }) {
   if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
-    return { status: "ok", phones: [], leader: "", official_site: "", note: "Already confirmed" };
+    return { status: "ok", phones: [], emails: [], leader: "", official_site: "", source_urls: [], note: "Already confirmed" };
   }
   const firstTimeout = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
@@ -5214,9 +5224,15 @@ async function searchContactsWithWeb({
   }
 
   const leader = String(first?.leader || second?.leader || "").trim();
+  const sources=[...new Set([
+    ...(Array.isArray(first?.source_urls)?first.source_urls:[]),
+    ...(Array.isArray(second?.source_urls)?second.source_urls:[])
+  ].filter(url=>String(url).startsWith("https://")))];
+  const emails=sources.length?formatEmailCell(first?.emails,second?.emails):"";
   return {
-    status: phones.size || leader ? "ok" : "not_found",
-    phones: [...phones],
+    status: phones.size || leader || emails ? "ok" : "not_found",
+    phones: [...phones], emails: emails?emails.split("; "):[],
+    source_urls:sources,
     leader,
     official_site: String(first?.official_site || second?.official_site || "").trim(),
     note: [first?.note, second?.note].map((value) => String(value || "").trim()).filter(Boolean).join(" | ")
@@ -5303,16 +5319,12 @@ function isMissingText(value) {
 }
 
 function evidenceEmail(row) {
-  const evidence = row?.__evidence || {};
-  const texts = [
-    evidence.email,
-    ...(Array.isArray(evidence.notes) ? evidence.notes : [])
-  ].map((value) => String(value || ""));
-  for (const text of texts) {
-    const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    if (match) return match[0];
-  }
-  return "";
+  // Free-form discovery notes frequently mention contractors, carriers,
+  // customers or tender counterparties. A random address in those notes is
+  // NOT safe proof that it belongs to this legal entity. Only explicit
+  // scoped contact fields / exact-INN Saby records / existing own company
+  // note can hydrate the visible e-mail column.
+  return formatEmailCell(row?.__evidence?.email);
 }
 
 function compactActivityDescription(row) {
@@ -5355,11 +5367,10 @@ function mergeResearchComment(row, incomingComment = "") {
     pickCurrent("Холдинг/УК/группа") ||
     (manager && !/не подтвержд/i.test(manager) ? manager : "") ||
     "не подтверждено";
-  const email =
-    pickIncoming("Email") ||
-    pickCurrent("Email") ||
-    evidenceEmail(row) ||
-    "не найден";
+  // The visible cell is canonical; keep the existing comment in sync.
+  mergeCompanyEmail(row,pickIncoming("Email"),pickCurrent("Email"),
+    evidenceEmail(row));
+  const email=companyEmailCell(row)||"не найден";
 
   row.__comment = [
     `Сайт/источник: ${source}`,
@@ -8638,6 +8649,8 @@ ${JSON.stringify(gaps)}
     if (result.leader && !hasConfirmedLeader(row)) {
       row["Руководитель / ЛПР"] = String(result.leader).trim();
     }
+    if (result.emails?.length && result.source_urls?.length)
+      mergeCompanyEmail(row,result.emails);
 
     for (const phone of result.phones || []) {
       const normalized = normalizePhoneDigits(phone);
@@ -8709,6 +8722,7 @@ ${JSON.stringify(gaps)}
       };
     }
     const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
+    const gainedEmail=Boolean(result.emails?.length && companyEmailCell(row));
     const gainedLeader = Boolean(
       result.__needLeader &&
       result?.leader &&
@@ -8716,7 +8730,7 @@ ${JSON.stringify(gaps)}
     );
     if (rowId) contactOutcomes.set(
       rowId,
-      gainedPhone || gainedLeader
+      gainedPhone || gainedLeader || gainedEmail
         ? "ok"
         : result.status === "unavailable"
           ? "unavailable"
@@ -8820,6 +8834,10 @@ ${JSON.stringify(gaps)}
 
           let applied = false;
           if (contact?.status === "ok") {
+            // Google AI must provide the company's own official source before
+            // its e-mail is accepted; no guessed domain or group leakage.
+            if (contact.email && String(contact.official_site||"").startsWith("https://"))
+              applied=mergeCompanyEmail(row,contact.email)||applied;
             if (contact.leader && !hasConfirmedLeader(row)) {
               row["Руководитель / ЛПР"] = String(contact.leader).trim();
               applied = true;

@@ -3,10 +3,11 @@
 // Visible cells may contain ONLY numbers, optionally followed by a department
 // explicitly stated by a source. No URLs, sites, Saby labels, e-mail, names,
 // provenance notes, or free-form descriptions. All provenance remains in the
-// established company comment / __evidence; no new XLSX columns.
+// established company comment / __evidence; e-mail has its own CRM column.
 //
 // This module is deliberately pure: exports never modify their source JSON.
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
+import { companyEmailCell, EMAIL_COLUMN } from "./emailContact.js";
 
 const PHONE_PATTERN = /(?<!\d)(?:\+7|7|8)(?:[\s().-]*\d){10}(?!\d)/g;
 const LOCAL_PATTERN = /(?<!\d)(?:\(\d{3}\)|\d{3})(?:[\s().-]*\d){7}(?!\d)/g;
@@ -136,7 +137,8 @@ export function sanitizedPhoneWorkbookData(result) {
   for(const section of ["direct_buyers","intermediaries","leasing"]){
     if(!Array.isArray(result[section]))continue;
     out[section]=result[section].map(row=>row && typeof row==="object" ?
-      {...row,"Телефон":formatPhoneCell(row["Телефон"])}:row);
+      {...row,"Телефон":formatPhoneCell(row["Телефон"]),
+        [EMAIL_COLUMN]:companyEmailCell(row)}:row);
   }
   return out;
 }

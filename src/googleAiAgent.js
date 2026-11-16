@@ -265,6 +265,7 @@ function agentPrompt(row, region, { needPhone, needLeader }) {
   const inn = row["ИНН"] || "";
   const city = row["Город/район"] || "";
   const currentPhone = row["Телефон"] || "";
+  const currentEmail = row["Электронная почта"] || "";
   const currentLeader = row["Руководитель / ЛПР"] || "";
 
   return `You operate a virtual Chromium browser. It is already open on Google.
@@ -276,6 +277,7 @@ INN: ${inn || "not known"}
 Region: ${region}
 City/district: ${city || "not known"}
 Existing phone cell: ${currentPhone || "empty"}
+Existing email cell: ${currentEmail || "empty"}
 Existing leader cell: ${currentLeader || "empty"}
 
 NEEDED FIELDS
@@ -288,7 +290,7 @@ MANDATORY PROCEDURE
 3. Verify the company primarily by INN. Never use contacts of namesakes or related legal entities unless explicitly tied to this INN.
 4. If phone is needed, extract only phone numbers explicitly belonging to this exact legal entity. If the first answer has no confirmed phone, use at most one second query: "${org} ${inn} телефон".
 5. If leader is needed, extract a named owner/director/transport or fleet decision-maker only when clearly tied to this exact legal entity.
-6. Never invent, complete, extrapolate, or guess contact data.
+6. Never invent, complete, extrapolate, or guess contact data. If an existing contact page already displays a public email of this exact legal entity, extract it; do not start a separate query just for email.
 7. If a field is already populated and not needed, do not spend additional searches trying to replace it.
 8. Normalize Russian phones to 7XXXXXXXXXX. Multiple new phones must be separated with "; ".
 9. Do not sign in, bypass CAPTCHA, bot checks, access controls, or paywalls. If blocked or AI Mode is unavailable, return "unavailable".
@@ -298,6 +300,7 @@ Return ONLY valid JSON:
 {
   "status": "ok" | "unavailable" | "not_found",
   "phone": "",
+  "email": "",
   "leader": "",
   "official_site": "",
   "note": ""
