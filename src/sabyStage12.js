@@ -49,6 +49,10 @@ export async function runSabyStage12({
   // Per-region fair queue cursor, durable across Saby-only child runs.
   // A reviewed contractor is retried only after unvisited INNs are seen.
   attemptedInns = [],
+  // Optional per-invocation override, used only by Saby-only continuation.
+  // Ordinary full research retains its 30-minute Stage12 default and
+  // existing two-hour configurable safety ceiling.
+  maxDurationMs = null,
   offset = 0, // smoke-test pagination only; default leaves production intact
   env = process.env,
   onProgress = async () => {},
@@ -58,6 +62,8 @@ export async function runSabyStage12({
   collectCompany = collectSabyCompany
 } = {}) {
   const settings=sabyStage12Settings(env);
+  if(maxDurationMs !== null && maxDurationMs !== undefined)
+    settings.maxMs=bounded(maxDurationMs,settings.maxMs,60000,24*60*60000);
   const completed=new Set((completedInns||[]).map(sabyInn).filter(Boolean));
   const plan=sabyEligibleRows(result);
   // Backward compatibility: older Stage12 checkpoints considered a direct
@@ -104,6 +110,7 @@ export async function runSabyStage12({
     previouslyCompleted:plan.eligible.length-pending.length,
     scheduled:selected.length,processed:0,verified:0,review:0,
     freshScheduled,retryScheduled:selected.length-freshScheduled,
+    maxDurationMs:settings.maxMs,deadlineReached:false,fullSweepCompleted:false,
     phonesAdded:0,transportsAdded:0,vehiclesVerified:0,
     partialResults:0,companyReviews:0,systemicErrors:0,
     circuitOpen:false,browserError:"",
@@ -132,7 +139,10 @@ export async function runSabyStage12({
     await sessionRunner(async ({page,settings:browserSettings})=>{
       for(const entry of selected) {
         if(signal?.aborted) throw new Error("JOB_CANCELLED");
-        if(Date.now()-startedAt>=settings.maxMs) break;
+        if(Date.now()-startedAt>=settings.maxMs) {
+          stats.deadlineReached=true;
+          break;
+        }
         const row=entry.row;
         const inn=sabyInn(row["ИНН"]);
         try {
@@ -231,6 +241,8 @@ export async function runSabyStage12({
   await flush();
   const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
     .filter(inn=>!completed.has(inn));
+  stats.fullSweepCompleted=stats.processed===pending.length &&
+    !stats.circuitOpen && !stats.browserError;
   const deferredSet=new Set(deferredInns);
   return {stats,completedInns:[...completed],deferredInns,
     attemptedInns:[...attempted].filter(inn=>deferredSet.has(inn))};
