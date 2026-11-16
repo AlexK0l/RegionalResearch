@@ -5224,9 +5224,15 @@ async function searchContactsWithWeb({
   }
 
   const leader = String(first?.leader || second?.leader || "").trim();
+  const sources=[...new Set([
+    ...(Array.isArray(first?.source_urls)?first.source_urls:[]),
+    ...(Array.isArray(second?.source_urls)?second.source_urls:[])
+  ].filter(url=>String(url).startsWith("https://")))];
+  const emails=sources.length?formatEmailCell(first?.emails,second?.emails):"";
   return {
-    status: phones.size || leader ? "ok" : "not_found",
-    phones: [...phones],
+    status: phones.size || leader || emails ? "ok" : "not_found",
+    phones: [...phones], emails: emails?emails.split("; "):[],
+    source_urls:sources,
     leader,
     official_site: String(first?.official_site || second?.official_site || "").trim(),
     note: [first?.note, second?.note].map((value) => String(value || "").trim()).filter(Boolean).join(" | ")
@@ -8647,6 +8653,8 @@ ${JSON.stringify(gaps)}
     if (result.leader && !hasConfirmedLeader(row)) {
       row["Руководитель / ЛПР"] = String(result.leader).trim();
     }
+    if (result.emails?.length && result.source_urls?.length)
+      mergeCompanyEmail(row,result.emails);
 
     for (const phone of result.phones || []) {
       const normalized = normalizePhoneDigits(phone);
@@ -8718,6 +8726,7 @@ ${JSON.stringify(gaps)}
       };
     }
     const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
+    const gainedEmail=Boolean(result.emails?.length && companyEmailCell(row));
     const gainedLeader = Boolean(
       result.__needLeader &&
       result?.leader &&
@@ -8725,7 +8734,7 @@ ${JSON.stringify(gaps)}
     );
     if (rowId) contactOutcomes.set(
       rowId,
-      gainedPhone || gainedLeader
+      gainedPhone || gainedLeader || gainedEmail
         ? "ok"
         : result.status === "unavailable"
           ? "unavailable"
