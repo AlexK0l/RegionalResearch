@@ -68,6 +68,15 @@ test("completed Saby-only UI displays stage12 activity, not misleading source co
   assert.match(completed,/Number\(d\.checkpoint\?\.saby_completed\|\|0\)/);
   assert.match(completed,/: "Проверено компаний: "/);
   assert.match(completed,/\+contactSummary\+/);
-  assert.match(markup,/UI build: 20261116-saby-only-summary/);
-  assert.match(markup,/app\.js\?v=20261116-saby-only-summary/);
+  assert.match(markup,/UI build: 20261116-saby-one-pass/);
+  assert.match(markup,/app\.js\?v=20261116-saby-one-pass/);
+});
+
+test("completed Saby-only UI distinguishes one full attempted sweep from fully verified firms",()=>{
+  const completed=source.slice(source.indexOf('if(d.state==="completed")'),
+    source.indexOf('if(d.state==="failed"||d.state==="cancelled")'));
+  assert.match(completed,/r\.saby\?\.fullSweepCompleted/);
+  assert.match(completed,/Повторить Saby для неподтверждённых компаний/);
+  assert.match(completed,/Вся очередь Saby проверена/);
+  assert.match(completed,/Неподтверждённые карточки сохранены/);
 });
