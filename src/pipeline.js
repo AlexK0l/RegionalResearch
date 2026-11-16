@@ -3375,7 +3375,7 @@ export function mergeQaRecordRows(records) {
       const current = String(mergedRow[col] || "").trim();
       const incoming = String(row[col] || "").trim();
       if (col === "Электронная почта")
-        mergeCompanyEmail(mergedRow,incoming);
+        mergeCompanyEmail(mergedRow,companyEmailCell(row));
       else if (!current && incoming) mergedRow[col] = incoming;
     }
 
