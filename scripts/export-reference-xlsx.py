@@ -6,7 +6,7 @@ import sys, json, copy, re
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.properties import CalcProperties
@@ -124,7 +124,7 @@ def ensure_email_columns(wb):
             assert headers.index(EMAIL_COL)+1==headers.index('Телефон'),name
             continue
         col=headers.index('Телефон')+1
-        old_last=ws.max_column
+        original_dims=[(key,copy.copy(dim)) for key,dim in ws.column_dimensions.items()]
         # Inserting at the source phone column does not modify formulas or
         # validations automatically in openpyxl, so shift these explicitly.
         validations=[(dv,[shift_range_columns(cr,col)
@@ -132,12 +132,17 @@ def ensure_email_columns(wb):
         old_cf=[(cf,[copy.copy(rule) for rule in rules])
             for cf,rules in ws.conditional_formatting._cf_rules.items()]
         ws.insert_cols(col)
-        for ci in range(old_last,col-1,-1):
-            old=get_column_letter(ci);new=get_column_letter(ci+1)
-            if old in ws.column_dimensions:
-                dim=copy.copy(ws.column_dimensions[old])
-                dim.index=new
-                ws.column_dimensions[new]=dim
+        # openpyxl does not shift column_dimensions on insert_cols.
+        # Rebuild their explicit OOXML min/max coordinates as well as keys;
+        # keeping old entries creates conflicting column-width definitions.
+        ws.column_dimensions.clear()
+        for key,dim in original_dims:
+            old_index=column_index_from_string(key)
+            new_index=old_index+(1 if old_index>=col else 0)
+            dim.index=get_column_letter(new_index)
+            if dim.min:dim.min+=(1 if dim.min>=col else 0)
+            if dim.max:dim.max+=(1 if dim.max>=col else 0)
+            ws.column_dimensions[dim.index]=dim
         ws.column_dimensions[get_column_letter(col)].width=33
         for row in range(1,ws.max_row+1):
             dest=ws.cell(row,col);src=ws.cell(row,col+1)
