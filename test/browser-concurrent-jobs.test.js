@@ -75,7 +75,7 @@ test("completed Saby-only UI displays stage12 activity, not misleading source co
 test("completed Saby-only UI distinguishes one full attempted sweep from fully verified firms",()=>{
   const completed=source.slice(source.indexOf('if(d.state==="completed")'),
     source.indexOf('if(d.state==="failed"||d.state==="cancelled")'));
-  assert.match(completed,/r\\.saby\\?\\.fullSweepCompleted/);
+  assert.match(completed,/r\.saby\?\.fullSweepCompleted/);
   assert.match(completed,/Повторить Saby для неподтверждённых компаний/);
   assert.match(completed,/Вся очередь Saby проверена/);
   assert.match(completed,/Неподтверждённые карточки сохранены/);
