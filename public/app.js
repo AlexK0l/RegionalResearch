@@ -646,6 +646,9 @@ async function poll(restoring=false){
       const r=d.result||{};
       const c=r.counts||{};
       const g=r.contacts||{};
+      e.sabyResume.textContent=d.mode==="saby_only"&&r.saby?.fullSweepCompleted
+        ?"Повторить Saby для неподтверждённых компаний"
+        :"Продолжить только Saby (без OpenAI)";
       // Saby-only reuses the source contact_stats, which is NOT the last
       // Saby attempt and can lack a total counter. Never label it as Saby work.
       const contactSummary=d.mode==="saby_only"
@@ -672,7 +675,9 @@ async function poll(restoring=false){
           ?" Отложено: контакты "+Number(d.checkpoint?.contacts_deferred||0)+
             ", Saby "+Number(d.checkpoint?.saby_deferred||0)+
             (d.mode==="saby_only"
-              ?". Можно продолжить только Saby без OpenAI."
+              ?(r.saby?.fullSweepCompleted
+                ?". Вся очередь Saby проверена. Неподтверждённые карточки сохранены; повторный обход необязателен."
+                :". Можно продолжить только Saby без OpenAI.")
               :". Выберите подходящий способ продолжения.")
           :"");
       return;
