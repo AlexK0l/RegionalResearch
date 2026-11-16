@@ -748,12 +748,13 @@ const CONTACT_BATCH_SCHEMA = {
           inn: { type: "string" },
           status: { type: "string", enum: ["ok", "not_found"] },
           phones: { type: "array", items: { type: "string" } },
+          emails: { type: "array", items: { type: "string" } },
           leader: { type: "string" },
           official_site: { type: "string" },
           source_urls: { type: "array", items: { type: "string" } },
           note: { type: "string" }
         },
-        required: ["id", "organization", "inn", "status", "phones", "leader", "official_site", "source_urls", "note"]
+        required: ["id", "organization", "inn", "status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
       }
     }
   }, required: ["items"]
@@ -765,11 +766,13 @@ const CONTACT_SEARCH_SCHEMA = {
   properties: {
     status: { type: "string", enum: ["ok", "not_found"] },
     phones: { type: "array", items: { type: "string" } },
+    emails: { type: "array", items: { type: "string" } },
     leader: { type: "string" },
     official_site: { type: "string" },
+    source_urls: { type: "array", items: { type: "string" } },
     note: { type: "string" }
   },
-  required: ["status", "phones", "leader", "official_site", "note"]
+  required: ["status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
 };
 
 const PHONE_VERIFY_SCHEMA = {
@@ -5114,6 +5117,7 @@ function compactContactBatchTarget(row) {
     inn: normalizeInn(row?.["ИНН"]),
     city: String(row?.["Город/район"] || "").slice(0, 110),
     need_phone: !hasConfirmedPhone(row),
+    need_email: !companyEmailCell(row),
     need_leader: !hasConfirmedLeader(row),
     official_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .filter((url) => /^https?:\/\//i.test(String(url))).slice(0, 2)
