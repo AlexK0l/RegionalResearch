@@ -73,6 +73,7 @@ test("Saby stage 12 writes multiple distinct phones but not their source",()=>{
   assert.equal(row.__evidence.saby.phone_details.length,2);
   assert.match(row.__comment,/Saby/);
   assert.match(row.__comment,/test@example.ru/);
+  assert.equal(row["Электронная почта"],"test@example.ru");
   assert.doesNotMatch(row["Телефон"],/Saby|example|https?:/i);
 });
 
@@ -96,7 +97,7 @@ test("XLSX fallback enforces phone-only values on all three commercial sheets",(
   const buffer=buildWorkbookBuffer(result);
   const wb=XLSX.read(buffer,{type:"buffer"});
   assert.equal(wb.SheetNames.length,6);
-  const lookup=[["Прямые покупатели",37],["Посредники",26],["Лизинг",27]];
+  const lookup=[["Прямые покупатели",38],["Посредники",27],["Лизинг",28]];
   for(const [name,width] of lookup) {
     const sheet=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1});
     assert.equal(sheet[0].length,width,name);
