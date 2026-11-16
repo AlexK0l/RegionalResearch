@@ -238,11 +238,11 @@ export async function runSabyStage12({
       error:stats.browserError
     }));
   }
+  stats.fullSweepCompleted=stats.processed===pending.length &&
+    !stats.circuitOpen && !stats.browserError;
   await flush();
   const deferredInns=pending.map(x=>sabyInn(x.row["ИНН"]))
     .filter(inn=>!completed.has(inn));
-  stats.fullSweepCompleted=stats.processed===pending.length &&
-    !stats.circuitOpen && !stats.browserError;
   const deferredSet=new Set(deferredInns);
   return {stats,completedInns:[...completed],deferredInns,
     attemptedInns:[...attempted].filter(inn=>deferredSet.has(inn))};
