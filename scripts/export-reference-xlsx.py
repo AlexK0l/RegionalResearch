@@ -81,13 +81,13 @@ def safe_phone_cell(value):
 # On old SQLite continuations rehydrate only explicit email facts belonging to
 # the current row, especially the exact-INN Saby card. Never scrape unrelated
 # notes for a plausible address.
-EMAIL_RE=re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",re.I)
+EMAIL_RE=re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",re.I)
 
 def safe_email_cell(row):
     evidence=row.get('__evidence') or {}
     saby=evidence.get('saby') or {}
     comment=str(row.get('__comment') or '')
-    line=re.search(r'^Email:\\s*([^\\r\\n]*)',comment,re.I|re.M)
+    line=re.search(r'^Email:\s*([^\r\n]*)',comment,re.I|re.M)
     inputs=[row.get(EMAIL_COL),row.get('Email'),evidence.get('email'),
             line.group(1) if line else '']
     if (str(saby.get('inn') or '')==str(row.get('ИНН') or '').strip()
@@ -150,7 +150,7 @@ def ensure_email_columns(wb):
             ranges=' '.join(shift_range_columns(cr,col) for cr in cf.sqref.ranges)
             for rule in rules:
                 if name=='Прямые покупатели' and rule.formula:
-                    rule.formula=[re.sub(r'(?<![A-Z])(\\$?)J(?=\\$?\\d)',r'\\1K',
+                    rule.formula=[re.sub(r'(?<![A-Z])(\$?)J(?=\$?\d)',r'\1K',
                         expr) for expr in rule.formula]
                 ws.conditional_formatting.add(ranges,rule)
 
