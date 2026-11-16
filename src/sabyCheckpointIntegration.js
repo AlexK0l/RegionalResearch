@@ -10,6 +10,7 @@ export async function runCheckpointedSabyStage12({
   result,
   completedInns = [],
   attemptedInns = [],
+  maxDurationMs = null,
   signal = null,
   env = process.env,
   startedAt = Date.now(),
@@ -24,7 +25,8 @@ export async function runCheckpointedSabyStage12({
     throw new TypeError("Stage 12 requires finalized commercial research result");
   }
   const options = {
-    result, completedInns, attemptedInns, signal, env, onProgress,
+    result, completedInns, attemptedInns, maxDurationMs,
+    signal, env, onProgress,
     onCheckpoint: async ({stats, completedInns: done, deferredInns,
       attemptedInns:visited}) => {
       await persistCheckpoint("saby", {
