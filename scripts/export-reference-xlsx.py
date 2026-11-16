@@ -7,13 +7,15 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.properties import CalcProperties
 
 SHEETS=['Прямые покупатели','Лизинг','Посредники','Статистика','Легенда цветов']
 COUNTS={'Прямые покупатели':21,'Посредники':26,'Лизинг':27,'Статистика':6,'Легенда цветов':4}
+EMAIL_COL='Электронная почта'
 SECTIONS=[('Прямые покупатели','direct_buyers'),('Посредники','intermediaries'),('Лизинг','leasing')]
-CHECKS={'Прямые покупатели':(1,8),'Посредники':(1,2,10),'Лизинг':(1,2,10)}
+CHECKS={'Прямые покупатели':(1,9),'Посредники':(1,2,11),'Лизинг':(1,2,11)}
 NUMERIC={'Выручка последнего подтвержденного года','Численность'}
 
 # Defense in depth: even when invoked directly (outside the Node exporter),
@@ -75,13 +77,93 @@ def safe_phone_cell(value):
     return '; '.join(phone+(' ('+dept+')' if dept else '')
                      for phone,dept in found.items())
 
+# The old research placed e-mails in the organization cell's comment.
+# On old SQLite continuations rehydrate only explicit email facts belonging to
+# the current row, especially the exact-INN Saby card. Never scrape unrelated
+# notes for a plausible address.
+EMAIL_RE=re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",re.I)
+
+def safe_email_cell(row):
+    evidence=row.get('__evidence') or {}
+    saby=evidence.get('saby') or {}
+    comment=str(row.get('__comment') or '')
+    line=re.search(r'^Email:\\s*([^\\r\\n]*)',comment,re.I|re.M)
+    inputs=[row.get(EMAIL_COL),row.get('Email'),evidence.get('email'),
+            line.group(1) if line else '']
+    if (str(saby.get('inn') or '')==str(row.get('ИНН') or '').strip()
+        and str(saby.get('source_url') or '').startswith('https://profile.saby.ru/')
+        and (saby.get('collection') or {}).get('contacts')=='collected'):
+        inputs.append(saby.get('emails'))
+    found=[]
+    for item in inputs:
+        parts=item if isinstance(item,list) else [item]
+        for part in parts:
+            for match in EMAIL_RE.findall(str(part or '')[:3000]):
+                addr=match.lower()
+                local,domain=addr.rsplit('@',1)
+                if (len(addr)>254 or len(local)>64 or local.startswith('.')
+                    or local.endswith('.') or '..' in local
+                    or len(found)>=20):continue
+                if addr not in found:found.append(addr)
+    return '; '.join(found)
+
+def shift_range_columns(value, inserted):
+    cr=CellRange(str(value))
+    if cr.min_col>=inserted:
+        cr.min_col+=1
+        cr.max_col+=1
+    elif cr.max_col>=inserted:
+        cr.max_col+=1
+    return str(cr)
+
+def ensure_email_columns(wb):
+    for name,_ in SECTIONS:
+        ws=wb[name]
+        headers=[str(cell.value or '') for cell in ws[1]]
+        if EMAIL_COL in headers:
+            assert headers.index(EMAIL_COL)+1==headers.index('Телефон'),name
+            continue
+        col=headers.index('Телефон')+1
+        old_last=ws.max_column
+        # Inserting at the source phone column does not modify formulas or
+        # validations automatically in openpyxl, so shift these explicitly.
+        validations=[(dv,[shift_range_columns(cr,col)
+            for cr in dv.sqref.ranges]) for dv in ws.data_validations.dataValidation]
+        old_cf=[(cf,[copy.copy(rule) for rule in rules])
+            for cf,rules in ws.conditional_formatting._cf_rules.items()]
+        ws.insert_cols(col)
+        for ci in range(old_last,col-1,-1):
+            old=get_column_letter(ci);new=get_column_letter(ci+1)
+            if old in ws.column_dimensions:
+                dim=copy.copy(ws.column_dimensions[old])
+                dim.index=new
+                ws.column_dimensions[new]=dim
+        ws.column_dimensions[get_column_letter(col)].width=33
+        for row in range(1,ws.max_row+1):
+            dest=ws.cell(row,col);src=ws.cell(row,col+1)
+            if src.has_style:dest._style=copy.copy(src._style)
+            dest.number_format='@'
+        ws.cell(1,col).value=EMAIL_COL
+        for dv,ranges in validations:dv.sqref=' '.join(ranges)
+        ws.conditional_formatting._cf_rules.clear()
+        for cf,rules in old_cf:
+            ranges=' '.join(shift_range_columns(cr,col) for cr in cf.sqref.ranges)
+            for rule in rules:
+                if name=='Прямые покупатели' and rule.formula:
+                    rule.formula=[re.sub(r'(?<![A-Z])(\\$?)J(?=\\$?\\d)',r'\\1K',
+                        expr) for expr in rule.formula]
+                ws.conditional_formatting.add(ranges,rule)
+
 def validate(wb):
     if wb.sheetnames!=SHEETS:
         raise ValueError('Reference template has incorrect sheet order: '+repr(wb.sheetnames))
     for name,expected in COUNTS.items():
         ws=wb[name]
-        if ws.max_column!=expected:
-            raise ValueError(f'Reference {name}: expected {expected} columns, got {ws.max_column}')
+        has_email=name in [section[0] for section in SECTIONS] and any(
+            str(cell.value or '')==EMAIL_COL for cell in ws[1])
+        wanted=expected+(1 if has_email else 0)
+        if ws.max_column!=wanted:
+            raise ValueError(f'Reference {name}: expected {wanted} columns, got {ws.max_column}')
     for name,_ in SECTIONS:
         header=[str(c.value or '') for c in wb[name][1]]
         if header.count('Организация')!=1 or 'ИНН' not in header or 'Основание' not in header:
@@ -137,7 +219,8 @@ def render(wb,data):
                     if src.has_style:dest._style=copy.copy(src._style)
                 ws.row_dimensions[ri].height=ws.row_dimensions[2].height
             for ci,h in enumerate(headers,1):
-                if h and h in row:ws.cell(ri,ci).value=get_value(row,h)
+                if h==EMAIL_COL:ws.cell(ri,ci).value=safe_email_cell(row)
+                elif h and h in row:ws.cell(ri,ci).value=get_value(row,h)
                 if h=='ИНН':ws.cell(ri,ci).number_format='@'
             for ci in CHECKS[name]:ws.cell(ri,ci).value=False
             note=str(row.get('__comment') or '').strip()
@@ -150,9 +233,9 @@ def render(wb,data):
             for key in list(ws.conditional_formatting):
                 rules=list(ws.conditional_formatting[key])
                 del ws.conditional_formatting[str(key.sqref)]
-                for rule in rules:ws.conditional_formatting.add(f'A2:U{end}',rule)
+                for rule in rules:ws.conditional_formatting.add(f'A2:{get_column_letter(len(headers))}{end}',rule)
             for dv in ws.data_validations.dataValidation:
-                if 'J2' in str(dv.sqref):dv.sqref=f'J2:J{end}'
+                if 'K2' in str(dv.sqref):dv.sqref=f'K2:K{end}'
         # The exported reference contains boolean cells; in XLSX they are
         # displayed as TRUE/FALSE rather than native Google Sheets checkboxes.
         if records:
@@ -172,7 +255,8 @@ def render(wb,data):
     for ri in range(2,8):
         code=legend.cell(ri,1).value
         if code is not None:
-            legend.cell(ri,4).value="=COUNTIF('Прямые покупатели'!J2:J"+str(max(2,len(data.get('direct_buyers',[]))+1))+","+str(int(code))+")"
+            color_col=get_column_letter([c.value for c in wb['Прямые покупатели'][1]].index('Цвет усл. форматирование')+1)
+            legend.cell(ri,4).value="=COUNTIF('Прямые покупатели'!"+color_col+"2:"+color_col+str(max(2,len(data.get('direct_buyers',[]))+1))+","+str(int(code))+")"
     wb.calculation=CalcProperties(calcMode='auto',fullCalcOnLoad=True,forceFullCalc=True)
 
 def main():
@@ -182,6 +266,7 @@ def main():
     validate(wb)
     rename_transport_header(wb)
     clear_existing(wb)
+    ensure_email_columns(wb)
     # Node writes UTF-8 bytes to stdin. Windows text pipes may default to
     # CP1251/CP866; decoding through sys.stdin would corrupt Cyrillic keys.
     # json.load(bytes) detects UTF-8 independently of the OS text code page.
