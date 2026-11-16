@@ -3,7 +3,7 @@
 // Visible cells may contain ONLY numbers, optionally followed by a department
 // explicitly stated by a source. No URLs, sites, Saby labels, e-mail, names,
 // provenance notes, or free-form descriptions. All provenance remains in the
-// established company comment / __evidence; no new XLSX columns.
+// established company comment / __evidence; e-mail has its own CRM column.
 //
 // This module is deliberately pure: exports never modify their source JSON.
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
