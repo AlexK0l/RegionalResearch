@@ -8838,6 +8838,10 @@ ${JSON.stringify(gaps)}
 
           let applied = false;
           if (contact?.status === "ok") {
+            // Google AI must provide the company's own official source before
+            // its e-mail is accepted; no guessed domain or group leakage.
+            if (contact.email && String(contact.official_site||"").startsWith("https://"))
+              applied=mergeCompanyEmail(row,contact.email)||applied;
             if (contact.leader && !hasConfirmedLeader(row)) {
               row["Руководитель / ЛПР"] = String(contact.leader).trim();
               applied = true;
