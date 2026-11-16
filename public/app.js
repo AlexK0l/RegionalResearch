@@ -646,12 +646,20 @@ async function poll(restoring=false){
       const r=d.result||{};
       const c=r.counts||{};
       const g=r.contacts||{};
+      // Saby-only reuses the source contact_stats, which is NOT the last
+      // Saby attempt and can lack a total counter. Never label it as Saby work.
+      const contactSummary=d.mode==="saby_only"
+        ? "Saby за запуск: обработано "+Number(r.saby?.processed||0)+
+          ", подтверждены данные по "+Number(r.saby?.verified||0)+
+          ". Всего завершено через Saby: "+
+          Number(d.checkpoint?.saby_completed||0)+"."
+        : "Проверено компаний: "+Number(g.total||0)+
+          ", контакты подтверждены для "+Number(g.ok||0)+".";
       e.resultSummary.textContent=
         "Прямые покупатели: "+(c.direct_buyers||0)+
         ", посредники: "+(c.intermediaries||0)+
         ", лизинг: "+(c.leasing||0)+
-        ". Проверено компаний: "+(g.total||0)+
-        ", контакты подтверждены для "+(g.ok||0)+"."+
+        ". "+contactSummary+
         (r.quality
           ?" Финальная проверка: A "+(r.quality.grades?.A||0)+
             ", B "+(r.quality.grades?.B||0)+
