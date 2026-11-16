@@ -1,10 +1,11 @@
 import { normalizeRussianPhone, validHttpUrl } from "./researchCostPolicy.js";
+import { mergeCompanyEmail, EMAIL_COLUMN } from "./emailContact.js";
 
 // Harvest only facts ALREADY SEEN during legal-INN identification. This
 // module never searches the web and must not infer values from the group name.
 const ALLOWED = new Set([
   "Телефон", "Руководитель / ЛПР", "Управляющая компания",
-  "Выручка последнего подтвержденного года", "Численность", "Email"
+  "Выручка последнего подтвержденного года", "Численность", "Email", EMAIL_COLUMN
 ]);
 function digits(value) { return String(value || "").replace(/\D/g, ""); }
 function norm(value) {
@@ -44,7 +45,7 @@ export function identitySnippetFact(item, fact, row) {
     const amount = Number(pure);
     if (!Number.isSafeInteger(amount) || amount <= 0) return null;
     value = amount;
-  } else if (field === "Email") {
+  } else if (field === "Email" || field === EMAIL_COLUMN) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(value) ||
         !quote.toLowerCase().includes(value.toLowerCase())) return null;
   } else if (!norm(quote).includes(norm(value))) {
@@ -63,11 +64,10 @@ export function reuseIdentityObservedFacts(row, item) {
     const fact = identitySnippetFact(item, candidate, row);
     if (!fact) continue;
     const field = fact.field;
-    if (field === "Email") {
-      if (missing(evidence.email)) {
-        evidence.email = fact.value;
-        applied.push(fact);
-      }
+    if (field === "Email" || field === EMAIL_COLUMN) {
+      const accepted=mergeCompanyEmail(row,fact.value);
+      if (missing(evidence.email)) evidence.email = fact.value;
+      if (accepted) applied.push(fact);
     } else if (field === "Телефон") {
       if (missing(row["Телефон"])) {
         row["Телефон"] = fact.value;
