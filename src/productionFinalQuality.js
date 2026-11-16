@@ -304,7 +304,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
   const originalRowCount = commercialBefore.length +
     previousReview.length + previousExcluded.length;
   const preservedFields = [
-    "ИНН", "Телефон", "Руководитель / ЛПР",
+    "ИНН", "Электронная почта", "Телефон", "Руководитель / ЛПР",
     "Управляющая компания", "Выручка последнего подтвержденного года",
     "Численность"
   ];
