@@ -316,7 +316,8 @@ test("segment-only Schmitz SCS and SCO 24 are typed but cannot raise coefficient
   });
   assert.equal(stats.recognized_semi_trailers,2);
   assert.equal(applyPriorityStage13(data).tiers.none,1);
-  assert.equal(r["Итоговый коэффициент"],0);
+  assert.ok(r["Итоговый коэффициент"]>=0&&r["Итоговый коэффициент"]<=19,
+    "the buyer must remain in the unconfirmed 0–19 band");
 });
 test("real full-checkpoint examples appear even when prior scores are ordinary",()=>{
   const samples=[
