@@ -146,7 +146,7 @@ function parseBasis(raw){
 // original evidentiary D from the already-saved, source-linked notes instead.
 // Never treat a speculative segment description as proof.
 const GENERIC_BASIS=/^\s*A\s*[—–-]\s*Конкретный evidence-note одновременно подтверждает прицепную\s*\/\s*полуприцепную технику/i;
-const PROOF_NOTE=/судебн|закупк|приобр|покупк|договор|лизинг|аренд|владени|владел|принадлеж|собственн|эксплуат|использу|зарегистр|зафиксир|в\s+залог|парк|передал|передан|в\s+реестр|выполнял[а-яё]*\s+перевоз|указан[а-яё]*\s+полуприцеп/i;
+const PROOF_NOTE=/суд\s+(?:установил|подтвердил|признал)|судебн|закупк|приобр|покупк|договор|лизинг|аренд|владени|владел|принадлеж|собственн|эксплуат|использу|зарегистр|зафиксир|в\s+залог|парк|передал|передан|в\s+реестр|выполнял[а-яё]*\s+перевоз|указан[а-яё]*\s+полуприцеп/i;
 const PROSPECTIVE=/потенциальн|предположител|теоретическ|может\s+(?:потребова|использова)|вероятн\s+потребност|не\s+раскрыт[а-яё]*|не\s+подтвержд[а-яё]*/i;
 // A broad job-search result does not identify this company's fleet. Mere
 // appearance in a query named "водитель на полуприцепе" is not equipment proof.
