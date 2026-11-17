@@ -30,7 +30,9 @@ test("testPriorityLogic: exact catalog pairs, both body groups, and no partial m
   }
   assert.equal(calc({c:"ТОНАР 959500 — 0 шт."}).tier,"none");
   assert.equal(calc({c:"полуприцеп без обозначения модели — 2 шт."}).tier,"ordinary");
-  assert.equal(calc({c:"Saby (грузовые): KRONE SD (2010 г.) — 2 шт."}).tier,"white");
+  assert.equal(calc({c:"Saby (грузовые): KRONE SD (2010 г.) — 2 шт."}).tier,"none");
+  assert.equal(calc({c:"TORGBOX: KRONE SD — 2 шт.; Saby (грузовые): KAMAZ 5490 — 4 шт."}).tier,"white");
+  assert.equal(calc({c:"Saby (грузовые): KAMAZ 5490 — 4 шт.; MAZ 5551 — 1 шт."}).warnings.length,0);
 });
 test("basis D matches only actual evidence and does not parse the segment suffix",()=>{
   assert.equal(calc({d:"В реестровых данных зафиксирован WIELTON NW-3 в залоге"}).tier,"green");
@@ -63,7 +65,7 @@ test("strict priority bands cannot cross regardless of revenue/staff/tractor",()
 test("no double count from C and D, exact revenue thresholds and staff",()=>{
   const v=calc({c:"ТОНАР 959500 — 2 шт.",
     d:"Подтверждены 2 самосвальных полуприцепа",revenue:300000000,staff:51});
-  assert.match(v.explanation,/минимум полуприцепов без двойного учёта C\/D: 2/);
+  assert.match(v.explanation,/минимум полуприцепов без двойного учёта C\/D\/источников: 2/);
   assert.match(v.explanation,/выручка Q: .* = 12\/20/);
   assert.match(v.explanation,/сотрудники V: 51 чел. = 6\/10/);
   assert.equal(v.score,70+Math.round(30*(12+6+4)/60));
@@ -94,4 +96,65 @@ test("stage13 changes only buyer final coefficient and virtual AK, idempotently"
   assert.deepEqual(base.leasing,before.leasing);
   assert.deepEqual(base.statistics,before.statistics);
   assert.equal(applyPriorityStage13(base).changed,0);
+});
+
+test("generic quality A statement is NOT independent evidence of a semi-trailer",()=>{
+  const generic="A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
+  const none=calc({d:generic,notes:["Подтверждена покупка трактора Беларус 1221.3. https://example.org/doc"]});
+  assert.equal(none.tier,"none");
+  assert.match(none.explanation,/только обобщённую оценку A/);
+  const ordinary=calc({d:generic,notes:["A — документ подтверждает аренду полуприцепа и тягача. https://example.org/doc"]});
+  assert.equal(ordinary.tier,"ordinary");
+  assert.equal(ordinary.warnings.length,0);
+});
+test("exact sourced model matches in evidence notes, including known brand and spelling aliases",()=>{
+  const generic="A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
+  for(const [note,tier,name] of [
+    ["В судебном акте подтверждено, что фирме принадлежит полуприцеп Schmitz Cargobull 9084. https://example.org/decision","white","SCHMITZ 9084"],
+    ["Компания эксплуатирует полуприцеп Schmitz SKO24. https://example.org/lease","white","SCHMITZ SKO24"],
+    ["Компания в лизинге приобрела полуприцеп Schmitz Cargobull SKO 24/L. https://example.org/lease","white","SCHMITZ SKO24"],
+    ["Судебным актом подтверждена аренда полуприцепа KRONE SD. https://example.org/lease","white","KRONE SD"],
+    ["В реестре зарегистрирован GRUNWALD 9453-0000010-50 в собственности компании. https://example.org/registry","green","GRUNWALD 9453-0000010-50"]
+  ]){
+    const res=calc({d:generic,notes:[note]});
+    assert.equal(res.tier,tier,note);
+    assert.match(res.models,new RegExp(name.replace(/[.*+?^$()|[\]{}]/g,"\\$&")));
+  }
+});
+test("bare brand, partial model, speculative source, missing provenance and expired deal cannot promote group",()=>{
+  const generic="A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
+  for(const note of [
+    "Ожидается, что KRONE SD пригодится для перевозок. https://example.org/forecast",
+    "Подтверждён договор аренды полуприцепа BONUM 914295-02. https://example.org/lease",
+    "В реестре зарегистрирована модель KRONE SDP27. https://example.org/doc",
+    "Подтверждено наличие GRUNWALD 9453-0000010-50", // no same-note URL
+    "В договоре аренды полуприцепа KRONE SD завершён срок. https://example.org/old",
+    "Полуприцеп KRONE SD не подтверждён регистрационными сведениями. https://example.org/registry"
+  ]){
+    assert.equal(calc({d:generic,notes:[note]}).tier,"none",note);
+  }
+  assert.equal(calc({d:generic,notes:["В 2026 году приобретён полуприцеп GRUNWALD 9453-0000010-50. https://example.org/lease"]}).tier,"green");
+  assert.equal(calc({d:generic,notes:["В 2026 году приобретён полуприцеп 9453-0000010-50. https://example.org/lease"]}).tier,"ordinary",
+    "trailer without manufacturer must not enter green group");
+});
+test("evidence is not double counted and never alters existing buyer fields",()=>{
+  const row={"Организация":"Sample",
+    "Основание":"A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.",
+    "__evidence":{notes:[
+      "В лизинге находится полуприцеп KRONE SD. https://example.org/source",
+      "В лизинге находится полуприцеп KRONE SD. https://example.org/source"
+    ]},
+    "Наличие транспорта":"Saby (грузовые): KAMAZ 5490 — 7 шт.",
+    "Выручка последнего подтвержденного года":100000000,
+    "Численность":12,"Телефон":"79991112233"};
+  const input={direct_buyers:[row],intermediaries:[],leasing:[],statistics:[]};
+  const original=structuredClone(row);
+  const report=applyPriorityStage13(input);
+  assert.equal(report.tiers.white,1);
+  assert.equal(report.warnings,0);
+  assert.equal(report.version,2);
+  assert.match(row[EXPLANATION_FIELD],/источников: 1/);
+  assert.equal(row["Телефон"],original["Телефон"]);
+  assert.deepEqual(row.__evidence,original.__evidence);
+  assert.equal(applyPriorityStage13(input).changed,0);
 });
