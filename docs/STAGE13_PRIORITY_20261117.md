@@ -102,8 +102,8 @@ npm run priority:stage13 -- \
 | --- | --- | --- |
 | `STAGE13_AI_ENABLED` | `true` | выключить все обращения OpenAI: `false` |
 | `STAGE13_AI_MODEL` | `TARGETED_SEARCH_MODEL` / `FINAL_BATCH_MODEL` / `gpt-5.6-luna` | модель Responses API |
-| `STAGE13_AI_MAX_CALLS` | `8` | максимум запросов OpenAI за исследование |
-| `STAGE13_AI_BATCH_SIZE` | `7` | моделей в одном запросе |
+| `STAGE13_AI_MAX_CALLS` | `12` | максимум запросов OpenAI за исследование |
+| `STAGE13_AI_BATCH_SIZE` | `10` | моделей в одном запросе |
 | `STAGE13_AI_MAX_PER_BUYER` | `3` | максимум обозначений от одного покупателя |
 | `STAGE13_AI_MAX_ESTIMATED_USD` | `0.35` | ограничение **оценочной** стоимости без гарантии счёта провайдера |
 | `STAGE13_AI_TIMEOUT_MS` | `25000` | таймаут одного запроса |
