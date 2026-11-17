@@ -9,6 +9,7 @@ import path from "node:path";
 import {createHash} from "node:crypto";
 import {buildReferenceWorkbookBuffer} from "../src/referenceWorkbookExport.js";
 import {applyPriorityStage13,calculatePriority13} from "../src/priorityStage13.js";
+import {finalizeStage13CommercialOutput} from "../src/priorityStage13Finalize.js";
 import {classifyStage13UnknownModels,stage13AISettings} from "../src/priorityStage13AI.js";
 import {stage13SourceAudit,stage13UsageSummary,stage13DiffAudit}
   from "../src/priorityStage13FullAudit.js";
@@ -197,6 +198,13 @@ async function main(){
     throw Error("Stage13 unexpectedly changed source fields: "+
       JSON.stringify(audit.unexpected_differences.slice(0,4)));
   }
+  // Commercial routing and JSON e-mail hydration are explicit, audited
+  // postprocessing steps, after the per-row immutable-input score audit.
+  const commercialPostprocess=finalizeStage13CommercialOutput(result);
+  audit.commercial_postprocess=commercialPostprocess;
+  audit.delivered_counts=commercialPostprocess.roles.final;
+  audit.score_audit_scope="All original direct buyers before commercial role routing";
+  summary.commercial_postprocess=commercialPostprocess;
   if(aiStats)payload.priority_ai_stats=aiStats;
   if(payload!==result)payload.priority_stats=summary;
   const bytes=await buildReferenceWorkbookBuffer(result);
@@ -211,6 +219,7 @@ async function main(){
     models_considered:selection.unique_models,
     rows_with_score_changes:audit.score_changed,
     score_increased:audit.score_increased,score_decreased:audit.score_decreased,
+    commercial_postprocess:commercialPostprocess,
     usage:{input_tokens:usage.input_tokens,output_tokens:usage.output_tokens,
       cached_input_tokens:usage.cached_input_tokens,
       estimated_token_cost_usd:usage.estimated_token_cost_usd},
