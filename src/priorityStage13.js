@@ -80,7 +80,7 @@ function startModel(line,{brand,model}){
 function basisModel(text,{brand,model}){
   const full=norm(brand+" "+model);
   return new RegExp("(^|[^A-ZА-Я0-9])"+escapeRE(full).replace(/ /g,"\\s+")+
-    "(?=$|[^A-ZА-Я0-9.\\-])").test(text);
+    "(?=$|[^A-ZА-Я0-9.\\-]|\\.(?=\\s|$|[,;]))").test(text);
 }
 function quantity(line){
   const m=line.match(/[—–-]\s*(\d+)\s*(?:шт|ед)(?:\.|иниц(?:ы|а)?)?(?=\s|$|[;,])/i);
@@ -89,10 +89,18 @@ function quantity(line){
 function parseTransport(raw){
   const res={tier:"none",green:0,white:0,ordinary:0,tractor:false,unknown:0,
     unknownExamples:[],items:[]},found=new Map();
-  // Existing column C contains both TORGBOX lines and Saby truck inventories.
-  const parts=str(raw).split(/[\r\n;]+/).map(x=>
-    x.replace(/^\s*(?:TORGBOX|Saby\s*\(грузовые\))\s*:\s*/i,"").trim()).filter(Boolean);
-  for(const line of parts){
+  // Saby (грузовые) lists TRUCKS, not proven semi-trailers. It often
+  // contains dozens of valid truck models; they are neither missing catalog
+  // entries nor grounds for warning/priority. TORGBOX lists remain eligible.
+  const parts=str(raw).split(/[\r\n;]+/).map(x=>x.trim()).filter(Boolean);
+  let sabyTrucks=false;
+  for(let line of parts){
+    if(/^Saby\s*\(грузовые\)\s*:/i.test(line)){sabyTrucks=true;continue;}
+    if(/^TORGBOX\s*:/i.test(line)){
+      sabyTrucks=false;
+      line=line.replace(/^TORGBOX\s*:\s*/i,"").trim();
+    }
+    if(sabyTrucks)continue;
     const q=quantity(line);
     if(!Number.isFinite(q)||q<1)continue;
     if(TRACTOR.test(line))res.tractor=true;
@@ -132,6 +140,46 @@ function parseBasis(raw){
   }else if(hasMention&&(negative||expired))res.uncertain=true;
   return res;
 }
+// Final qualification may replace D with a generic statement such as
+// "A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную...".
+// This statement does not itself identify the trailer. Reconstruct the
+// original evidentiary D from the already-saved, source-linked notes instead.
+// Never treat a speculative segment description as proof.
+const GENERIC_BASIS=/^\s*A\s*[—–-]\s*Конкретный evidence-note одновременно подтверждает прицепную\s*\/\s*полуприцепную технику/i;
+const PROOF_NOTE=/судебн|закупк|приобр|покупк|договор|лизинг|аренд|владени|владел|принадлеж|собственн|эксплуат|использу|зарегистр|зафиксир|в\s+залог|парк|передал|передан|в\s+реестр|выполнял[а-яё]*\s+перевоз|указан[а-яё]*\s+полуприцеп/i;
+const PROSPECTIVE=/потенциальн|предположител|теоретическ|может\s+(?:потребова|использова)|вероятн\s+потребност|не\s+раскрыт[а-яё]*|не\s+подтвержд[а-яё]*/i;
+function normalizeNoteModel(text){
+  // Canonical aliases preserve BOTH manufacturer and model; they never
+  // classify on the basis of a manufacturer alone.
+  return norm(text).replace(/SCHMITZ\s+CARGOBULL/g,"SCHMITZ")
+    .replace(/\bSKO\s+24\b/g,"SKO24")
+    .replace(/\bSCS\s+24\b/g,"SCS24");
+}
+function parseSourcedNotes(notes){
+  const models=new Map();
+  let ordinary=false;
+  for(const raw of Array.isArray(notes)?notes.slice(0,150):[]){
+    const note=str(raw);
+    // A source URL directly in the SAME note is required; a row-level list
+    // of unrelated source URLs cannot establish a model provenance.
+    if(!/https?:\/\//i.test(note) || !PROOF_NOTE.test(note) ||
+       NEGATIVE.test(note) || EXPIRED.test(note) ||
+       PROSPECTIVE.test(note))continue;
+    const normalized=normalizeNoteModel(note);
+    const matched=CATALOG.filter(item=>basisModel(normalized,item));
+    if(!matched.length && !TRAILER.test(note))continue;
+    for(const item of matched){
+      const key=item.brand+" "+item.model;
+      if(!models.has(key))models.set(key,{model:key,tier:item.tier,count:1,source:"evidence"});
+    }
+    if(!matched.length)ordinary=true;
+  }
+  const all=[...models.values()];
+  return {tier:all.some(x=>x.tier==="green")?"green":
+    all.some(x=>x.tier==="white")?"white":ordinary?"ordinary":"none",
+    qty:ordinary||all.length?1:0,models:all};
+}
+
 function parseRevenue(value){
   if(typeof value==="number")return Number.isFinite(value)&&value>=0?value:null;
   const s=str(value).trim();
@@ -156,10 +204,14 @@ function parseStaff(value){
 const qtyPoints=q=>q<=1?0:q<=3?4:q<=5?7:10;
 
 /** Pure calculation, including model, evidence and data warnings. */
-export function calculatePriority13({c="",d="",revenue="",staff=""}={}){
-  const t=parseTransport(c),b=parseBasis(d),ranking={none:0,ordinary:1,white:2,green:3};
-  const tier=ranking[t.tier]>=ranking[b.tier]?t.tier:b.tier;
-  const count=Math.max(t.green+t.white+t.ordinary,b.qty);
+export function calculatePriority13({c="",d="",revenue="",staff="",notes=[]}={}){
+  const generic=GENERIC_BASIS.test(str(d));
+  const t=parseTransport(c),b=parseBasis(generic?"":d),
+    e=parseSourcedNotes(notes),ranking={none:0,ordinary:1,white:2,green:3};
+  const tier=[t.tier,b.tier,e.tier].reduce((best,current)=>
+    ranking[current]>ranking[best]?current:best,"none");
+  // Both C and any number of source notes can describe the same vehicle.
+  const count=Math.max(t.green+t.white+t.ordinary,b.qty,e.qty);
   const rv=parseRevenue(revenue),pe=parseStaff(staff);
   const rp=rv===null||rv===0?0:rv<100e6?4:rv<300e6?8:rv<700e6?12:rv<1.5e9?16:20;
   const sp=pe===null||pe===0?0:pe<25?2:pe<=50?4:pe<=100?6:pe<=200?8:10;
@@ -167,14 +219,20 @@ export function calculatePriority13({c="",d="",revenue="",staff=""}={}){
   const band=BANDS[tier],extra=Math.round((band[1]-band[0])*Math.min(60,raw)/60),score=band[0]+extra;
   const names={none:"НЕТ ПОДТВЕРЖДЕНИЯ ПОЛУПРИЦЕПА",
     ordinary:"ОБЫЧНЫЙ ПОЛУПРИЦЕП",white:"БЕЛЫЙ СПИСОК",green:"ЗЕЛЁНЫЙ СПИСОК"};
-  const models=t.items.concat(b.models.filter(x=>!t.items.some(y=>y.model===x.model)));
+  const models=t.items.concat(b.models.filter(x=>!t.items.some(y=>y.model===x.model)))
+    .concat(e.models.filter(x=>!t.items.some(y=>y.model===x.model)&&
+      !b.models.some(y=>y.model===x.model)));
   const modelLabels=models.length?models.map(x=>(x.tier==="green"?"ЗЕЛЁНЫЙ ":"БЕЛЫЙ ")+x.model+
-    (x.source==="C"?" ("+x.count+" шт.)":" (по D, 1 упом.)")).join("; "):"нет точного совпадения";
+    (x.source==="C"?" ("+x.count+" шт.)":
+     x.source==="D"?" (по D, 1 упом.)":" (по источнику, 1 упом.)")).join("; "):
+    "нет точного совпадения";
   const warnings=[];
   if(!blank(revenue)&&rv===null)warnings.push("выручка не распознана");
   if(!blank(staff)&&pe===null)warnings.push("численность не распознана");
-  if(t.unknown)warnings.push("Наличие транспорта: "+t.unknown+" записей без классифицированного типа"+
+  if(t.unknown)warnings.push("TORGBOX: "+t.unknown+" записей без классифицированного типа"+
     (t.unknownExamples.length?" ("+t.unknownExamples.join(" | ")+")":""));
+  if(generic&&e.tier==="none"&&t.tier==="none")
+    warnings.push("D содержит только обобщённую оценку A; точное подтверждение полуприцепа из источника не извлечено");
   if(b.uncertain)warnings.push("основание D содержит сведения о полуприцепах с отрицанием/истёкшим договором");
   if(tier!=="none"&&b.negative&&t.tier!=="none")
     warnings.push("D не подтверждает технику, хотя C содержит модель: проверить актуальность");
@@ -186,7 +244,7 @@ export function calculatePriority13({c="",d="",revenue="",staff=""}={}){
     "ИТОГО: "+score+"/100",
     "КАТЕГОРИЯ: "+names[tier]+" ("+band[0]+"–"+band[1]+")",
     "Модели из списка: "+modelLabels,
-    "Подтверждённый минимум полуприцепов без двойного учёта C/D: "+count,
+    "Подтверждённый минимум полуприцепов без двойного учёта C/D/источников: "+count,
     "Внутригрупповые показатели (до нормировки, сумма "+raw+"/60):",
     "— седельный тягач из C: "+(t.tractor?"да":"нет")+" = "+tp+"/20",
     "— выручка Q: "+(rv===null?"нет распознанных данных":fmt(rv)+" ₽")+" = "+rp+"/20",
@@ -202,13 +260,13 @@ export function calculatePriority13({c="",d="",revenue="",staff=""}={}){
 export function applyPriorityStage13(result){
   if(!Array.isArray(result?.direct_buyers))
     throw new TypeError("Stage 13 requires final_result.direct_buyers");
-  const report={version:1,processed:0,changed:0,warnings:0,
+  const report={version:2,processed:0,changed:0,warnings:0,
     tiers:{none:0,ordinary:0,white:0,green:0},openai_calls:0,saby_calls:0,network_calls:0};
   for(const row of result.direct_buyers){
     if(!str(row?.["Организация"]).trim())continue;
     const r=calculatePriority13({c:row["Наличие транспорта"]||row.TORGBOX||"",
       d:row["Основание"],revenue:row["Выручка последнего подтвержденного года"],
-      staff:row["Численность"]});
+      staff:row["Численность"],notes:row.__evidence?.notes||[]});
     if(row["Итоговый коэффициент"]!==r.score ||
        row[EXPLANATION_FIELD]!==r.explanation)report.changed++;
     row["Итоговый коэффициент"]=r.score;
