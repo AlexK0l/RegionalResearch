@@ -28,7 +28,8 @@
     "saby:public-requisites-check": "node --env-file-if-exists=.env scripts/saby-public-requisites-check.js",
     "saby:missing-inn-queue": "node --env-file-if-exists=.env scripts/saby-missing-inn-queue.js",
     "audit:post-saby": "node scripts/post-saby-remediation.js",
-    "priority:stage13": "node --env-file-if-exists=.env scripts/priority-stage13-offline.js"
+    "priority:stage13": "node --env-file-if-exists=.env scripts/priority-stage13-offline.js",
+    "stage13:smoke:smolensk": "node --env-file-if-exists=.env scripts/stage13-smolensk-live-smoke.js"
   },
   "engines": {
     "node": ">=22"
