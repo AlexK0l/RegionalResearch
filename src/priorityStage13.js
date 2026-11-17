@@ -261,7 +261,7 @@ function modelMentions(text,limit=2){
   const clean=str(text).replace(/https?:\/\/\S+/gi," ");
   const results=[];
   for(const m of clean.matchAll(UNKNOWN_MODEL)){
-    let phrase=m[0].trim(),parts=phrase.split(/\s+/);
+    let phrase=m[0].trim().replace(/[.,;:]+$/g,""),parts=phrase.split(/\s+/);
     // "приобрела KRONE SDP27" includes a verb before the actual make.
     if(parts.length===3&&NOT_BRAND.test(parts[0])){
       phrase=parts.slice(1).join(" ");
@@ -281,7 +281,8 @@ function modelMentions(text,limit=2){
   // high confidence and must never be used as standalone ownership evidence.
   if(results.length<limit)for(const match of clean.matchAll(ALPHA_MODEL)){
     const phrase=match[0].trim();
-    if(!validPriority13ModelQuote(phrase)||results.includes(phrase))continue;
+    if(!validPriority13ModelQuote(phrase)||results.includes(phrase)||
+       results.some(numeric=>numeric.startsWith(phrase+" ")))continue;
     results.push(phrase);
     if(results.length>=limit)break;
   }
