@@ -206,7 +206,7 @@ export function applyPriorityStage13(result){
     tiers:{none:0,ordinary:0,white:0,green:0},openai_calls:0,saby_calls:0,network_calls:0};
   for(const row of result.direct_buyers){
     if(!str(row?.["Организация"]).trim())continue;
-    const r=calculatePriority13({c:row["Наличие транспорта"]??row.TORGBOX??"",
+    const r=calculatePriority13({c:row["Наличие транспорта"]||row.TORGBOX||"",
       d:row["Основание"],revenue:row["Выручка последнего подтвержденного года"],
       staff:row["Численность"]});
     if(row["Итоговый коэффициент"]!==r.score ||
