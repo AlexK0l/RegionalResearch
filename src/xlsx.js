@@ -16,7 +16,7 @@ const DIRECT_MAP = [
   "Организация",
   "Наличие транспорта",
   "Основание",
-  null,
+  "Итоговый коэффициент",
   null,
   null,
   EMAIL_COLUMN,
@@ -49,7 +49,7 @@ const DIRECT_MAP = [
   null,
   null,
   null,
-  null
+  "Обоснование коэффициента (Apps Script)"
 ];
 
 const INTERMEDIARY_MAP = [
