@@ -239,7 +239,13 @@ function modelMentions(text,limit=2){
   const clean=str(text).replace(/https?:\/\/\S+/gi," ");
   const results=[];
   for(const m of clean.matchAll(UNKNOWN_MODEL)){
-    const phrase=m[0].trim(),parts=phrase.trim().split(/\s+/),last=parts.at(-1);
+    let phrase=m[0].trim(),parts=phrase.split(/\s+/);
+    // "приобрела KRONE SDP27" includes a verb before the actual make.
+    if(parts.length===3&&NOT_BRAND.test(parts[0])){
+      phrase=parts.slice(1).join(" ");
+      parts=phrase.split(/\s+/);
+    }
+    const last=parts.at(-1);
     if(parts.length<2||NOT_BRAND.test(parts[0])||
        /^20(?:[0-2]\d|3\d)$/.test(last)||/^19\d\d$/.test(last)||
        /^(?:\d{1,3})$/.test(last))continue;
