@@ -2,7 +2,7 @@
 // No web tools: the model identifies a vehicle TYPE, not a buyer, transaction or source.
 // A positive high-confidence answer may unlock ONLY the ordinary 20-39 band.
 // It cannot populate the 57-item green/white catalog or change A/B/C, contacts or INN.
-import {priority13AICandidates,priority13InputHash} from "./priorityStage13.js";
+import {priority13AICandidates,priority13InputHash,validPriority13ModelQuote} from "./priorityStage13.js";
 
 const clampInt=(value,fallback,min,max)=>{
   const n=Number(value);
@@ -49,7 +49,7 @@ function promptFor(items){
     "Не повышай уверенность по отрасли компании, названию страницы, ТН ВЭД, ОКПД или просто слову 'прицеп'.",
     "Каталог цветовых групп НЕ расширяй: вид техники здесь только semi_trailer / другое.",
     "kind=semi_trailer и confidence=high допустимы только когда по конкретной марке+модели уверенно известно, что это полуприцеп.",
-    "model_quote — ТОЧНЫЙ непрерывный фрагмент model_text, содержащий производителя и номер модели; не выдумывай характеристики.",
+    "model_quote — ТОЧНЫЙ непрерывный фрагмент model_text с производителем и обозначением модели (числовым или буквенным); не выдумывай характеристики.",
     "reason — короткое объяснение по-русски без выдуманных ссылок.",
     "Ответь JSON-объектом items, сохрани id всех записей.",
     JSON.stringify(items.map(x=>({id:x.id,model_text:x.model_text,context:x.text.slice(0,460)})))
@@ -59,8 +59,7 @@ const normalizedModel=text=>String(text||"").toUpperCase().replace(/Ё/g,"Е")
   .replace(/\s+/g," ").trim();
 const safeQuote=(quote,text)=>{
   const q=String(quote||"").trim();
-  return q.length>=5&&q.length<=95&&String(text||"").includes(q)&&
-    /[A-Za-zА-Яа-яЁё]{2,}[\s-]+[A-Za-zА-Яа-яЁё\d*./_-]*\d/u.test(q);
+  return String(text||"").includes(q)&&validPriority13ModelQuote(q);
 };
 function normalizeVerdict(verdict,candidate){
   const k=String(verdict?.kind||"");
