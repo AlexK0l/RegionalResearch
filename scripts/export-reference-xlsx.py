@@ -227,6 +227,13 @@ def render(wb,data):
                 if h==EMAIL_COL:ws.cell(ri,ci).value=safe_email_cell(row)
                 elif h and h in row:ws.cell(ri,ci).value=get_value(row,h)
                 if h=='ИНН':ws.cell(ri,ci).number_format='@'
+                # Strict customer workbook has only 22 buyer columns; the old
+                # Google Sheets AK explanation column is not present. Preserve
+                # the five-tab layout by attaching Stage13's explanation to E.
+                if name=='Прямые покупатели' and h=='Итоговый коэффициент':
+                    explanation=str(row.get('Обоснование коэффициента (Apps Script)') or '').strip()
+                    if explanation:
+                        ws.cell(ri,ci).comment=Comment(explanation,'RegionalResearch · этап 13')
             for ci in CHECKS[name]:ws.cell(ri,ci).value=False
             note=str(row.get('__comment') or '').strip()
             if note:
