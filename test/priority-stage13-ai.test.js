@@ -114,7 +114,8 @@ test("without exact manufacturer+model quote or high confidence AI cannot promot
     {kind:"semi_trailer",confidence:"high",model_quote:"ТОНАР 959500"},
     {kind:"truck",confidence:"high",model_quote:"KRONE SDP27"},
     {kind:"unknown",confidence:"low",model_quote:""},
-    {kind:"semi_trailer",confidence:"high",model_quote:"2020"}
+    {kind:"semi_trailer",confidence:"high",model_quote:"2020"},
+    {kind:"semi_trailer",confidence:"high",model_quote:"KRONE SDP"}
   ]){
     const data=final(row("TORGBOX: KRONE SDP27 — 1 шт."));
     await classifyStage13UnknownModels(data,{env:cliEnv,
@@ -260,4 +261,10 @@ test("unknown alphabetic model names can be recognized, not just numerical codes
   assert.equal(rep.tiers.ordinary,1);
   assert.equal(rep.tiers.white,0);
   assert.equal(rep.tiers.green,0);
+});
+
+test("alphabetic parser cannot mistake the prefix of a numeric model for another model",()=>{
+  const items=priority13AICandidates(row("TORGBOX: KRONE SDP27 — 1 шт."));
+  assert.equal(items.length,1);
+  assert.equal(items[0].model_text,"KRONE SDP27");
 });
