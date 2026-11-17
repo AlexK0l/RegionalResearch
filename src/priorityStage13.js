@@ -177,7 +177,8 @@ function parseSourcedNotes(notes){
     const note=str(raw);
     // A source URL directly in the SAME note is required; a row-level list
     // of unrelated source URLs cannot establish a model provenance.
-    if(!/https?:\/\//i.test(note) || GENERIC_SEARCH_MENTION.test(note) ||
+    if(!/https?:\/\//i.test(note) || EXPIRED.test(note) ||
+       GENERIC_SEARCH_MENTION.test(note) ||
        (TAXONOMY_ONLY_TRAILER.test(note) && NON_SEMI_PURCHASE.test(note)))continue;
     const claim=affirmativeEvidence(note);
     if(!PROOF_NOTE.test(claim))continue;
