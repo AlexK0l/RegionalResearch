@@ -234,7 +234,16 @@ export function priority13InputHash(row){
 // Numbers in year/source URLs must not masquerade as a make+model. Do not send
 // Saby truck lists to OpenAI; those are explicitly truck-only sections.
 const UNKNOWN_MODEL=/([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,23}(?:\s+[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,22})?)\s+([A-Za-zА-Яа-яЁё\d*./_-]*\d[A-Za-zА-Яа-яЁё\d*./_-]{0,22})/gu;
-const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|сумма|руб|рф|для|был|была|приобрела|приобрёл|поставка|закупка|выручка|фирма|компания|судебный)$/i;
+// Some genuine models are alphabetic: Kögel Cargo, KRONE Box Liner,
+// SCHMITZ CARGOBULL S.KO. Require capitalized make AND named model.
+const ALPHA_MODEL=/[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}/gu;
+const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|сумма|руб|рф|для|был|была|приобрела|приобрёл|поставка|закупка|выручка|фирма|компания|предприятие|договор|контракт|судебный|ведомость|регистрации)$/i;
+export function validPriority13ModelQuote(value){
+  const q=str(value).trim();
+  if(q.length<5||q.length>95||NOT_BRAND.test(q.split(/\s+/)[0]))return false;
+  return /[A-Za-zА-Яа-яЁё]{2,}[\s-]+[A-Za-zА-Яа-яЁё\d*./_-]*\d/u.test(q)||
+    /^[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}$/u.test(q);
+}
 // Unverified tenders, speculative procurement plans and discovery listings
 // are not evidence that THIS company has the named piece of equipment.
 const ACTUAL_EQUIPMENT_EVENT=/приобр[её]л|приобрела|приобретен|приобретён|приобретена|закупил|закупила|закуплен|купил|купила|в\s+лизинге|лизингов[а-яё]*\s+договор|арендует|арендовал|владени|владеет|принадлежит|в\s+собственност|эксплуатир|использует|зарегистрирован|на\s+балансе|суд\s+установил|подтвержден[а-яё]*\s+владен/i;
@@ -256,6 +265,15 @@ function modelMentions(text,limit=2){
     // Some notes prepend a verb to "SCHMITZ 9084". Keep the literal phrase;
     // the model must return the exact shorter manufacturer+model substring.
     if(!results.includes(phrase))results.push(phrase);
+    if(results.length>=limit)break;
+  }
+  // Letter-only make/model names also deserve AI classification.
+  // Not every capitalized phrase is a vehicle: the final answer still needs
+  // high confidence and must never be used as standalone ownership evidence.
+  if(results.length<limit)for(const match of clean.matchAll(ALPHA_MODEL)){
+    const phrase=match[0].trim();
+    if(!validPriority13ModelQuote(phrase)||results.includes(phrase))continue;
+    results.push(phrase);
     if(results.length>=limit)break;
   }
   return results;
@@ -301,19 +319,13 @@ export function priority13AICandidates(row,{maxPerBuyer=3}={}){
   }
   return result;
 }
-function validAIModelQuote(value){
-  const q=str(value).trim();
-  return q.length>=5&&q.length<=95&&
-    /[A-Za-zА-Яа-яЁё]{2,}[\s-]+[A-Za-zА-Яа-яЁё\d*./_-]*\d/u.test(q) &&
-    !/^\s*(?:ООО|АО|ПАО|ЗАО|год|суд)\b/i.test(q);
-}
 function matchedAIInterpretations(row){
   const stored=row?.__priority13_ai;
   if(stored?.version!==1||stored.input_hash!==priority13InputHash(row)||
      !Array.isArray(stored.results))return [];
   const input=priority13AICandidates(row,{maxPerBuyer:50});
   return stored.results.filter(v=>v?.kind==="semi_trailer"&&
-    v.confidence==="high"&&validAIModelQuote(v.model_quote)&&
+    v.confidence==="high"&&validPriority13ModelQuote(v.model_quote)&&
     input.some(c=>c.source===v.source&&c.index===v.index&&
       c.model_text===v.model_text&&c.text.includes(v.model_quote)));
 }
