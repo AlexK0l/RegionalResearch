@@ -35,8 +35,15 @@ export function stage13CommercialRole(row){
   // lessor, the fact that it holds property is not a direct-cargo use case.
   const key=name.replace(/^(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*/u,"")
     .replace(/[«»"']/gu,"").trim();
-  const selectedNamesCompany=key.length>=5&&normalized(a).replace(/[«»"\x27]/gu,"").includes(key);
-  const selectedLessor=selectedNamesCompany&&/лизингодател[а-яё]*/iu.test(a);
+  const evidence=normalized(a).replace(/[«»"\x27]/gu,"");
+  const position=key.length>=5?evidence.indexOf(key):-1;
+  const selectedNamesCompany=position>=0;
+  // Require the grammatical lessor role immediately after the ROW company
+  // name. A lease agreement that mentions another lessor later in the
+  // sentence must NOT reclassify a lessee as a financing channel.
+  const sameCompanyRole=position<0?"":evidence.slice(position+key.length,position+key.length+105);
+  const selectedLessor=selectedNamesCompany&&
+    /^\s*(?:УКАЗАН[АОЫ]?|ВЫСТУПАЕТ|ЯВЛЯЕТСЯ|НАЗВАН[АОЫ]?)\s+ЛИЗИНГОДАТЕЛ[А-ЯЁ]*/u.test(sameCompanyRole);
   const explicitRole=notes.find(n=>
     /(?:^|[;.]\s*)роль\s*:\s*лизингодател[а-яё]*(?:\s*\/\s*реализатор)?/iu.test(n)||
     /не\s+(?:конечный|непосредственный)\s+эксплуатант/iu.test(n));
