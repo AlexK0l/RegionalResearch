@@ -599,7 +599,7 @@ function setProgress(p){
       " · на проверку: "+Number(stats.review||0);
   }else if(p.phase==="priority"){
     e.contactBox.hidden=true;
-    e.statusText.textContent="Расчёт коэффициента по группам моделей (без OpenAI и Saby)";
+    e.statusText.textContent="Этап 13: каталог моделей и OpenAI для неизвестных типов (при необходимости)";
   }else{
     e.contactBox.hidden=true;
     e.statusText.textContent=p.step?("Этап "+p.step):"";
