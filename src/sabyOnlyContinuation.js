@@ -1,7 +1,7 @@
 // Run ONLY Stage 12 from an already finalized SQLite research checkpoint.
 // Saby-only remains free of OpenAI by default. AI model checks are explicit opt-in.
 // The parent snapshot is immutable; a new job ID persists a Saby-only copy.
-import OpenAI from "openai";
+
 import {PIPELINE_VERSION, normalizeCheckpoint} from "./checkpointStore.js";
 import {costEnvLimitUsd} from "./researchCostPolicy.js";
 import {STEPS} from "./constants.js";
@@ -187,6 +187,7 @@ export async function runSabyOnlyContinuation({
      String(env.STAGE13_AI_ENABLED??"true").toLowerCase()!=="false"){
     if(!String(env.OPENAI_API_KEY||"").trim())
       throw new Error("STAGE13_AI_SABY_ONLY_ENABLED requires OPENAI_API_KEY");
+    const {default:OpenAI}=await import("openai");
     const aiClient=new OpenAI({apiKey:env.OPENAI_API_KEY});
     const priorCost=Number(source.api_usage?.estimated_cost_usd||0);
     priorityAIStats=await classifyStage13UnknownModels(result,{
