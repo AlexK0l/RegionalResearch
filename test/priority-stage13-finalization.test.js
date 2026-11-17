@@ -154,3 +154,9 @@ test("commercial postprocessing never drops rows or changes scoring, phone or do
   assert.equal(after["Итоговый коэффициент"],original["Итоговый коэффициент"]);
   assert.deepEqual(after.__evidence,original.__evidence);
 });
+
+test("lessee with own name and a different lessor in the SAME selected proof stays a direct buyer",()=>{
+  const r=row("ООО «ТМГ ИНДУСТРИЯ»",
+    "A — ООО «ТМГ ИНДУСТРИЯ» выступает лизингополучателем по договору, где ООО «АБСОЛЮТ ЛИЗИНГ» указано лизингодателем.");
+  assert.equal(stage13CommercialRole(r),null);
+});
