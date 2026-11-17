@@ -20,6 +20,7 @@ import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validB
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
+import { applyPriorityStage13 } from "./priorityStage13.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -5849,7 +5850,8 @@ const PIPELINE_PHASE_ORDER = {
   statistics: 9,
   contacts: 10,
   saby: 11,
-  completed: 12
+  priority: 12,
+  completed: 13
 };
 
 function cloneJson(value) {
@@ -9055,10 +9057,19 @@ ${JSON.stringify(gaps)}
   statuses[11].detail = !sabyStats.enabled
     ? "отключен (SABY_STAGE12_ENABLED=false)"
     : `выполнен · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+  // Stage 13 is purely local and runs after the last Saby row has been
+  // merged. It edits only buyer score (E) and explanation (virtual AK).
+  await assertNotCancelled();
+  startStep(statuses[12]);
+  statuses[12].detail="Расчёт групп моделей без платных запросов";
+  await progress({phase:"priority",step:13,percent:99,sabyStats});
+  const priorityStats=applyPriorityStage13(finalResult);
+  finishStep(statuses[12]);
+  statuses[12].detail=`выполнен · покупателей ${priorityStats.processed} · зелёных ${priorityStats.tiers.green} · белых ${priorityStats.tiers.white}`;
   await progress({
-    phase:"completed", step:12, percent:100,
+    phase:"completed", step:13, percent:100,
     contactCurrent:googleCompanies.length,
-    contactTotal:googleCompanies.length, contactStats, sabyStats
+    contactTotal:googleCompanies.length, contactStats, sabyStats,priorityStats
   });
   await persistCheckpoint("completed", {
     completed_stage: 9,
@@ -9083,6 +9094,8 @@ ${JSON.stringify(gaps)}
     saby_deferred_inns: sabyOutcome.deferredInns,
     saby_attempted_inns: sabyOutcome.attemptedInns,
     saby_stats: sabyStats,
+    priority_stats:priorityStats,
+    stage13_duration_ms:statuses[12].completedAt-statuses[12].startedAt,
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt,
     stage12_duration_ms: Date.now() - stage12StartedAt
@@ -9120,7 +9133,8 @@ ${JSON.stringify(gaps)}
       browserCircuitOpen,
       stage11DurationMs: Date.now() - stage11StartedAt
     },
-    saby: sabyStats
+    saby: sabyStats,
+    priority:priorityStats
   };
 }
 

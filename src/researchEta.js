@@ -93,7 +93,7 @@ export function estimateResearchEta(job, {
 
   const baselineLate = [defaultLateMs(env, "STAGE10_MAX_MS"),
     defaultLateMs(env, "STAGE11_MAX_MS"),
-    defaultLateMs(env, "STAGE12_MAX_MS")];
+    defaultLateMs(env, "STAGE12_MAX_MS"),1000];
   let remaining = 0;
   let observed = 0;
   let source = "measured";
@@ -110,7 +110,7 @@ export function estimateResearchEta(job, {
       return unestimated("calibrating", "Уточняем скорость выполнения этапов");
     }
 
-    if (i >= DISCOVERY && (!Number.isFinite(historical) || historical <= 0)) {
+    if (i >= DISCOVERY && i < 12 && (!Number.isFinite(historical) || historical <= 0)) {
       source = "mixed";
     }
     if (step.status === "running" && Number.isFinite(Number(step.startedAt)) &&

@@ -24,8 +24,8 @@ function payload({inn="7707083893",name="ООО Тест",
 const base = rows=>({direct_buyers:rows,intermediaries:[],leasing:[],statistics:[]});
 const fakeSession = task=>task({page:{},settings:{}});
 
-test("12 stages are shown; TORGBOX commercial header is renamed without changing its position",()=>{
-  assert.equal(STEPS.length,12);
+test("13 stages are shown; TORGBOX commercial header is renamed without changing its position",()=>{
+  assert.equal(STEPS.length,13);
   assert.equal(DIRECT_BUYER_COLS[2],"Наличие транспорта");
   assert.ok(!DIRECT_BUYER_COLS.includes("TORGBOX"));
 });

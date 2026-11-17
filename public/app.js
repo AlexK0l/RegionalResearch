@@ -224,6 +224,7 @@ function formatCheckpointPhase(phase){
     statistics:"статистика",
     contacts:"контакты",
     saby:"Saby — контакты и транспорт",
+    priority:"Этап 13 — итоговый коэффициент",
     completed:"завершено"
   })[phase]||phase||"неизвестный этап";
 }
@@ -565,6 +566,7 @@ function setProgress(p){
     dedupe:"Объединение и дедупликация",
     google_ai:"Поиск контактов",
     saby:"Saby: контакты и транспорт",
+    priority:"Этап 13: приоритет покупателей",
     qualification:"Identity, дедупликация и A/B/C",
     completed:"Готово",
     cancelled:"Остановлено"
@@ -595,6 +597,9 @@ function setProgress(p){
       " · телефоны: +"+Number(stats.phonesAdded||0)+
       " · транспорт: +"+Number(stats.transportsAdded||0)+
       " · на проверку: "+Number(stats.review||0);
+  }else if(p.phase==="priority"){
+    e.contactBox.hidden=true;
+    e.statusText.textContent="Расчёт коэффициента по группам моделей (без OpenAI и Saby)";
   }else{
     e.contactBox.hidden=true;
     e.statusText.textContent=p.step?("Этап "+p.step):"";

@@ -40,4 +40,13 @@ jobs:
       - name: Syntax
         run: node --check src/pipeline.js
       - name: Offline regression
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > test-output.log 2>&1
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            python -c 'import re,pathlib; s=pathlib.Path("test-output.log").read_text(encoding="utf8",errors="replace"); [print("::error title=Offline regression::"+s[m.start():m.start()+850].replace("%","%25").replace("\r","%0D").replace("\n","%0A")) for m in list(re.finditer(r"(?m)^not ok \d+ - ",s))[:20]]'
+            tail -n 80 test-output.log
+          fi
+          exit "$code"

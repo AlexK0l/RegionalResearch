@@ -27,7 +27,8 @@
     "saby:identity-probe": "node --env-file-if-exists=.env scripts/saby-identity-probe.js",
     "saby:public-requisites-check": "node --env-file-if-exists=.env scripts/saby-public-requisites-check.js",
     "saby:missing-inn-queue": "node --env-file-if-exists=.env scripts/saby-missing-inn-queue.js",
-    "audit:post-saby": "node scripts/post-saby-remediation.js"
+    "audit:post-saby": "node scripts/post-saby-remediation.js",
+    "priority:stage13": "node scripts/priority-stage13-offline.js"
   },
   "engines": {
     "node": ">=22"
