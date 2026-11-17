@@ -248,3 +248,29 @@ test("direct production request helper is reusable by real Smolensk smoke",async
   assert.equal(received,true);
   assert.equal(response.items[0].kind,"semi_trailer");
 });
+
+
+test("Smolensk Kögel SN 24 positive model verdict raises E from 0 to ordinary",async()=>{
+  const caseRow=buyer([SMOLENSK_NOTE],{
+    "Организация":"ООО «АЛЬВАДИ-ТОРГ ПЛЮС»",
+    "Основание":"A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга."
+  });
+  const data=final(caseRow);
+  const old=applyPriorityStage13(structuredClone(data));
+  assert.equal(old.tiers.none,1);
+  const stats=await classifyStage13UnknownModels(data,{env,
+    requestBatch:async batch=>({items:batch.map(x=>({
+      id:x.id,kind:"semi_trailer",confidence:"high",
+      model_quote:"Kögel SN 24",reason:"проверенный тип модели"
+    }))})
+  });
+  assert.equal(stats.calls,1);
+  assert.equal(stats.recognized_semi_trailers,1);
+  assert.equal(applyPriorityStage13(data).tiers.ordinary,1);
+  assert.ok(caseRow["Итоговый коэффициент"]>=20&&caseRow["Итоговый коэффициент"]<=39);
+});
+
+test("historical TORGBOX text is not an active OpenAI candidate source",()=>{
+  const row=buyer([],{TORGBOX:"KRONE SDP27 — 1 шт."});
+  assert.equal(priority13AICandidates(row).length,0);
+});
