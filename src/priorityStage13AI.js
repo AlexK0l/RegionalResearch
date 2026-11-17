@@ -121,7 +121,7 @@ function actualEstimatedUsd(usage,env){
 function shouldCancel(signal){
   if(signal?.aborted)throw new Error("JOB_CANCELLED");
 }
-async function queryOpenAI(client,batch,{model,maxOutputTokens,timeoutMs,signal,onUsage}){
+export async function requestStage13ModelBatch(client,batch,{model,maxOutputTokens,timeoutMs,signal,onUsage=()=>{}}){
   const prompt=promptFor(batch);
   const request={
     model,input:prompt,max_output_tokens:maxOutputTokens,
@@ -226,7 +226,7 @@ export async function classifyStage13UnknownModels(result,{
       // returns malformed data: it may still be chargeable.
       stats.calls++;
       response=requestBatch?await requestBatch(batch):
-        await queryOpenAI(client,batch,{
+        await requestStage13ModelBatch(client,batch,{
           model:settings.model,maxOutputTokens:settings.maxOutputTokens,
           timeoutMs:settings.timeoutMs,signal,onUsage
         });

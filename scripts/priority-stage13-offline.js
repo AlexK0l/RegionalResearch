@@ -62,7 +62,7 @@ async function main(){
       firstChanges:[],firstWarnings:[]};
     for(const [index,row] of result.direct_buyers.entries()){
       if(!String(row["Организация"]||"").trim())continue;
-      const v=calculatePriority13({c:row["Наличие транспорта"]||row.TORGBOX||"",
+      const v=calculatePriority13({c:row["Наличие транспорта"]||"",
         d:row["Основание"],revenue:row["Выручка последнего подтвержденного года"],
         staff:row["Численность"],notes:row.__evidence?.notes||[]});
       stats.buyers++;stats.tiers[v.tier]++;
