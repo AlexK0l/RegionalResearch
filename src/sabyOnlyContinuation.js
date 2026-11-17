@@ -190,13 +190,17 @@ export async function runSabyOnlyContinuation({
     const {default:OpenAI}=await import("openai");
     const aiClient=new OpenAI({apiKey:env.OPENAI_API_KEY});
     const priorCost=Number(source.api_usage?.estimated_cost_usd||0);
+    let stage13Cost=0;
     priorityAIStats=await classifyStage13UnknownModels(result,{
       client:aiClient,env,signal,
       previousRows:source.final_result?.direct_buyers||[],
-      remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd(env)-priorCost),
-      onBatchComplete:aiState=>persist("priority",{
-        completed_stage:12,final_result:result,priority_ai_stats:aiState
-      })
+      remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd(env)-priorCost-stage13Cost),
+      onBatchComplete:aiState=>{
+        stage13Cost=Number(aiState.estimated_cost_usd||0);
+        return persist("priority",{
+          completed_stage:12,final_result:result,priority_ai_stats:aiState
+        });
+      }
     });
   }
   const priorityStats=applyPriorityStage13(result,{aiStats:priorityAIStats});
