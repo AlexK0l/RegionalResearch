@@ -16,8 +16,8 @@ export function stage13AISettings(env=process.env){
   return {
     enabled:String(env.STAGE13_AI_ENABLED??"true").toLowerCase()!=="false",
     model:String(env.STAGE13_AI_MODEL||env.TARGETED_SEARCH_MODEL||env.FINAL_BATCH_MODEL||"gpt-5.6-luna"),
-    maxCalls:clampInt(env.STAGE13_AI_MAX_CALLS,8,0,20),
-    batchSize:clampInt(env.STAGE13_AI_BATCH_SIZE,7,1,12),
+    maxCalls:clampInt(env.STAGE13_AI_MAX_CALLS,12,0,20),
+    batchSize:clampInt(env.STAGE13_AI_BATCH_SIZE,10,1,12),
     maxPerBuyer:clampInt(env.STAGE13_AI_MAX_PER_BUYER,3,1,8),
     maxUsd:clampNum(env.STAGE13_AI_MAX_ESTIMATED_USD,0.35,0,2),
     timeoutMs:clampInt(env.STAGE13_AI_TIMEOUT_MS,25000,5000,60000),
@@ -194,7 +194,16 @@ export async function classifyStage13UnknownModels(result,{
   stats.candidates=queue.length+stats.cached;
   stats.unique_models=bySignature.size;
   // One request per unknown MAKE+MODEL rather than one request per buyer.
-  const representatives=[...bySignature.values()].map(rows=>rows[0]);
+  // Prioritize sourced A/B and verified TORGBOX when the budget is smaller
+  // than the whole candidate queue; never sort by company name/alphabet.
+  const rank=t=>{
+    const row=result.direct_buyers[t.rowIndex];
+    const grade=String(row?.__final_grade||row?.["Основание"]||"").trim().toUpperCase()[0];
+    return (grade==="A"?30:grade==="B"?20:10)+(t.source==="TORGBOX"?5:0);
+  };
+  const representatives=[...bySignature.values()]
+    .map(rows=>rows.slice().sort((a,b)=>rank(b)-rank(a)||a.rowIndex-b.rowIndex)[0])
+    .sort((a,b)=>rank(b)-rank(a)||a.rowIndex-b.rowIndex);
   const maxItems=settings.maxCalls*settings.batchSize;
   const work=representatives.slice(0,maxItems);
   stats.deferred=queue.length-work.reduce((n,item)=>
