@@ -21,6 +21,7 @@ import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { applyPriorityStage13 } from "./priorityStage13.js";
+import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -9057,13 +9058,31 @@ ${JSON.stringify(gaps)}
   statuses[11].detail = !sabyStats.enabled
     ? "отключен (SABY_STAGE12_ENABLED=false)"
     : `выполнен · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
-  // Stage 13 is purely local and runs after the last Saby row has been
-  // merged. It edits only buyer score (E) and explanation (virtual AK).
+  // Stage 13: exact 57-model catalog stays deterministic. Optionally classify
+  // UNKNOWN models using the existing OpenAI client, without web search.
+  // AI may establish only the ordinary 20-39 group, never green/white or A/B/C.
+  // If model calls fail or cost cap is reached, use the deterministic result.
   await assertNotCancelled();
   startStep(statuses[12]);
-  statuses[12].detail="Расчёт групп моделей без платных запросов";
+  statuses[12].detail="Каталог моделей и ограниченная проверка неизвестных через OpenAI";
   await progress({phase:"priority",step:13,percent:99,sabyStats});
-  const priorityStats=applyPriorityStage13(finalResult);
+  const priorityAIStats=await classifyStage13UnknownModels(finalResult,{
+    client,env:process.env,signal:jobSignal,
+    previousRows:resumeCheckpoint?.final_result?.direct_buyers||[],
+    remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd()-estimatedApiCostUsd(client)),
+    onUsage:usage=>recordTokenUsage(client,usage),
+    onBatchComplete:async aiState=>{
+      statuses[12].detail=`OpenAI: ${aiState.classified} моделей, ${aiState.calls} запросов; без веб-поиска`;
+      // Persist each completed batch: a resumed job can reuse model decisions
+      // from the source-fingerprinted JSON instead of paying for them again.
+      await persistCheckpoint("priority",{
+        completed_stage:12,final_result:finalResult,priority_ai_stats:aiState
+      });
+      await progress({phase:"priority",step:13,percent:99,
+        sabyStats,priorityAIStats:aiState});
+    }
+  });
+  const priorityStats=applyPriorityStage13(finalResult,{aiStats:priorityAIStats});
   finishStep(statuses[12]);
   statuses[12].detail=`выполнен · покупателей ${priorityStats.processed} · зелёных ${priorityStats.tiers.green} · белых ${priorityStats.tiers.white}`;
   await progress({
@@ -9095,6 +9114,7 @@ ${JSON.stringify(gaps)}
     saby_attempted_inns: sabyOutcome.attemptedInns,
     saby_stats: sabyStats,
     priority_stats:priorityStats,
+    priority_ai_stats:priorityAIStats,
     stage13_duration_ms:statuses[12].completedAt-statuses[12].startedAt,
     stage10_duration_ms: Date.now() - stage10StartedAt,
     stage11_duration_ms: Date.now() - stage11StartedAt,
