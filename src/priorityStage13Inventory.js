@@ -12,11 +12,47 @@ const EXTRA=["KÖGEL","KOGEL","KOEGEL","V-TRAILER","SCHMITZ CARGOBULL",
 const CONTEXT=/полуприцеп|п\s*\/\s*прицеп|прицеп|сортиментовоз|автопоезд|седельн[а-яё]*\s+тягач|цистерн|трал|контейнеровоз|шторн|грузов[а-яё]*\s+автомоб|транспортн[а-яё]*\s+(?:средств|техник)|марки|модел[ьи]|лизинг|автотранспорт/iu;
 const NON_MODEL=/^(?:VIN|ИНН|ОБЪЕМОМ[А-ЯЁ]*|CARGOBULL|ЛЕСОВОЗ[А-ЯЁ]*|САМОСВАЛ[А-ЯЁ]*|ПОЛУПРИЦЕП[А-ЯЁ]*|ПРИЦЕП[А-ЯЁ]*|СЕДЕЛЬН[А-ЯЁ]*|ТЯГАЧ[А-ЯЁ]*|ГРУЗОВ[А-ЯЁ]*|ТЕНТОВ[А-ЯЁ]*|БОРТОВ[А-ЯЁ]*|ШТОРН[А-ЯЁ]*|ЦИСТЕРН[А-ЯЁ]*|ТРАНСПОРТ[А-ЯЁ]*|АВТОМОБИЛ[А-ЯЁ]*|ТОНН[А-ЯЁ]*|МОДЕЛЬ|МОДЕЛИ|МАРКА|МАРКИ|КОМПАНИИ|МОЩНОСТЬЮ|ОБОРУДОВАНИЕ|ЛИНИИ|НЕИЗВЕСТНА|МЕЖДУНАРОДНЫХ)$/iu;
 const NON_MAKE=/^(?:VIN|ИНН|ОБЪЕМОМ[А-ЯЁ]*|АСМАП|ПОЛУПРИЦЕП[А-ЯЁ-]*|КАМАЗ-САМОСВАЛ|ООО|АО|ПАО|ОАО|ЗАО|ГК|ИП|МУП|ГОДА|ГОДУ|СУД|ДОГОВОР|ТЕХНИКА|МОДЕЛЬ|ПРИЦЕП|КОМПАНИЯ|ТРАКТОРНЫЙ|ЗАКРЕПЛЕНЫ|МОЩНОСТЬЮ|МАСЕЛ)$/iu;
-const EVENT=/приобр|купил|купила|куплен|лизингополуч|лизинг|в\s+собственност|собственн|владен|владеет|зарегистрирован|закреплен|закреплён|эксплуатир|использу|суд\s+установ|парк\s+(?:содержит|включает|состоит)|переданы|получил|выполнял[а-яё]*\s+перевоз/iu;
+const EVENT=/приобр|купил|купила|куплен|лизингополуч|лизинг|в\s+собственност|собственн|владен|владеет|зарегистрирован|закреплен|закреплён|эксплуатир|использу|суд\s+установ|парк(?:\s+[а-яё]+){0,3}\s+(?:содержит|включает|состоит)|переданы|получил|выполнял[а-яё]*\s+перевоз/iu;
 const UNPROVEN=/планир[а-яё]*\s+(?:приобр|закуп|купить)|план\s+закуп|запрос\s+цен|тендер\s+на|потенциал|предположител|потенциальн|возможн[а-яё]*\s+использован|не\s+(?:подтвержд[а-яё]*|установлен[а-яё]*|найден[а-яё]*|раскрыт[а-яё]*|доказан[а-яё]*|принадлеж[а-яё]*|имеет)|нет\s+(?:данных|сведений|подтверждения)|отсутств[а-яё]*/iu;
 const EXPIRED=/договор[а-яё]*[^.;\n]{0,110}(?:заверш[а-яё]*|прекращ[а-яё]*|ист[её]к[а-яё]*)|(?:заверш[а-яё]*|ист[её]к[а-яё]*)[^.;\n]{0,110}договор/iu;
 const urlIn=text=>(String(text||"").match(/https?:\/\/[^\s<>\])]+/i)?.[0]||"")
   .replace(/[.,;!?]+$/,"");
+// Conservative recovery for legacy notes that say "Сайт организации: ..."
+// without an inline citation. Match an official, company-named domain
+// from the SAME ROW'S stored sources; never attach arbitrary source_urls.
+// "ООО «Трансснип»" -> "transsnip.ru" is an exact company/domain match.
+const CYRILLIC_TO_LATIN={
+  а:"a",б:"b",в:"v",г:"g",д:"d",е:"e",ё:"e",ж:"zh",з:"z",
+  и:"i",й:"y",к:"k",л:"l",м:"m",н:"n",о:"o",п:"p",р:"r",
+  с:"s",т:"t",у:"u",ф:"f",х:"kh",ц:"ts",ч:"ch",ш:"sh",
+  щ:"shch",ъ:"",ы:"y",ь:"",э:"e",ю:"yu",я:"ya"
+};
+const transliterate=value=>String(value||"").toLowerCase()
+  .split("").map(c=>CYRILLIC_TO_LATIN[c]??c).join("")
+  .replace(/[^a-z0-9]/g,"");
+function ownSiteForNote(row,note){
+  if(!/^\s*(?:сайт|официальный сайт)\s+(?:организации|компании)\s*:/iu.test(note))
+    return "";
+  const organization=String(row?.["Организация"]||"")
+    .replace(/^\s*(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*/iu,"");
+  const brand=transliterate(organization);
+  if(brand.length<7)return "";
+  const candidates=[];
+  for(const raw of (Array.isArray(row?.__evidence?.source_urls)?
+    row.__evidence.source_urls:[])){
+    try{
+      const u=new URL(String(raw));
+      if(u.protocol!=="https:"&&u.protocol!=="http:")continue;
+      const host=u.hostname.replace(/^www\./i,"").toLowerCase();
+      const parts=host.split(".");
+      if(parts.length<2)continue;
+      const stem=parts.at(-2).replace(/[^a-z0-9]/g,"");
+      if(stem.length<7||stem!==brand)continue;
+      candidates.push(u.origin+"/");
+    }catch{}
+  }
+  return [...new Set(candidates)].length===1?candidates[0]:"";
+}
 function readCode(text){
   const m=String(text||"").match(/^[\s\-–—]*(?:№\s*)?([\p{L}\d*./_-]{2,31})(?:\s+(\d[\p{L}\d./_-]{0,25}))?/u);
   if(!m)return "";
@@ -72,8 +108,12 @@ export function extractStage13ModelInventory(row,{catalog=[],maxPerBuyer=50}={})
       .map(x=>[x.note_index,x])),sources=[];
   for(const [index,note] of notes.entries()){
     const text=String(note||"");
+    const direct=urlIn(text),indexed=provenance.get(index)?.source_url||"",
+      ownSite=!direct&&!indexed?ownSiteForNote(row,text):"";
     sources.push({source:"evidence",index,text,
-      url:urlIn(text)||provenance.get(index)?.source_url||""});
+      url:direct||indexed||ownSite,
+      attribution:direct?"inline_url":indexed?"note_provenance":
+        ownSite?"company_site_domain_correlated":"none"});
   }
   for(const [source,key] of [["a_evidence","__a_evidence"],["basis","Основание"],["segment","Техника/сегмент"]]){
     const text=String(row?.[key]||"");
@@ -90,7 +130,10 @@ export function extractStage13ModelInventory(row,{catalog=[],maxPerBuyer=50}={})
       entry={source:src.source,index:src.index,
         text:src.text.slice(Math.max(0,hit.at-240),Math.min(src.text.length,hit.at+380)),
         model_text:hit.model_text,signature,source_url:src.url||"",
-        source_status:src.url?"source_attributed_not_live_verified":"source_not_attributed",
+        source_attribution:src.attribution||(src.url?"inline_url":"none"),
+        source_status:src.attribution==="company_site_domain_correlated"?
+          "company_website_correlated_not_live_verified":
+          src.url?"source_attributed_not_live_verified":"source_not_attributed",
         evidence_eligible:eligible,catalog_tier:known?.tier||null,
         verification:known?"catalog":"openai",
         reason:known?"exact_catalog_match":eligible?"attributed_vehicle_event":
