@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import OpenAI from "openai";
 import path from "node:path";
 import {buildReferenceWorkbookBuffer} from "../src/referenceWorkbookExport.js";
-import {applyPriorityStage13,calculatePriority13} from "../src/priorityStage13.js";
+import {applyPriorityStage13,calculatePriority13,priority13AICandidates} from "../src/priorityStage13.js";
 import {classifyStage13UnknownModels} from "../src/priorityStage13AI.js";
 
 const option=(args,name)=>{
@@ -14,14 +14,15 @@ const option=(args,name)=>{
 const args=process.argv.slice(2);
 async function main(){
   if(args.includes("--help")){
-    console.log("Stage 13: --result=FINAL.json --out-prefix=exports/stage13-region [--preview] [--with-openai]");
+    console.log("Stage 13: --result=FINAL.json [--preview|--preview-ai-candidates] [--out-prefix=exports/stage13-region] [--with-openai]");
     return;
   }
   const input=option(args,"result"),prefix=option(args,"out-prefix");
   if(!input)throw new Error("Provide --result=FINAL.json");
-  if(args.includes("--preview")&&args.includes("--with-openai"))
-    throw new Error("--preview is offline; use --with-openai with a new --out-prefix");
-  if(!prefix&&!args.includes("--preview"))throw new Error("Provide --out-prefix or --preview");
+  const preview=args.includes("--preview")||args.includes("--preview-ai-candidates");
+  if(preview&&args.includes("--with-openai"))
+    throw new Error("preview modes are offline; use --with-openai with a new --out-prefix");
+  if(!prefix&&!preview)throw new Error("Provide --out-prefix or --preview");
   const original=JSON.parse(await fs.readFile(path.resolve(input),"utf8"));
   if(original.final_result&&original.phase&&original.phase!=="completed")
     throw new Error("Only a completed checkpoint can be recalculated");
@@ -31,6 +32,30 @@ async function main(){
   if(!["direct_buyers","intermediaries","leasing","statistics"]
       .every(key=>Array.isArray(result[key])))
     throw new Error("Stage 13 requires a completed four-array final result");
+  if(args.includes("--preview-ai-candidates")){
+    const sample=[],bySource={TORGBOX:0,evidence:0};
+    let companies=0,identified=0;
+    for(const row of result.direct_buyers){
+      const candidates=priority13AICandidates(row);
+      if(!candidates.length)continue;
+      companies++;
+      for(const candidate of candidates){
+        identified++;
+        bySource[candidate.source]=(bySource[candidate.source]||0)+1;
+        if(sample.length<25)sample.push({
+          buyer:row["Организация"],model_text:candidate.model_text,
+          source:candidate.source,source_url:candidate.source_url||""
+        });
+      }
+    }
+    console.log(JSON.stringify({
+      mode:"preview-ai-candidates",buyers:result.direct_buyers.length,
+      candidate_rows:companies,candidate_mentions:identified,bySource,
+      firstCandidates:sample,openai_calls:0,network_calls:0,
+      original_unchanged:true
+    },null,2));
+    return;
+  }
   if(args.includes("--preview")){
     const stats={buyers:0,changedScores:0,
       tiers:{none:0,ordinary:0,white:0,green:0},rowsWithWarnings:0,
