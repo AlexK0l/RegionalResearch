@@ -70,7 +70,7 @@ const norm=x=>str(x).normalize("NFKC").toUpperCase().replace(/Ё/g,"Е")
 const escapeRE=s=>s.replace(/[.*+?^$()|[\]{}]/g,"\\$&");
 const TRACTOR=/седельн[а-яё]*\s+тягач[а-яё]*/i;
 const TRAILER=/полуприцеп[а-яё]*|п\s*\/\s*прицеп[а-яё]*/i;
-const NEGATIVE=/не\s+(?:подтвержд[а-яё]*|найден[а-яё]*|установлен[а-яё]*|доказан[а-яё]*)|принадлежност[а-яё]*[^.\n]{0,100}не\s+подтвержд|полуприцеп[а-яё]*[^.\n]{0,60}(?:отсутств[а-яё]*|не\s+найден[а-яё]*)|нет\s+(?:собственн[а-яё]*\s+)?полуприцеп[а-яё]*/i;
+const NEGATIVE=/не\s+(?:подтвержд[а-яё]*|найден[а-яё]*|установлен[а-яё]*|доказан[а-яё]*|доказыва[а-яё]*|выявлен[а-яё]*|раскрыт[а-яё]*|указан[а-яё]*|известн[а-яё]*)|принадлежност[а-яё]*[^.\n]{0,100}не\s+подтвержд|полуприцеп[а-яё]*[^.\n]{0,60}(?:отсутств[а-яё]*|не\s+найден[а-яё]*)|нет\s+(?:собственн[а-яё]*\s+)?полуприцеп[а-яё]*|нет\s+(?:достаточн[а-яё]*\s+)?(?:данных|сведений|подтверждения)\s+(?:о|об|для)?\s*(?:наличи[а-яё]*\s+)?(?:полуприцеп|прицепн)[а-яё]*|недостаточн[а-яё]*\s+(?:данных|сведений)/i;
 const POSITIVE=/зафиксирован[а-яё]*|зарегистрирован[а-яё]*|в\s+реестр[а-яё]*|в\s+залоге|эксплуатир[а-яё]*|использу[а-яё]*|принадлежит|в\s+собственност[а-яё]*|собственн[а-яё]*\s+парк|подтвержден[а-яё]*\s+(?:наличие|эксплуатац)/i;
 const EXPIRED=/договор[а-яё]*[^.;\n]{0,80}(?:заверш[а-яё]*|прекращ[а-яё]*|ист[её]к[а-яё]*)|(?:заверш[а-яё]*|ист[её]к[а-яё]*)[^.;\n]{0,80}договор/i;
 function startModel(line,{brand,model}){
@@ -148,6 +148,13 @@ function parseBasis(raw){
 const GENERIC_BASIS=/^\s*A\s*[—–-]\s*Конкретный evidence-note одновременно подтверждает прицепную\s*\/\s*полуприцепную технику/i;
 const PROOF_NOTE=/судебн|закупк|приобр|покупк|договор|лизинг|аренд|владени|владел|принадлеж|собственн|эксплуат|использу|зарегистр|зафиксир|в\s+залог|парк|передал|передан|в\s+реестр|выполнял[а-яё]*\s+перевоз|указан[а-яё]*\s+полуприцеп/i;
 const PROSPECTIVE=/потенциальн|предположител|теоретическ|может\s+(?:потребова|использова)|вероятн\s+потребност|не\s+раскрыт[а-яё]*|не\s+подтвержд[а-яё]*/i;
+// A broad job-search result does not identify this company's fleet. Mere
+// appearance in a query named "водитель на полуприцепе" is not equipment proof.
+const GENERIC_SEARCH_MENTION=/(?:^|\s)в\s+(?:(?:региональн|тематическ)[а-яё]*\s+)?выдач[а-яё]*/i;
+// Technical classifications mention both trailers and semi-trailers even
+// when the actually purchased item is explicitly a non-semi trailer.
+const TAXONOMY_ONLY_TRAILER=/ОКПД\s*2?|ТН\s*ВЭД|классификатор/i;
+const NON_SEMI_PURCHASE=/(?:закуп[а-яё]*|приобр[а-яё]*|постав[а-яё]*|купил[а-яё]*)[^.;\n]{0,180}(?:^|[^а-яё])прицеп[-\s]+(?:цистерн|самосвал|роспуск|платформ)[а-яё]*/i;
 function normalizeNoteModel(text){
   // Canonical aliases preserve BOTH manufacturer and model; they never
   // classify on the basis of a manufacturer alone.
@@ -164,7 +171,8 @@ function parseSourcedNotes(notes){
     // of unrelated source URLs cannot establish a model provenance.
     if(!/https?:\/\//i.test(note) || !PROOF_NOTE.test(note) ||
        NEGATIVE.test(note) || EXPIRED.test(note) ||
-       PROSPECTIVE.test(note))continue;
+       PROSPECTIVE.test(note) || GENERIC_SEARCH_MENTION.test(note) ||
+       (TAXONOMY_ONLY_TRAILER.test(note) && NON_SEMI_PURCHASE.test(note)))continue;
     const normalized=normalizeNoteModel(note);
     const matched=CATALOG.filter(item=>basisModel(normalized,item));
     if(!matched.length && !TRAILER.test(note))continue;
@@ -260,7 +268,7 @@ export function calculatePriority13({c="",d="",revenue="",staff="",notes=[]}={})
 export function applyPriorityStage13(result){
   if(!Array.isArray(result?.direct_buyers))
     throw new TypeError("Stage 13 requires final_result.direct_buyers");
-  const report={version:2,processed:0,changed:0,warnings:0,
+  const report={version:3,processed:0,changed:0,warnings:0,
     tiers:{none:0,ordinary:0,white:0,green:0},openai_calls:0,saby_calls:0,network_calls:0};
   for(const row of result.direct_buyers){
     if(!str(row?.["Организация"]).trim())continue;
