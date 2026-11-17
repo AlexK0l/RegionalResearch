@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Re-run Stage 13 on a saved final JSON/checkpoint; no OpenAI/Saby/SQLite or network.
 import fs from "node:fs/promises";
+import OpenAI from "openai";
 import path from "node:path";
 import {buildReferenceWorkbookBuffer} from "../src/referenceWorkbookExport.js";
 import {applyPriorityStage13,calculatePriority13} from "../src/priorityStage13.js";
+import {classifyStage13UnknownModels} from "../src/priorityStage13AI.js";
 
 const option=(args,name)=>{
   const arg=args.find(x=>x.startsWith("--"+name+"="));
@@ -12,11 +14,13 @@ const option=(args,name)=>{
 const args=process.argv.slice(2);
 async function main(){
   if(args.includes("--help")){
-    console.log("Stage 13: --result=FINAL.json --out-prefix=exports/stage13-region [--preview]");
+    console.log("Stage 13: --result=FINAL.json --out-prefix=exports/stage13-region [--preview] [--with-openai]");
     return;
   }
   const input=option(args,"result"),prefix=option(args,"out-prefix");
   if(!input)throw new Error("Provide --result=FINAL.json");
+  if(args.includes("--preview")&&args.includes("--with-openai"))
+    throw new Error("--preview is offline; use --with-openai with a new --out-prefix");
   if(!prefix&&!args.includes("--preview"))throw new Error("Provide --out-prefix or --preview");
   const original=JSON.parse(await fs.readFile(path.resolve(input),"utf8"));
   if(original.final_result&&original.phase&&original.phase!=="completed")
@@ -55,7 +59,16 @@ async function main(){
     console.log(JSON.stringify({...stats,preview_only:true,source_unchanged:true},null,2));
     return;
   }
-  const summary=applyPriorityStage13(result);
+  // Explicit --with-openai is the ONLY way this replay command may incur a
+  // model charge. The normal replay and preview stay 100% network-free.
+  let aiStats=null;
+  if(args.includes("--with-openai")){
+    if(!process.env.OPENAI_API_KEY)throw new Error("--with-openai requires OPENAI_API_KEY");
+    const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY});
+    aiStats=await classifyStage13UnknownModels(result,{client,env:process.env});
+  }
+  const summary=applyPriorityStage13(result,{aiStats});
+  if(aiStats)payload.priority_ai_stats=aiStats;
   if(payload!==result)payload.priority_stats=summary;
   const base=path.resolve(prefix),xlsx=base+".xlsx",json=base+".json";
   await fs.mkdir(path.dirname(base),{recursive:true,mode:0o700});

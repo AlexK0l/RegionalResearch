@@ -93,13 +93,15 @@ export function estimateResearchEta(job, {
 
   const baselineLate = [defaultLateMs(env, "STAGE10_MAX_MS"),
     defaultLateMs(env, "STAGE11_MAX_MS"),
-    defaultLateMs(env, "STAGE12_MAX_MS"),1000];
+    defaultLateMs(env, "STAGE12_MAX_MS"),
+    String(env.STAGE13_AI_ENABLED??"true").toLowerCase()==="false" ? 1000 : 45000];
   let remaining = 0;
   let observed = 0;
   let source = "measured";
 
   for (let i = 0; i < STAGES; i++) {
-    if (i === STAGES - 1 && String(env.SABY_STAGE12_ENABLED || "false").toLowerCase() !== "true") continue;
+    // Saby is stage 12 (index 11). Stage 13 must still run even when Saby is disabled.
+    if (i === 11 && String(env.SABY_STAGE12_ENABLED || "false").toLowerCase() !== "true") continue;
     const step = stages[i] || {};
     if (step.status === "done") continue;
     const historical = Number(history[i]);
