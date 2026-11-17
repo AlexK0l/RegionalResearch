@@ -3,6 +3,7 @@
 // The parent snapshot is immutable; a new job ID persists a Saby-only copy.
 import {PIPELINE_VERSION, normalizeCheckpoint} from "./checkpointStore.js";
 import {STEPS} from "./constants.js";
+import {applyPriorityStage13} from "./priorityStage13.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
@@ -130,16 +131,17 @@ export async function runSabyOnlyContinuation({
   };
   const stageStatuses=STEPS.map((name,i)=>({
     step:i+1,name,
-    status:i===11?"running":"done",
-    detail:i===11?"Saby из SQLite · без OpenAI":"из сохранённого исследования"
+    status:i===11?"running":i===12?"waiting":"done",
+    detail:i===11?"Saby из SQLite · без OpenAI":i===12?"Ожидает Saby":"из сохранённого исследования"
   }));
   const report=async (stats,finished=false)=>{
     await onProgress({
-      phase:finished?"completed":"saby",step:12,
+      phase:finished?"completed":"saby",step:finished?13:12,
       percent:finished?100:96+Math.floor(3*Math.min(1,
         Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1)))),
-      statuses:stageStatuses.map((s,i)=>i===11&&finished
-        ?{...s,status:"done",detail:"Saby-only завершён"}:s),
+      statuses:stageStatuses.map((s,i)=>
+        finished&&i===11?{...s,status:"done",detail:"Saby-only завершён"}:
+        finished&&i===12?{...s,status:"done",detail:"Приоритеты рассчитаны"}:s),
       sabyCurrent:Number(stats?.processed||0),
       sabyTotal:Number(stats?.scheduled||0),
       sabyStats:stats
@@ -170,6 +172,12 @@ export async function runSabyOnlyContinuation({
   if(collectCompany)options.collectCompany=collectCompany;
   const outcome=await runCheckpointedSabyStage12(options);
 
+  await onProgress({phase:"priority",step:13,percent:99,
+    statuses:stageStatuses.map((s,i)=>i===11
+      ?{...s,status:"done",detail:"Saby-only завершён"}:
+      i===12?{...s,status:"running",detail:"Расчёт итогового коэффициента"}:s),
+    sabyStats:outcome.stats});
+  const priorityStats=applyPriorityStage13(result);
   await persist("completed",{
     completed_stage:9,
     final_result:result,
@@ -177,6 +185,7 @@ export async function runSabyOnlyContinuation({
     saby_deferred_inns:outcome.deferredInns,
     saby_attempted_inns:outcome.attemptedInns,
     saby_stats:outcome.stats,
+    priority_stats:priorityStats,
     stage12_duration_ms:Date.now()-startedAt
   });
   await report(outcome.stats,true);
@@ -190,6 +199,7 @@ export async function runSabyOnlyContinuation({
       statistics:result.statistics.length
     },
     contacts:source.contact_stats||null,
-    saby:outcome.stats
+    saby:outcome.stats,
+    priority:priorityStats
   };
 }
