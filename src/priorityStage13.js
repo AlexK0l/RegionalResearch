@@ -163,10 +163,11 @@ function parseSourcedNotes(notes){
     // A source URL directly in the SAME note is required; a row-level list
     // of unrelated source URLs cannot establish a model provenance.
     if(!/https?:\/\//i.test(note) || !PROOF_NOTE.test(note) ||
-       !TRAILER.test(note) || NEGATIVE.test(note) || EXPIRED.test(note) ||
+       NEGATIVE.test(note) || EXPIRED.test(note) ||
        PROSPECTIVE.test(note))continue;
     const normalized=normalizeNoteModel(note);
     const matched=CATALOG.filter(item=>basisModel(normalized,item));
+    if(!matched.length && !TRAILER.test(note))continue;
     for(const item of matched){
       const key=item.brand+" "+item.model;
       if(!models.has(key))models.set(key,{model:key,tier:item.tier,count:1,source:"evidence"});
