@@ -76,3 +76,17 @@ test("historical runs allow immediate coarse estimate with per-step real duratio
   assert.ok(result.remainingMs<13*MINUTE);
   assert.equal(result.basis,"measured");
 });
+
+test("stage13 countdown remains visible when Saby stage12 is disabled",()=>{
+  const a=steps();
+  for(let i=0;i<11;i++)a[i].status="done";
+  const ai=estimateResearchEta(job(a),{now:1000000,env:{
+    STAGE13_AI_ENABLED:"true",SABY_STAGE12_ENABLED:"false"
+  }});
+  assert.equal(ai.status,"estimated");
+  assert.equal(ai.remainingMs,45000);
+  const offline=estimateResearchEta(job(a),{now:1000000,env:{
+    STAGE13_AI_ENABLED:"false",SABY_STAGE12_ENABLED:"false"
+  }});
+  assert.equal(offline.remainingMs,1000);
+});
