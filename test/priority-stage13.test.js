@@ -189,3 +189,9 @@ test("an employer appearing in a regional vacancy search is not a semi-trailer s
   const direct="Собственный парк тягачей и полуприцепов, компания эксплуатирует автопоезда. https://example.org/own-fleet";
   assert.equal(calc({notes:[direct]}).tier,"ordinary");
 });
+
+test("a court-proven model stays white even when the note denies proof of CURRENT operation",()=>{
+  const note="A — в обеспечительных мерах суд указал, что имущество принадлежит компании; конкретно назван полуприцеп-фургон Schmitz Cargobull 9084 с VIN. Это подтверждает владение прицепной техникой, но само по себе не доказывает её текущую эксплуатацию. https://example.org/court";
+  assert.equal(calc({notes:[note]}).tier,"white");
+  assert.match(calc({notes:[note]}).models,/SCHMITZ 9084/);
+});
