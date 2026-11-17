@@ -64,7 +64,12 @@ const safeQuote=(quote,text)=>{
 function normalizeVerdict(verdict,candidate){
   const k=String(verdict?.kind||"");
   const confidence=String(verdict?.confidence||"");
-  const quote=String(verdict?.model_quote||"").trim();
+  const originalQuote=String(verdict?.model_quote||"").trim();
+  // A single answer may cover "WIELTON NW3A..." and "Wielton NW3A...".
+  // Preserve the exact source spelling for each buyer, never invent a
+  // different model number or promote a substring.
+  const quote=normalizedModel(originalQuote)===normalizedModel(candidate.model_text)
+    ?candidate.model_text:originalQuote;
   const permitted=["semi_trailer","other_trailer","truck","tractor","other","unknown"].includes(k);
   const verified=permitted&&["high","medium","low"].includes(confidence)&&
     safeQuote(quote,candidate.model_text);
