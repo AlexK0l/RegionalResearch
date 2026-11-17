@@ -14,7 +14,7 @@ test("catalog has precisely 33 green and 24 white manufacturer/model pairs",()=>
 });
 test("testPriorityLogic: exact catalog pairs, both body groups, and no partial matching",()=>{
   const cases=[
-    ["green tipper","TONАР 959500 (2021 г.) — 2 шт.","green"],
+    ["green tipper","ТОНАР 959500 (2021 г.) — 2 шт.","green"],
     ["green heavy trailer","АЛСА 948412 (2021 г.) — 1 шт.","green"],
     ["green livestock","ТОНАР 982620 (2024 г.) — 1 шт.","green"],
     ["green walking floor","KNAPEN K100 — 1 шт.","green"],
