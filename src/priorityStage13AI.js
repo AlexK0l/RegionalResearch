@@ -21,7 +21,7 @@ export function stage13AISettings(env=process.env){
     maxPerBuyer:clampInt(env.STAGE13_AI_MAX_PER_BUYER,3,1,8),
     maxUsd:clampNum(env.STAGE13_AI_MAX_ESTIMATED_USD,0.35,0,2),
     timeoutMs:clampInt(env.STAGE13_AI_TIMEOUT_MS,25000,5000,60000),
-    maxOutputTokens:clampInt(env.STAGE13_AI_MAX_OUTPUT_TOKENS,2200,800,4000)
+    maxOutputTokens:clampInt(env.STAGE13_AI_MAX_OUTPUT_TOKENS,3500,800,4000)
   };
 }
 const OUTPUT_SCHEMA={
