@@ -154,9 +154,55 @@ test("evidence is not double counted and never alters existing buyer fields",()=
   const report=applyPriorityStage13(input);
   assert.equal(report.tiers.white,1);
   assert.equal(report.warnings,0);
-  assert.equal(report.version,2);
+  assert.equal(report.version,3);
   assert.match(row[EXPLANATION_FIELD],/источников: 1/);
   assert.equal(row["Телефон"],original["Телефон"]);
   assert.deepEqual(row.__evidence,original.__evidence);
   assert.equal(applyPriorityStage13(input).changed,0);
+});
+
+test("a cited source explicitly denying trailer proof never creates an ordinary score",()=>{
+  for(const note of [
+    "В подразделении требуются специалисты по эксплуатации автогрейдера, но не доказывает наличие полуприцепов. https://example.org/vacancy",
+    "Есть парк погрузчиков, но не выявлено наличие полуприцепов. https://example.org/fleet",
+    "Указана эксплуатация техники, но не установлено наличие полуприцепов. https://example.org/report",
+    "Судебный документ не раскрывает полуприцепы компании. https://example.org/decision",
+    "Договор подтверждён, но нет данных о наличии полуприцепов. https://example.org/contract",
+    "На сайте подтверждён парк грузовиков, недостаточно данных о полуприцепах. https://example.org/fleet"
+  ]){
+    const out=calc({notes:[note]});
+    assert.equal(out.tier,"none",note);
+  }
+  const affirmed="Суд установил, что у ООО есть полуприцеп с бортовой платформой. https://example.org/court";
+  assert.equal(calc({notes:[affirmed]}).tier,"ordinary");
+});
+test("do not infer semitrailer from an ordinary trailer's classification code",()=>{
+  const note="Компания закупила прицеп-цистерну на 1150 л; в закупке указан ОКПД2 для прицепов-цистерн и полуприцепов-цистерн, договор заключен на 1 млн рублей. https://example.org/tender";
+  assert.equal(calc({notes:[note]}).tier,"none");
+  const semi="Компания закупила полуприцеп-цистерну на 12000 л по ОКПД2 с подтверждением договора. https://example.org/tender";
+  assert.equal(calc({notes:[semi]}).tier,"ordinary",
+    "actual semi-trailer in a classified tender is still valid");
+});
+test("an employer appearing in a regional vacancy search is not a semi-trailer source",()=>{
+  const note="В Рославле размещена вакансия водителя категории Е в выдаче «водитель на полуприцепе»; отдельное описание указывает FTL-перевозки и наличие автопарка. https://roslavl.hh.ru/vacancies/voditel-na-polupritsep";
+  assert.equal(calc({notes:[note]}).tier,"none");
+  const direct="Собственный парк тягачей и полуприцепов, компания эксплуатирует автопоезда. https://example.org/own-fleet";
+  assert.equal(calc({notes:[direct]}).tier,"ordinary");
+});
+
+test("a court-proven model stays white even when the note denies proof of CURRENT operation",()=>{
+  const note="A — в обеспечительных мерах суд указал, что имущество принадлежит компании; конкретно назван полуприцеп-фургон Schmitz Cargobull 9084 с VIN. Это подтверждает владение прицепной техникой, но само по себе не доказывает её текущую эксплуатацию. https://example.org/court";
+  assert.equal(calc({notes:[note]}).tier,"white");
+  assert.match(calc({notes:[note]}).models,/SCHMITZ 9084/);
+});
+
+test("a court denying ownership cannot be treated as a positive fleet signal",()=>{
+  for(const note of [
+    "Суд установил, что компания не имеет полуприцепов. https://example.org/court",
+    "Суд установил отсутствие полуприцепов у общества. https://example.org/court"
+  ]){
+    assert.equal(calc({notes:[note]}).tier,"none",note);
+  }
+  const positive="Суд установил, что организации принадлежит полуприцеп с бортовой платформой. https://example.org/court";
+  assert.equal(calc({notes:[positive]}).tier,"ordinary");
 });
