@@ -1,6 +1,6 @@
 // Stage 13: deterministic color bands plus optional bounded OpenAI vehicle-type checks.
 import {createHash} from "node:crypto";
-import {extractStage13EvidenceModels} from "./priorityStage13EvidenceModels.js";
+import {extractStage13ModelInventory} from "./priorityStage13Inventory.js";
 // The 57 explicit manufacturer/model pairs are supplied by the user.
 // Never infer a model from a brand alone or promote a company grade A/B/C.
 export const BANDS=Object.freeze({none:[0,19],ordinary:[20,39],white:[40,69],green:[70,100]});
@@ -225,9 +225,14 @@ const qtyPoints=q=>q<=1?0:q<=3?4:q<=5?7:10;
 /** Hash only relevant source fields: stale AI interpretations must not be reused. */
 export function priority13InputHash(row){
   return createHash("sha256").update(JSON.stringify([
+    str(row?.["Организация"]),
     str(row?.["Наличие транспорта"]||""),
     str(row?.["Основание"]),
-    Array.isArray(row?.__evidence?.notes)?row.__evidence.notes:[]
+    str(row?.["Техника/сегмент"]),
+    str(row?.__a_evidence),
+    Array.isArray(row?.__evidence?.notes)?row.__evidence.notes:[],
+    Array.isArray(row?.__evidence?.inline_note_provenance)?
+      row.__evidence.inline_note_provenance:[]
   ])).digest("hex");
 }
 
@@ -252,33 +257,14 @@ export function exactPriority13ModelQuote(quote,text){
 }
 const ACTUAL_EQUIPMENT_EVENT=/приобр[её]л|приобрела|приобретен|приобретён|приобретена|закупил|закупила|закуплен|купил|купила|в\s+лизинге|лизингов[а-яё]*\s+договор|арендует|арендовал|владени|владеет|принадлежит|в\s+собственност|эксплуатир|использова[а-яё]*|использует|зарегистрирован|на\s+балансе|закреплен[а-яё]*|закреплён[а-яё]*|суд\s+установил|подтвержден[а-яё]*\s+владен/i;
 const UNCOMMITTED_PLAN=/планиру[а-яё]*\s+(?:приобр|закуп|купить)|план\s+закуп|намерен[а-яё]*\s+приобр|коммерческ[а-яё]*\s+предложени|запрос\s+цен|интерес\s+к\s+покупк/i;
-export function priority13AICandidates(row,{maxPerBuyer=3}={}){
-  const existing=calculatePriority13({
-    c:row?.["Наличие транспорта"]||"",d:row?.["Основание"],
-    revenue:row?.["Выручка последнего подтвержденного года"],
-    staff:row?.["Численность"],notes:row?.__evidence?.notes||[]
-  });
-  if(existing.tier!=="none")return [];
-  const result=[],fingerprint=priority13InputHash(row);
-  const notes=Array.isArray(row?.__evidence?.notes)?row.__evidence.notes.slice(0,150):[];
-  for(const [index,value] of notes.entries()){
-    const note=str(value),url=(note.match(/https?:\/\/[^\s<>\])]+/i)||[])[0]||"";
-    if(!url||GENERIC_SEARCH_MENTION.test(note)||EXPIRED.test(note)||
-       (TAXONOMY_ONLY_TRAILER.test(note)&&NON_SEMI_PURCHASE.test(note))||
-       /(?:hh\.ru\/vacancies\/|b2b-center\.ru\/search\/|jobcareer\.ru\/jobs\/)/i.test(url))continue;
-    const claim=affirmativeEvidence(note);
-    if(!ACTUAL_EQUIPMENT_EVENT.test(claim)||UNCOMMITTED_PLAN.test(claim))continue;
-    const names=extractStage13EvidenceModels(claim,{
-      catalog:CATALOG,limit:Math.max(1,maxPerBuyer-result.length)
-    });
-    for(const name of names){
-      if(!validPriority13ModelQuote(name)||!claim.includes(name))continue;
-      result.push({source:"evidence",index,text:claim.slice(0,750),
-        model_text:name,source_url:url.replace(/[.,;!?]+$/,""),fingerprint});
-      if(result.length>=maxPerBuyer)return result;
-    }
-  }
-  return result;
+// Inventory does NOT depend on existing ordinary/white/green tiers. A model
+// absent from the fixed catalog must be typed even if the buyer already has
+// an ordinary score. Type classification is NOT evidence of ownership.
+export function priority13AICandidates(row,{maxPerBuyer=50}={}){
+  const inventory=extractStage13ModelInventory(row,{catalog:CATALOG,maxPerBuyer});
+  const fingerprint=priority13InputHash(row);
+  return inventory.models.filter(m=>m.verification==="openai")
+    .map(m=>({...m,fingerprint}));
 }
 function matchedAIInterpretations(row){
   const stored=row?.__priority13_ai;
@@ -287,7 +273,8 @@ function matchedAIInterpretations(row){
   const input=priority13AICandidates(row,{maxPerBuyer:50});
   return stored.results.filter(v=>v?.kind==="semi_trailer"&&
     v.confidence==="high"&&exactPriority13ModelQuote(v.model_quote,v.model_text)&&
-    input.some(c=>c.source===v.source&&c.index===v.index&&
+    input.some(c=>c.evidence_eligible===true&&
+      c.source===v.source&&c.index===v.index&&
       c.model_text===v.model_text&&c.text.includes(v.model_quote)));
 }
 
@@ -356,7 +343,7 @@ export function calculatePriority13({c="",d="",revenue="",staff="",notes=[],ai=[
 export function applyPriorityStage13(result,{aiStats=null}={}){
   if(!Array.isArray(result?.direct_buyers))
     throw new TypeError("Stage 13 requires final_result.direct_buyers");
-  const report={version:4,processed:0,changed:0,warnings:0,
+  const report={version:5,processed:0,changed:0,warnings:0,
     tiers:{none:0,ordinary:0,white:0,green:0},openai_calls:0,saby_calls:0,network_calls:0};
   for(const row of result.direct_buyers){
     if(!str(row?.["Организация"]).trim())continue;
