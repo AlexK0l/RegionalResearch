@@ -154,7 +154,7 @@ test("evidence is not double counted and never alters existing buyer fields",()=
   const report=applyPriorityStage13(input);
   assert.equal(report.tiers.white,1);
   assert.equal(report.warnings,0);
-  assert.equal(report.version,3);
+  assert.equal(report.version,4);
   assert.match(row[EXPLANATION_FIELD],/источников: 1/);
   assert.equal(row["Телефон"],original["Телефон"]);
   assert.deepEqual(row.__evidence,original.__evidence);
