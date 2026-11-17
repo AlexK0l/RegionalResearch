@@ -236,13 +236,22 @@ export function priority13InputHash(row){
 const UNKNOWN_MODEL=/([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,23}(?:\s+[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,22})?)\s+([A-Za-zА-Яа-яЁё\d*./_-]*\d[A-Za-zА-Яа-яЁё\d*./_-]{0,22})/gu;
 // Some genuine models are alphabetic: Kögel Cargo, KRONE Box Liner,
 // SCHMITZ CARGOBULL S.KO. Require capitalized make AND named model.
-const ALPHA_MODEL=/[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}/gu;
+const ALPHA_MODEL=/[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}(?![\p{L}\p{N}*./_-])/gu;
 const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|сумма|руб|рф|для|был|была|приобрела|приобрёл|поставка|закупка|выручка|фирма|компания|предприятие|договор|контракт|судебный|ведомость|регистрации)$/i;
 export function validPriority13ModelQuote(value){
   const q=str(value).trim();
   if(q.length<5||q.length>95||NOT_BRAND.test(q.split(/\s+/)[0]))return false;
   return /[A-Za-zА-Яа-яЁё]{2,}[\s-]+[A-Za-zА-Яа-яЁё\d*./_-]*\d/u.test(q)||
     /^[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}$/u.test(q);
+}
+export function exactPriority13ModelQuote(quote,text){
+  const q=str(quote).trim(),s=str(text);
+  if(!validPriority13ModelQuote(q))return false;
+  const i=s.indexOf(q);
+  if(i<0)return false;
+  // "KRONE SDP" must NEVER authenticate "KRONE SDP27".
+  const part=/[\p{L}\p{N}*./_-]/u;
+  return !part.test(s[i-1]||"")&&!part.test(s[i+q.length]||"");
 }
 // Unverified tenders, speculative procurement plans and discovery listings
 // are not evidence that THIS company has the named piece of equipment.
@@ -325,7 +334,7 @@ function matchedAIInterpretations(row){
      !Array.isArray(stored.results))return [];
   const input=priority13AICandidates(row,{maxPerBuyer:50});
   return stored.results.filter(v=>v?.kind==="semi_trailer"&&
-    v.confidence==="high"&&validPriority13ModelQuote(v.model_quote)&&
+    v.confidence==="high"&&exactPriority13ModelQuote(v.model_quote,v.model_text)&&
     input.some(c=>c.source===v.source&&c.index===v.index&&
       c.model_text===v.model_text&&c.text.includes(v.model_quote)));
 }
