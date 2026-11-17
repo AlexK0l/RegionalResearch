@@ -21,6 +21,7 @@ import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { applyPriorityStage13 } from "./priorityStage13.js";
+import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
@@ -9083,8 +9084,10 @@ ${JSON.stringify(gaps)}
     }
   });
   const priorityStats=applyPriorityStage13(finalResult,{aiStats:priorityAIStats});
+  const commercialPostprocess=finalizeStage13CommercialOutput(finalResult);
+  priorityStats.commercial_postprocess=commercialPostprocess;
   finishStep(statuses[12]);
-  statuses[12].detail=`выполнен · покупателей ${priorityStats.processed} · зелёных ${priorityStats.tiers.green} · белых ${priorityStats.tiers.white}`;
+  statuses[12].detail=`выполнен · проверено ${priorityStats.processed} · прямых ${finalResult.direct_buyers.length} · лизинг ${finalResult.leasing.length} · зелёных ${priorityStats.tiers.green} · белых ${priorityStats.tiers.white}`;
   await progress({
     phase:"completed", step:13, percent:100,
     contactCurrent:googleCompanies.length,
