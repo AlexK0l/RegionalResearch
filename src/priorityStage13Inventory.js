@@ -25,7 +25,7 @@ function readCode(text){
      /^\d{1,2}$/.test(first))return "";
   if(second&&/^[\p{L}.]{1,9}$/u.test(first))return first+" "+second;
   if(/\d/u.test(first)||/\./u.test(first))return first;
-  return /^\p{Lu}[\p{L}]{2,20}$/u.test(first)?first:"";
+  return /^\p{Lu}[\p{L}]{1,20}$/u.test(first)?first:"";
 }
 function scanModels(text,catalog){
   const src=String(text||"").normalize("NFKC"),upper=norm(src),
