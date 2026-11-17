@@ -22,9 +22,8 @@ export function stage13CommercialRole(row){
   const name=normalized(row?.["Организация"]);
   const a=str(row?.__a_evidence),notes=evidenceNotes(row);
   if(!name)return null;
-  const candidate=/(?:ЛИЗИНГ|ЛИЗИНГОВ|ЕВРОПЛАН|КАРКАДЕ)/u.test(name);
-  if(!candidate)return null;
-
+  // No hard-coded lessor brand names or company-name heuristics: rely
+  // solely on explicit role attribution preserved for this legal entity.
   // An explicit channel designation overrides a misleading company name.
   const intermediary=notes.find(n=>
     /(?:роль|компания)\s+(?:классифицирована\s+как|отнесена\s+к)\s*(?:intermediaries|посредник)/iu.test(n)||
@@ -41,7 +40,7 @@ export function stage13CommercialRole(row){
   const explicitRole=notes.find(n=>
     /(?:^|[;.]\s*)роль\s*:\s*лизингодател[а-яё]*(?:\s*\/\s*реализатор)?/iu.test(n)||
     /не\s+(?:конечный|непосредственный)\s+эксплуатант/iu.test(n));
-  if(selectedLessor||explicitRole)
+  if(selectedLessor||(selectedNamesCompany&&explicitRole))
     return {channel:"leasing",
       reason:selectedLessor?"selected_company_is_explicit_lessor":"explicit_lessor_not_operator",
       evidence:(selectedLessor?a:explicitRole).slice(0,420)};
