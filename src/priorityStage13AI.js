@@ -2,7 +2,7 @@
 // No web tools: the model identifies a vehicle TYPE, not a buyer, transaction or source.
 // A positive high-confidence answer may unlock ONLY the ordinary 20-39 band.
 // It cannot populate the 57-item green/white catalog or change A/B/C, contacts or INN.
-import {priority13AICandidates,priority13InputHash,validPriority13ModelQuote} from "./priorityStage13.js";
+import {priority13AICandidates,priority13InputHash,exactPriority13ModelQuote} from "./priorityStage13.js";
 
 const clampInt=(value,fallback,min,max)=>{
   const n=Number(value);
@@ -59,7 +59,7 @@ const normalizedModel=text=>String(text||"").toUpperCase().replace(/Ё/g,"Е")
   .replace(/\s+/g," ").trim();
 const safeQuote=(quote,text)=>{
   const q=String(quote||"").trim();
-  return String(text||"").includes(q)&&validPriority13ModelQuote(q);
+  return exactPriority13ModelQuote(q,text);
 };
 function normalizeVerdict(verdict,candidate){
   const k=String(verdict?.kind||"");
