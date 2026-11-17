@@ -211,3 +211,30 @@ test("a mere purchasing PLAN or a request for quotation cannot prove equipment o
   const proven="В судебном акте указано, что компания приобрела KRONE SDP27 и владеет ею. https://example.org/judgment";
   assert.equal(priority13AICandidates(row("",[proven])).length,1);
 });
+
+test("Responses API integration uses strict JSON schema, no web tools and no retries",async()=>{
+  let requests=0,usage=0;
+  const client={responses:{create:async(req,opts)=>{
+    requests++;
+    assert.equal(Object.hasOwn(req,"tools"),false);
+    assert.equal(req.text.format.type,"json_schema");
+    assert.equal(req.text.format.strict,true);
+    assert.equal(opts.maxRetries,0);
+    assert.ok(opts.timeout<=60000);
+    const input=req.input.split("\n").at(-1);
+    const item=JSON.parse(input)[0];
+    return {status:"completed",output_text:JSON.stringify({items:[{
+      id:item.id,kind:"semi_trailer",confidence:"high",
+      model_quote:"KRONE SDP27",reason:"Тип полуприцепа известен"
+    }]}),usage:{input_tokens:330,output_tokens:90}};
+  }}};
+  const data=final(row("TORGBOX: KRONE SDP27 — 1 шт."));
+  const stats=await classifyStage13UnknownModels(data,{
+    client,env:cliEnv,onUsage:u=>{usage+=u.input_tokens+u.output_tokens}
+  });
+  assert.equal(requests,1);
+  assert.equal(stats.web_search_calls,0);
+  assert.equal(stats.calls,1);
+  assert.equal(usage,420);
+  assert.equal(applyPriorityStage13(data).tiers.ordinary,1);
+});
