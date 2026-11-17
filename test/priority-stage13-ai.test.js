@@ -238,3 +238,26 @@ test("Responses API integration uses strict JSON schema, no web tools and no ret
   assert.equal(usage,420);
   assert.equal(applyPriorityStage13(data).tiers.ordinary,1);
 });
+
+test("unknown alphabetic model names can be recognized, not just numerical codes",async()=>{
+  const data=final(row("TORGBOX: Kögel Cargo — 1 шт.",
+    ["Компания приобрела Schmitz Cargobull S.KO в лизинг. https://example.org/document"]));
+  const candidates=priority13AICandidates(data.direct_buyers[0]);
+  assert.ok(candidates.some(c=>c.model_text.includes("Kögel Cargo")));
+  assert.ok(candidates.some(c=>c.model_text.includes("Schmitz Cargobull S.KO")));
+  let asked=0;
+  const stats=await classifyStage13UnknownModels(data,{env:cliEnv,
+    requestBatch:async batch=>{
+      asked+=batch.length;
+      return {items:batch.map(c=>({id:c.id,kind:"semi_trailer",
+        confidence:"high",model_quote:c.model_text,
+        reason:"подтверждён тип полуприцепа"}))};
+    }
+  });
+  assert.ok(asked>=2);
+  assert.ok(stats.recognized_semi_trailers>=2);
+  const rep=applyPriorityStage13(data);
+  assert.equal(rep.tiers.ordinary,1);
+  assert.equal(rep.tiers.white,0);
+  assert.equal(rep.tiers.green,0);
+});
