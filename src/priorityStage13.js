@@ -80,7 +80,7 @@ function startModel(line,{brand,model}){
 function basisModel(text,{brand,model}){
   const full=norm(brand+" "+model);
   return new RegExp("(^|[^A-ZА-Я0-9])"+escapeRE(full).replace(/ /g,"\\s+")+
-    "(?=$|[^A-ZА-Я0-9.\\-])").test(text);
+    "(?=$|[^A-ZА-Я0-9.\\-]|\\.(?=\\s|$|[,;]))").test(text);
 }
 function quantity(line){
   const m=line.match(/[—–-]\s*(\d+)\s*(?:шт|ед)(?:\.|иниц(?:ы|а)?)?(?=\s|$|[;,])/i);
