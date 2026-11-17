@@ -6,6 +6,7 @@ import {PIPELINE_VERSION, normalizeCheckpoint} from "./checkpointStore.js";
 import {costEnvLimitUsd} from "./researchCostPolicy.js";
 import {STEPS} from "./constants.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
+import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
@@ -204,6 +205,7 @@ export async function runSabyOnlyContinuation({
     });
   }
   const priorityStats=applyPriorityStage13(result,{aiStats:priorityAIStats});
+  priorityStats.commercial_postprocess=finalizeStage13CommercialOutput(result);
   await persist("completed",{
     completed_stage:9,
     final_result:result,
