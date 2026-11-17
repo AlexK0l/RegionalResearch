@@ -230,17 +230,47 @@ export function priority13InputHash(row){
   ])).digest("hex");
 }
 
-// Candidate selection happens only for companies without a proven semi-trailer.
-// Numbers in year/source URLs must not masquerade as a make+model. Do not send
-// Saby truck lists to OpenAI; those are explicitly truck-only sections.
+// Stage 13 extracts MAKE + MODEL, not arbitrary capitalized names or
+// 'word word number' fragments from broad company/evidence prose.
+// TORGBOX is structured transport data; unstructured evidence needs stronger
+// lexical proof of a model, close to its actual equipment transaction.
 const UNKNOWN_MODEL=/([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,23}(?:\s+[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,22})?)\s+([A-Za-zА-Яа-яЁё\d*./_-]*\d[A-Za-zА-Яа-яЁё\d*./_-]{0,22})/gu;
-// Some genuine models are alphabetic: Kögel Cargo, KRONE Box Liner,
-// SCHMITZ CARGOBULL S.KO. Require capitalized make AND named model.
 const ALPHA_MODEL=/[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}(?![\p{L}\p{N}*./_-])/gu;
-const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|сумма|руб|рф|для|был|была|приобрела|приобрёл|поставка|закупка|выручка|фирма|компания|предприятие|договор|контракт|судебный|ведомость|регистрации)$/i;
+const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|муп|ип|гк|сумма|руб|рф|для|был|была|приобрела|приобрёл|приобрели|приобрело|закупила|закупил|купила|купил|поставка|закупка|выручка|фирма|компания|предприятие|договор|контракт|судебный|ведомость|регистрации|мощностью|производительность|единиц|количество|линии|марка|модель|автомобиль|транспорт|техника|полуприцеп|прицеп|тракторный|грузовой|владении|находится|имеется|масел)$/i;
+const VEHICLE_CONTEXT=/полуприцеп|п\s*\/\s*прицеп|прицеп|тягач|автопоезд|автотранспорт|грузов|автомобил|трал|контейнеровоз|цистерн|фургон|рефрижератор|транспортн[а-яё]*\s+(?:средств|техник|модел)|(?:марки|модель|модели|марка)\s*[:«"A-ZА-ЯЁ]/i;
+const MODEL_LABEL=/\b(?:марки|марка|модель|модели|производитель)\s*[:«"—-]?\s*$/i;
+const ORG_PREFIX=/\b(?:ООО|АО|ПАО|ЗАО|ОАО|МУП|ИП|ГК|ФИЛИАЛ|ПРЕДПРИЯТИЕ)\s*[«"(\s]*$/iu;
+const KNOWN_MAKES=new Set([
+  ...CATALOG.map(x=>norm(x.brand)),
+  "SCHMITZ CARGOBULL","KÖGEL","KOGEL","KOEGEL",
+  "SCHWARZMULLER","SCHWARZMÜLLER","LAMBERET","CHEREAU",
+  "GOLDHOFER","FAYMONVILLE","KOLUMAN","CIMC"
+].map(x=>norm(x)));
+const isCapitalized=x=>/^\p{Lu}/u.test(String(x||""));
+const comparable=x=>norm(x).replace(/[^\p{L}\p{N}]+/gu," ").trim();
+const makeKnown=phrase=>{
+  const up=norm(phrase);
+  return [...KNOWN_MAKES].some(make=>up===make||up.startsWith(make+" "));
+};
+function companyNamePart(phrase,company){
+  const normalized=comparable(phrase),full=comparable(company);
+  return normalized.length>=8&&full.includes(normalized);
+}
+function hasExplicitMakeLabel(text,index){
+  return MODEL_LABEL.test(text.slice(Math.max(0,index-55),index));
+}
+function localModelProof(text,start,end,source,phrase){
+  if(source==="TORGBOX")return true;
+  const context=text.slice(Math.max(0,start-85),Math.min(text.length,end+70));
+  const nearbyEvent=text.slice(Math.max(0,start-130),Math.min(text.length,end+110));
+  return ACTUAL_EQUIPMENT_EVENT.test(nearbyEvent)&&
+    (makeKnown(phrase)||VEHICLE_CONTEXT.test(context)||
+      hasExplicitMakeLabel(text,start));
+}
 export function validPriority13ModelQuote(value){
-  const q=str(value).trim();
-  if(q.length<5||q.length>95||NOT_BRAND.test(q.split(/\s+/)[0]))return false;
+  const q=str(value).trim(),tokens=q.split(/\s+/);
+  if(q.length<5||q.length>95||!isCapitalized(tokens[0])||
+     NOT_BRAND.test(tokens[0])||companyNamePart(q,""))return false;
   return /[A-Za-zА-Яа-яЁё]{2,}[\s-]+[A-Za-zА-Яа-яЁё\d*./_-]*\d/u.test(q)||
     /^[\p{Lu}][\p{L}-]{2,}(?:\s+[\p{Lu}][\p{L}./-]{2,}){1,2}$/u.test(q);
 }
@@ -249,7 +279,6 @@ export function exactPriority13ModelQuote(quote,text){
   if(!validPriority13ModelQuote(q))return false;
   const i=s.indexOf(q);
   if(i<0)return false;
-  // "KRONE SDP" must NEVER authenticate "KRONE SDP27".
   const part=/[\p{L}\p{N}*./_-]/u;
   return !part.test(s[i-1]||"")&&!part.test(s[i+q.length]||"");
 }
@@ -257,36 +286,50 @@ export function exactPriority13ModelQuote(quote,text){
 // are not evidence that THIS company has the named piece of equipment.
 const ACTUAL_EQUIPMENT_EVENT=/приобр[её]л|приобрела|приобретен|приобретён|приобретена|закупил|закупила|закуплен|купил|купила|в\s+лизинге|лизингов[а-яё]*\s+договор|арендует|арендовал|владени|владеет|принадлежит|в\s+собственност|эксплуатир|использует|зарегистрирован|на\s+балансе|суд\s+установил|подтвержден[а-яё]*\s+владен/i;
 const UNCOMMITTED_PLAN=/планиру[а-яё]*\s+(?:приобр|закуп|купить)|план\s+закуп|намерен[а-яё]*\s+приобр|коммерческ[а-яё]*\s+предложени|запрос\s+цен|интерес\s+к\s+покупк/i;
-function modelMentions(text,limit=2){
+function modelMentions(text,{source="evidence",buyer="",limit=2}={}){
   const clean=str(text).replace(/https?:\/\/\S+/gi," ");
-  const results=[];
+  const found=[];
+  const add=(phrase,start)=>{
+    const normalized=phrase.trim();
+    if(!validPriority13ModelQuote(normalized) ||
+       companyNamePart(normalized,buyer)||
+       !localModelProof(clean,start,start+phrase.length,source,normalized)||
+       found.some(x=>x.phrase===normalized))return;
+    found.push({phrase:normalized,start});
+  };
   for(const m of clean.matchAll(UNKNOWN_MODEL)){
-    let phrase=m[0].trim().replace(/[.,;:]+$/g,""),parts=phrase.split(/\s+/);
-    // "приобрела KRONE SDP27" includes a verb before the actual make.
-    if(parts.length===3&&NOT_BRAND.test(parts[0])){
-      phrase=parts.slice(1).join(" ");
-      parts=phrase.split(/\s+/);
+    let phrase=m[0].trim().replace(/[.,;:]+$/g,""),
+      parts=phrase.split(/\s+/),start=m.index;
+    // Remove an accidental verb or generic vehicle noun before a real make.
+    // Keep two-part manufacturer names, e.g. Schmitz Cargobull SKO26.
+    if(parts.length===3 && !isCapitalized(parts[0]) &&
+       isCapitalized(parts[1])){
+      start+=parts[0].length+1;
+      parts=parts.slice(1);
+      phrase=parts.join(" ");
     }
-    const last=parts.at(-1);
-    if(parts.length<2||NOT_BRAND.test(parts[0])||
-       /^20(?:[0-2]\d|3\d)$/.test(last)||/^19\d\d$/.test(last)||
-       /^(?:\d{1,2})$/.test(last))continue;
-    // Some notes prepend a verb to "SCHMITZ 9084". Keep the literal phrase;
-    // the model must return the exact shorter manufacturer+model substring.
-    if(!results.includes(phrase))results.push(phrase);
-    if(results.length>=limit)break;
+    const make=parts.slice(0,-1).join(" "),code=parts.at(-1);
+    if(!validPriority13ModelQuote(phrase) ||
+       parts.slice(0,-1).some(p=>NOT_BRAND.test(p))||
+       // "масел мощностью 300" is a power measurement, NOT a model.
+       (/^\d{1,3}$/.test(code)&&source!=="TORGBOX"&&!makeKnown(make)) ||
+       /^20(?:[0-2]\d|3\d)$/.test(code)||/^19\d\d$/.test(code))continue;
+    add(phrase,start);
+    if(found.length>=limit)break;
   }
-  // Letter-only make/model names also deserve AI classification.
-  // Not every capitalized phrase is a vehicle: the final answer still needs
-  // high confidence and must never be used as standalone ownership evidence.
-  if(results.length<limit)for(const match of clean.matchAll(ALPHA_MODEL)){
-    const phrase=match[0].trim();
-    if(!validPriority13ModelQuote(phrase)||results.includes(phrase)||
-       results.some(numeric=>numeric.startsWith(phrase+" ")))continue;
-    results.push(phrase);
-    if(results.length>=limit)break;
+  if(found.length<limit)for(const m of clean.matchAll(ALPHA_MODEL)){
+    const phrase=m[0].trim(),tokens=phrase.split(/\s+/),start=m.index;
+    if(tokens.some(t=>NOT_BRAND.test(t)))continue;
+    // In free text, mere proper names ("Деловые Линии") do not imply
+    // a make/model. Keep explicit makes and labeled vehicle models.
+    if(source!=="TORGBOX"&&!makeKnown(phrase)&&
+       !hasExplicitMakeLabel(clean,start))continue;
+    if(found.some(x=>x.phrase.startsWith(phrase+" ")||
+       (x.start<=start&&x.start+x.phrase.length>=start+phrase.length)))continue;
+    add(phrase,start);
+    if(found.length>=limit)break;
   }
-  return results;
+  return found.map(x=>x.phrase);
 }
 export function priority13AICandidates(row,{maxPerBuyer=3}={}){
   const existing=calculatePriority13({
@@ -297,7 +340,7 @@ export function priority13AICandidates(row,{maxPerBuyer=3}={}){
   if(existing.tier!=="none")return [];
   const result=[],fingerprint=priority13InputHash(row);
   const add=(source,index,text,url="")=>{
-    for(const phrase of modelMentions(text)){
+    for(const phrase of modelMentions(text,{source,buyer:row?.["Организация"]||""})){
       result.push({source,index,text:str(text).slice(0,750),
         model_text:phrase,source_url:url,fingerprint});
       if(result.length>=maxPerBuyer)return;
