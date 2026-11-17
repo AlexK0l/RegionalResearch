@@ -57,7 +57,7 @@ test("full Stage13 score audit reports promotions without modifying other source
   row.__priority13_ai={results:[{model_text:"Kögel SN 24",
     kind:"semi_trailer",confidence:"high",source:"evidence",source_url:"https://example.org",
     model_quote:"Kögel SN 24",reason:"Полуприцеп"}]};
-  const report=stage13DiffAudit(before,after,{deferred:0,stopped_reason:""},{},stage13SourceAudit(before));
+  const report=stage13DiffAudit(before,after,{deferred:0,classified:1,stopped_reason:""},{},stage13SourceAudit(before));
   assert.equal(report.input_buyers,2);
   assert.equal(report.processed_buyers,2);
   assert.equal(report.score_changed,1);
@@ -80,4 +80,34 @@ test("deferred work or a model error never counts as completed full Stage13",()=
   const data=result();
   assert.equal(stage13DiffAudit(data,data,{deferred:1,stopped_reason:"candidate_limit"}).complete,false);
   assert.equal(stage13DiffAudit(data,data,{deferred:0,stopped_reason:"model_unavailable"}).complete,false);
+});
+
+test("inventory includes both catalog matches and unknown models at an ordinary score",()=>{
+  const data=result();
+  data.direct_buyers[0]["Итоговый коэффициент"]=20;
+  data.direct_buyers[0]["Техника/сегмент"]="Бортовой полуприцеп Kögel SN 24 и SCHMITZ 9084";
+  const selection=stage13SourceAudit(data);
+  assert.equal(selection.candidate_rows,1);
+  assert.ok(selection.candidates_detail.some(x=>x.model==="Kögel SN 24"));
+  assert.ok(selection.model_inventory.some(x=>x.model==="SCHMITZ 9084"&&
+    x.verification==="catalog"&&x.catalog_tier==="white"));
+  assert.equal(selection.rows_detail.length,2);
+  assert.ok(selection.model_inventory.some(x=>x.source_status));
+});
+test("no model calls means full model inventory is NOT classified even if 459 scores were recalculated",()=>{
+  const data=result(),sel=stage13SourceAudit(data);
+  const audit=stage13DiffAudit(data,data,{calls:0,classified:0,deferred:0},{},sel);
+  assert.equal(audit.complete,false);
+  assert.equal(audit.model_inventory_complete,false);
+  assert.ok(audit.model_outcomes.some(x=>x.final_status==="not_classified"));
+});
+test("unattributed model is sent for TYPE only and retained in ledger",()=>{
+  const data=result();
+  data.direct_buyers[1]["Техника/сегмент"]="Полуприцеп Schmitz SCO 24";
+  const inv=stage13SourceAudit(data);
+  const model=inv.candidates_detail.find(x=>x.model==="Schmitz SCO 24");
+  assert.ok(model);
+  assert.equal(model.evidence_eligible,false);
+  assert.equal(model.source,"segment");
+  assert.equal(model.reason,"source_not_attributed");
 });

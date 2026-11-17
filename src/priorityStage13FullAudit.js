@@ -1,49 +1,75 @@
 // Stage 13: independent analysis of the completed Saby checkpoint and the
 // full post-Saby replay. Financial amounts estimate OpenAI token charges;
 // the provider's invoice is authoritative.
-import {priority13AICandidates} from "./priorityStage13.js";
-
+import {CATALOG} from "./priorityStage13.js";
+import {extractStage13ModelInventory} from "./priorityStage13Inventory.js";
 const number=v=>Number.isFinite(Number(v))?Math.max(0,Number(v)):0;
 const rounded=(x,d=6)=>Number(Number(x||0).toFixed(d));
 const band=v=>v>=70?"green":v>=40?"white":v>=20?"ordinary":"none";
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 
-export function stage13SourceAudit(result,{maxPerBuyer=3,batchSize=10,maxCalls=12}={}){
+export function stage13SourceAudit(result,{maxPerBuyer=50,batchSize=12,maxCalls=20}={}){
   const buyers=Array.isArray(result?.direct_buyers)?result.direct_buyers:[];
-  const selected=[],signatures=new Map(),bySource={evidence:0};
-  let rows=0;
-  for(let i=0;i<buyers.length;i++){
-    const row=buyers[i],found=priority13AICandidates(row,{maxPerBuyer});
-    if(found.length)rows++;
-    for(const c of found){
-      const signature=String(c.model_text||"").toUpperCase()
-        .replace(/Ё/g,"Е").replace(/\s+/g," ").trim();
-      selected.push({row:i+2,buyer:row["Организация"]||"",
-        model:c.model_text,source:c.source,url:c.source_url||"",
-        grade:row.__final_grade||"",prior_score:row["Итоговый коэффициент"]??null});
-      bySource[c.source]=(bySource[c.source]||0)+1;
-      if(!signatures.has(signature))signatures.set(signature,c.model_text);
+  const selected=[],inventory=[],rowsDetail=[],signatures=new Map(),bySource={};
+  let rows=0,catalogMatches=0,truncated=0,sabyRows=0,modelRows=0,unattributed=0;
+  for(const [i,row] of buyers.entries()){
+    const found=extractStage13ModelInventory(row,{catalog:CATALOG,maxPerBuyer});
+    if(found.excluded_saby_truck_list)sabyRows++;
+    if(found.found_total)modelRows++;
+    truncated+=found.skipped_due_to_limit.length;
+    const unknown=found.models.filter(x=>x.verification==="openai");
+    if(unknown.length)rows++;
+    catalogMatches+=found.models.filter(x=>x.verification==="catalog").length;
+    unattributed+=unknown.filter(x=>!x.evidence_eligible).length;
+    rowsDetail.push({row:i+2,buyer:row["Организация"]||"",
+      score_before:row["Итоговый коэффициент"]??null,
+      models_found:found.found_total,models_to_openai:unknown.length,
+      models_in_catalog:found.catalog_models,
+      skipped_due_to_limit:found.skipped_due_to_limit,
+      saby_trucks_excluded:found.excluded_saby_truck_list,
+      reason:found.found_total?"concrete_models_found":
+        found.excluded_saby_truck_list?"no_non_saby_concrete_model":
+          "no_concrete_make_model"});
+    for(const m of found.models){
+      const entry={row:i+2,buyer:row["Организация"]||"",
+        grade:row.__final_grade||"",score_before:row["Итоговый коэффициент"]??null,
+        model:m.model_text,signature:m.signature,source:m.source,
+        source_index:m.index,source_url:m.source_url||"",
+        source_status:m.source_status,evidence_eligible:m.evidence_eligible,
+        verification:m.verification,catalog_tier:m.catalog_tier,
+        reason:m.reason,observations:m.observations||[]};
+      inventory.push(entry);
+      if(m.verification!=="openai")continue;
+      selected.push(entry);
+      bySource[m.source]=(bySource[m.source]||0)+1;
+      // The runtime deduplicates exact case-insensitive literal labels. Do
+      // NOT collapse different model spellings if the returned quote would
+      // fail its exact-match integrity check for a different company.
+      const signature=String(m.model_text||"").toUpperCase().replace(/Ё/g,"Е")
+        .replace(/\s+/g," ").trim();
+      if(!signatures.has(signature))signatures.set(signature,m.model_text);
     }
   }
-  const unique=[...signatures.values()];
-  const calls=Math.ceil(unique.length/batchSize);
+  const unique=[...signatures.values()],calls=Math.ceil(unique.length/batchSize);
   const batches=Array.from({length:calls},(_,i)=>unique.slice(i*batchSize,(i+1)*batchSize));
-  // This baseline was observed from one 5-model live smoke on the same API:
-  // 828 input / 418 output. Intercepts approximate per-request overhead.
-  const predictedInput=batches.reduce((s,b)=>s+Math.ceil(228+120*b.length),0);
-  const predictedOutput=batches.reduce((s,b)=>s+Math.ceil(70+70*b.length),0);
+  const predictedInput=batches.reduce((sum,b)=>sum+Math.ceil(228+120*b.length),0);
+  const predictedOutput=batches.reduce((sum,b)=>sum+Math.ceil(70+70*b.length),0);
   const expectedUsd=rounded((predictedInput*0.20+predictedOutput*1.20)/1e6);
-  const upperUsd=rounded(batches.reduce((s,b)=>
-    s+(Math.ceil(228+160*b.length)*0.20+3500*1.20)/1e6,0));
-  return {buyers:buyers.length,candidate_rows:rows,candidates:selected.length,
+  const upperUsd=rounded(batches.reduce((sum,b)=>
+    sum+(Math.ceil(228+160*b.length)*0.20+3500*1.20)/1e6,0));
+  return {buyers:buyers.length,model_rows:modelRows,
+    candidate_rows:rows,candidates:selected.length,
+    catalog_models:catalogMatches,unknown_models:selected.length,
+    unattributed_type_only:unattributed,saby_truck_rows_excluded:sabyRows,
+    models_skipped_due_to_limit:truncated,
     unique_models:unique.length,planned_calls:calls,
     available_calls:maxCalls,batch_size:batchSize,
-    capacity:maxCalls*batchSize,all_models_fit:calls<=maxCalls,
-    by_source:bySource,unique_models_list:unique,
-    candidates_detail:selected,
+    capacity:maxCalls*batchSize,all_models_fit:calls<=maxCalls&&truncated===0,
+    by_source:bySource,unique_models_list:unique,candidates_detail:selected,
+    model_inventory:inventory,rows_detail:rowsDetail,
     token_forecast:{input:predictedInput,output:predictedOutput,
       expected_usd:expectedUsd,conservative_usd:upperUsd,
-      basis:"828 input / 418 output tokens for five models in 2026-11-17 Smolensk live smoke; indicative only"}
+      basis:"Smolensk live API reference: 828 input / 418 output tokens for five models; indicative"}
   };
 }
 export function stage13UsageSummary(records,{
@@ -127,7 +153,29 @@ export function stage13DiffAudit(before,after,ai={},usage={},selection={}){
   const signed=changed.filter(x=>x.delta>0).length,
     fallen=changed.filter(x=>x.delta<0).length;
   const deferred=number(ai.deferred);
-  return {version:1,
+  const expected=number(selection?.candidates);
+  const actual=number(ai.classified)+number(ai.cached);
+  const completelyProcessed=deferred===0&&
+    (expected===0||actual>=expected)&&
+    !["model_unavailable","stage13_cost_or_call_budget",
+      "global_research_cost_budget","candidate_limit","disabled",
+      "no_openai_client"].includes(ai.stopped_reason);
+  const modelOutcomes=(selection?.model_inventory||[]).map(item=>{
+    const row=after.direct_buyers[item.row-2];
+    const decisions=Array.isArray(row?.__priority13_ai?.results)?
+      row.__priority13_ai.results:[];
+    const verdict=decisions.find(d=>d.model_text===item.model&&
+      d.source===item.source&&d.index===item.source_index);
+    return {...item,final_status:item.verification==="catalog"?
+      "catalog_"+item.catalog_tier:!verdict?"not_classified":
+      verdict.kind==="unknown"?"openai_unknown":"openai_"+verdict.kind,
+      openai_confidence:verdict?.confidence||null,
+      openai_reason:verdict?.reason||null,
+      can_support_score:item.evidence_eligible&&
+        (item.verification==="catalog"||
+        (verdict?.kind==="semi_trailer"&&verdict?.confidence==="high"))};
+  });
+  return {version:2,
     input_buyers:before.direct_buyers.length,
     processed_buyers:after.direct_buyers.length,
     score_changed:changed.length,score_increased:signed,score_decreased:fallen,
@@ -135,8 +183,12 @@ export function stage13DiffAudit(before,after,ai={},usage={},selection={}){
     ai_rows_with_verdicts:aiBuyerRows,accepted_types:acceptedKinds,
     high_confidence_semi_results:recognized,
     non_semi_results:negative,uncertain_results:uncertain,
-    pending_candidates:deferred,complete:deferred===0&&
-      !["model_unavailable","stage13_cost_or_call_budget","global_research_cost_budget","candidate_limit"].includes(ai.stopped_reason),
+    pending_candidates:deferred,complete:completelyProcessed&&
+      !number(selection?.models_skipped_due_to_limit),
+    requested_model_mentions:expected,classified_model_mentions:actual,
+    model_inventory_complete:completelyProcessed&&
+      !number(selection?.models_skipped_due_to_limit),
+    model_outcomes:modelOutcomes,
     ai_summary:ai,usage,source_selection:selection,
     unchanged_source_fields:issues.length===0,
     unexpected_differences:issues.slice(0,100),

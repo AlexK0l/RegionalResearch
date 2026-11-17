@@ -73,9 +73,13 @@ async function main(){
   const settings=stage13AISettings();
   const selection=stage13SourceAudit(result,settings);
   if(flag("preview-ai-candidates")){
-    const {candidates_detail, ...statistics}=selection;
+    const {candidates_detail,model_inventory,rows_detail,...statistics}=selection;
     console.log(JSON.stringify({mode:"preview-ai-candidates",
-      ...statistics,firstCandidates:candidates_detail.slice(0,25),
+      ...statistics,
+      firstCandidates:candidates_detail.slice(0,35),
+      firstCatalogModels:model_inventory.filter(x=>x.verification==="catalog").slice(0,15),
+      firstUnattributedModels:candidates_detail.filter(x=>!x.evidence_eligible).slice(0,15),
+      rows_without_concrete_model:rows_detail.filter(x=>!x.models_found).length,
       openai_calls:0,network_calls:0,original_unchanged:true},null,2));
     return;
   }

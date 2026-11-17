@@ -16,9 +16,9 @@ export function stage13AISettings(env=process.env){
   return {
     enabled:String(env.STAGE13_AI_ENABLED??"true").toLowerCase()!=="false",
     model:String(env.STAGE13_AI_MODEL||env.TARGETED_SEARCH_MODEL||env.FINAL_BATCH_MODEL||"gpt-5.6-luna"),
-    maxCalls:clampInt(env.STAGE13_AI_MAX_CALLS,12,0,20),
-    batchSize:clampInt(env.STAGE13_AI_BATCH_SIZE,10,1,12),
-    maxPerBuyer:clampInt(env.STAGE13_AI_MAX_PER_BUYER,3,1,8),
+    maxCalls:clampInt(env.STAGE13_AI_MAX_CALLS,20,0,20),
+    batchSize:clampInt(env.STAGE13_AI_BATCH_SIZE,12,1,12),
+    maxPerBuyer:clampInt(env.STAGE13_AI_MAX_PER_BUYER,50,1,50),
     maxUsd:clampNum(env.STAGE13_AI_MAX_ESTIMATED_USD,0.35,0,2),
     timeoutMs:clampInt(env.STAGE13_AI_TIMEOUT_MS,25000,5000,60000),
     maxOutputTokens:clampInt(env.STAGE13_AI_MAX_OUTPUT_TOKENS,3500,800,4000)
@@ -64,13 +64,21 @@ const safeQuote=(quote,text)=>{
 function normalizeVerdict(verdict,candidate){
   const k=String(verdict?.kind||"");
   const confidence=String(verdict?.confidence||"");
-  const quote=String(verdict?.model_quote||"").trim();
+  const originalQuote=String(verdict?.model_quote||"").trim();
+  // A single answer may cover "WIELTON NW3A..." and "Wielton NW3A...".
+  // Preserve the exact source spelling for each buyer, never invent a
+  // different model number or promote a substring.
+  const quote=normalizedModel(originalQuote)===normalizedModel(candidate.model_text)
+    ?candidate.model_text:originalQuote;
   const permitted=["semi_trailer","other_trailer","truck","tractor","other","unknown"].includes(k);
   const verified=permitted&&["high","medium","low"].includes(confidence)&&
     safeQuote(quote,candidate.model_text);
   return {
     source:candidate.source,index:candidate.index,model_text:candidate.model_text,
     source_url:candidate.source_url||"",
+    source_status:candidate.source_status||"source_not_attributed",
+    evidence_eligible:candidate.evidence_eligible===true,
+    inventory_reason:candidate.reason||"",
     kind:verified?k:"unknown",
     confidence:verified?confidence:"low",
     model_quote:verified?quote:"",
@@ -193,12 +201,14 @@ export async function classifyStage13UnknownModels(result,{
   stats.candidates=queue.length+stats.cached;
   stats.unique_models=bySignature.size;
   // One request per unknown MAKE+MODEL rather than one request per buyer.
-  // Prioritize sourced A/B and verified TORGBOX when the budget is smaller
-  // than the whole candidate queue; never sort by company name/alphabet.
+  // Prioritize source-attributed models, but never exclude an ordinary
+  // buyer from type classification or treat bare Saby truck lists as trailers.
   const rank=t=>{
     const row=result.direct_buyers[t.rowIndex];
     const grade=String(row?.__final_grade||row?.["Основание"]||"").trim().toUpperCase()[0];
-    return (grade==="A"?30:grade==="B"?20:10)+(t.source==="TORGBOX"?5:0);
+    return (grade==="A"?30:grade==="B"?20:10)+
+      (t.evidence_eligible===true?10:0)+
+      (t.source==="evidence"?4:t.source==="a_evidence"?3:t.source==="segment"?1:0);
   };
   const representatives=[...bySignature.values()]
     .map(rows=>rows.slice().sort((a,b)=>rank(b)-rank(a)||a.rowIndex-b.rowIndex)[0])

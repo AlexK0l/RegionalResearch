@@ -101,7 +101,7 @@ test("ordinary agricultural trailer 2ПТС-6 lacks a manufacturer pair",()=>{
   assert.deepEqual(priority13AICandidates(buyer([note])),[]);
 });
 
-test("unrelated sources, future plans and expired contracts do not qualify",()=>{
+test("plans, expired deals and unattributed references may be typed but never prove ownership",()=>{
   for(const note of [
     "Компания планирует приобрести транспортное средство марки TRAILCO N900. https://example.org/plan",
     "Компания приобрела транспортное средство марки TRAILCO N900.", // no URL
@@ -109,7 +109,8 @@ test("unrelated sources, future plans and expired contracts do not qualify",()=>
     "В поисковой выдаче вакансий указано TRAILCO N900 и парк. https://hh.ru/vacancies/voditel",
     "Запрос цен на транспортное средство марки TRAILCO N900. https://example.org/rfq"
   ]){
-    assert.equal(priority13AICandidates(buyer([note])).length,0,note);
+    const found=priority13AICandidates(buyer([note]));
+    assert.ok(found.every(v=>v.evidence_eligible===false),note);
   }
 });
 
@@ -273,4 +274,101 @@ test("Smolensk Kögel SN 24 positive model verdict raises E from 0 to ordinary",
 test("historical TORGBOX text is not an active OpenAI candidate source",()=>{
   const row=buyer([],{TORGBOX:"KRONE SDP27 — 1 шт."});
   assert.equal(priority13AICandidates(row).length,0);
+});
+
+test("already ordinary buyer STILL sends out-of-catalog trailer model to OpenAI",async()=>{
+  const known=row=>row;
+  const r=buyer([actualNote("WIELTON NW3A48SD")],{
+    "Основание":"B — Компания эксплуатирует полуприцеп и организует перевозки"
+  });
+  assert.equal(priority13AICandidates(r).length,1);
+  let calls=0;
+  const data=final(r);
+  const stats=await classifyStage13UnknownModels(data,{env,
+    requestBatch:async batch=>{
+      calls++;return {items:batch.map(c=>({id:c.id,
+        kind:"semi_trailer",confidence:"high",model_quote:c.model_text,
+        reason:"Полуприцеп"}))};
+    }
+  });
+  assert.equal(calls,1);
+  assert.equal(stats.recognized_semi_trailers,1);
+  assert.equal(applyPriorityStage13(data).tiers.ordinary,1);
+});
+test("catalog pair is not sent to AI; another make/model in the same buyer still is",()=>{
+  const r=buyer([actualNote("WIELTON NW3A48SD"),
+    actualNote("SCHMITZ 9084")]);
+  assert.deepEqual(priority13AICandidates(r).map(c=>c.model_text),["WIELTON NW3A48SD"]);
+});
+test("segment-only Schmitz SCS and SCO 24 are typed but cannot raise coefficient",async()=>{
+  const r=buyer([],{"Техника/сегмент":
+    "Шторные полуприцепы Schmitz SCS, Schmitz SCO 24; международные перевозки"});
+  const candidates=priority13AICandidates(r);
+  assert.deepEqual(candidates.map(c=>c.model_text).sort(),
+    ["Schmitz SCO 24","Schmitz SCS"]);
+  assert.ok(candidates.every(c=>c.evidence_eligible===false&&c.source==="segment"));
+  const data=final(r);
+  const stats=await classifyStage13UnknownModels(data,{env,
+    requestBatch:async batch=>({
+      items:batch.map(c=>({id:c.id,kind:"semi_trailer",
+        confidence:"high",model_quote:c.model_text,reason:"полуприцеп"}))
+    })
+  });
+  assert.equal(stats.recognized_semi_trailers,2);
+  assert.equal(applyPriorityStage13(data).tiers.none,1);
+  assert.ok(r["Итоговый коэффициент"]>=0&&r["Итоговый коэффициент"]<=19,
+    "the buyer must remain in the unconfirmed 0–19 band");
+});
+test("real full-checkpoint examples appear even when prior scores are ordinary",()=>{
+  const samples=[
+    ["ООО «АРИХОН»","WIELTON NW3A48SD"],
+    ["ООО «ТМГ ИНДУСТРИЯ»","V-TRAILER VTPP31"],
+    ["ООО «ГЛОБАЛ ТРЕЙД»","Wielton NW3A44SD"],
+    ["ООО «Регион Паллет»","Tonar 9445"],
+    ["ООО «СПЕКТР67»","KOGEL S24-1"],
+    ["ООО «КСП «Струково»","KRONE SDP 27"],
+    ["ПАО «НК «Роснефть» — Смоленскнефтепродукт»","НЕФАЗ-96895"]
+  ];
+  for(const [company,model] of samples){
+    const note="A — "+company+" получил по договору полуприцеп "+
+      model+" и эксплуатирует его. https://example.org/court";
+    const r=buyer([note],{"Техника/сегмент":"Полуприцеп "+model,
+      "Основание":"A — указан полуприцеп по договору"});
+    const found=priority13AICandidates(r);
+    assert.ok(found.some(c=>c.model_text.replace(/\s+/g," ").includes(model.replace("НЕФАЗ-","НЕФАЗ ")) ||
+       c.model_text===model||c.model_text===model.replace("НЕФАЗ-","НЕФАЗ ")),model);
+  }
+});
+test("a source hyperlink only in the source list does not prove a segment-only vehicle",()=>{
+  const r=buyer([],{"Техника/сегмент":"Полуприцеп Schmitz SCO 24"});
+  r.__evidence.source_urls=["https://example.org/unrelated"];
+  const found=priority13AICandidates(r);
+  assert.equal(found.length,1);
+  assert.equal(found[0].evidence_eligible,false);
+});
+test("Saby (грузовые) trucks are excluded even when the row has many KAMAZ models",()=>{
+  const r=buyer([],{"Наличие транспорта":
+    "Saby (грузовые): KAMAZ 5490 — 1 шт.; MAZ 6430 — 2 шт."});
+  assert.deepEqual(priority13AICandidates(r),[]);
+});
+
+
+test("case-only model spelling variants share one API call with verified literal quotes",async()=>{
+  const one=buyer([actualNote("WIELTON NW3A48SD")]);
+  const two=buyer([actualNote("Wielton NW3A48SD")],{
+    "Организация":"ООО «Другой»",__canonical_id:"different-entity"
+  });
+  const data=final(one,two);
+  let requests=0;
+  const stats=await classifyStage13UnknownModels(data,{env,
+    requestBatch:async batch=>{
+      requests++;
+      assert.equal(batch.length,1);
+      return {items:[{id:batch[0].id,kind:"semi_trailer",
+        confidence:"high",model_quote:batch[0].model_text,reason:"полуприцеп"}]};
+    }
+  });
+  assert.equal(requests,1);
+  assert.equal(stats.recognized_semi_trailers,2);
+  assert.equal(applyPriorityStage13(data).tiers.ordinary,2);
 });
