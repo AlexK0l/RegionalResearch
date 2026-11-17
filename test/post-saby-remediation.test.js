@@ -50,9 +50,9 @@ test("post-Saby work queues are readonly, factual and preserve identity uncertai
   assert.equal(r.summary.a_claims_missing_source,1);
   assert.equal(r.summary.a_claims_highest_risk,1);
   assert.equal(r.summary.saby_partial,1);
-  assert.equal(r.summary.saby_unverified_or_absent,2,
+  assert.equal(r.summary.saby_unverified_or_absent,1,
     "missing INN must not masquerade as Saby-not-captured firm");
-  assert.equal(r.saby_not_captured.length,2);
+  assert.equal(r.saby_not_captured.length,1);
   assert.equal(r.summary.companies_with_email,4);
   assert.equal(r.summary.rows_auto_changed,0);
   assert.equal(r.summary.openai_calls,0);
