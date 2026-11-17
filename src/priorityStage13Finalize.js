@@ -36,7 +36,7 @@ export function stage13CommercialRole(row){
   // lessor, the fact that it holds property is not a direct-cargo use case.
   const key=name.replace(/^(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*/u,"")
     .replace(/[«»"']/gu,"").trim();
-  const selectedNamesCompany=key.length>=5&&normalized(a).includes(key);
+  const selectedNamesCompany=key.length>=5&&normalized(a).replace(/[«»"\x27]/gu,"").includes(key);
   const selectedLessor=selectedNamesCompany&&/лизингодател[а-яё]*/iu.test(a);
   const explicitRole=notes.find(n=>
     /(?:^|[;.]\s*)роль\s*:\s*лизингодател[а-яё]*(?:\s*\/\s*реализатор)?/iu.test(n)||
