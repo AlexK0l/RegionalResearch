@@ -198,3 +198,16 @@ test("resumed run reuses only matching canonical ID and input hash",async()=>{
   assert.equal(stats.cached,1);
   assert.equal(applyPriorityStage13(data).tiers.ordinary,1);
 });
+
+test("a mere purchasing PLAN or a request for quotation cannot prove equipment ownership",()=>{
+  const offers=[
+    "Компания планирует приобрести KRONE SDP27 в будущем. https://example.org/business-plan",
+    "Для бизнеса размещен запрос цен на KRONE SDP27 и лизинг. https://example.org/rfq",
+    "В каталоге размещено коммерческое предложение на KRONE SDP27. https://example.org/catalog"
+  ];
+  for(const note of offers){
+    assert.equal(priority13AICandidates(row("",[note])).length,0,note);
+  }
+  const proven="В судебном акте указано, что компания приобрела KRONE SDP27 и владеет ею. https://example.org/judgment";
+  assert.equal(priority13AICandidates(row("",[proven])).length,1);
+});
