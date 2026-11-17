@@ -350,3 +350,24 @@ test("Saby (грузовые) trucks are excluded even when the row has many KAM
     "Saby (грузовые): KAMAZ 5490 — 1 шт.; MAZ 6430 — 2 шт."});
   assert.deepEqual(priority13AICandidates(r),[]);
 });
+
+
+test("case-only model spelling variants share one API call with verified literal quotes",async()=>{
+  const one=buyer([actualNote("WIELTON NW3A48SD")]);
+  const two=buyer([actualNote("Wielton NW3A48SD")],{
+    "Организация":"ООО «Другой»",__canonical_id:"different-entity"
+  });
+  const data=final(one,two);
+  let requests=0;
+  const stats=await classifyStage13UnknownModels(data,{env,
+    requestBatch:async batch=>{
+      requests++;
+      assert.equal(batch.length,1);
+      return {items:[{id:batch[0].id,kind:"semi_trailer",
+        confidence:"high",model_quote:batch[0].model_text,reason:"полуприцеп"}]};
+    }
+  });
+  assert.equal(requests,1);
+  assert.equal(stats.recognized_semi_trailers,2);
+  assert.equal(applyPriorityStage13(data).tiers.ordinary,2);
+});
