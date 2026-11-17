@@ -268,3 +268,8 @@ test("alphabetic parser cannot mistake the prefix of a numeric model for another
   assert.equal(items.length,1);
   assert.equal(items[0].model_text,"KRONE SDP27");
 });
+
+test("two-word manufacturer is not independently classified ahead of its numeric model",()=>{
+  const items=priority13AICandidates(row("TORGBOX: Schmitz Cargobull SKO26 — 1 шт."));
+  assert.deepEqual(items.map(v=>v.model_text),["Schmitz Cargobull SKO26"]);
+});
