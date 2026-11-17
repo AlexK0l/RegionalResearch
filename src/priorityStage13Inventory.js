@@ -87,7 +87,8 @@ export function extractStage13ModelInventory(row,{catalog=[],maxPerBuyer=50}={})
         Math.min(src.text.length,hit.at+hit.model_text.length+100)),
       eligible=!!src.url&&src.source!=="segment"&&EVENT.test(context)&&
         !UNPROVEN.test(context)&&!EXPIRED.test(context),
-      entry={source:src.source,index:src.index,text:src.text.slice(0,750),
+      entry={source:src.source,index:src.index,
+        text:src.text.slice(Math.max(0,hit.at-240),Math.min(src.text.length,hit.at+380)),
         model_text:hit.model_text,signature,source_url:src.url||"",
         source_status:src.url?"source_attributed_not_live_verified":"source_not_attributed",
         evidence_eligible:eligible,catalog_tier:known?.tier||null,
