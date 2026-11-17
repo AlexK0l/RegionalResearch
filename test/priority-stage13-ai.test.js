@@ -333,3 +333,9 @@ test("general vehicle terms without a manufacturer are not a model",()=>{
     assert.equal(priority13AICandidates(row(c)).length,0,c);
   }
 });
+
+
+test("Unicode manufacturer and numeric model remain supported",()=>{
+  const candidates=priority13AICandidates(row("TORGBOX: Kögel F26 — 1 шт."));
+  assert.deepEqual(candidates.map(v=>v.model_text),["Kögel F26"]);
+});
