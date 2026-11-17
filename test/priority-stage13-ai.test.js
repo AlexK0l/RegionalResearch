@@ -273,3 +273,63 @@ test("two-word manufacturer is not independently classified ahead of its numeric
   const items=priority13AICandidates(row("TORGBOX: Schmitz Cargobull SKO26 — 1 шт."));
   assert.deepEqual(items.map(v=>v.model_text),["Schmitz Cargobull SKO26"]);
 });
+
+
+test("real Stage13 smoke: factory power and buyer names are not model candidates",async()=>{
+  const industrial=row("",[
+    "Компания приобрела оборудование для переработки растительных масел мощностью 300 тонн в месяц. https://example.org/plant"
+  ]);
+  industrial["Организация"]="ООО «Грейнлюкс»";
+  const corporate=row("",[
+    "ООО «Деловые Линии» использует автомобильный транспорт для грузовых перевозок. https://example.org/profile"
+  ]);
+  corporate["Организация"]="ООО «ДЛ-Транс» / ГК «Деловые Линии»";
+  assert.deepEqual(priority13AICandidates(industrial),[]);
+  assert.deepEqual(priority13AICandidates(corporate),[]);
+  const data=final(industrial,corporate);
+  const stats=await classifyStage13UnknownModels(data,{
+    env:cliEnv,requestBatch:async()=>{throw new Error("irrelevant paid classification")}
+  });
+  assert.equal(stats.calls,0);
+  assert.equal(stats.candidates,0);
+});
+test("unrelated equipment purchases and corporate names cannot trigger model classification",()=>{
+  const fakes=[
+    "Купила устройство для производства масел мощностью 300 кВт. https://example.org/plant",
+    "Компания приобрела серверное оборудование DELL 300 для склада. https://example.org/it",
+    "В собственности ООО «Деловые Линии» находится транспортный парк. https://example.org/company"
+  ];
+  for(const note of fakes){
+    assert.equal(priority13AICandidates(row("",[note])).length,0,note);
+  }
+});
+test("new numeric vehicle models in source-bound evidence still reach OpenAI",()=>{
+  const unknown=row("",[
+    "Компания приобрела транспортное средство марки TRAILCO N900 по договору лизинга. https://example.org/lease"
+  ]);
+  const candidates=priority13AICandidates(unknown);
+  assert.equal(candidates.length,1);
+  assert.equal(candidates[0].model_text,"TRAILCO N900");
+  assert.equal(candidates[0].source,"evidence");
+});
+test("known semitrailer manufacturers, letter-only models and TORGBOX codes remain eligible",()=>{
+  assert.deepEqual(
+    priority13AICandidates(row("TORGBOX: Schmitz Cargobull SKO26 — 1 шт."))
+      .map(x=>x.model_text),["Schmitz Cargobull SKO26"]);
+  assert.deepEqual(
+    priority13AICandidates(row("TORGBOX: Kögel Cargo — 1 шт."))
+      .map(x=>x.model_text),["Kögel Cargo"]);
+  assert.deepEqual(
+    priority13AICandidates(row("TORGBOX: KRONE SDP27 — 1 шт."))
+      .map(x=>x.model_text),["KRONE SDP27"]);
+  const known=row("",["Компания приобрела Schmitz Cargobull S.KO в лизинг. https://example.org/lease"]);
+  assert.deepEqual(priority13AICandidates(known).map(x=>x.model_text),["Schmitz Cargobull S.KO"]);
+});
+test("general vehicle terms without a manufacturer are not a model",()=>{
+  for(const c of [
+    "TORGBOX: тракторный прицеп 2ПТС-6 — 1 шт.",
+    "TORGBOX: прицеп самосвальный 2ПТС-6 — 2 шт."
+  ]){
+    assert.equal(priority13AICandidates(row(c)).length,0,c);
+  }
+});
