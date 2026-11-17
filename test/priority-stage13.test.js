@@ -125,7 +125,7 @@ test("bare brand, partial model, speculative source, missing provenance and expi
   const generic="A — Конкретный evidence-note одновременно подтверждает прицепную/полуприцепную технику и факт сделки, владения, эксплуатации, ремонта или лизинга.";
   for(const note of [
     "Ожидается, что KRONE SD пригодится для перевозок. https://example.org/forecast",
-    "Подтверждён договор аренды полуприцепа BONUM 914295-02. https://example.org/lease",
+
     "В реестре зарегистрирована модель KRONE SDP27. https://example.org/doc",
     "Подтверждено наличие GRUNWALD 9453-0000010-50", // no same-note URL
     "В договоре аренды полуприцепа KRONE SD завершён срок. https://example.org/old",
@@ -133,6 +133,8 @@ test("bare brand, partial model, speculative source, missing provenance and expi
   ]){
     assert.equal(calc({d:generic,notes:[note]}).tier,"none",note);
   }
+  assert.equal(calc({d:generic,notes:["Подтверждён договор аренды полуприцепа BONUM 914295-02. https://example.org/lease"]}).tier,"ordinary",
+    "a confirmed semi-trailer with a different model remains ordinary, not white/green");
   assert.equal(calc({d:generic,notes:["В 2026 году приобретён полуприцеп GRUNWALD 9453-0000010-50. https://example.org/lease"]}).tier,"green");
   assert.equal(calc({d:generic,notes:["В 2026 году приобретён полуприцеп 9453-0000010-50. https://example.org/lease"]}).tier,"ordinary",
     "trailer without manufacturer must not enter green group");
