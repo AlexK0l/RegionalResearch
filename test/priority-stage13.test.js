@@ -195,3 +195,14 @@ test("a court-proven model stays white even when the note denies proof of CURREN
   assert.equal(calc({notes:[note]}).tier,"white");
   assert.match(calc({notes:[note]}).models,/SCHMITZ 9084/);
 });
+
+test("a court denying ownership cannot be treated as a positive fleet signal",()=>{
+  for(const note of [
+    "Суд установил, что компания не имеет полуприцепов. https://example.org/court",
+    "Суд установил отсутствие полуприцепов у общества. https://example.org/court"
+  ]){
+    assert.equal(calc({notes:[note]}).tier,"none",note);
+  }
+  const positive="Суд установил, что организации принадлежит полуприцеп с бортовой платформой. https://example.org/court";
+  assert.equal(calc({notes:[positive]}).tier,"ordinary");
+});
