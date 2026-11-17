@@ -35,7 +35,7 @@ async function main(){
       if(!String(row["Организация"]||"").trim())continue;
       const v=calculatePriority13({c:row["Наличие транспорта"]||row.TORGBOX||"",
         d:row["Основание"],revenue:row["Выручка последнего подтвержденного года"],
-        staff:row["Численность"]});
+        staff:row["Численность"],notes:row.__evidence?.notes||[]});
       stats.buyers++;stats.tiers[v.tier]++;
       if(row["Итоговый коэффициент"]!==v.score){
         stats.changedScores++;
