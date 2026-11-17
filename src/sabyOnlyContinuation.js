@@ -1,9 +1,12 @@
 // Run ONLY Stage 12 from an already finalized SQLite research checkpoint.
-// No OpenAI SDK/client or earlier paid research pipeline is imported here.
+// Saby-only remains free of OpenAI by default. AI model checks are explicit opt-in.
 // The parent snapshot is immutable; a new job ID persists a Saby-only copy.
+import OpenAI from "openai";
 import {PIPELINE_VERSION, normalizeCheckpoint} from "./checkpointStore.js";
+import {costEnvLimitUsd} from "./researchCostPolicy.js";
 import {STEPS} from "./constants.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
+import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
@@ -177,7 +180,25 @@ export async function runSabyOnlyContinuation({
       ?{...s,status:"done",detail:"Saby-only завершён"}:
       i===12?{...s,status:"running",detail:"Расчёт итогового коэффициента"}:s),
     sabyStats:outcome.stats});
-  const priorityStats=applyPriorityStage13(result);
+  // Saby-only continuation historically promises no OpenAI costs. Keep that
+  // promise unless specifically enabled for this mode and an API key exists.
+  let priorityAIStats=null;
+  if(String(env.STAGE13_AI_SABY_ONLY_ENABLED??"false").toLowerCase()==="true" &&
+     String(env.STAGE13_AI_ENABLED??"true").toLowerCase()!=="false"){
+    if(!String(env.OPENAI_API_KEY||"").trim())
+      throw new Error("STAGE13_AI_SABY_ONLY_ENABLED requires OPENAI_API_KEY");
+    const aiClient=new OpenAI({apiKey:env.OPENAI_API_KEY});
+    const priorCost=Number(source.api_usage?.estimated_cost_usd||0);
+    priorityAIStats=await classifyStage13UnknownModels(result,{
+      client:aiClient,env,signal,
+      previousRows:source.final_result?.direct_buyers||[],
+      remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd(env)-priorCost),
+      onBatchComplete:aiState=>persist("priority",{
+        completed_stage:12,final_result:result,priority_ai_stats:aiState
+      })
+    });
+  }
+  const priorityStats=applyPriorityStage13(result,{aiStats:priorityAIStats});
   await persist("completed",{
     completed_stage:9,
     final_result:result,
@@ -186,6 +207,7 @@ export async function runSabyOnlyContinuation({
     saby_attempted_inns:outcome.attemptedInns,
     saby_stats:outcome.stats,
     priority_stats:priorityStats,
+    priority_ai_stats:priorityAIStats,
     stage12_duration_ms:Date.now()-startedAt
   });
   await report(outcome.stats,true);
