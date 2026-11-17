@@ -235,6 +235,10 @@ export function priority13InputHash(row){
 // Saby truck lists to OpenAI; those are explicitly truck-only sections.
 const UNKNOWN_MODEL=/([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,23}(?:\s+[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\d-]{1,22})?)\s+([A-Za-zА-Яа-яЁё\d*./_-]*\d[A-Za-zА-Яа-яЁё\d*./_-]{0,22})/gu;
 const NOT_BRAND=/^(?:год|года|году|дата|суд|дело|ооо|ао|пао|зао|сумма|руб|рф|для|был|была|приобрела|приобрёл|поставка|закупка|выручка|фирма|компания|судебный)$/i;
+// Unverified tenders, speculative procurement plans and discovery listings
+// are not evidence that THIS company has the named piece of equipment.
+const ACTUAL_EQUIPMENT_EVENT=/приобр[её]л|приобрела|приобретен|приобретён|приобретена|закупил|закупила|закуплен|купил|купила|в\s+лизинге|лизингов[а-яё]*\s+договор|арендует|арендовал|владени|владеет|принадлежит|в\s+собственност|эксплуатир|использует|зарегистрирован|на\s+балансе|суд\s+установил|подтвержден[а-яё]*\s+владен/i;
+const UNCOMMITTED_PLAN=/планиру[а-яё]*\s+(?:приобр|закуп|купить)|план\s+закуп|намерен[а-яё]*\s+приобр|коммерческ[а-яё]*\s+предложени|запрос\s+цен|интерес\s+к\s+покупк/i;
 function modelMentions(text,limit=2){
   const clean=str(text).replace(/https?:\/\/\S+/gi," ");
   const results=[];
@@ -248,7 +252,7 @@ function modelMentions(text,limit=2){
     const last=parts.at(-1);
     if(parts.length<2||NOT_BRAND.test(parts[0])||
        /^20(?:[0-2]\d|3\d)$/.test(last)||/^19\d\d$/.test(last)||
-       /^(?:\d{1,3})$/.test(last))continue;
+       /^(?:\d{1,2})$/.test(last))continue;
     // Some notes prepend a verb to "SCHMITZ 9084". Keep the literal phrase;
     // the model must return the exact shorter manufacturer+model substring.
     if(!results.includes(phrase))results.push(phrase);
@@ -291,7 +295,7 @@ export function priority13AICandidates(row,{maxPerBuyer=3}={}){
        (TAXONOMY_ONLY_TRAILER.test(note)&&NON_SEMI_PURCHASE.test(note))||
        /(?:hh\.ru\/vacancies\/|b2b-center\.ru\/search\/|jobcareer\.ru\/jobs\/)/i.test(url))continue;
     const claim=affirmativeEvidence(note);
-    if(!PROOF_NOTE.test(claim))continue;
+    if(!ACTUAL_EQUIPMENT_EVENT.test(claim)||UNCOMMITTED_PLAN.test(claim))continue;
     add("evidence",index,claim,url.replace(/[.,;!?]+$/,""));
     if(result.length>=maxPerBuyer)break;
   }
