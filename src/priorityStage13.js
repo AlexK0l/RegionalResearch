@@ -162,6 +162,14 @@ function normalizeNoteModel(text){
     .replace(/\bSKO\s+24\b/g,"SKO24")
     .replace(/\bSCS\s+24\b/g,"SCS24");
 }
+// A note can prove historical ownership and then explicitly say that CURRENT
+// use is not established. Remove unsupported clauses, not the valid earlier
+// proof. Conversely, a purely negative clause cannot provide trailer evidence.
+function affirmativeEvidence(note){
+  return str(note).split(/;\s*|\.\s+(?=[А-ЯЁA-Z])|,\s*но\s+|\s+но\s+/i)
+    .filter(clause=>!NEGATIVE.test(clause)&&!EXPIRED.test(clause)&&
+      !PROSPECTIVE.test(clause)).join(" ");
+}
 function parseSourcedNotes(notes){
   const models=new Map();
   let ordinary=false;
@@ -169,13 +177,13 @@ function parseSourcedNotes(notes){
     const note=str(raw);
     // A source URL directly in the SAME note is required; a row-level list
     // of unrelated source URLs cannot establish a model provenance.
-    if(!/https?:\/\//i.test(note) || !PROOF_NOTE.test(note) ||
-       NEGATIVE.test(note) || EXPIRED.test(note) ||
-       PROSPECTIVE.test(note) || GENERIC_SEARCH_MENTION.test(note) ||
+    if(!/https?:\/\//i.test(note) || GENERIC_SEARCH_MENTION.test(note) ||
        (TAXONOMY_ONLY_TRAILER.test(note) && NON_SEMI_PURCHASE.test(note)))continue;
-    const normalized=normalizeNoteModel(note);
+    const claim=affirmativeEvidence(note);
+    if(!PROOF_NOTE.test(claim))continue;
+    const normalized=normalizeNoteModel(claim);
     const matched=CATALOG.filter(item=>basisModel(normalized,item));
-    if(!matched.length && !TRAILER.test(note))continue;
+    if(!matched.length && !TRAILER.test(claim))continue;
     for(const item of matched){
       const key=item.brand+" "+item.model;
       if(!models.has(key))models.set(key,{model:key,tier:item.tier,count:1,source:"evidence"});
