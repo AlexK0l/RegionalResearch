@@ -8,6 +8,7 @@ import { withSabyBrowser } from "../src/sabyBrowser.js";
 import { sabyFleetScreenshotPath } from "../src/sabyFleetPanelSnapshot.js";
 import { authenticateSaby, waitForSabySession, sabyLoginDiagnostic } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
+import {selectSabySmokeTarget} from "../src/sabySmokeSelection.js";
 import { buildReferenceWorkbookBuffer } from "../src/referenceWorkbookExport.js";
 
 function option(args, key, fallback="") {
@@ -23,6 +24,7 @@ async function main() {
     console.log("  npm run saby:smoke -- --login");
     console.log("  npm run saby:smoke -- --inn=7707083893 --name=\\\"ПАО Сбербанк\\\" --limit=1");
     console.log("  npm run saby:smoke -- --result=SAT_Region.json --limit=3 --xlsx");
+    console.log("  Exact eligible INN: --result=SAT_Region.json --target-inn=7707083893 --limit=1");
     console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
     console.log("  Experimental safe matching: --public-identity-fallback (off by default)");
     console.log("  Private local fleet-panel image: --fleet-panel-screenshot (opt-in, only with --result and fallback)");
@@ -94,12 +96,22 @@ async function main() {
      !Array.isArray(base.intermediaries)||!Array.isArray(base.leasing)) {
     throw new Error("JSON должен содержать direct_buyers, intermediaries и leasing");
   }
-  const result=structuredClone(base);
+  const hasTargetOption=args.some(arg=>arg==="--target-inn"||
+    arg.startsWith("--target-inn="));
+  const rawTargetInn=option(args,"target-inn");
+  let result=structuredClone(base);
+  let selectedTarget=null;
   const rawOffset=option(args,"offset","0");
   if(!/^(?:0|[1-9]\d*)$/.test(rawOffset) ||
       !Number.isSafeInteger(Number(rawOffset)) || Number(rawOffset)>20000)
     throw new Error("--offset должен быть целым числом от 0 до 20000");
   const offset=Number(rawOffset);
+  if(hasTargetOption){
+    if(!jsonFile||env.SABY_MAX_COMPANIES!=="1"||offset!==0)
+      throw new Error("Для --target-inn нужны --result, --limit=1 и --offset=0");
+    selectedTarget=selectSabySmokeTarget(base,rawTargetInn);
+    result=selectedTarget.result;
+  }
   const output=path.resolve(option(args,"out",
     path.join("data","saby-smoke-"+Date.now()+".json")));
   if(await exists(output))
@@ -121,7 +133,10 @@ async function main() {
     env.SABY_FLEET_SCREENSHOT_PATH=snapshot;
   }
   console.log("Тестирую Saby без OpenAI и без изменения исходного JSON...");
-  if(offset)console.log("Saby: пропускаю первые "+offset+
+  if(selectedTarget)console.log("[SABY_SMOKE_TARGET] "+JSON.stringify({
+    inn:selectedTarget.inn,section:selectedTarget.section,exact:true
+  }));
+  else if(offset)console.log("Saby: пропускаю первые "+offset+
     " компаний отсортированной исходной выборки.");
   const response=await runSabyStage12({
     result,env,offset,onProgress:async stats=>{
@@ -133,7 +148,9 @@ async function main() {
   if(await exists(output))throw new Error("Файл результата уже существует: "+output);
   await fs.writeFile(output,JSON.stringify({
     source, final_result:result, saby_stage12:response.stats,
-    saby_smoke_selection:{offset,limit:Number(env.SABY_MAX_COMPANIES)}
+    saby_smoke_selection:{offset,limit:Number(env.SABY_MAX_COMPANIES),
+      ...(selectedTarget?{mode:"exact_inn",target_inn:selectedTarget.inn,
+        target_section:selectedTarget.section}:{mode:"offset"})}
   },null,2)+"\n",{flag:"wx",mode:0o600});
   let xlsx="";
   if(args.includes("--xlsx")) {
@@ -143,12 +160,25 @@ async function main() {
     await fs.writeFile(target,bytes,{flag:"wx"});
     xlsx=target;
   }
+  const targetRow=selectedTarget?result[selectedTarget.section]?.[0]:null;
+  const trucks=targetRow?.__evidence?.saby?.trucks;
+  const recordedVehicles=Array.isArray(trucks?.vehicles)?trucks.vehicles.length:0;
   console.log(JSON.stringify({
     checked:response.stats.verified,review:response.stats.review,
     contactUpdates:response.stats.phonesAdded,
     transportUpdates:response.stats.transportsAdded,
     deferred:response.stats.deferred,
     browserError:response.stats.browserError||null,
+    ...(selectedTarget?{
+      target_inn:selectedTarget.inn,
+      target_company:targetRow?.["Организация"]||"",
+      saby_contacts_status:targetRow?.__evidence?.saby?.collection?.contacts||"missing",
+      saby_trucks_status:targetRow?.__evidence?.saby?.collection?.trucks||"missing",
+      saby_trucks_count:Number.isSafeInteger(trucks?.count)?trucks.count:null,
+      saby_vehicle_rows:recordedVehicles,
+      full_fleet_verified:trucks?.status==="verified"&&
+        Number.isSafeInteger(trucks.count)&&trucks.count===recordedVehicles
+    }:{}),
     json:output,excel:xlsx||null,
     openai_requests:0,google_sheets_writes:0,source_file_unchanged:true
   },null,2));
