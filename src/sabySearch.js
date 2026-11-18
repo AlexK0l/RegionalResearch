@@ -113,3 +113,52 @@ export async function findSabyCompanySearch(page, {
     urlCategory:"profile-company-list"
   }};
 }
+
+
+// A Wasaby search field can be replaced between isVisible()/isEnabled()
+// and Playwright's actionability checks. Reacquire the *safe* field once,
+// without falling back to page.keyboard (which could type into login/other
+// inputs). A failed field action NEVER counts as a searched contractor.
+export async function submitSabyCompanySearch(page, inn, {
+  isListRoute=()=>true,
+  findSearch=findSabyCompanySearch,
+  timeoutMs=15000,
+  actionTimeoutMs=8000,
+  maxAttempts=2,
+  wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+  onRetry=()=>{}
+}={}) {
+  const identifier=String(inn||"");
+  if(!/^(?:\d{10}|\d{12})$/.test(identifier) ||
+     typeof isListRoute!=="function"||!isListRoute())
+    return {ok:false,reason:"unsafe_identity_or_route",attempts:0};
+  const limit=Math.min(2,Math.max(1,Math.floor(maxAttempts)||2));
+  let stage="find";
+  for(let attempt=1;attempt<=limit;attempt++){
+    if(!isListRoute())
+      return {ok:false,reason:"route_changed",stage,attempts:attempt-1};
+    const found=await findSearch(page,{timeoutMs});
+    if(!found?.field)
+      return {ok:false,reason:found?.reason||"no_safe_search_field",
+        diagnostic:found?.diagnostic,stage:"find",attempts:attempt};
+    try{
+      stage="fill";
+      await found.field.fill(identifier,{timeout:actionTimeoutMs});
+      if(!isListRoute())
+        return {ok:false,reason:"route_changed",stage,attempts:attempt};
+      stage="press";
+      await found.field.press("Enter",{timeout:actionTimeoutMs});
+      return {ok:true,method:found.method,attempts:attempt};
+    }catch{
+      // Do not log Playwright exceptions, dynamic selectors, DOM or values.
+      if(!isListRoute())
+        return {ok:false,reason:"route_changed",stage,attempts:attempt};
+      if(attempt===limit)
+        return {ok:false,reason:"search_action_timeout",
+          stage,attempts:attempt};
+      onRetry({stage,attempt});
+      await wait(600);
+    }
+  }
+  return {ok:false,reason:"search_action_timeout",stage,attempts:limit};
+}
