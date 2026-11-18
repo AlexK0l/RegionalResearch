@@ -142,7 +142,9 @@ export async function runSabyOnlyContinuation({
   };
   const persist=async (phase, patch={})=>{
     snapshot={
-      ...snapshot,...structuredClone(patch),phase,
+      // One deep copy below is enough to freeze the durable Saby snapshot.
+      // Avoid cloning a large final_result twice for each company.
+      ...snapshot,...patch,phase,
       version:1,pipeline_version:PIPELINE_VERSION,
       source_mode:"saby",
       updated_at:new Date().toISOString()

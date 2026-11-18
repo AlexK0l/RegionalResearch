@@ -16,6 +16,7 @@ const e={
   savedJson:document.querySelector("#savedJsonBtn"),
   start:document.querySelector("#startBtn"),
   jobsSummary:document.querySelector("#jobsSummary"),
+  runtimeMemory:document.querySelector("#runtimeMemory"),
   jobsList:document.querySelector("#jobsList"),
   selectedJob:document.querySelector("#selectedJob"),
   etaCountdown:document.querySelector("#etaCountdown"),
@@ -456,7 +457,19 @@ function renderJobs(payload){
   const waiting=jobs.filter(j=>j.state==="waiting").length;
   e.jobsSummary.textContent="Активно: "+active+" / "+Number(q.limit||2)+
     (waiting?" · в очереди: "+waiting:"")+
-    " · завершённые задания доступны для скачивания до перезапуска сервера";
+    " · сохранённые исследования доступны из SQLite после перезапуска";
+  const memory=payload?.memory||{};
+  const nodeMiB=Number(memory.node_rss_mib);
+  const allMiB=Number(memory.cgroup_total_mib);
+  if(Number.isFinite(nodeMiB)&&Number.isFinite(allMiB)){
+    e.runtimeMemory.textContent="ОЗУ: Node.js "+nodeMiB+
+      " МиБ · весь сервис с Chromium и кэшем "+allMiB+
+      " МиБ · JS-объекты "+Number(memory.node_heap_used_mib||0)+" МиБ";
+  }else if(Number.isFinite(nodeMiB)){
+    e.runtimeMemory.textContent="ОЗУ Node.js "+nodeMiB+
+      " МиБ · JS-объекты "+Number(memory.node_heap_used_mib||0)+
+      " МиБ · память Chromium отдельная";
+  }else e.runtimeMemory.textContent="Данные об ОЗУ пока недоступны";
   e.jobsList.replaceChildren();
   if(!jobs.length){
     const p=document.createElement("p");

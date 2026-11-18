@@ -89,9 +89,14 @@ function metadataFromRow(row) {
 export async function saveCheckpoint(jobId, checkpoint) {
   if (!jobId || !checkpoint) return { sqliteSaved: false };
 
-  const normalized = normalizeCheckpoint(checkpoint);
-  if (!normalized) throw new Error("Некорректный checkpoint");
-  normalized.pipeline_version = PIPELINE_VERSION;
+  // The caller already holds an immutable snapshot. A JSON stringify/parse
+  // deep clone here would temporarily double a potentially large research
+  // payload, and JSON.stringify below would allocate it yet again.
+  // Validate first, then serialize a shallow top-level copy exactly once.
+  if (Number(checkpoint.version) !== 1 ||
+      !String(checkpoint.region || "").trim())
+    throw new Error("Некорректный checkpoint");
+  const normalized = { ...checkpoint, pipeline_version: PIPELINE_VERSION };
 
   const database = ensureDb();
   const now = new Date().toISOString();

@@ -10,6 +10,7 @@ import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import {preparePersistedCheckpointExport} from "./src/persistedCheckpointExport.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
+import {createJobMemoryMonitor,processMemorySnapshot} from "./src/runtimeMemory.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
@@ -39,6 +40,44 @@ app.set("trust proxy", "loopback");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
+
+function lightweightJobCheckpointSummary(job){
+  return job?.latestCheckpointSummary || checkpointSummary(job?.latestCheckpoint) ||
+    checkpointSummary(job?.data?.checkpoint);
+}
+
+async function savedJobCheckpoint(job,id){
+  // The full snapshot belongs in durable SQLite, not in the long-lived
+  // HTTP jobs map. Only a queued source may not have a saved child yet.
+  const child=await loadCheckpoint(id);
+  if(child)return normalizeCheckpoint(child);
+  const parentId=String(job?.data?.sourceJobId||"");
+  const source=job?.data?.checkpoint ||
+    (parentId?await loadCheckpoint(parentId):null);
+  return normalizeCheckpoint(source);
+}
+async function completedJobResult(job){
+  if(job?.result?.result){
+    return {
+      final_result:job.result.result,
+      region:job.result.region,
+      final_quality_gate:job.result.quality||job.result.result?.final_quality_gate||null
+    };
+  }
+  if(!job?.result?.resultStored)return null;
+  const checkpoint=await loadCheckpoint(job.id);
+  if(!checkpoint)throw Error("Сохранённый результат отсутствует в SQLite");
+  return preparePersistedCheckpointExport(checkpoint);
+}
+
+function compactCompletedJobPayload(job){
+  const output=job?.result;
+  if(!output?.result)return;
+  // Full studies/Saby-only jobs have their authoritative result in SQLite.
+  // Do not retain another entire commercial database for the 24h UI history.
+  job.result={...output,result:null,resultStored:true};
+}
+
 const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
 if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS) !== String(MAX_ACTIVE_FULL_JOBS)) {
   console.warn("[MAX_ACTIVE_FULL_JOBS_ADJUSTED] " + JSON.stringify({configured:process.env.MAX_ACTIVE_FULL_JOBS,effective:MAX_ACTIVE_FULL_JOBS}));
@@ -413,6 +452,9 @@ const JOB_MODES = new Set([
 async function executeJob(job, apiKey) {
   return runWithJobLog(job, async () => {
     job.state = "active";
+    const memoryMonitor=createJobMemoryMonitor(job);
+    job.memoryMonitor=memoryMonitor;
+    memoryMonitor.start();
     console.log("[JOB_START] " + JSON.stringify({
       id: job.id,
       region: job.region,
@@ -449,6 +491,14 @@ async function executeJob(job, apiKey) {
             JSON.stringify({job_id:job.id,error:checkpointError?.message || String(checkpointError)}));
         }
       }
+      // Release the full result only after the durable checkpoint exists.
+      // This also applies to a partial Saby-only child (phase=saby).
+      if(["full","resume","saby_only"].includes(job.mode) &&
+         job.result?.result){
+        const saved=await loadCheckpoint(job.id).catch(()=>null);
+        if(saved?.final_result && ["completed","saby"].includes(saved.phase))
+          compactCompletedJobPayload(job);
+      }
       job.state = "completed";
     } catch (error) {
       if (
@@ -465,6 +515,11 @@ async function executeJob(job, apiKey) {
         console.error(error);
       }
     } finally {
+      memoryMonitor.stop();
+      job.memoryMonitor=null;
+      // Resume/Saby source payloads are already durably preserved in SQLite.
+      // Avoid retaining them in the in-memory jobs list for another 24 hours.
+      if(job.data?.checkpoint)delete job.data.checkpoint;
       console.log("[JOB_FINISH] " + JSON.stringify({
         id: job.id,
         region: job.region,
@@ -655,16 +710,20 @@ app.post("/api/jobs", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
-    latestCheckpoint: ["resume","saby_only"].includes(mode)
-      ? normalizeCheckpoint(data.checkpoint) : null,
+    latestCheckpoint:null,
+    latestCheckpointSummary:["resume","saby_only"].includes(mode)
+      ?checkpointSummary(data.checkpoint):null,
     async updateProgress(progress) {
       this.progress = progress;
+      this.memoryMonitor?.phase(progress?.phase);
     },
     async updateCheckpoint(checkpoint) {
-      const normalized = normalizeCheckpoint(checkpoint);
-      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
-      this.latestCheckpoint = normalized;
-      await saveCheckpoint(this.id, normalized);
+      if(Number(checkpoint?.version)!==1||
+         !String(checkpoint?.region||"").trim())
+        throw new Error("Некорректный checkpoint pipeline");
+      await saveCheckpoint(this.id,checkpoint);
+      this.latestCheckpointSummary=checkpointSummary(checkpoint);
+      this.latestCheckpoint=null;
     }
   };
   const queued = queueJob(job, apiKey);
@@ -688,12 +747,18 @@ app.post("/api/jobs", async (req, res) => {
   });
 });
 
+app.get("/api/runtime/memory",(_req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  res.json({memory:processMemorySnapshot(),queue:fullQueue.snapshot()});
+});
+
 app.get("/api/jobs", (_req, res) => {
   const now = Date.now();
   const history = historicalStageDurations(jobs.values());
   res.setHeader("Cache-Control", "no-store");
   res.json({
     queue: fullQueue.snapshot(),
+    memory:processMemorySnapshot(),
     jobs: [...jobs.values()]
       .sort((a,b)=>b.createdAt-a.createdAt)
       .slice(0,100)
@@ -706,7 +771,8 @@ app.get("/api/jobs", (_req, res) => {
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
         createdAt: job.createdAt,
-        hasResult: job.state === "completed" && Boolean(job.result?.result),
+        hasResult: job.state === "completed" &&
+          Boolean(job.result?.result || job.result?.resultStored),
         eta: estimateResearchEta(job, { now, history })
       }))
   });
@@ -739,16 +805,12 @@ app.get("/api/jobs/:id", (req, res) => {
           dedupe_comparison: job.result?.dedupe_comparison || null,
           replay_available: Boolean(job.result?.discovery_snapshot),
           quality: job.result?.quality || null,
-          full_json_available: Boolean(job.result?.result)
+          full_json_available: Boolean(job.result?.result || job.result?.resultStored)
         }
       : null,
-    checkpoint: checkpointSummary(job.latestCheckpoint),
-    resume_available: Boolean(job.latestCheckpoint),
-    continuation_available:
-      (Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
-       job.latestCheckpoint.contact_unsearched_ids.length > 0) ||
-      (Array.isArray(job.latestCheckpoint?.saby_deferred_inns) &&
-       job.latestCheckpoint.saby_deferred_inns.length > 0),
+    checkpoint:lightweightJobCheckpointSummary(job),
+    resume_available:Boolean(lightweightJobCheckpointSummary(job)),
+    continuation_available:Boolean(lightweightJobCheckpointSummary(job)?.continuation_available),
     log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
@@ -773,9 +835,7 @@ app.get("/api/jobs/:id/log", (req, res) => {
 
 app.get("/api/jobs/:id/checkpoint", async (req, res) => {
   const job = jobs.get(req.params.id);
-  const checkpoint = normalizeCheckpoint(
-    job?.latestCheckpoint || await loadCheckpoint(req.params.id)
-  );
+  const checkpoint=await savedJobCheckpoint(job,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для этого задания не найден" });
   }
@@ -788,9 +848,7 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   const sourceJob = jobs.get(req.params.id);
-  const checkpoint = normalizeCheckpoint(
-    sourceJob?.latestCheckpoint || await loadCheckpoint(req.params.id)
-  );
+  const checkpoint=await savedJobCheckpoint(sourceJob,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
   }
@@ -815,15 +873,19 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
-    latestCheckpoint: checkpoint,
+    latestCheckpoint:null,
+    latestCheckpointSummary:checkpointSummary(checkpoint),
     async updateProgress(progress) {
       this.progress = progress;
+      this.memoryMonitor?.phase(progress?.phase);
     },
     async updateCheckpoint(nextCheckpoint) {
-      const normalized = normalizeCheckpoint(nextCheckpoint);
-      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
-      this.latestCheckpoint = normalized;
-      await saveCheckpoint(this.id, normalized);
+      if(Number(nextCheckpoint?.version)!==1||
+         !String(nextCheckpoint?.region||"").trim())
+        throw new Error("Некорректный checkpoint pipeline");
+      await saveCheckpoint(this.id,nextCheckpoint);
+      this.latestCheckpointSummary=checkpointSummary(nextCheckpoint);
+      this.latestCheckpoint=null;
     }
   };
   const queued = queueJob(job, apiKey);
@@ -878,10 +940,10 @@ app.get("/api/jobs/:id/download", async (req, res) => {
     return res.status(409).json({ error: "Итоговый файл ещё не готов" });
   }
 
-  const result = job.result?.result;
-  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
-
   try {
+    const saved=await completedJobResult(job);
+    const result=saved?.final_result;
+    if(!result)return res.status(500).json({error:"Результат отсутствует"});
     // The browser receives the sanitized reference's exact five-sheet layout.
     // No silent fallback to the old 37-column approximation.
     const buffer = await buildReferenceWorkbookBuffer(result);
@@ -906,13 +968,19 @@ app.get("/api/jobs/:id/download", async (req, res) => {
 
 
 // REVIEW/EXCLUDED remain in a separate audit workbook, not the reference.
-app.get("/api/jobs/:id/download-audit", (req, res) => {
+app.get("/api/jobs/:id/download-audit", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Аудит ещё не готов" });
-  const result = job.result?.result;
-  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
-  const buffer = buildAuditWorkbookBuffer(result);
+  let buffer;
+  try{
+    const saved=await completedJobResult(job);
+    if(!saved?.final_result)return res.status(500).json({error:"Результат отсутствует"});
+    buffer=buildAuditWorkbookBuffer(saved.final_result);
+  }catch(error){
+    return res.status(503).json({error:"Не удалось прочитать сохранённый аудит: "+
+      String(error?.message||error)});
+  }
   const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, "_audit.xlsx");
   res.setHeader("Content-Type",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -922,36 +990,48 @@ app.get("/api/jobs/:id/download-audit", (req, res) => {
   res.send(buffer);
 });
 
-app.get("/api/jobs/:id/quality", (req, res) => {
+app.get("/api/jobs/:id/quality", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Итоговый аудит ещё не готов" });
-  const output = job.result?.result;
-  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
-  return res.json({
-    region: job.result?.region || "",
-    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
-    review: output.qualification_review || [],
-    excluded: output.qualification_excluded || []
-  });
+  try{
+    const saved=await completedJobResult(job);
+    const output=saved?.final_result;
+    if(!output)return res.status(500).json({error:"Результат отсутствует"});
+    return res.json({
+      region:saved.region||job.result?.region||"",
+      final_quality_gate:saved.final_quality_gate||job.result?.quality||null,
+      review:output.qualification_review||[],
+      excluded:output.qualification_excluded||[]
+    });
+  }catch(error){
+    return res.status(503).json({error:"Не удалось получить сохранённый QA: "+
+      String(error?.message||error)});
+  }
 });
 
-app.get("/api/jobs/:id/download-json", (req, res) => {
+app.get("/api/jobs/:id/download-json", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Итоговый JSON ещё не готов" });
-  const output = job.result?.result;
-  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
-  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, ".json");
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Content-Disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
-  res.setHeader("Cache-Control", "no-store");
-  return res.send(JSON.stringify({
-    region: job.result.region,
-    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
-    final_result: output
-  }, null, 2));
+  try{
+    const saved=await completedJobResult(job);
+    const output=saved?.final_result;
+    if(!output)return res.status(500).json({error:"Результат отсутствует"});
+    const filename=safeFileName(job.result?.region||"result").replace(/\.xlsx$/i,".json");
+    res.setHeader("Content-Type","application/json; charset=utf-8");
+    res.setHeader("Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader("Cache-Control","no-store");
+    return res.send(JSON.stringify({
+      region:saved.region||job.result.region,
+      final_quality_gate:saved.final_quality_gate||job.result?.quality||null,
+      final_result:output
+    },null,2));
+  }catch(error){
+    return res.status(503).json({error:"Не удалось получить сохранённый JSON: "+
+      String(error?.message||error)});
+  }
 });
 
 setInterval(() => {

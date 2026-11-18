@@ -66,7 +66,9 @@ test("server exposes checkpoint download and resume APIs", () => {
   assert.match(server, /"resume"/);
   assert.match(server, /\/api\/jobs\/:id\/checkpoint/);
   assert.match(server, /\/api\/jobs\/:id\/resume/);
-  assert.match(server, /loadCheckpoint\(req\.params\.id\)/);
+  assert.match(server,/savedJobCheckpoint\(job,req\.params\.id\)/);
+  assert.match(server,/savedJobCheckpoint\(sourceJob,req\.params\.id\)/);
+  assert.match(server,/const child=await loadCheckpoint\(id\)/);
   assert.match(server, /updateCheckpoint\(checkpoint\)/);
 });
 
