@@ -8278,7 +8278,13 @@ ${JSON.stringify(gaps)}
 
   finishStep(statuses[9]);
   statuses[9].detail =
-    `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}`;
+    `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}` +
+    (finalInnStats.retryBudgetDeferred
+      ? ` · дополнительные повторы ИНН отложены: ${finalInnStats.retryBudgetDeferred} (лимит)`
+      : "") +
+    (innConflictBudgetDeferred
+      ? ` · перепроверка спорных ИНН отложена: ${innConflictBudgetDeferred}`
+      : "");
   await progress({ phase: "dedupe", step: 10, percent: 90 });
 
   const companies = allResearchRows(finalResult);
