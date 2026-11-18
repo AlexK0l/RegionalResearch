@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {findSabyCompanySearch} from "../src/sabySearch.js";
 
-function field(attributes={}, {visible=true,enabled=true,tagName="INPUT"}={}) {
+function field(attributes={}, {visible=true,enabled=true,editable=true,tagName="INPUT"}={}) {
   return {
     async isVisible(){return visible;},
     async isEnabled(){return enabled;},
+    async isEditable(){return editable;},
     async evaluate(callback) {
       return callback({
         tagName,
@@ -93,4 +94,15 @@ test("search module logs only generic diagnostics and never collects field value
   assert.match(browser,/submitSabyCompanySearch\(/);
   assert.match(browser,/waitUntil:"commit"/);
   assert.match(browser,/\[SABY_SEARCH_DIAG\]/);
+});
+
+test("read-only or not yet editable Wasaby inputs are never submitted",async()=>{
+  const readonly=field({type:"text",placeholder:"Название, ИНН, ОГРН",
+    "aria-readonly":"true"});
+  const stillHydrating=field({type:"text",placeholder:"Поиск"},{editable:false});
+  const page=pageWith({search:[readonly,stillHydrating],
+    generic:[readonly,stillHydrating]});
+  const result=await findSabyCompanySearch(page,{timeoutMs:0});
+  assert.equal(result.field,null);
+  assert.equal(result.reason,"no_safe_visible_input");
 });
