@@ -106,7 +106,7 @@ test("company reviews without systemic errors do not cause repeated Saby passes"
 test("deadline and cancellation never open another browser",async()=>{
   let calls=0;
   const expired=await runSabyOnlyWithRecovery({
-    total:3,maxDurationMs:60000,wait:async()=>{},
+    total:3,maxDurationMs:120000,wait:async()=>{},
     runPass:async()=>{
       calls++;
       return {stats:stats({processed:1,circuitOpen:true,deadlineReached:true}),
