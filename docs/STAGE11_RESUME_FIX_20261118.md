@@ -38,6 +38,11 @@ restarted. This effectively **downgraded the checkpoint phase**.
 6. Stage12 carries forward Saby completed/attempted/deferred lists.
    If Stage12 is disabled for this server, existing lists are not
    reset or implicitly claimed finished.
+7. The browser's `findLatestCheckpoint` selector now resolves same-origin
+   resume children (same original `created_at`) by the most advanced
+   durable phase. This recovers an older `contacts`/`priority` parent
+   when a newer, pre-fix resume child accidentally downgraded itself
+   to `statistics`. A genuinely new independent study retains priority.
 
 No paid full study is needed to validate the fix; CI includes
 offline tests for Stage11 complete, Stage13 complete, incomplete
