@@ -108,7 +108,12 @@ test("saved OpenAI type results for Transsnip become usable without another API 
   assert.equal(score.openai_calls,0);
   assert.equal(score.tiers.ordinary,1);
   assert.ok(r["Итоговый коэффициент"]>=20&&r["Итоговый коэффициент"]<=39);
+  const comment=r["Обоснование коэффициента (Apps Script)"];
+  assert.equal((comment.match(/https:\/\/www\.transsnip\.ru\//g)||[]).length,2);
+  assert.ok(comment.includes("сопоставлен с сохранённой заметкой по домену"));
+  assert.ok(!comment.includes("с источником )"));
   assert.equal(priority13InputHash(r),fingerprint);
+  assert.deepEqual(before.__priority13_ai,r.__priority13_ai);
   assert.deepEqual(before.__evidence,r.__evidence);
 });
 test("unrelated URLs and company names never establish ownership of a model",()=>{
@@ -159,4 +164,26 @@ test("lessee with own name and a different lessor in the SAME selected proof sta
   const r=row("ООО «ТМГ ИНДУСТРИЯ»",
     "A — ООО «ТМГ ИНДУСТРИЯ» выступает лизингополучателем по договору, где ООО «АБСОЛЮТ ЛИЗИНГ» указано лизингодателем.");
   assert.equal(stage13CommercialRole(r),null);
+});
+
+
+test("AI score comment displays a direct evidence URL and never falls back to a stale stored URL",()=>{
+  const evidence="Компания приобрела полуприцеп WIELTON NW3A48SD. https://example.org/contract";
+  const buyer=row("ООО «Пример»","",[evidence],{
+    "Основание":"A — подтверждённое владение прицепом"
+  });
+  buyer.__priority13_ai={version:1,input_hash:priority13InputHash(buyer),results:[{
+    source:"evidence",index:0,model_text:"WIELTON NW3A48SD",
+    source_url:"https://irrelevant.example/not-this-model",
+    kind:"semi_trailer",confidence:"high",model_quote:"WIELTON NW3A48SD"
+  }]};
+  const original=structuredClone(buyer.__priority13_ai);
+  const result={direct_buyers:[buyer]};
+  const report=applyPriorityStage13(result);
+  assert.equal(report.openai_calls,0);
+  assert.equal(report.tiers.ordinary,1);
+  const comment=buyer["Обоснование коэффициента (Apps Script)"];
+  assert.ok(comment.includes("https://example.org/contract"));
+  assert.ok(!comment.includes("irrelevant.example"));
+  assert.deepEqual(buyer.__priority13_ai,original);
 });
