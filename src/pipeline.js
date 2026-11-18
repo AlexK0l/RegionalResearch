@@ -2515,7 +2515,8 @@ async function resolveFinalMissingInns({
   assertNotCancelled,
   completedIds = new Set(),
   onBatch = async () => {},
-  lookupBatch = lookupFinalInnBatch
+  lookupBatch = lookupFinalInnBatch,
+  previousStats = {}
 }) {
   const companies = [
     ...(finalResult?.direct_buyers || []),
@@ -2546,9 +2547,12 @@ async function resolveFinalMissingInns({
     batches.push(pending.slice(offset, offset + FINAL_INN_BATCH_SIZE));
   }
 
-  let attempted = 0;
-  let recovered = 0;
-  let retried = 0;
+  // Counters in a checkpoint describe the ENTIRE study, not just this
+  // process. A resume that skips 680 already paid searches must not replace
+  // their "found" and "retry" metrics with zero.
+  let attempted = Math.max(0, Number(previousStats.attempted || 0));
+  let recovered = Math.max(0, Number(previousStats.recovered || 0));
+  let retried = Math.max(0, Number(previousStats.retried || 0));
   let retryBudgetDeferred = 0;
   let retryBudgetDeferredIds = [];
   let completedBatches = 0;
@@ -7565,9 +7569,9 @@ ${JSON.stringify(groupBatch)}`,
 
   let latestFinalInnProgress = {
     completedIds: finalInnCompleted,
-    attempted: 0,
-    recovered: 0,
-    retried: 0,
+    attempted: Number(resumeCheckpoint?.final_inn_attempted || 0),
+    recovered: Number(resumeCheckpoint?.final_inn_recovered || 0),
+    retried: Number(resumeCheckpoint?.final_inn_retried || 0),
     pendingTotal: rowCount(finalResult)
   };
   let finalInnProgressEvents = 0;
@@ -7597,6 +7601,11 @@ ${JSON.stringify(groupBatch)}`,
     region,
     assertNotCancelled,
     completedIds: finalInnCompleted,
+    previousStats: {
+      attempted: resumeCheckpoint?.final_inn_attempted || 0,
+      recovered: resumeCheckpoint?.final_inn_recovered || 0,
+      retried: resumeCheckpoint?.final_inn_retried || 0
+    },
     onBatch: async (progressState) => {
       latestFinalInnProgress = progressState;
       finalInnProgressEvents++;
