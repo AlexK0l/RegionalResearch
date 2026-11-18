@@ -167,8 +167,11 @@ export async function runSabyOnlyContinuation({
       sabyCurrent:Number(stats?.processed||0),
       sabyTotal:Number(stats?.scheduled||0),
       sabyStats:stats,
-      sabyRecoveryText:paused?"Saby остановился после ограниченных повторов браузера. "
-        +"Сохранённый результат можно скачать и продолжить позже.":
+      sabyRecoveryText:paused?(stats?.circuitOpen||stats?.browserError?
+        "Saby недоступен после ограниченных переподключений. ":
+        stats?.deadlineReached?"Достигнут лимит времени Saby. ":
+        "Осталась необработанная часть очереди Saby. ")+
+        "Результат можно скачать и продолжить позже.":
         Number(stats?.browserRestarts||0)>0?
         "Браузерная сессия автоматически восстановлена "+
         Number(stats.browserRestarts)+" раз(а).":""
@@ -208,7 +211,7 @@ export async function runSabyOnlyContinuation({
 
   await onProgress({phase:"priority",step:13,percent:99,
     statuses:stageStatuses.map((s,i)=>i===11
-      ?{...s,status:"done",detail:"Saby-only завершён"}:
+      ?{...s,status:"done",detail:"Текущий проход Saby окончен"}:
       i===12?{...s,status:"running",detail:"Расчёт итогового коэффициента"}:s),
     sabyStats:outcome.stats});
   // Saby-only continuation historically promises no OpenAI costs. Keep that
@@ -237,7 +240,8 @@ export async function runSabyOnlyContinuation({
   const priorityStats=applyPriorityStage13(result,{aiStats:priorityAIStats});
   priorityStats.commercial_postprocess=finalizeStage13CommercialOutput(result);
   const paused=Boolean(outcome.stats.circuitOpen || outcome.stats.browserError ||
-    outcome.stats.deadlineReached);
+    outcome.stats.deadlineReached ||
+    (!outcome.stats.fullSweepCompleted && outcome.deferredInns.length>0));
   await persist(paused?"saby":"completed",{
     completed_stage:9,
     final_result:result,
