@@ -4,7 +4,7 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
-import { findSabyCompanySearch } from "./sabySearch.js";
+import { submitSabyCompanySearch } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
@@ -240,20 +240,31 @@ async function openCompany(page, row, settings) {
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия",{scope:"company"});
-  await page.goto(BASE, {waitUntil:"domcontentloaded",timeout:settings.timeoutMs});
-  if (!isSabyProfileUrl(page.url())) throw new SabyReview("Переадресация вне Saby");
-  const found=await findSabyCompanySearch(page,{
-    timeoutMs:Math.min(15000,settings.timeoutMs)
+  // Wait for navigation commit, NOT every subresource/SPA script. The
+  // authenticated list's input is verified and polled below independently.
+  // This avoids a 45s DOMContentLoaded timeout during slow Wasaby hydration.
+  await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
+  if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
+    throw new SabyReview("Saby: список организаций не подтверждён");
+  const submitted=await submitSabyCompanySearch(page,inn,{
+    timeoutMs:Math.min(15000,settings.timeoutMs),
+    actionTimeoutMs:Math.min(8000,settings.timeoutMs),
+    isListRoute:()=>sabyCardRoute(page.url())==="list",
+    onRetry:({stage,attempt})=>console.warn(
+      "[SABY_SEARCH_RETRY] "+JSON.stringify({stage,attempt,reason:"action_timeout"})
+    )
   });
-  if(!found.field) {
-    // No screenshots, DOM text, form values or credentials in diagnostics.
-    console.warn("[SABY_SEARCH_DIAG] "+JSON.stringify(found.diagnostic));
-    throw new SabyReview("Поле поиска компаний Saby не распознано ("+
-      found.reason+"); статус входа проверен отдельно");
+  if(!submitted.ok){
+    // Strict, allowlisted statuses only. Never print INN, DOM, URL or
+    // the raw Playwright exception, which can include private context.
+    console.warn("[SABY_SEARCH_DIAG] "+JSON.stringify({
+      code:submitted.reason,stage:submitted.stage||"find",
+      attempts:submitted.attempts,
+      ...(submitted.diagnostic||{})
+    }));
+    throw new SabyReview("Saby: безопасный ввод в поиск не завершён");
   }
-  console.info("[SABY_SEARCH] "+found.method);
-  await found.field.fill(inn);
-  await found.field.press("Enter");
+  console.info("[SABY_SEARCH] "+submitted.method);
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
   const publicFallback=settings.publicIdentityFallback===true;
   let rows=[],selection="not_found",lastSelected=null;

@@ -36,14 +36,16 @@ async function detailsOf(field) {
         autocomplete:v("autocomplete").toLowerCase(),
         placeholder:v("placeholder"),label:v("aria-label"),
         name:v("name"),role:v("role"),dataHint:v("data-placeholder"),
-        editable:el.isContentEditable===true};
+        editable:el.isContentEditable===true,
+        readonly:el.readOnly===true||el.hasAttribute?.("readonly")===true||
+          v("aria-readonly").toLowerCase()==="true"};
     });
     const hints=[a.placeholder,a.label,a.dataHint,a.name,a.role].join(" ");
     const auth=AUTH_HINTS.test(hints+" "+a.autocomplete);
     const isInput=a.tag==="input" && typeAllowed(a.type);
     const isEditor=a.editable && a.role==="searchbox";
     return {
-      safe:(isInput||isEditor) && !auth,
+      safe:(isInput||isEditor) && !auth && !a.readonly,
       searchHint:SEARCH_HINTS.test(hints) || a.type==="search" ||
         a.role==="searchbox",
       type:isEditor?"searchbox":a.type||"text",
@@ -65,6 +67,9 @@ async function visibleCandidates(page, selector) {
     if(!await field.isVisible().catch(()=>false))continue;
     if(typeof field.isEnabled==="function" &&
        !await field.isEnabled().catch(()=>false))continue;
+    // A visible, enabled but readonly Wasaby input is not actionable.
+    if(typeof field.isEditable==="function" &&
+       !await field.isEditable().catch(()=>false))continue;
     const meta=await detailsOf(field);
     if(meta.safe)result.push({field,meta});
   }
@@ -112,4 +117,54 @@ export async function findSabyCompanySearch(page, {
     // Categorization only: do not include PII or dynamic DOM attributes.
     urlCategory:"profile-company-list"
   }};
+}
+
+
+// A Wasaby search field can be replaced between isVisible()/isEnabled()
+// and Playwright's actionability checks. Reacquire the *safe* field once,
+// without falling back to page.keyboard (which could type into login/other
+// inputs). A failed field action NEVER counts as a searched contractor.
+export async function submitSabyCompanySearch(page, inn, {
+  // Proving the exact Saby company-list route is mandatory.
+  isListRoute=()=>false,
+  findSearch=findSabyCompanySearch,
+  timeoutMs=15000,
+  actionTimeoutMs=8000,
+  maxAttempts=2,
+  wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+  onRetry=()=>{}
+}={}) {
+  const identifier=String(inn||"");
+  if(!/^(?:\d{10}|\d{12})$/.test(identifier) ||
+     typeof isListRoute!=="function"||!isListRoute())
+    return {ok:false,reason:"unsafe_identity_or_route",attempts:0};
+  const limit=Math.min(2,Math.max(1,Math.floor(maxAttempts)||2));
+  let stage="find";
+  for(let attempt=1;attempt<=limit;attempt++){
+    if(!isListRoute())
+      return {ok:false,reason:"route_changed",stage,attempts:attempt-1};
+    const found=await findSearch(page,{timeoutMs});
+    if(!found?.field)
+      return {ok:false,reason:found?.reason||"no_safe_search_field",
+        diagnostic:found?.diagnostic,stage:"find",attempts:attempt};
+    try{
+      stage="fill";
+      await found.field.fill(identifier,{timeout:actionTimeoutMs});
+      if(!isListRoute())
+        return {ok:false,reason:"route_changed",stage,attempts:attempt};
+      stage="press";
+      await found.field.press("Enter",{timeout:actionTimeoutMs});
+      return {ok:true,method:found.method,attempts:attempt};
+    }catch{
+      // Do not log Playwright exceptions, dynamic selectors, DOM or values.
+      if(!isListRoute())
+        return {ok:false,reason:"route_changed",stage,attempts:attempt};
+      if(attempt===limit)
+        return {ok:false,reason:"search_action_timeout",
+          stage,attempts:attempt};
+      onRetry({stage,attempt});
+      await wait(600);
+    }
+  }
+  return {ok:false,reason:"search_action_timeout",stage,attempts:limit};
 }
