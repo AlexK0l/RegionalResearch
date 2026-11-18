@@ -28,8 +28,8 @@ const run=(options={})=>resolveFinalMissingInns({
   region:"Смоленская область",
   assertNotCancelled:async()=>{},
   completedIds:options.completedIds||new Set(),
-  lookupBatch:options.lookupBatch||async()=>({items:[]}),
-  onBatch:options.onBatch||async()=>{}
+  lookupBatch:options.lookupBatch||(async()=>({items:[]})),
+  onBatch:options.onBatch||(async()=>{})
 });
 
 test("stage10: after ALL primary INN checks, exhausted optional retry budget is nonfatal",async()=>{
