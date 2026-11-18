@@ -56,6 +56,28 @@ async function savedJobCheckpoint(job,id){
     (parentId?await loadCheckpoint(parentId):null);
   return normalizeCheckpoint(source);
 }
+async function completedJobResult(job){
+  if(job?.result?.result){
+    return {
+      final_result:job.result.result,
+      region:job.result.region,
+      final_quality_gate:job.result.quality||job.result.result?.final_quality_gate||null
+    };
+  }
+  if(!job?.result?.resultStored)return null;
+  const checkpoint=await loadCheckpoint(job.id);
+  if(!checkpoint)throw Error("Сохранённый результат отсутствует в SQLite");
+  return preparePersistedCheckpointExport(checkpoint);
+}
+
+function compactCompletedJobPayload(job){
+  const output=job?.result;
+  if(!output?.result)return;
+  // Full studies/Saby-only jobs have their authoritative result in SQLite.
+  // Do not retain another entire commercial database for the 24h UI history.
+  job.result={...output,result:null,resultStored:true};
+}
+
 const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
 if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS) !== String(MAX_ACTIVE_FULL_JOBS)) {
   console.warn("[MAX_ACTIVE_FULL_JOBS_ADJUSTED] " + JSON.stringify({configured:process.env.MAX_ACTIVE_FULL_JOBS,effective:MAX_ACTIVE_FULL_JOBS}));
@@ -469,6 +491,14 @@ async function executeJob(job, apiKey) {
             JSON.stringify({job_id:job.id,error:checkpointError?.message || String(checkpointError)}));
         }
       }
+      // Release the full result only after the durable checkpoint exists.
+      // This also applies to a partial Saby-only child (phase=saby).
+      if(["full","resume","saby_only"].includes(job.mode) &&
+         job.result?.result){
+        const saved=await loadCheckpoint(job.id).catch(()=>null);
+        if(saved?.final_result && ["completed","saby"].includes(saved.phase))
+          compactCompletedJobPayload(job);
+      }
       job.state = "completed";
     } catch (error) {
       if (
@@ -741,7 +771,8 @@ app.get("/api/jobs", (_req, res) => {
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
         createdAt: job.createdAt,
-        hasResult: job.state === "completed" && Boolean(job.result?.result),
+        hasResult: job.state === "completed" &&
+          Boolean(job.result?.result || job.result?.resultStored),
         eta: estimateResearchEta(job, { now, history })
       }))
   });
@@ -774,7 +805,7 @@ app.get("/api/jobs/:id", (req, res) => {
           dedupe_comparison: job.result?.dedupe_comparison || null,
           replay_available: Boolean(job.result?.discovery_snapshot),
           quality: job.result?.quality || null,
-          full_json_available: Boolean(job.result?.result)
+          full_json_available: Boolean(job.result?.result || job.result?.resultStored)
         }
       : null,
     checkpoint:lightweightJobCheckpointSummary(job),
