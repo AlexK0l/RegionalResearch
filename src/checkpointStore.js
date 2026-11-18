@@ -271,6 +271,10 @@ export function checkpointSummary(value) {
     version: Number(value.version || 0),
     region: String(value.region || ""),
     phase: String(value.phase || ""),
+    // completed_stage is the number of 1-9 discovery passes, NOT the full
+    // 13-stage workflow. Surface Stage11 completion separately for the UI.
+    stage11_completed: value.stage11_completed===true ||
+      ["saby","priority","completed"].includes(String(value.phase||"")),
     completed_stage: Number(value.completed_stage || 0),
     completed_final_batches: Number(value.completed_final_batches || 0),
     enrichment_completed: Array.isArray(value.enrichment_completed_ids)
