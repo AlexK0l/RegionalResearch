@@ -1000,7 +1000,7 @@ async function downloadSaved(format="xlsx"){
     }
     const blob=await r.blob();
     const cd=r.headers.get("content-disposition")||"";
-    const match=cd.match(/filename\\*=UTF-8''([^;]+)/i);
+    const match=cd.match(/filename\*=UTF-8''([^;]+)/i);
     const fallback=format==="json"?"SAT_saved.json":"SAT_saved.xlsx";
     const filename=match?decodeURIComponent(match[1]):fallback;
     const url=URL.createObjectURL(blob);
