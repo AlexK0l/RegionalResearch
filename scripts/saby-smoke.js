@@ -160,8 +160,7 @@ async function main() {
     await fs.writeFile(target,bytes,{flag:"wx"});
     xlsx=target;
   }
-  const targetRow=selectedTarget?.result?.[selectedTarget.section]?.[0]||
-    (selectedTarget?result[selectedTarget.section]?.[0]:null);
+  const targetRow=selectedTarget?result[selectedTarget.section]?.[0]:null;
   const trucks=targetRow?.__evidence?.saby?.trucks;
   const recordedVehicles=Array.isArray(trucks?.vehicles)?trucks.vehicles.length:0;
   console.log(JSON.stringify({
