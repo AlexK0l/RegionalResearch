@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { checkpointSummary, normalizeCheckpoint } from "../src/checkpointStore.js";
+import { checkpointSummary, normalizeCheckpoint,
+  preferLatestResumeCheckpoint } from "../src/checkpointStore.js";
 
 const pipeline = readFileSync(new URL("../src/pipeline.js", import.meta.url), "utf8");
 const server = readFileSync(new URL("../server.js", import.meta.url), "utf8");
@@ -124,4 +125,31 @@ test("a completed checkpoint explicitly reports unfinished contact work", () => 
   assert.equal(summary.continuation_available, true);
   assert.match(server, /continuation_available/);
   assert.match(server, /contact_unsearched_ids/);
+});
+
+test("select the advanced Stage11/13 parent over a downgraded resumed child",()=>{
+  const family="2026-11-18T08:00:00Z";
+  const records=[
+    {id:"newer-resume",created_at:family,phase:"statistics",
+      updated_at:"2026-11-18T12:50:00Z"},
+    {id:"saved-contacts",created_at:family,phase:"contacts",
+      updated_at:"2026-11-18T12:00:00Z"},
+    {id:"saved-priority",created_at:family,phase:"priority",
+      updated_at:"2026-11-18T11:50:00Z"}
+  ];
+  assert.equal(preferLatestResumeCheckpoint(records).id,"saved-priority");
+  assert.equal(preferLatestResumeCheckpoint(records.slice(0,2)).id,
+    "saved-contacts");
+});
+
+test("a genuinely fresh independent study retains precedence over old lineage",()=>{
+  const records=[
+    {id:"fresh-study",created_at:"2026-11-18T13:00:00Z",
+      phase:"discovery",updated_at:"2026-11-18T13:03:00Z"},
+    {id:"old-completed-stage11",created_at:"2026-11-17T08:00:00Z",
+      phase:"contacts",updated_at:"2026-11-18T12:59:00Z"}
+  ];
+  assert.equal(preferLatestResumeCheckpoint(records).id,"fresh-study");
+  assert.equal(preferLatestResumeCheckpoint([]),null);
+  assert.equal(preferLatestResumeCheckpoint(null),null);
 });
