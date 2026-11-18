@@ -79,12 +79,22 @@ export async function runLateCheckpointResume({
   // Previously completed Stage13 must never replay Stage10/11, and must
   // not run Saby or OpenAI simply because the earlier crash left phase=priority.
   if(source.phase==="priority"){
+    let recovered=null;
     try{
-      const {recovered}=recoverPriorityCheckpointOffline(source,{
+      recovered=recoverPriorityCheckpointOffline(source,{
         jobId:sourceJobId,env
-      });
+      }).recovered;
+    }catch(error){
+      // Only incomplete Stage13 classifications continue into Stage13,
+      // never fall through to paid discovery/enrichment/contact searches.
+      console.warn("[PIPELINE_STAGE13_CHECKPOINT_INCOMPLETE] "+JSON.stringify({
+        reason:String(error?.message||"incomplete_stage13").slice(0,180)
+      }));
+    }
+    if(recovered){
       markDone(11,"результат Saby восстановлен");
       markDone(12,"Stage13 восстановлен из проверенного checkpoint (без API)");
+      // I/O errors must propagate; they must NEVER trigger a paid retry.
       await persistCheckpoint("completed",{
         ...recovered,stage11_completed:true,
         final_result:recovered.final_result,
@@ -98,12 +108,6 @@ export async function runLateCheckpointResume({
       return lateResultSummary(source,recovered.final_result,
         recovered.saby_stats,recovered.priority_stats,
         recovered.final_quality_gate);
-    }catch(error){
-      // Only incomplete Stage13 classifications continue into Stage13,
-      // never fall through to paid discovery/enrichment/contact searches.
-      console.warn("[PIPELINE_STAGE13_CHECKPOINT_INCOMPLETE] "+JSON.stringify({
-        reason:String(error?.message||"incomplete_stage13").slice(0,180)
-      }));
     }
   }
 
