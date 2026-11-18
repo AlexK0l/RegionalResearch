@@ -678,6 +678,13 @@ async function poll(restoring=false){
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
       const r=d.result||{};
+      const paused=d.mode==="saby_only"&&Boolean(
+        r.saby?.circuitOpen||r.saby?.browserError||r.saby?.deadlineReached);
+      e.resultEyebrow.textContent=paused?"Частичный результат":"Готово";
+      e.resultTitle.textContent=paused?
+        "Saby приостановлен — все собранные данные сохранены":
+        "Итоговый файл сформирован";
+      if(paused)e.statusTitle.textContent="Saby: продолжение доступно";
       const c=r.counts||{};
       const g=r.contacts||{};
       e.sabyResume.textContent=d.mode==="saby_only"&&r.saby?.fullSweepCompleted
@@ -697,6 +704,9 @@ async function poll(restoring=false){
         ", посредники: "+(c.intermediaries||0)+
         ", лизинг: "+(c.leasing||0)+
         ". "+contactSummary+
+        (paused?" Автоматические переподключения: "+
+          Number(r.saby?.browserRestarts||0)+
+          ". Данные сохранены; продолжение доступно через эту страницу.":"")+
         (r.quality
           ?" Финальная проверка: A "+(r.quality.grades?.A||0)+
             ", B "+(r.quality.grades?.B||0)+
@@ -778,6 +788,12 @@ async function start(){
     return;
   }
 
+  // A fresh run may repeat paid discovery/identity/contact queries.
+  // Do not silently replace the user's existing Saby-only work.
+  if((regionSabyCheckpoint?.id||regionCheckpoint?.id) &&
+     !confirm("Для региона уже есть сохранённое исследование. Новое исследование может "
+       +"снова расходовать бюджет OpenAI. Продолжить именно НОВОЕ исследование?"))
+    return;
   localStorage.setItem(LAST_REGION_KEY,region);
   startRequestPending=true;
   e.start.disabled=true;
@@ -967,6 +983,37 @@ async function download(format="xlsx"){
   }
 }
 
+async function downloadSaved(format="xlsx"){
+  const id=savedCheckpointDownloadId();
+  if(!id)return;
+  try{
+    const endpoint=format==="json"?"/download-json":"/download";
+    const r=await fetch(apiUrl("/api/checkpoints/"+encodeURIComponent(id)+endpoint),{
+      headers:headers(false)
+    });
+    if(!r.ok){
+      if(r.status===401&&r.headers.get("x-auth-mode")==="browser-session"){
+        window.location.replace("/login");return;
+      }
+      const data=await r.json().catch(()=>({}));
+      throw Error(data.error||("HTTP "+r.status));
+    }
+    const blob=await r.blob();
+    const cd=r.headers.get("content-disposition")||"";
+    const match=cd.match(/filename\\*=UTF-8''([^;]+)/i);
+    const fallback=format==="json"?"SAT_saved.json":"SAT_saved.xlsx";
+    const filename=match?decodeURIComponent(match[1]):fallback;
+    const url=URL.createObjectURL(blob);
+    const anchor=document.createElement("a");
+    anchor.href=url;anchor.download=filename;
+    document.body.append(anchor);anchor.click();anchor.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){
+    e.error.hidden=false;
+    e.error.textContent=String(error?.message||error);
+  }
+}
+
 function setServiceStatus(text,state=""){
   if(!e.serviceStatus)return;
   e.serviceStatus.textContent=text;
@@ -1016,6 +1063,8 @@ e.region.onchange=()=>{
 };
 e.regionResume.onclick=startRegionResume;
 e.regionSaby.onclick=()=>void startSabyOnly(regionSabyCheckpoint?.id,e.regionSaby);
+e.savedXlsx.onclick=()=>void downloadSaved("xlsx");
+e.savedJson.onclick=()=>void downloadSaved("json");
 e.start.onclick=start;
 e.resume.onclick=resumeFromCheckpoint;
 e.sabyResume.onclick=()=>void startSabyOnly(currentJobId,e.sabyResume);
