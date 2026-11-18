@@ -3,6 +3,7 @@
 // continue from their own phase. No discovery/INN/contact API calls.
 import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
+import {sabyStage12Settings} from "./sabyStage12.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
@@ -120,7 +121,7 @@ export async function runLateCheckpointResume({
     deferredInns:asArray(source.saby_deferred_inns),
     attemptedInns:asArray(source.saby_attempted_inns)
   };
-  if(source.phase!=="priority"){
+  if(source.phase!=="priority"&&sabyStage12Settings(env).enabled){
     statuses[11].status="running";
     statuses[11].startedAt=Date.now();
     statuses[11].detail="продолжение Stage12 из сохранённых контактов";
