@@ -2514,7 +2514,8 @@ async function resolveFinalMissingInns({
   region,
   assertNotCancelled,
   completedIds = new Set(),
-  onBatch = async () => {}
+  onBatch = async () => {},
+  lookupBatch = lookupFinalInnBatch
 }) {
   const companies = [
     ...(finalResult?.direct_buyers || []),
@@ -2548,6 +2549,8 @@ async function resolveFinalMissingInns({
   let attempted = 0;
   let recovered = 0;
   let retried = 0;
+  let retryBudgetDeferred = 0;
+  let retryBudgetDeferredIds = [];
   let completedBatches = 0;
   const concurrency = client?.__webBudget?.kind !== "full" && client?.__webBudget ? 1 : FINAL_INN_CONCURRENCY;
 
@@ -2563,7 +2566,7 @@ async function resolveFinalMissingInns({
 
   await mapWithConcurrency(batches, concurrency, async (batch, batchIndex) => {
     await assertNotCancelled();
-    const result = await lookupFinalInnBatch({
+    const result = await lookupBatch({
       client,
       rows: batch,
       region,
@@ -2618,15 +2621,38 @@ async function resolveFinalMissingInns({
       concurrency
     }));
 
-    await mapWithConcurrency(retryBatches, concurrency, async (batch, batchIndex) => {
+    // These searches are OPTIONAL, and can be repeated only when the first
+    // pass yielded a new credible source. Exhausting their per-phase web
+    // budget must not discard 680/680 already completed primary INN checks,
+    // nor prevent contacts/Saby/priority (independent budgets) from running.
+    // Run optional retries sequentially so no other retry is left in flight
+    // after the budget rejects a new request.
+    for (const [batchIndex, batch] of retryBatches.entries()) {
       await assertNotCancelled();
-      const result = await lookupFinalInnBatch({
-        client,
-        rows: batch,
-        region,
-        assertNotCancelled,
-        label: `retry-${batchIndex + 1}/${retryBatches.length}`
-      });
+      let result;
+      try {
+        result = await lookupBatch({
+          client,
+          rows: batch,
+          region,
+          assertNotCancelled,
+          label: `retry-${batchIndex + 1}/${retryBatches.length}`
+        });
+      } catch (error) {
+        if (!isWebBudgetStop(error)) throw error;
+        const remaining = retryBatches.slice(batchIndex).flat();
+        retryBudgetDeferred = remaining.length;
+        retryBudgetDeferredIds = remaining.map(checkpointRowId).filter(Boolean);
+        console.warn("[FINAL_INN_RETRY_DEFERRED_BUDGET] " + JSON.stringify({
+          reason: error.scope || "web_budget_stop",
+          error: error.message,
+          deferred_rows: retryBudgetDeferred,
+          completed_first_pass: completedIds.size,
+          retried,
+          web_budget: publicWebBudgetState(client?.__webBudget)
+        }));
+        break;
+      }
       retried += batch.length;
       recovered += applyFinalInnItems(rowsById, result);
       for (const row of batch) completedIds.add(`retry:${checkpointRowId(row)}`);
@@ -2637,7 +2663,7 @@ async function resolveFinalMissingInns({
         retried,
         pendingTotal: pending.length
       });
-    });
+    }
   }
 
   for (const row of companies) mergeResearchComment(row);
@@ -2647,12 +2673,16 @@ async function resolveFinalMissingInns({
     final_companies: companies.length,
     attempted,
     retried,
+    retry_budget_deferred: retryBudgetDeferred,
     recovered,
     inn_present: companies.length - finalMissing,
     inn_missing: finalMissing
   }));
 
-  return { completedIds, attempted, retried, recovered, missing: finalMissing };
+  return {
+    completedIds, attempted, retried, recovered, missing: finalMissing,
+    retryBudgetDeferred, retryBudgetDeferredIds
+  };
 }
 
 function duplicateInnConflictGroups(finalResult) {
@@ -7593,30 +7623,44 @@ ${JSON.stringify(groupBatch)}`,
 
   let innConflictGroups = duplicateInnConflictGroups(finalResult);
   let innConflictRechecks = 0;
+  let innConflictBudgetDeferred = 0;
   if (innConflictGroups.length) {
     console.log("[POST_INN_CONFLICT_PLAN] " + JSON.stringify({
       groups: innConflictGroups.length,
       inns: innConflictGroups.map((group) => group.inn)
     }));
-    await mapWithConcurrency(
-      innConflictGroups,
-      Math.min(FINAL_INN_CONCURRENCY, 3),
-      async (group, groupIndex) => {
-        await assertNotCancelled();
-        const rowsById = new Map(
-          group.rows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
-        );
-        const result = await lookupFinalInnBatch({
+    // Extra conflict rechecks are optional once the first INN pass has
+    // completed. If the identity web budget is exhausted, quarantine unresolved
+    // claimants for review instead of failing the entire study.
+    for (const [groupIndex, group] of innConflictGroups.entries()) {
+      await assertNotCancelled();
+      const rowsById = new Map(
+        group.rows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
+      );
+      let result;
+      try {
+        result = await lookupFinalInnBatch({
           client,
           rows: group.rows,
           region,
           assertNotCancelled,
           label: `post-inn-conflict-${groupIndex + 1}/${innConflictGroups.length}`
         });
-        innConflictRechecks += group.rows.length;
-        finalInnStats.recovered += applyFinalInnItems(rowsById, result);
+      } catch (error) {
+        if (!isWebBudgetStop(error)) throw error;
+        innConflictBudgetDeferred = innConflictGroups.slice(groupIndex)
+          .reduce((total, item) => total + item.rows.length, 0);
+        console.warn("[POST_INN_CONFLICT_RECHECK_DEFERRED_BUDGET] " + JSON.stringify({
+          error: error.message,
+          deferred_rows: innConflictBudgetDeferred,
+          checked_rows: innConflictRechecks,
+          policy: "quarantine_ambiguous_inn_claimants"
+        }));
+        break;
       }
-    );
+      innConflictRechecks += group.rows.length;
+      finalInnStats.recovered += applyFinalInnItems(rowsById, result);
+    }
 
     postInn = postInnDedupe(finalResult, region, postInnDiagnostics);
     dedupedRecords = postInn.records;
@@ -7729,6 +7773,7 @@ ${JSON.stringify(groupBatch)}`,
 
   finalInnStats.missing = allResearchRows(finalResult)
     .filter((row) => !normalizeInn(row?.["ИНН"])).length;
+  finalInnStats.innConflictBudgetDeferred = innConflictBudgetDeferred;
   finalInnStats.innConflictRechecks = innConflictRechecks;
   finalInnStats.remainingInnConflicts = innConflictGroups.length;
 
@@ -7737,6 +7782,8 @@ ${JSON.stringify(groupBatch)}`,
     output_rows: rowCount(finalResult),
     qualification_counts: qualifiedFinal.counts,
     conflict_rechecks: innConflictRechecks,
+    optional_retry_budget_deferred: finalInnStats.retryBudgetDeferred || 0,
+    conflict_recheck_budget_deferred: innConflictBudgetDeferred,
     unresolved_conflict_groups_quarantined: unresolvedInnConflictClear.groups,
     unresolved_conflict_rows_quarantined: unresolvedInnConflictClear.quarantinedRows || 0,
     conflict_verified_rows_preserved: unresolvedInnConflictClear.preservedVerifiedRows || 0,
@@ -7761,6 +7808,9 @@ ${JSON.stringify(groupBatch)}`,
     final_inn_completed_ids: [...finalInnStats.completedIds],
     final_inn_attempted: finalInnStats.attempted,
     final_inn_retried: finalInnStats.retried,
+    final_inn_retry_budget_deferred: finalInnStats.retryBudgetDeferred || 0,
+    final_inn_retry_budget_deferred_ids: finalInnStats.retryBudgetDeferredIds || [],
+    final_inn_conflict_budget_deferred: innConflictBudgetDeferred,
     final_inn_recovered: finalInnStats.recovered,
     final_inn_missing: finalInnStats.missing,
     final_inn_conflict_rechecks: finalInnStats.innConflictRechecks,
@@ -9171,6 +9221,7 @@ export {
   duplicateInnConflictGroups,
   clearUnresolvedInnConflicts,
   applyFinalInnItems,
+  resolveFinalMissingInns,
   resolveClusterWithoutWeb,
   applyIdentityResult,
   extractInnFromEvidenceNotes,
