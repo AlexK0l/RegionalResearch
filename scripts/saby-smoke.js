@@ -96,6 +96,8 @@ async function main() {
      !Array.isArray(base.intermediaries)||!Array.isArray(base.leasing)) {
     throw new Error("JSON должен содержать direct_buyers, intermediaries и leasing");
   }
+  const hasTargetOption=args.some(arg=>arg==="--target-inn"||
+    arg.startsWith("--target-inn="));
   const rawTargetInn=option(args,"target-inn");
   let result=structuredClone(base);
   let selectedTarget=null;
@@ -104,7 +106,7 @@ async function main() {
       !Number.isSafeInteger(Number(rawOffset)) || Number(rawOffset)>20000)
     throw new Error("--offset должен быть целым числом от 0 до 20000");
   const offset=Number(rawOffset);
-  if(rawTargetInn){
+  if(hasTargetOption){
     if(!jsonFile||env.SABY_MAX_COMPANIES!=="1"||offset!==0)
       throw new Error("Для --target-inn нужны --result, --limit=1 и --offset=0");
     selectedTarget=selectSabySmokeTarget(base,rawTargetInn);
@@ -158,12 +160,26 @@ async function main() {
     await fs.writeFile(target,bytes,{flag:"wx"});
     xlsx=target;
   }
+  const targetRow=selectedTarget?.result?.[selectedTarget.section]?.[0]||
+    (selectedTarget?result[selectedTarget.section]?.[0]:null);
+  const trucks=targetRow?.__evidence?.saby?.trucks;
+  const recordedVehicles=Array.isArray(trucks?.vehicles)?trucks.vehicles.length:0;
   console.log(JSON.stringify({
     checked:response.stats.verified,review:response.stats.review,
     contactUpdates:response.stats.phonesAdded,
     transportUpdates:response.stats.transportsAdded,
     deferred:response.stats.deferred,
     browserError:response.stats.browserError||null,
+    ...(selectedTarget?{
+      target_inn:selectedTarget.inn,
+      target_company:targetRow?.["Организация"]||"",
+      saby_contacts_status:targetRow?.__evidence?.saby?.collection?.contacts||"missing",
+      saby_trucks_status:targetRow?.__evidence?.saby?.collection?.trucks||"missing",
+      saby_trucks_count:Number.isSafeInteger(trucks?.count)?trucks.count:null,
+      saby_vehicle_rows:recordedVehicles,
+      full_fleet_verified:trucks?.status==="verified"&&
+        Number.isSafeInteger(trucks.count)&&trucks.count===recordedVehicles
+    }:{}),
     json:output,excel:xlsx||null,
     openai_requests:0,google_sheets_writes:0,source_file_unchanged:true
   },null,2));
