@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {execFileSync} from "node:child_process";
+import {fileURLToPath} from "node:url";
 import {preparePersistedCheckpointExport}
   from "../src/persistedCheckpointExport.js";
 
@@ -84,7 +85,7 @@ test("public browser UI compiles and offers saved results from authorized SQLite
   const ui=fs.readFileSync(new URL("../public/app.js",import.meta.url),"utf8");
   const html=fs.readFileSync(new URL("../public/index.html",import.meta.url),"utf8");
   execFileSync(process.execPath,["--check",
-    new URL("../public/app.js",import.meta.url).pathname],{stdio:"pipe"});
+    fileURLToPath(new URL("../public/app.js",import.meta.url))],{stdio:"pipe"});
   assert.ok(server.indexOf('app.use("/api",')<
     server.indexOf('app.get("/api/checkpoints/:id/download"'));
   assert.match(server,/preparePersistedCheckpointExport\(checkpoint\)/);
