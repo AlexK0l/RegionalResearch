@@ -12,6 +12,8 @@ const e={
   regionCheckpointText:document.querySelector("#regionCheckpointText"),
   regionResume:document.querySelector("#regionResumeBtn"),
   regionSaby:document.querySelector("#regionSabyBtn"),
+  savedXlsx:document.querySelector("#savedXlsxBtn"),
+  savedJson:document.querySelector("#savedJsonBtn"),
   start:document.querySelector("#startBtn"),
   jobsSummary:document.querySelector("#jobsSummary"),
   jobsList:document.querySelector("#jobsList"),
@@ -33,6 +35,8 @@ const e={
   contactBox:document.querySelector("#contactBox"),
   error:document.querySelector("#errorBox"),
   resultCard:document.querySelector("#resultCard"),
+  resultEyebrow:document.querySelector("#resultEyebrow"),
+  resultTitle:document.querySelector("#resultTitle"),
   resultSummary:document.querySelector("#resultSummary"),
   download:document.querySelector("#downloadBtn"),
   downloadJson:document.querySelector("#downloadJsonBtn"),
@@ -229,14 +233,30 @@ function formatCheckpointPhase(phase){
   })[phase]||phase||"неизвестный этап";
 }
 
+function savedCheckpointDownloadId(){
+  // A newer Saby-only child contains the latest enrichment. Fall back to
+  // the complete full research, including strictly recoverable Stage13.
+  return regionSabyCheckpoint?.id ||
+    (["priority","completed"].includes(regionCheckpoint?.phase)?
+      regionCheckpoint?.id:"") || "";
+}
+function updateSavedDownloadControls(){
+  const available=Boolean(savedCheckpointDownloadId());
+  for(const button of [e.savedXlsx,e.savedJson]){
+    button.hidden=!available;
+    button.disabled=!available;
+  }
+}
+
 function renderRegionCheckpoint(checkpoint){
   regionCheckpoint=checkpoint||null;
-  if(checkpoint&&checkpoint.status==="completed"&&!checkpoint.continuation_available)checkpoint=null;
-  e.regionResume.hidden=false;
+  const finished=checkpoint?.status==="completed"&&!checkpoint.continuation_available;
+  e.regionResume.hidden=Boolean(finished);
   if(!checkpoint){
     e.regionCheckpointBox.hidden=true;
     e.regionResume.disabled=true;
     e.start.textContent="Запустить исследование";
+    updateSavedDownloadControls();
     return;
   }
 
@@ -257,17 +277,19 @@ function renderRegionCheckpoint(checkpoint){
     " · источник: "+sourceText+
     (checkpoint.compatible===false?" · версия pipeline несовместима":"");
   e.regionCheckpointBox.hidden=false;
-  e.regionResume.disabled=checkpoint.compatible===false;
-  e.start.textContent="Начать новое исследование";
+  e.regionResume.disabled=Boolean(finished)||checkpoint.compatible===false;
+  e.start.textContent="Начать новое исследование (возможны OpenAI-запросы)";
   // This action may re-enter paid stages; distinguish it from Saby-only.
   e.regionResume.textContent="Продолжить исследование (возможны OpenAI-запросы)";
+  updateSavedDownloadControls();
 }
 
 function renderRegionSabyCheckpoint(checkpoint){
   regionSabyCheckpoint=checkpoint||null;
   e.regionSaby.hidden=!checkpoint;
   e.regionSaby.disabled=!checkpoint;
-  if(!checkpoint)return;
+  e.regionSaby.classList.toggle("secondary",!checkpoint);
+  if(!checkpoint){updateSavedDownloadControls();return;}
   const count=Number(checkpoint.saby_deferred||0);
   const info=checkpoint.saby_bootstrap
     ? "Готовое исследование из SQLite · компаний в исследовании: "+
@@ -278,8 +300,7 @@ function renderRegionSabyCheckpoint(checkpoint){
   e.regionSaby.textContent=checkpoint.saby_bootstrap
     ? "Дополнить через Saby (без OpenAI)"
     : "Продолжить только Saby (без OpenAI)";
-  if(checkpoint.saby_bootstrap)
-    e.start.textContent="Начать новое исследование (возможны OpenAI-запросы)";
+  e.start.textContent="Начать новое исследование (возможны OpenAI-запросы)";
   if(e.regionCheckpointBox.hidden){
     e.regionCheckpointBox.hidden=false;
     e.regionResume.hidden=true;
@@ -288,6 +309,7 @@ function renderRegionSabyCheckpoint(checkpoint){
   }else{
     e.regionCheckpointText.textContent+=" · "+info;
   }
+  updateSavedDownloadControls();
 }
 
 async function refreshRegionCheckpoint(){
@@ -536,6 +558,7 @@ function resetIdleState(){
   e.checkpoint.disabled=true;
   regionCheckpoint=null;
   regionSabyCheckpoint=null;
+  updateSavedDownloadControls();
   e.regionSaby.hidden=true;
   e.regionSaby.disabled=true;
   e.regionCheckpointBox.hidden=true;
@@ -569,7 +592,8 @@ function setProgress(p){
     priority:"Этап 13: приоритет покупателей",
     qualification:"Identity, дедупликация и A/B/C",
     completed:"Готово",
-    cancelled:"Остановлено"
+    cancelled:"Остановлено",
+    saby_paused:"Saby приостановлен — данные сохранены"
   };
   e.statusTitle.textContent=labels[p.phase]||"Исследование";
 
@@ -588,15 +612,20 @@ function setProgress(p){
       (s.ok!==undefined
         ?" · найдено: "+(s.ok||0)+", недоступно: "+(s.unavailable||0)+", не найдено: "+(s.notFound||0)
         :"");
-  }else if(p.phase==="saby"){
+  }else if(p.phase==="saby"||p.phase==="saby_paused"){
     const stats=p.sabyStats||{};
-    e.statusText.textContent="Проверка контактов и грузовых автомобилей в Saby";
+    e.statusText.textContent=p.phase==="saby_paused"
+      ?"Автоматические попытки восстановления завершены. Результат доступен для скачивания."
+      :stats.restarting?"Повторное подключение к Saby · "+Number(stats.browserRestarts||0)+
+        " / "+Number(stats.maxBrowserRestarts||2)
+      :"Проверка контактов и грузовых автомобилей в Saby";
     e.contactBox.hidden=false;
     e.contactBox.textContent="Проверено: "+Number(p.sabyCurrent||0)+
       " / "+Number(p.sabyTotal||0)+
       " · телефоны: +"+Number(stats.phonesAdded||0)+
       " · транспорт: +"+Number(stats.transportsAdded||0)+
-      " · на проверку: "+Number(stats.review||0);
+      " · на проверку: "+Number(stats.review||0)+
+      (p.sabyRecoveryText?" · "+p.sabyRecoveryText:"");
   }else if(p.phase==="priority"){
     e.contactBox.hidden=true;
     e.statusText.textContent="Этап 13: каталог моделей и OpenAI для неизвестных типов (при необходимости)";
