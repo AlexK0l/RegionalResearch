@@ -7,6 +7,7 @@ import {costEnvLimitUsd} from "./researchCostPolicy.js";
 import {STEPS} from "./constants.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
+import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
@@ -40,10 +41,23 @@ function legacySabyPlan(checkpoint, plan) {
 }
 
 export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}={}) {
-  const checkpoint=normalizeCheckpoint(value);
+  let checkpoint=normalizeCheckpoint(value);
   if(!checkpoint)return {ok:false,code:"CHECKPOINT_INVALID"};
   if(Number(checkpoint.pipeline_version||pipelineVersion)!==pipelineVersion)
     return {ok:false,code:"CHECKPOINT_VERSION_MISMATCH"};
+  // A full study can finish all 13 stages and crash BEFORE saving completed,
+  // leaving a fully populated Stage13 "priority" snapshot in SQLite.
+  // Recover the result *in memory* using the same fail-closed offline audit.
+  // Never mutate that source checkpoint, charge for AI, or repeat discovery.
+  let recoveredPriority=false;
+  if(checkpoint.source_mode==="full" && checkpoint.phase==="priority"){
+    try{
+      checkpoint=recoverPriorityCheckpointOffline(checkpoint).recovered;
+      recoveredPriority=true;
+    }catch{
+      return {ok:false,code:"SABY_PRIORITY_SNAPSHOT_INCOMPLETE"};
+    }
+  }
   if(!["full","saby"].includes(String(checkpoint.source_mode||"full")) ||
      !["saby","completed"].includes(checkpoint.phase))
     return {ok:false,code:"SABY_FINALIZED_SOURCE_REQUIRED"};
@@ -73,7 +87,8 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
       result.intermediaries.length+result.leasing.length,
     invalid:plan.invalid.length,
     duplicates:plan.duplicates.length,
-    bootstrap:!!legacy
+    bootstrap:!!legacy,
+    recovered_priority:recoveredPriority
   };
 }
 
