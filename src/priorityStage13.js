@@ -342,7 +342,7 @@ export function calculatePriority13({c="",d="",revenue="",staff="",notes=[],ai=[
     const evidenceSource=item.source_url?
       item.source_status==="company_website_correlated_not_live_verified"?
         "сайт организации сопоставлен с сохранённой заметкой по домену: "+
-          item.source_url+" (без повторной веб-проверки)":
+          item.source_url+"; новая веб-проверка не выполнялась":
         "сохранённая заметка с источником "+item.source_url:
       "сохранённая заметка (ссылка на источник не установлена)";
     explanation.push("КЛАССИФИКАЦИЯ МОДЕЛИ OPENAI: "+item.model_quote+
