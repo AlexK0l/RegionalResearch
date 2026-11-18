@@ -92,7 +92,7 @@ test("legacy company-site note recovers only exact same-company domain",()=>{
   assert.ok(got.every(x=>x.source_status==="company_website_correlated_not_live_verified"));
 });
 test("saved OpenAI type results for Transsnip become usable without another API call",()=>{
-  const note="Сайт организации: парк транспортных средств включает шторные полуприцепы Schmitz SCS и полуприцепы Schmitz SCO 24.";
+  const note="Сайт организации: парк транспортных средств включает шторные полуприцепы Schmitz SCS и полуприцепы Schmitz SCO 24; адрес — г. Смоленск.";
   const r=row("ООО «Трансснип»",note,[note],{
     "__evidence":{notes:[note],source_urls:["https://www.transsnip.ru/"]}
   });
