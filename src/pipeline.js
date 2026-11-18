@@ -23,7 +23,7 @@ import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { applyPriorityStage13 } from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
-import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
+import {canResumeFromCompletedContacts,runLateCheckpointResume} from "./lateCheckpointResume.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -6064,6 +6064,19 @@ export async function runResearchPipeline({ job, apiKey }) {
     });
 
   await progress({ phase: "starting", percent: 0 });
+  // The Stage11 finalization marker (or later durable Saby/Stage13 state)
+  // is authoritative: do not re-enter the paid identity/enrichment/contact
+  // stages, and never downgrade this source to a Stage10 checkpoint.
+  if(resumeCheckpoint && canResumeFromCompletedContacts(resumeCheckpoint)){
+    return runLateCheckpointResume({
+      checkpoint:resumeCheckpoint,
+      sourceJobId:String(job.data?.sourceJobId||""),
+      client,env:process.env,signal:jobSignal,
+      statuses,progress,persistCheckpoint,
+      remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd()-estimatedApiCostUsd(client)),
+      onAIUsage:usage=>recordTokenUsage(client,usage)
+    });
+  }
   if (!resumeCheckpoint) {
     await persistCheckpoint("starting", { parts: [] });
   } else {
