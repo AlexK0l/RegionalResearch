@@ -33,7 +33,10 @@ export function stage13CommercialRole(row){
 
   // Selected A evidence is company-bound; when it identifies this company as
   // lessor, the fact that it holds property is not a direct-cargo use case.
-  const key=name.replace(/^(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*/u,"")
+  // A display name may include an alias/group after " / ". Check the
+  // first named legal entity, not the entire display label, against evidence.
+  const key=name.split(/\s+\/\s+/u)[0]
+    .replace(/^(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*/u,"")
     .replace(/[«»"']/gu,"").trim();
   const evidence=normalized(a).replace(/[«»"\x27]/gu,"");
   const position=key.length>=5?evidence.indexOf(key):-1;
@@ -42,8 +45,11 @@ export function stage13CommercialRole(row){
   // name. A lease agreement that mentions another lessor later in the
   // sentence must NOT reclassify a lessee as a financing channel.
   const sameCompanyRole=position<0?"":evidence.slice(position+key.length,position+key.length+105);
+  // Support real source language ("прямо указано", "выступало") but
+  // only when the lessor role immediately follows THIS row's company.
+  // A role for another party later in the note must never transfer a lessee.
   const selectedLessor=selectedNamesCompany&&
-    /^\s*(?:УКАЗАН[АОЫ]?|ВЫСТУПАЕТ|ЯВЛЯЕТСЯ|НАЗВАН[АОЫ]?)\s+ЛИЗИНГОДАТЕЛ[А-ЯЁ]*/u.test(sameCompanyRole);
+    /^\s*(?:ПРЯМО\s+)?(?:УКАЗАН[АОЫ]?|ВЫСТУПАЕТ|ВЫСТУПАЛ[АО]?|ЯВЛЯЕТСЯ|НАЗВАН[АОЫ]?)\s+ЛИЗИНГОДАТЕЛ[А-ЯЁ]*/u.test(sameCompanyRole);
   const explicitRole=notes.find(n=>
     /(?:^|[;.]\s*)роль\s*:\s*лизингодател[а-яё]*(?:\s*\/\s*реализатор)?/iu.test(n)||
     /не\s+(?:конечный|непосредственный)\s+эксплуатант/iu.test(n));
