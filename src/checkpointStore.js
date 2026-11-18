@@ -146,21 +146,47 @@ export async function loadCheckpoint(jobId) {
   return rowToCheckpoint(row);
 }
 
+// On the legacy pipeline a newer resume child could overwrite the phase
+// "contacts" with "statistics", even though its original parent had
+// already finished Stage11. Resume children retain the parent's created_at:
+// within that SAME source lineage, prefer the furthest committed phase.
+// A fresh study has a different created_at and must remain the newest study.
+const RESUME_PHASE_RANK=new Map([
+  "starting","discovery","pre_identity","identity","final_batches",
+  "dedupe","qualification","final_inn","enrichment","statistics",
+  "contacts","saby","priority","completed"
+].map((phase,index)=>[phase,index]));
+
+export function preferLatestResumeCheckpoint(rows) {
+  if(!Array.isArray(rows)||!rows.length)return null;
+  const ordered=[...rows].sort((a,b)=>
+    Date.parse(b.updated_at||0)-Date.parse(a.updated_at||0));
+  const newest=ordered[0];
+  const family=ordered.filter(item=>
+    item.created_at && item.created_at===newest.created_at);
+  if(!family.length)return newest;
+  return family.sort((a,b)=>
+    (RESUME_PHASE_RANK.get(b.phase)??-1)-
+      (RESUME_PHASE_RANK.get(a.phase)??-1) ||
+    Date.parse(b.updated_at||0)-Date.parse(a.updated_at||0))[0];
+}
+
 export async function findLatestCheckpoint(region, mode = "full") {
   const normalizedRegion = String(region || "").trim();
   if (!normalizedRegion) return null;
 
-  const row = ensureDb().prepare(`
-    SELECT *
+  const rows = ensureDb().prepare(`
+    SELECT id,region,mode,pipeline_version,status,phase,
+      completed_stage,completed_final_batches,created_at,updated_at
     FROM research_checkpoints
     WHERE region = ?
       AND mode = ?
       AND status = 'resumable'
     ORDER BY updated_at DESC
-    LIMIT 1
-  `).get(normalizedRegion, String(mode || "full"));
+    LIMIT 50
+  `).all(normalizedRegion,String(mode||"full"));
 
-  return metadataFromRow(row);
+  return metadataFromRow(preferLatestResumeCheckpoint(rows));
 }
 
 // Read-only historical source for bounded, fresh-web recall. Completed results
@@ -271,6 +297,10 @@ export function checkpointSummary(value) {
     version: Number(value.version || 0),
     region: String(value.region || ""),
     phase: String(value.phase || ""),
+    // completed_stage is the number of 1-9 discovery passes, NOT the full
+    // 13-stage workflow. Surface Stage11 completion separately for the UI.
+    stage11_completed: value.stage11_completed===true ||
+      ["saby","priority","completed"].includes(String(value.phase||"")),
     completed_stage: Number(value.completed_stage || 0),
     completed_final_batches: Number(value.completed_final_batches || 0),
     enrichment_completed: Array.isArray(value.enrichment_completed_ids)

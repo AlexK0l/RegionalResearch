@@ -267,6 +267,13 @@ function renderRegionCheckpoint(checkpoint){
   const missingContacts=Number(checkpoint.contacts_deferred||0);
   const missingSaby=Number(checkpoint.saby_deferred||0);
   const sourceText=checkpoint.source==="browser"?"браузер":"backend / SQLite";
+  const savedContacts=checkpoint.stage11_completed===true ||
+    ["saby","priority","completed"].includes(checkpoint.phase);
+  const stageHint=savedContacts
+    ?" · этап 11 сохранён · этапы 10–11 повторно не выполняются"
+    :checkpoint.phase==="contacts"
+      ?" · этап 11: сохранён промежуточный прогресс"
+      :"";
   e.regionCheckpointText.textContent=
     (checkpoint.status==="completed"
       ?"Исследование завершено; осталось проверить: контакты "+missingContacts+", Saby "+missingSaby+" · "
@@ -274,7 +281,7 @@ function renderRegionCheckpoint(checkpoint){
     " · завершено discovery-этапов: "+Number(checkpoint.completed_stage||0)+
     (batch?" · final batches: "+batch:"")+
     " · сохранено: "+updated+
-    " · источник: "+sourceText+
+    " · источник: "+sourceText+stageHint+
     (checkpoint.compatible===false?" · версия pipeline несовместима":"");
   e.regionCheckpointBox.hidden=false;
   e.regionResume.disabled=Boolean(finished)||checkpoint.compatible===false;
