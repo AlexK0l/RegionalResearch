@@ -30,7 +30,8 @@
     "audit:post-saby": "node scripts/post-saby-remediation.js",
     "priority:stage13": "node --env-file-if-exists=.env scripts/priority-stage13-offline.js",
     "stage13:smoke:smolensk": "node --env-file-if-exists=.env scripts/stage13-smolensk-live-smoke.js",
-    "stage13:finalize:free": "node --env-file-if-exists=.env scripts/stage13-finalize-existing-offline.js"
+    "stage13:finalize:free": "node --env-file-if-exists=.env scripts/stage13-finalize-existing-offline.js",
+    "recover:priority:offline": "node --env-file-if-exists=.env scripts/recover-priority-checkpoint-offline.js"
   },
   "engines": {
     "node": ">=22"
