@@ -10,6 +10,7 @@ import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import {preparePersistedCheckpointExport} from "./src/persistedCheckpointExport.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
+import {createJobMemoryMonitor,processMemorySnapshot} from "./src/runtimeMemory.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
@@ -39,6 +40,22 @@ app.set("trust proxy", "loopback");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
+
+function lightweightJobCheckpointSummary(job){
+  return job?.latestCheckpointSummary || checkpointSummary(job?.latestCheckpoint) ||
+    checkpointSummary(job?.data?.checkpoint);
+}
+
+async function savedJobCheckpoint(job,id){
+  // The full snapshot belongs in durable SQLite, not in the long-lived
+  // HTTP jobs map. Only a queued source may not have a saved child yet.
+  const child=await loadCheckpoint(id);
+  if(child)return normalizeCheckpoint(child);
+  const parentId=String(job?.data?.sourceJobId||"");
+  const source=job?.data?.checkpoint ||
+    (parentId?await loadCheckpoint(parentId):null);
+  return normalizeCheckpoint(source);
+}
 const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
 if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS) !== String(MAX_ACTIVE_FULL_JOBS)) {
   console.warn("[MAX_ACTIVE_FULL_JOBS_ADJUSTED] " + JSON.stringify({configured:process.env.MAX_ACTIVE_FULL_JOBS,effective:MAX_ACTIVE_FULL_JOBS}));
@@ -413,6 +430,9 @@ const JOB_MODES = new Set([
 async function executeJob(job, apiKey) {
   return runWithJobLog(job, async () => {
     job.state = "active";
+    const memoryMonitor=createJobMemoryMonitor(job);
+    job.memoryMonitor=memoryMonitor;
+    memoryMonitor.start();
     console.log("[JOB_START] " + JSON.stringify({
       id: job.id,
       region: job.region,
@@ -465,6 +485,11 @@ async function executeJob(job, apiKey) {
         console.error(error);
       }
     } finally {
+      memoryMonitor.stop();
+      job.memoryMonitor=null;
+      // Resume/Saby source payloads are already durably preserved in SQLite.
+      // Avoid retaining them in the in-memory jobs list for another 24 hours.
+      if(job.data?.checkpoint)delete job.data.checkpoint;
       console.log("[JOB_FINISH] " + JSON.stringify({
         id: job.id,
         region: job.region,
@@ -655,16 +680,20 @@ app.post("/api/jobs", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
-    latestCheckpoint: ["resume","saby_only"].includes(mode)
-      ? normalizeCheckpoint(data.checkpoint) : null,
+    latestCheckpoint:null,
+    latestCheckpointSummary:["resume","saby_only"].includes(mode)
+      ?checkpointSummary(data.checkpoint):null,
     async updateProgress(progress) {
       this.progress = progress;
+      this.memoryMonitor?.phase(progress?.phase);
     },
     async updateCheckpoint(checkpoint) {
-      const normalized = normalizeCheckpoint(checkpoint);
-      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
-      this.latestCheckpoint = normalized;
-      await saveCheckpoint(this.id, normalized);
+      if(Number(checkpoint?.version)!==1||
+         !String(checkpoint?.region||"").trim())
+        throw new Error("Некорректный checkpoint pipeline");
+      await saveCheckpoint(this.id,checkpoint);
+      this.latestCheckpointSummary=checkpointSummary(checkpoint);
+      this.latestCheckpoint=null;
     }
   };
   const queued = queueJob(job, apiKey);
@@ -688,12 +717,18 @@ app.post("/api/jobs", async (req, res) => {
   });
 });
 
+app.get("/api/runtime/memory",(_req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  res.json({memory:processMemorySnapshot(),queue:fullQueue.snapshot()});
+});
+
 app.get("/api/jobs", (_req, res) => {
   const now = Date.now();
   const history = historicalStageDurations(jobs.values());
   res.setHeader("Cache-Control", "no-store");
   res.json({
     queue: fullQueue.snapshot(),
+    memory:processMemorySnapshot(),
     jobs: [...jobs.values()]
       .sort((a,b)=>b.createdAt-a.createdAt)
       .slice(0,100)
@@ -742,13 +777,9 @@ app.get("/api/jobs/:id", (req, res) => {
           full_json_available: Boolean(job.result?.result)
         }
       : null,
-    checkpoint: checkpointSummary(job.latestCheckpoint),
-    resume_available: Boolean(job.latestCheckpoint),
-    continuation_available:
-      (Array.isArray(job.latestCheckpoint?.contact_unsearched_ids) &&
-       job.latestCheckpoint.contact_unsearched_ids.length > 0) ||
-      (Array.isArray(job.latestCheckpoint?.saby_deferred_inns) &&
-       job.latestCheckpoint.saby_deferred_inns.length > 0),
+    checkpoint:lightweightJobCheckpointSummary(job),
+    resume_available:Boolean(lightweightJobCheckpointSummary(job)),
+    continuation_available:Boolean(lightweightJobCheckpointSummary(job)?.continuation_available),
     log: jobLogPublicInfo(job),
     error: ["failed", "cancelled"].includes(job.state) ? job.error : null
   });
@@ -773,9 +804,7 @@ app.get("/api/jobs/:id/log", (req, res) => {
 
 app.get("/api/jobs/:id/checkpoint", async (req, res) => {
   const job = jobs.get(req.params.id);
-  const checkpoint = normalizeCheckpoint(
-    job?.latestCheckpoint || await loadCheckpoint(req.params.id)
-  );
+  const checkpoint=await savedJobCheckpoint(job,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для этого задания не найден" });
   }
@@ -788,9 +817,7 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   const sourceJob = jobs.get(req.params.id);
-  const checkpoint = normalizeCheckpoint(
-    sourceJob?.latestCheckpoint || await loadCheckpoint(req.params.id)
-  );
+  const checkpoint=await savedJobCheckpoint(sourceJob,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
   }
@@ -815,15 +842,19 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
     cancelled: false,
     abortController: new AbortController(),
     createdAt: Date.now(),
-    latestCheckpoint: checkpoint,
+    latestCheckpoint:null,
+    latestCheckpointSummary:checkpointSummary(checkpoint),
     async updateProgress(progress) {
       this.progress = progress;
+      this.memoryMonitor?.phase(progress?.phase);
     },
     async updateCheckpoint(nextCheckpoint) {
-      const normalized = normalizeCheckpoint(nextCheckpoint);
-      if (!normalized) throw new Error("Некорректный checkpoint pipeline");
-      this.latestCheckpoint = normalized;
-      await saveCheckpoint(this.id, normalized);
+      if(Number(nextCheckpoint?.version)!==1||
+         !String(nextCheckpoint?.region||"").trim())
+        throw new Error("Некорректный checkpoint pipeline");
+      await saveCheckpoint(this.id,nextCheckpoint);
+      this.latestCheckpointSummary=checkpointSummary(nextCheckpoint);
+      this.latestCheckpoint=null;
     }
   };
   const queued = queueJob(job, apiKey);
