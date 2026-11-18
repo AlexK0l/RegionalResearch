@@ -28,6 +28,7 @@ const run=(options={})=>resolveFinalMissingInns({
   region:"Смоленская область",
   assertNotCancelled:async()=>{},
   completedIds:options.completedIds||new Set(),
+  previousStats:options.previousStats||{},
   lookupBatch:options.lookupBatch||(async()=>({items:[]})),
   onBatch:options.onBatch||(async()=>{})
 });
@@ -90,4 +91,20 @@ test("stage10: unexpected API failures are not disguised as web-budget deferrals
     rows:[row("a")],completedIds:new Set(["a"]),
     lookupBatch:async()=>{throw Error("network JSON corrupt");}
   }),/network JSON corrupt/);
+});
+
+
+test("stage10: resume preserves prior 680 completed checks and 283 found INNs in cumulative counters",async()=>{
+  const rows=[row("a"),row("b")];
+  const completedIds=new Set(["a","b"]);
+  const stats={attempted:680,recovered:283,retried:20};
+  const resumed=await run({
+    rows,completedIds,previousStats:stats,
+    lookupBatch:async()=>{throw budgetStop();}
+  });
+  assert.equal(resumed.attempted,680);
+  assert.equal(resumed.recovered,283);
+  assert.equal(resumed.retried,20);
+  assert.equal(resumed.retryBudgetDeferred,2);
+  assert.equal(resumed.completedIds.size,2);
 });
