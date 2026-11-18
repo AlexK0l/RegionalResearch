@@ -29,6 +29,8 @@ export async function runSabyOnlyWithRecovery({
     ...Object.fromEntries(COUNTERS.map(key=>[key,
       sums[key]+Number(stats?.[key]||0)])),
     scheduled:total,
+    processed:Math.min(total,sums.processed+Number(stats?.processed||0)),
+    totalAttempts:sums.processed+Number(stats?.processed||0),
     deferred:Number(stats?.deferred??total),
     browserRestarts:sessionRestarts,
     maxBrowserRestarts:retries,
@@ -64,6 +66,8 @@ export async function runSabyOnlyWithRecovery({
   const stats={
     ...lastStats,...sums,
     scheduled:total,
+    processed:Math.min(total,sums.processed),
+    totalAttempts:sums.processed,
     deferred:last.deferredInns?.length??total,
     browserRestarts:sessionRestarts,
     maxBrowserRestarts:retries,
