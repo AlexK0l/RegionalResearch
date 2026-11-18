@@ -36,14 +36,16 @@ async function detailsOf(field) {
         autocomplete:v("autocomplete").toLowerCase(),
         placeholder:v("placeholder"),label:v("aria-label"),
         name:v("name"),role:v("role"),dataHint:v("data-placeholder"),
-        editable:el.isContentEditable===true};
+        editable:el.isContentEditable===true,
+        readonly:el.readOnly===true||el.hasAttribute?.("readonly")===true||
+          v("aria-readonly").toLowerCase()==="true"};
     });
     const hints=[a.placeholder,a.label,a.dataHint,a.name,a.role].join(" ");
     const auth=AUTH_HINTS.test(hints+" "+a.autocomplete);
     const isInput=a.tag==="input" && typeAllowed(a.type);
     const isEditor=a.editable && a.role==="searchbox";
     return {
-      safe:(isInput||isEditor) && !auth,
+      safe:(isInput||isEditor) && !auth && !a.readonly,
       searchHint:SEARCH_HINTS.test(hints) || a.type==="search" ||
         a.role==="searchbox",
       type:isEditor?"searchbox":a.type||"text",
@@ -65,6 +67,9 @@ async function visibleCandidates(page, selector) {
     if(!await field.isVisible().catch(()=>false))continue;
     if(typeof field.isEnabled==="function" &&
        !await field.isEnabled().catch(()=>false))continue;
+    // A visible, enabled but readonly Wasaby input is not actionable.
+    if(typeof field.isEditable==="function" &&
+       !await field.isEditable().catch(()=>false))continue;
     const meta=await detailsOf(field);
     if(meta.safe)result.push({field,meta});
   }
@@ -120,7 +125,8 @@ export async function findSabyCompanySearch(page, {
 // without falling back to page.keyboard (which could type into login/other
 // inputs). A failed field action NEVER counts as a searched contractor.
 export async function submitSabyCompanySearch(page, inn, {
-  isListRoute=()=>true,
+  // Proving the exact Saby company-list route is mandatory.
+  isListRoute=()=>false,
   findSearch=findSabyCompanySearch,
   timeoutMs=15000,
   actionTimeoutMs=8000,
