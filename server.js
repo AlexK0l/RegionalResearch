@@ -940,10 +940,10 @@ app.get("/api/jobs/:id/download", async (req, res) => {
     return res.status(409).json({ error: "Итоговый файл ещё не готов" });
   }
 
-  const result = job.result?.result;
-  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
-
   try {
+    const saved=await completedJobResult(job);
+    const result=saved?.final_result;
+    if(!result)return res.status(500).json({error:"Результат отсутствует"});
     // The browser receives the sanitized reference's exact five-sheet layout.
     // No silent fallback to the old 37-column approximation.
     const buffer = await buildReferenceWorkbookBuffer(result);
@@ -968,13 +968,19 @@ app.get("/api/jobs/:id/download", async (req, res) => {
 
 
 // REVIEW/EXCLUDED remain in a separate audit workbook, not the reference.
-app.get("/api/jobs/:id/download-audit", (req, res) => {
+app.get("/api/jobs/:id/download-audit", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Аудит ещё не готов" });
-  const result = job.result?.result;
-  if (!result) return res.status(500).json({ error: "Результат отсутствует" });
-  const buffer = buildAuditWorkbookBuffer(result);
+  let buffer;
+  try{
+    const saved=await completedJobResult(job);
+    if(!saved?.final_result)return res.status(500).json({error:"Результат отсутствует"});
+    buffer=buildAuditWorkbookBuffer(saved.final_result);
+  }catch(error){
+    return res.status(503).json({error:"Не удалось прочитать сохранённый аудит: "+
+      String(error?.message||error)});
+  }
   const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, "_audit.xlsx");
   res.setHeader("Content-Type",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -984,36 +990,48 @@ app.get("/api/jobs/:id/download-audit", (req, res) => {
   res.send(buffer);
 });
 
-app.get("/api/jobs/:id/quality", (req, res) => {
+app.get("/api/jobs/:id/quality", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Итоговый аудит ещё не готов" });
-  const output = job.result?.result;
-  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
-  return res.json({
-    region: job.result?.region || "",
-    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
-    review: output.qualification_review || [],
-    excluded: output.qualification_excluded || []
-  });
+  try{
+    const saved=await completedJobResult(job);
+    const output=saved?.final_result;
+    if(!output)return res.status(500).json({error:"Результат отсутствует"});
+    return res.json({
+      region:saved.region||job.result?.region||"",
+      final_quality_gate:saved.final_quality_gate||job.result?.quality||null,
+      review:output.qualification_review||[],
+      excluded:output.qualification_excluded||[]
+    });
+  }catch(error){
+    return res.status(503).json({error:"Не удалось получить сохранённый QA: "+
+      String(error?.message||error)});
+  }
 });
 
-app.get("/api/jobs/:id/download-json", (req, res) => {
+app.get("/api/jobs/:id/download-json", async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
   if (job.state !== "completed") return res.status(409).json({ error: "Итоговый JSON ещё не готов" });
-  const output = job.result?.result;
-  if (!output) return res.status(500).json({ error: "Результат отсутствует" });
-  const filename = safeFileName(job.result?.region || "result").replace(/\.xlsx$/i, ".json");
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Content-Disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
-  res.setHeader("Cache-Control", "no-store");
-  return res.send(JSON.stringify({
-    region: job.result.region,
-    final_quality_gate: job.result?.quality || output.final_quality_gate || null,
-    final_result: output
-  }, null, 2));
+  try{
+    const saved=await completedJobResult(job);
+    const output=saved?.final_result;
+    if(!output)return res.status(500).json({error:"Результат отсутствует"});
+    const filename=safeFileName(job.result?.region||"result").replace(/\.xlsx$/i,".json");
+    res.setHeader("Content-Type","application/json; charset=utf-8");
+    res.setHeader("Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader("Cache-Control","no-store");
+    return res.send(JSON.stringify({
+      region:saved.region||job.result.region,
+      final_quality_gate:saved.final_quality_gate||job.result?.quality||null,
+      final_result:output
+    },null,2));
+  }catch(error){
+    return res.status(503).json({error:"Не удалось получить сохранённый JSON: "+
+      String(error?.message||error)});
+  }
 });
 
 setInterval(() => {
