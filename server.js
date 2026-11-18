@@ -176,7 +176,9 @@ async function latestSabyCheckpointForRegion(region) {
   // deferrals were already completed by a newer Saby-only child.
   const latest=[...full,...saby]
     .filter(c=>c.status!=="superseded" &&
-      ["saby","completed"].includes(c.phase))
+      (["saby","completed"].includes(c.phase) ||
+       (c.mode==="full" && c.status==="resumable" &&
+        c.phase==="priority")))
     .sort((a,b)=>Date.parse(b.updated_at||"")-Date.parse(a.updated_at||""))[0];
   if (!latest) return null;
   const snapshot=await loadCheckpoint(latest.id);
@@ -189,7 +191,8 @@ async function latestSabyCheckpointForRegion(region) {
         saby_total:validated.commercialTotal,
         saby_invalid:validated.invalid,
         saby_duplicate:validated.duplicates,
-        saby_bootstrap:validated.bootstrap}
+        saby_bootstrap:validated.bootstrap,
+        saby_recovered_priority:validated.recovered_priority}
     : null;
 }
 
