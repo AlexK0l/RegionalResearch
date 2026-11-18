@@ -90,6 +90,7 @@ test("search module logs only generic diagnostics and never collects field value
   assert.doesNotMatch(source,/\binputValue\b|\.inputValue\(|\.screenshot\(|\.content\(/);
   assert.doesNotMatch(source,/document\.body\.innerText|\.innerText/);
   const browser=fs.readFileSync(new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
-  assert.match(browser,/findSabyCompanySearch\(/);
+  assert.match(browser,/submitSabyCompanySearch\(/);
+  assert.match(browser,/waitUntil:"commit"/);
   assert.match(browser,/\[SABY_SEARCH_DIAG\]/);
 });
