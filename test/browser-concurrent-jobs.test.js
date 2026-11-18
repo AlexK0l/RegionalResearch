@@ -68,8 +68,10 @@ test("completed Saby-only UI displays stage12 activity, not misleading source co
   assert.match(completed,/Number\(d\.checkpoint\?\.saby_completed\|\|0\)/);
   assert.match(completed,/: "Проверено компаний: "/);
   assert.match(completed,/\+contactSummary\+/);
-  assert.match(markup,/UI build: 20261117-stage13-ai-types/);
-  assert.match(markup,/app\.js\?v=20261117-stage13-ai-types/);
+  // Versioned UI assets are required, but an old hardcoded build date
+  // must not block legitimate changes to browser workflow.
+  assert.match(markup,/UI build: [0-9]{8}-[a-z0-9-]+/);
+  assert.match(markup,/app\.js\?v=[0-9]{8}-[a-z0-9-]+/);
 });
 
 test("completed Saby-only UI distinguishes one full attempted sweep from fully verified firms",()=>{

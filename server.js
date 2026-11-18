@@ -8,6 +8,7 @@ import {validateSabyOnlySource,sabyOnlyConfigReady,
   runSabyOnlyContinuation} from "./src/sabyOnlyContinuation.js";
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
+import {preparePersistedCheckpointExport} from "./src/persistedCheckpointExport.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
@@ -260,6 +261,51 @@ app.get("/api/checkpoints", async (req, res) => {
     res.status(500).json({ error: error?.message || "Не удалось прочитать checkpoints" });
   }
 });
+
+// Saved results survive app restarts: serve them from durable SQLite rather
+// than only the in-memory (24h) HTTP jobs map. All routes inherit the API
+// token/session guard above and perform no paid calls or SQLite writes.
+async function sendSavedCheckpoint(req,res,format){
+  const id=String(req.params.id||"");
+  if(!/^[a-f0-9-]{36}$/i.test(id))
+    return res.status(400).json({error:"Некорректный ID checkpoint"});
+  try{
+    const checkpoint=await loadCheckpoint(id);
+    if(!checkpoint)return res.status(404).json({error:"Checkpoint не найден"});
+    const saved=preparePersistedCheckpointExport(checkpoint);
+    const prefix=safeFileName(saved.region||"result")
+      .replace(/\.xlsx$/i,"");
+    let filename,contentType,buffer;
+    if(format==="json"){
+      filename=prefix+"_saved.json";
+      contentType="application/json; charset=utf-8";
+      buffer=JSON.stringify(saved,null,2);
+    }else{
+      filename=prefix+(format==="audit"?"_saved_audit.xlsx":"_saved.xlsx");
+      contentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      buffer=format==="audit"?
+        buildAuditWorkbookBuffer(saved.final_result):
+        await buildReferenceWorkbookBuffer(saved.final_result);
+    }
+    res.setHeader("Content-Type",contentType);
+    res.setHeader("Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader("Cache-Control","no-store");
+    return res.send(buffer);
+  }catch(error){
+    console.warn("[SAVED_CHECKPOINT_EXPORT_REJECTED] "+JSON.stringify({
+      reason:String(error?.message||"export_failed").slice(0,160)
+    }));
+    return res.status(409).json({error:
+      "Сохранённый результат пока нельзя выгрузить. "+String(error?.message||"")});
+  }
+}
+app.get("/api/checkpoints/:id/download",
+  (req,res)=>sendSavedCheckpoint(req,res,"xlsx"));
+app.get("/api/checkpoints/:id/download-json",
+  (req,res)=>sendSavedCheckpoint(req,res,"json"));
+app.get("/api/checkpoints/:id/download-audit",
+  (req,res)=>sendSavedCheckpoint(req,res,"audit"));
 
 function requireCourtArchiveAdmin(req, res, next) {
   const expected = String(process.env.COURT_ARCHIVE_ADMIN_TOKEN || "").trim();

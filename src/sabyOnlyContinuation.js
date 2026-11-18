@@ -12,6 +12,7 @@ import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
+import {runSabyOnlyWithRecovery} from "./sabyOnlyRecovery.js";
 import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage} from "./sabyEnrichment.js";
 
 // Older completed regional studies may predate Stage12 entirely. Derive a
@@ -153,17 +154,29 @@ export async function runSabyOnlyContinuation({
     status:i===11?"running":i===12?"waiting":"done",
     detail:i===11?"Saby из SQLite · без OpenAI":i===12?"Ожидает Saby":"из сохранённого исследования"
   }));
-  const report=async (stats,finished=false)=>{
+  const report=async (stats,finished=false,paused=false)=>{
     await onProgress({
-      phase:finished?"completed":"saby",step:finished?13:12,
-      percent:finished?100:96+Math.floor(3*Math.min(1,
-        Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1)))),
+      phase:paused?"saby_paused":finished?"completed":"saby",
+      step:finished&&!paused?13:12,
+      // For Saby-only, 0-100% reflects this queue, not the already
+      // completed paid stages 1-11. Long sweeps must have visible progress.
+      percent:finished&&!paused?100:Math.min(99,Math.floor(100*Math.min(1,
+        Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1))))),
       statuses:stageStatuses.map((s,i)=>
+        paused&&i===11?{...s,status:"waiting",detail:"Saby приостановлен; продолжение доступно"}:
         finished&&i===11?{...s,status:"done",detail:"Saby-only завершён"}:
         finished&&i===12?{...s,status:"done",detail:"Приоритеты рассчитаны"}:s),
       sabyCurrent:Number(stats?.processed||0),
       sabyTotal:Number(stats?.scheduled||0),
-      sabyStats:stats
+      sabyStats:stats,
+      sabyRecoveryText:paused?(stats?.circuitOpen||stats?.browserError?
+        "Saby недоступен после ограниченных переподключений. ":
+        stats?.deadlineReached?"Достигнут лимит времени Saby. ":
+        "Осталась необработанная часть очереди Saby. ")+
+        "Результат можно скачать и продолжить позже.":
+        Number(stats?.browserRestarts||0)>0?
+        "Браузерная сессия автоматически восстановлена "+
+        Number(stats.browserRestarts)+" раз(а).":""
     });
   };
 
@@ -176,24 +189,31 @@ export async function runSabyOnlyContinuation({
     saby_attempted_inns:source.saby_attempted_inns||[]
   });
   await report({processed:0,scheduled:checked.pending});
-  const options={
-    result,
+  const outcome=await runSabyOnlyWithRecovery({
+    total:checked.pending,
     completedInns:source.saby_completed_inns,
     attemptedInns:source.saby_attempted_inns||[],
-    maxDurationMs:sabyOnlyMaxDurationMs(env),
-    env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
+    maxDurationMs:sabyOnlyMaxDurationMs(env),startedAt,signal,
     onProgress:stats=>report(stats),
-    persistCheckpoint:persist
-  };
-  // Deterministic offline tests inject a fake browser only. Production uses
-  // the same real guarded Playwright collector as ordinary Stage12.
-  if(sessionRunner)options.sessionRunner=sessionRunner;
-  if(collectCompany)options.collectCompany=collectCompany;
-  const outcome=await runCheckpointedSabyStage12(options);
+    onRecovery:stats=>report({...stats,review:0,verified:0,
+      circuitOpen:false,browserError:"",restarting:true}),
+    runPass:({completedInns,attemptedInns,maxDurationMs,onProgress})=>{
+      const options={
+        result,completedInns,attemptedInns,maxDurationMs,
+        env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
+        onProgress,persistCheckpoint:persist
+      };
+      // Offline tests can inject a simulated browser. Live runs use the
+      // real guarded Playwright collector and the same single Saby profile.
+      if(sessionRunner)options.sessionRunner=sessionRunner;
+      if(collectCompany)options.collectCompany=collectCompany;
+      return runCheckpointedSabyStage12(options);
+    }
+  });
 
   await onProgress({phase:"priority",step:13,percent:99,
     statuses:stageStatuses.map((s,i)=>i===11
-      ?{...s,status:"done",detail:"Saby-only завершён"}:
+      ?{...s,status:"done",detail:"Текущий проход Saby окончен"}:
       i===12?{...s,status:"running",detail:"Расчёт итогового коэффициента"}:s),
     sabyStats:outcome.stats});
   // Saby-only continuation historically promises no OpenAI costs. Keep that
@@ -221,7 +241,10 @@ export async function runSabyOnlyContinuation({
   }
   const priorityStats=applyPriorityStage13(result,{aiStats:priorityAIStats});
   priorityStats.commercial_postprocess=finalizeStage13CommercialOutput(result);
-  await persist("completed",{
+  const paused=Boolean(outcome.stats.circuitOpen || outcome.stats.browserError ||
+    outcome.stats.deadlineReached ||
+    (!outcome.stats.fullSweepCompleted && outcome.deferredInns.length>0));
+  await persist(paused?"saby":"completed",{
     completed_stage:9,
     final_result:result,
     saby_completed_inns:outcome.completedInns,
@@ -232,7 +255,7 @@ export async function runSabyOnlyContinuation({
     priority_ai_stats:priorityAIStats,
     stage12_duration_ms:Date.now()-startedAt
   });
-  await report(outcome.stats,true);
+  await report(outcome.stats,true,paused);
   return {
     mode:"saby_only",region:String(source.region),result,
     quality:source.final_quality_gate||null,
