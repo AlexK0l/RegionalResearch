@@ -9170,7 +9170,9 @@ ${JSON.stringify(gaps)}
     final_result: finalResult,
     final_quality_gate: finalQuality.report,
     historical_recall: historicalRecall,
-    historical_coverage: historicalCoverage,
+    // Historical recall is optional (disabled during autonomous discovery).
+    // The block-local historicalCoverage variable is not always defined.
+    historical_coverage: finalQuality.report.historical_coverage ?? null,
     targeted_searches: targetedSearches,
     enrichment_completed_ids: [...enrichmentCompleted],
     contact_completed_ids: [...contactCompleted],
