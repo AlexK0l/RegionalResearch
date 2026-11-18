@@ -678,8 +678,7 @@ async function poll(restoring=false){
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
       const r=d.result||{};
-      const paused=d.mode==="saby_only"&&Boolean(
-        r.saby?.circuitOpen||r.saby?.browserError||r.saby?.deadlineReached);
+      const paused=d.mode==="saby_only"&&d.checkpoint?.phase==="saby";
       e.resultEyebrow.textContent=paused?"Частичный результат":"Готово";
       e.resultTitle.textContent=paused?
         "Saby приостановлен — все собранные данные сохранены":
