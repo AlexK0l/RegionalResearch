@@ -23,6 +23,7 @@ import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
 import { applyPriorityStage13 } from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
+import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
 import { courtArchiveCandidates, courtArchiveStats } from "./courtArchive.js";
 import {
   closeResearchSession,
@@ -6006,6 +6007,17 @@ export async function runResearchPipeline({ job, apiKey }) {
   };
 
   const persistCheckpoint = async (phase, patch = {}) => {
+    // A resumed Stage11/12 snapshot is newer than Stage10. Replaying an
+    // older deterministic step must never downgrade the only durable source
+    // back to final_inn/enrichment/statistics before it can advance.
+    if (resumeCheckpoint &&
+        Number(PIPELINE_PHASE_ORDER[phase]??-1) <
+          Number(PIPELINE_PHASE_ORDER[resumeCheckpoint.phase]??-1)) {
+      console.warn("[CHECKPOINT_PHASE_REGRESSION_BLOCKED] "+JSON.stringify({
+        saved_phase:resumeCheckpoint.phase,attempted_phase:phase
+      }));
+      return;
+    }
     Object.assign(checkpointState, cloneJson(patch), {
       version: PIPELINE_CHECKPOINT_VERSION,
       region,
@@ -9089,6 +9101,19 @@ ${JSON.stringify(gaps)}
   finishStep(statuses[10]);
   statuses[10].detail =
     `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · REVIEW: ${finalQuality.report.review_records} · QA: OK`;
+  // The batcher flush above is not guaranteed to write if its last batch
+  // already hit the flush threshold. Persist the *finished* Stage11, the
+  // latest QA result, and the exact deferred/contact ledger unconditionally.
+  // "completed" means the bounded stage ended, not that every contact exists.
+  await persistCheckpoint("contacts",{
+    completed_stage:9,stage11_completed:true,
+    final_result:finalResult,final_quality_gate:finalQuality.report,
+    contact_completed_ids:[...contactCompleted],
+    contact_primary_results:Object.fromEntries(primaryResults),
+    contact_unsearched_ids:[...contactUnsearched],
+    contact_stats:contactStats,
+    stage11_duration_ms:Date.now()-stage11StartedAt
+  });
   await progress({
     phase: "saby", step: 11, percent: 96,
     contactCurrent: googleCompanies.length,
