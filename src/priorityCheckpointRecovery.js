@@ -54,6 +54,10 @@ export function recoverPriorityCheckpointOffline(checkpoint,{jobId="",env=proces
     ...structuredClone(checkpoint),
     phase:"completed",
     final_result:result,
+    // Production QA was saved inside final_result before the Stage13 crash.
+    // Restore the same report at the normal completed-checkpoint level.
+    final_quality_gate: structuredClone(checkpoint.final_quality_gate ||
+      checkpoint.final_result?.final_quality_gate || null),
     priority_stats:priority,
     // Preserve source usage, contacts, Saby evidence and source QA state.
     // Stage13 duration and any absent final-quality report are NOT invented.
@@ -64,7 +68,7 @@ export function recoverPriorityCheckpointOffline(checkpoint,{jobId="",env=proces
       source_checkpoint_unchanged:true,sqlite_writes:0,
       new_openai_calls:0,new_web_search_calls:0,new_saby_calls:0,
       full_stage13_classification_covered:true,
-      final_quality_report_present:Boolean(checkpoint.final_quality_gate),
+      final_quality_report_present:Boolean(checkpoint.final_quality_gate || checkpoint.final_result?.final_quality_gate),
       source_sha256:createHash("sha256")
         .update(JSON.stringify(checkpoint)).digest("hex"),
       recovered_at:new Date().toISOString()
@@ -98,7 +102,7 @@ export function recoverPriorityCheckpointOffline(checkpoint,{jobId="",env=proces
       source_fields_unchanged:audit.unchanged_source_fields,
       score_changed:audit.score_changed,
       priority_tiers:priority.tiers,
-      final_quality_report_present:Boolean(checkpoint.final_quality_gate),
+      final_quality_report_present:Boolean(checkpoint.final_quality_gate || checkpoint.final_result?.final_quality_gate),
       new_paid_calls:0,
       sqlite_writes:0
     }
