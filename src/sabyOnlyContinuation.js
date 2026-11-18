@@ -158,8 +158,10 @@ export async function runSabyOnlyContinuation({
     await onProgress({
       phase:paused?"saby_paused":finished?"completed":"saby",
       step:finished&&!paused?13:12,
-      percent:finished&&!paused?100:96+Math.floor(3*Math.min(1,
-        Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1)))),
+      // For Saby-only, 0-100% reflects this queue, not the already
+      // completed paid stages 1-11. Long sweeps must have visible progress.
+      percent:finished&&!paused?100:Math.min(99,Math.floor(100*Math.min(1,
+        Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1))))),
       statuses:stageStatuses.map((s,i)=>
         paused&&i===11?{...s,status:"waiting",detail:"Saby приостановлен; продолжение доступно"}:
         finished&&i===11?{...s,status:"done",detail:"Saby-only завершён"}:
