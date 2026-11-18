@@ -274,7 +274,7 @@ async function sendSavedCheckpoint(req,res,format){
     if(!checkpoint)return res.status(404).json({error:"Checkpoint не найден"});
     const saved=preparePersistedCheckpointExport(checkpoint);
     const prefix=safeFileName(saved.region||"result")
-      .replace(/\\.xlsx$/i,"");
+      .replace(/\.xlsx$/i,"");
     let filename,contentType,buffer;
     if(format==="json"){
       filename=prefix+"_saved.json";
