@@ -21,6 +21,7 @@ test("checkpoint format validates and summarizes resume state", () => {
     version: 1,
     region: "Смоленская область",
     phase: "final_batches",
+    stage11_completed: false,
     completed_stage: 9,
     completed_final_batches: 4,
     enrichment_completed: 1,
@@ -119,6 +120,7 @@ test("a completed checkpoint explicitly reports unfinished contact work", () => 
   const summary = checkpointSummary(checkpoint);
   assert.equal(summary.contacts_completed, 2);
   assert.equal(summary.contacts_deferred, 2);
+  assert.equal(summary.stage11_completed,true);
   assert.equal(summary.continuation_available, true);
   assert.match(server, /continuation_available/);
   assert.match(server, /contact_unsearched_ids/);
