@@ -271,11 +271,21 @@ function matchedAIInterpretations(row){
   if(stored?.version!==1||stored.input_hash!==priority13InputHash(row)||
      !Array.isArray(stored.results))return [];
   const input=priority13AICandidates(row,{maxPerBuyer:50});
-  return stored.results.filter(v=>v?.kind==="semi_trailer"&&
-    v.confidence==="high"&&exactPriority13ModelQuote(v.model_quote,v.model_text)&&
-    input.some(c=>c.evidence_eligible===true&&
+  return stored.results.flatMap(v=>{
+    if(v?.kind!=="semi_trailer"||v.confidence!=="high"||
+       !exactPriority13ModelQuote(v.model_quote,v.model_text))return [];
+    const matched=input.find(c=>c.evidence_eligible===true&&
       c.source===v.source&&c.index===v.index&&
-      c.model_text===v.model_text&&c.text.includes(v.model_quote)));
+      c.model_text===v.model_text&&c.text.includes(v.model_quote));
+    if(!matched)return [];
+    // The saved OpenAI verdict identifies the model TYPE, but its original
+    // source_url may be empty (the source was attributed only in a later
+    // offline pass). Attach the URL from the CURRENT, validated inventory
+    // match. Never modify the paid API result or the stored checkpoint.
+    return [{...v,
+      source_url:matched.source_url||"",
+      source_status:matched.source_status||"source_not_attributed"}];
+  });
 }
 
 /** Pure calculation, including model, evidence and data warnings. */
@@ -329,10 +339,17 @@ export function calculatePriority13({c="",d="",revenue="",staff="",notes=[],ai=[
     "Формула: нижняя граница "+band[0]+" + "+extra+" балл(ов) за показатели внутри категории = "+score
   ];
   if(ai.length)for(const item of ai){
+    const evidenceSource=item.source_url?
+      item.source_status==="company_website_correlated_not_live_verified"?
+        "сайт организации сопоставлен с сохранённой заметкой по домену: "+
+          item.source_url+" (без повторной веб-проверки)":
+        "сохранённая заметка с источником "+item.source_url:
+      "сохранённая заметка (ссылка на источник не установлена)";
     explanation.push("КЛАССИФИКАЦИЯ МОДЕЛИ OPENAI: "+item.model_quote+
       " = полуприцеп (высокая уверенность, без веб-проверки спецификации; "+
-      (item.source==="evidence"?"сохранённая заметка с источником "+item.source_url:
-        "сохранённый источник")+
+      (item.source==="evidence"?evidenceSource:
+        item.source_url?"сохранённый источник "+item.source_url:
+          "сохранённый источник без URL")+
       "). Не является новым доказательством владения.");
   }
   if(warnings.length)explanation.push("ПРОВЕРИТЬ: "+warnings.join("; "));
