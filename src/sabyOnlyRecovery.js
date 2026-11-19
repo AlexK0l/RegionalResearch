@@ -3,7 +3,8 @@
 // browser and persists every company through runCheckpointedSabyStage12.
 const COUNTERS=[
   "processed","verified","review","phonesAdded","emailsAdded",
-  "transportsAdded","vehiclesVerified","partialResults",
+  "transportsAdded","vehiclesVerified","revenuesAdded","employeesAdded",
+  "partialResults",
   "companyReviews","systemicErrors"
 ];
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
