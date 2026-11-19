@@ -4,6 +4,7 @@
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
 import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
+import {decorateCompanyBasisForExport} from "./companyBasisNarrative.js";
 
 const sections=["direct_buyers","intermediaries","leasing","statistics"];
 
@@ -35,7 +36,7 @@ export function preparePersistedCheckpointExport(checkpoint){
   }
   return {
     region:String(snapshot.region||""),
-    final_result:result,
+    final_result:decorateCompanyBasisForExport(result),
     final_quality_gate:snapshot.final_quality_gate||
       result.final_quality_gate||null,
     checkpoint_phase:checkpoint.phase,

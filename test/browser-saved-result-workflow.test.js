@@ -28,7 +28,13 @@ test("full completed checkpoint exports read-only, identical commercial records"
   assert.equal(out.region,"Ленинградская область");
   assert.equal(out.checkpoint_phase,"completed");
   assert.equal(out.partial_saby,false);
-  assert.deepEqual(out.final_result,cp.final_result);
+  // Export adds optional explanatory presentation notes only. Saved
+  // commercial data, qualifications and source checkpoint stay unchanged.
+  const {__basis_comment,__comment,...baseFields}=
+    out.final_result.direct_buyers[0];
+  assert.deepEqual(baseFields,cp.final_result.direct_buyers[0]);
+  assert.match(__basis_comment,/ОСНОВАНИЕ КАТЕГОРИИ C/);
+  assert.match(__comment,/Краткое основание:/);
   assert.notStrictEqual(out.final_result,cp.final_result);
   assert.deepEqual(cp,snapshot);
 });

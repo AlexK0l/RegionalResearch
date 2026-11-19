@@ -227,6 +227,16 @@ def render(wb,data):
                 if h==EMAIL_COL:ws.cell(ri,ci).value=safe_email_cell(row)
                 elif h and h in row:ws.cell(ri,ci).value=get_value(row,h)
                 if h=='ИНН':ws.cell(ri,ci).number_format='@'
+                # Like the original Google Sheet, "Основание" contains an
+                # individualized short reason in the visible cell AND a note
+                # explaining the exact saved evidence, with source links.
+                # Do not add columns or replace the approved five-sheet style.
+                if h=='Основание':
+                    basis_note=str(row.get('__basis_comment') or '').strip()
+                    if basis_note:
+                        ws.cell(ri,ci).comment=Comment(
+                            basis_note[:16000],'RegionalResearch · основания'
+                        )
                 # Strict customer workbook has only 22 buyer columns; the old
                 # Google Sheets AK explanation column is not present. Preserve
                 # the five-tab layout by attaching Stage13's explanation to E.

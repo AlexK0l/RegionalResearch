@@ -9,6 +9,7 @@ import {validateSabyOnlySource,sabyOnlyConfigReady,
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
 import { buildReferenceWorkbookBuffer } from "./src/referenceWorkbookExport.js";
 import {preparePersistedCheckpointExport} from "./src/persistedCheckpointExport.js";
+import {decorateCompanyBasisForExport} from "./src/companyBasisNarrative.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import {createJobMemoryMonitor,processMemorySnapshot} from "./src/runtimeMemory.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
@@ -1026,7 +1027,7 @@ app.get("/api/jobs/:id/download-json", async (req, res) => {
     return res.send(JSON.stringify({
       region:saved.region||job.result.region,
       final_quality_gate:saved.final_quality_gate||job.result?.quality||null,
-      final_result:output
+      final_result:decorateCompanyBasisForExport(output)
     },null,2));
   }catch(error){
     return res.status(503).json({error:"Не удалось получить сохранённый JSON: "+
