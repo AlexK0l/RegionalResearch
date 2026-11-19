@@ -72,7 +72,7 @@ test("real strict five-sheet Excel puts narrative in D/H and linked comments in 
     "    'rows':[c.value for c in ws[1]],",
     "    'score':ws.cell(2,5).value if name=='Прямые покупатели' else None,",
     "    'untouched_f':ws.cell(2,6).value if name=='Прямые покупатели' else None}",
-    "print(json.dumps(out,ensure_ascii=False))"
+    "sys.stdout.buffer.write(json.dumps(out,ensure_ascii=False).encode('utf-8'))"
   ].join("\n");
   const run=spawnSync("python",["-c",python],{
     cwd:root,input:bytes,maxBuffer:2_000_000,timeout:15000
