@@ -283,8 +283,8 @@ def render(wb,data):
                 # the full organization comment for links and requisites.
                 short_lines=[line.strip() for line in note.splitlines()
                     if re.match(r'^(?:СВЕДЕНИЯ О КОМПАНИИ|Краткое основание:|Деятельность:)',line.strip(),re.I)]
-                short_note='\\n'.join(short_lines[:3])[:700]
-                short_note+=("\\nПодробности и источники — в примечании к названию организации.")
+                short_note='\n'.join(short_lines[:3])[:700]
+                short_note+=("\nПодробности и источники — в примечании к названию организации.")
                 put_note(ws.cell(ri,1),short_note,
                          'RegionalResearch',width=390,height=170)
                 put_note(ws.cell(ri,headers.index('Организация')+1),note,
