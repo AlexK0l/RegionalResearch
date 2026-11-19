@@ -698,10 +698,13 @@ async function poll(restoring=false){
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
       const r=d.result||{};
-      const sabyInterrupted=Boolean(r.saby?.browserError||r.saby?.circuitOpen) &&
+      const sabyOutstanding=Number(r.saby?.deferred||0)>0 &&
         Number(r.saby?.scheduled||0)>0;
+      const sabyInterrupted=(Boolean(r.saby?.browserError||r.saby?.circuitOpen) ||
+        (Number(r.saby?.scheduled||0)>0 &&
+          Number(r.saby?.processed||0)===0)) && Number(r.saby?.scheduled||0)>0;
       const paused=(d.mode==="saby_only"&&d.checkpoint?.phase==="saby") ||
-        (d.mode!=="saby_only"&&sabyInterrupted);
+        (d.mode!=="saby_only"&&(sabyInterrupted||sabyOutstanding));
       e.resultEyebrow.textContent=paused?"Частичный результат":"Готово";
       e.resultTitle.textContent=paused?
         (d.mode==="saby_only"
