@@ -2569,15 +2569,36 @@ async function resolveFinalMissingInns({
     batches: batches.length
   }));
 
+  // Stage10's PRIMARY INN search is also bounded by the independent
+  // identity budget (600 calls by default). Reaching that phase cap is NOT a
+  // fatal research error: the discovery dataset and confirmed INNs survive,
+  // and contacts/Saby/priority have their own budgets. Never raise that cap,
+  // reset its checkpoint counters or invent INNs for the skipped companies.
+  //
+  // Keep the existing bounded workers; unlike Promise.all rejecting early,
+  // catching this ONE expected condition inside every worker waits for all
+  // already-reserved calls to settle before persisting final progress.
+  let primaryIdentityBudgetStop = null;
   await mapWithConcurrency(batches, concurrency, async (batch, batchIndex) => {
+    if (primaryIdentityBudgetStop) return;
     await assertNotCancelled();
-    const result = await lookupBatch({
-      client,
-      rows: batch,
-      region,
-      assertNotCancelled,
-      label: `${batchIndex + 1}/${batches.length}`
-    });
+    let result;
+    try {
+      result = await lookupBatch({
+        client,
+        rows: batch,
+        region,
+        assertNotCancelled,
+        label: `${batchIndex + 1}/${batches.length}`
+      });
+    } catch (error) {
+      // Global web, dollar and unrelated phase limits still fail closed.
+      // Billing failures, cancellation and unexpected API errors must not
+      // become a misleading "completed" identity check.
+      if (!isWebBudgetStop(error) || error.scope !== "identity") throw error;
+      primaryIdentityBudgetStop ||= error;
+      return;
+    }
     attempted += batch.length;
     recovered += applyFinalInnItems(rowsById, result);
 
@@ -2607,11 +2628,46 @@ async function resolveFinalMissingInns({
     });
   });
 
+  const primaryBudgetDeferredIds = primaryIdentityBudgetStop
+    ? [...new Set(pending
+      .filter((row) => !completedIds.has(checkpointRowId(row)))
+      .map(checkpointRowId).filter(Boolean))]
+    : [];
+  const primaryBudgetDeferred = primaryBudgetDeferredIds.length;
+  if (primaryBudgetDeferred) {
+    console.warn("[FINAL_INN_PRIMARY_DEFERRED_BUDGET] " + JSON.stringify({
+      reason: "identity_phase_budget",
+      scope: primaryIdentityBudgetStop.scope,
+      deferred_rows: primaryBudgetDeferred,
+      completed_first_pass: completedIds.size,
+      recovered,
+      web_budget: publicWebBudgetState(client?.__webBudget),
+      next: "continue_with_existing_evidence_no_fabricated_inn"
+    }));
+    // Force a durable checkpoint even if no successful primary lookup was
+    // performed in this resume. Deferred IDs are NOT completed IDs.
+    await onBatch({
+      completedIds, attempted, recovered, retried,
+      pendingTotal: pending.length,
+      primaryBudgetDeferred, primaryBudgetDeferredIds
+    });
+  }
+
   const remainingMissing = companies.filter(row => !normalizeInn(row?.["ИНН"]));
+  // Optional retries are only valid AFTER that row's PRIMARY lookup. A
+  // deferred primary must never be silently relabelled as a retry or billed.
   const retryRows = remainingMissing.filter(row =>
+    completedIds.has(checkpointRowId(row)) &&
     !completedIds.has("retry:" + checkpointRowId(row)) &&
     shouldRetryFinalInn(row));
-  if (retryRows.length) {
+  if (retryRows.length && primaryIdentityBudgetStop) {
+    retryBudgetDeferred = retryRows.length;
+    retryBudgetDeferredIds = retryRows.map(checkpointRowId).filter(Boolean);
+    console.log("[FINAL_INN_RETRY_SKIPPED_PHASE_BUDGET] " + JSON.stringify({
+      deferred_rows: retryBudgetDeferred,
+      reason: "identity_phase_budget"
+    }));
+  } else if (retryRows.length) {
     const retryBatches = [];
     for (let offset = 0; offset < retryRows.length; offset += FINAL_INN_BATCH_SIZE) {
       retryBatches.push(retryRows.slice(offset, offset + FINAL_INN_BATCH_SIZE));
@@ -2678,6 +2734,7 @@ async function resolveFinalMissingInns({
     final_companies: companies.length,
     attempted,
     retried,
+    primary_budget_deferred: primaryBudgetDeferred,
     retry_budget_deferred: retryBudgetDeferred,
     recovered,
     inn_present: companies.length - finalMissing,
@@ -2686,6 +2743,7 @@ async function resolveFinalMissingInns({
 
   return {
     completedIds, attempted, retried, recovered, missing: finalMissing,
+    primaryBudgetDeferred, primaryBudgetDeferredIds,
     retryBudgetDeferred, retryBudgetDeferredIds
   };
 }
