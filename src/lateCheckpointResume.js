@@ -136,6 +136,7 @@ export async function runLateCheckpointResume({
       completedInns:saby.completedInns,
       attemptedInns:saby.attemptedInns,
       env,signal,startedAt,
+      recoverBrowserSession:true,
       persistCheckpoint:async(phase,patch)=>
         persistCheckpoint(phase,{stage11_completed:true,...patch}),
       onProgress:async stats=>{
@@ -150,8 +151,17 @@ export async function runLateCheckpointResume({
       }
     });
   }
-  markDone(11,"Saby: сохранены подтверждённые данные, отложено "+
-    asNumber(saby.stats?.deferred));
+  if(saby.stats?.browserError || saby.stats?.circuitOpen){
+    statuses[11].status="waiting";
+    statuses[11].completedAt=Date.now();
+    statuses[11].detail="Saby не завершён: браузер недоступен; отложено "+
+      asNumber(saby.stats.deferred)+" · продолжить только Saby (без OpenAI)"+
+      (saby.stats.browserError?" · причина: "+
+        String(saby.stats.browserError).slice(0,180):"");
+  }else{
+    markDone(11,"Saby: сохранены подтверждённые данные, отложено "+
+      asNumber(saby.stats?.deferred));
+  }
 
   if(signal?.aborted)throw Error("JOB_CANCELLED");
   statuses[12].status="running";
