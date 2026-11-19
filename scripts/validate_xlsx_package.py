@@ -6,6 +6,7 @@ and unsupported legacy comment length *before* HTTP sends the workbook.
 They do not replace opening it in desktop Microsoft Excel.
 """
 import posixpath
+import re
 import sys
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile, BadZipFile
@@ -45,6 +46,8 @@ def validate_xlsx_package(path):
 
             count_comments=0
             count_shapes=0
+            global_shapes={}
+            global_blocks={}
             for name in names:
                 if not name.endswith(('.xml','.rels','.vml')):
                     continue
@@ -75,12 +78,40 @@ def validate_xlsx_package(path):
                         count_comments+=1
                 elif name.endswith('.vml'):
                     seen=set()
+                    clusters=set()
                     for shape in root.iter(VML_NS+'shape'):
                         shape_id=shape.get('id','')
-                        if not shape_id or shape_id in seen:
-                            raise ValueError('XLSX duplicate/empty VML shape id in '+name)
+                        match=re.fullmatch(r'_x0000_s(\d+)',shape_id)
+                        if not match or shape_id in seen:
+                            raise ValueError('XLSX duplicate/invalid VML shape id in '+name)
+                        number=int(match.group(1))
+                        if number<1025:
+                            raise ValueError('XLSX VML shape id below Excel minimum: '+name)
                         seen.add(shape_id)
+                        cluster=(number-1)//1024
+                        clusters.add(cluster)
+                        if shape_id in global_shapes:
+                            raise ValueError('XLSX cross-sheet duplicate VML shape id: '+
+                                             name+' / '+global_shapes[shape_id])
+                        global_shapes[shape_id]=name
+                        owner=global_blocks.get(cluster)
+                        if owner and owner!=name:
+                            raise ValueError('XLSX VML 1024-ID block shared across sheets: '+
+                                             name+' / '+owner)
+                        global_blocks[cluster]=name
                         count_shapes+=1
+                    idmaps=list(root.iter('{urn:schemas-microsoft-com:office:office}idmap'))
+                    if seen:
+                        if len(idmaps)!=1:
+                            raise ValueError('XLSX VML idmap is missing/ambiguous in '+name)
+                        data=idmaps[0].get('data','')
+                        if not re.fullmatch(r'\d+(?:,\d+)*',data):
+                            raise ValueError('XLSX invalid VML idmap data: '+name)
+                        declared={int(x) for x in data.split(',')}
+                        if clusters!=declared:
+                            raise ValueError('XLSX VML idmap does not cover shape clusters: '+
+                                             name+' declares '+str(sorted(declared))+
+                                             ', contains '+str(sorted(clusters)))
             if count_comments!=count_shapes:
                 # Exported workbook has only old-style cell notes, with one
                 # VML shape per comment, and no forms/other drawing objects.
