@@ -49,10 +49,20 @@ export async function recoverSabyMissingSections(
   try {
     await wait();
     const retried=await collect();
-    const financials=validSabyFinancialEvidence(initial?.financials);
-    if(financials && !validSabyFinancialEvidence(retried?.financials) &&
-       sameVerifiedSabyCard(initial,retried)){
-      return {...retried,financials};
+    const first=validSabyFinancialEvidence(initial?.financials);
+    const second=validSabyFinancialEvidence(retried?.financials);
+    if(first && sameVerifiedSabyCard(initial,retried) &&
+       (!second || !("revenue_rub" in second) || !("employees" in second))){
+      return {...retried,financials:{
+        status:"collected",
+        ...(Number.isSafeInteger(second?.revenue_rub)?
+          {revenue_rub:second.revenue_rub,revenue_year:second.revenue_year}:
+          Number.isSafeInteger(first.revenue_rub)?
+            {revenue_rub:first.revenue_rub,revenue_year:first.revenue_year}:{}),
+        ...(Number.isSafeInteger(second?.employees)?
+          {employees:second.employees}:
+          Number.isSafeInteger(first.employees)?{employees:first.employees}:{})
+      }};
     }
     return retried;
   } catch {
