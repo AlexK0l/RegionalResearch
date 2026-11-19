@@ -84,7 +84,7 @@ export async function runCheckpointedSabyStage12({
         onProgress:report
       }),
     completedInns, attemptedInns, total,
-    startedAt, maxDurationMs:duration, signal,
+    startedAt, maxDurationMs:duration, minimumSessionMs:1000, signal,
     ...(recoveryWait ? {wait:recoveryWait} : {}),
     onProgress,
     onRecovery:async state=>{
