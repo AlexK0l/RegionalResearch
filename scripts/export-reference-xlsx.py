@@ -277,10 +277,16 @@ def render(wb,data):
             for ci in CHECKS[name]:ws.cell(ri,ci).value=False
             note=str(row.get('__comment') or '').strip()
             if note:
-                # The source previously attached the exact same huge note
-                # to both the checkbox and the organization, doubling VML
-                # objects for no informational gain. The reference keeps
-                # company details on the organization cell only.
+                # The original five-sheet contract also has a comment on
+                # column A. Keep it, but avoid duplicating the entire
+                # source/evidence payload: show a short summary and point to
+                # the full organization comment for links and requisites.
+                short_lines=[line.strip() for line in note.splitlines()
+                    if re.match(r'^(?:СВЕДЕНИЯ О КОМПАНИИ|Краткое основание:|Деятельность:)',line.strip(),re.I)]
+                short_note='\\n'.join(short_lines[:3])[:700]
+                short_note+=("\\nПодробности и источники — в примечании к названию организации.")
+                put_note(ws.cell(ri,1),short_note,
+                         'RegionalResearch',width=390,height=170)
                 put_note(ws.cell(ri,headers.index('Организация')+1),note,
                          'RegionalResearch',width=500,height=300)
         end=max(2,len(records)+1)
