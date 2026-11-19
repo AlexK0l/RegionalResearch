@@ -99,7 +99,7 @@ test("real Excel has large legible VML notes and only one company note",async()=
       "  b=s.cell(2,basis).comment",
       "  out[name]={'org':n.text if n else '',"+
       " 'basis':b.text if b else '',"+
-      " 'check':bool(s.cell(2,1).comment),"+
+      " 'check':s.cell(2,1).comment.text if s.cell(2,1).comment else '',"+
       " 'b_val':s.cell(2,basis).value}",
       "s=w['Прямые покупатели']",
       "out['formulaType']=s.cell(3,2).data_type",
@@ -122,7 +122,10 @@ test("real Excel has large legible VML notes and only one company note",async()=
       assert.ok(r.org.indexOf("Краткое основание:")<
         r.org.indexOf("Сайт/источник:"));
       assert.match(r.basis,/Источник утверждения:/);
-      assert.equal(r.check,false,"checkbox does not duplicate company note");
+      assert.match(r.check,/Краткое основание:/,
+        "checkbox retains a concise contractual note");
+      assert.doesNotMatch(r.check,/https?:\/\//,
+        "checkbox must not duplicate long source URL lists");
     }
     assert.equal(report.wide_note,true);
     assert.equal(report.formulaType,"s",
