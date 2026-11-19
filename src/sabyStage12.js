@@ -4,6 +4,7 @@ import { parsePhoneEntries } from "./phoneExport.js";
 import { applySabyEnrichment, sabyEligibleRows, sabyInn,
   sabyStoredSectionCoverage } from "./sabyEnrichment.js";
 import { withSabyBrowser, collectSabyCompany, SabyReview } from "./sabyBrowser.js";
+import { validSabyFinancialEvidence } from "./sabyFinancials.js";
 
 const bounded = (value, fallback, min, max) => {
   const n = Number(value);
@@ -27,7 +28,8 @@ export function sabyStage12Settings(env = process.env) {
 // buyers can additionally be completed by a verified truck section.
 function hasRelevantSection(record, transport) {
   return record?.contacts?.status === "collected" ||
-    (transport && record?.trucks?.status === "verified");
+    (transport && record?.trucks?.status === "verified") ||
+    Boolean(validSabyFinancialEvidence(record?.financials));
 }
 
 function phoneOwnersForResult(result) {
@@ -112,6 +114,7 @@ export async function runSabyStage12({
     freshScheduled,retryScheduled:selected.length-freshScheduled,
     maxDurationMs:settings.maxMs,deadlineReached:false,fullSweepCompleted:false,
     phonesAdded:0,emailsAdded:0,transportsAdded:0,vehiclesVerified:0,
+    revenuesAdded:0,employeesAdded:0,
     partialResults:0,companyReviews:0,systemicErrors:0,
     circuitOpen:false,browserError:"",
     deferred:settings.enabled ? pending.length : 0
@@ -149,7 +152,8 @@ export async function runSabyStage12({
           const record=await collectCompany(page,row,browserSettings);
           if(!hasRelevantSection(record,entry.transport)) {
             // Do not mutate the CRM row or checkpoint the company as done:
-            // a Saby card may render its legal details before contacts/trucks.
+            // a Saby card may render its legal details before any requested
+            // contacts, trucks OR financial widgets.
             stats.review++;
             stats.companyReviews++;
             // An unavailable company-specific widget is not proof of
@@ -160,14 +164,18 @@ export async function runSabyStage12({
               contacts:["missing","review","collected"].includes(record?.contacts?.status)
                 ? record.contacts.status : "unknown",
               trucks:["missing","review","verified"].includes(record?.trucks?.status)
-                ? record.trucks.status : "unknown"
+                ? record.trucks.status : "unknown",
+              financials:record?.financials?.status==="collected"?
+                "collected":"unavailable"
             }));
           } else {
             const applied=applySabyEnrichment(row,record,
               {phoneOwners,transport:entry.transport});
             if(applied.status==="ok") {
-              // Enrichment can save a verified phone without a fleet (or
-              // vice versa). Only mark the INN completed when ALL sections
+              // Enrichment can save verified financials, a phone or a
+              // fleet independently. Financials are OPTIONAL: do not turn
+              // otherwise completed companies into endless retry loops.
+              // Only mark the INN completed when ALL sections
               // required for its buyer type have been verified. Otherwise
               // leave it in the durable deferred queue for the next run.
               const coverage=sabyStoredSectionCoverage(row,
@@ -176,6 +184,8 @@ export async function runSabyStage12({
               stats.verified++;
               if(applied.phoneAdded) stats.phonesAdded++;
               if(applied.emailAdded) stats.emailsAdded++;
+              if(applied.revenueAdded) stats.revenuesAdded++;
+              if(applied.employeesAdded) stats.employeesAdded++;
               if(applied.transportAdded) stats.transportsAdded++;
               if(applied.verifiedTrucks!==null)
                 stats.vehiclesVerified+=applied.verifiedTrucks;

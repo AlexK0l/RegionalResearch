@@ -3,6 +3,7 @@
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
 import { formatPhoneCell, parsePhoneEntries, explicitPhoneDepartment } from "./phoneExport.js";
 import { mergeCompanyEmail } from "./emailContact.js";
+import { validSabyFinancialEvidence } from "./sabyFinancials.js";
 
 const LEGAL_WORDS = new Set([
   "ооо", "ао", "пао", "оао", "зао", "ип", "общество", "с",
@@ -191,8 +192,10 @@ function safeCollectionStatus(record) {
   return {
     contacts:["collected","missing","review"].includes(contacts) ? contacts : "unknown",
     trucks:["verified","missing","review"].includes(trucks) ? trucks : "unknown",
+    financials:validSabyFinancialEvidence(record?.financials)?"collected":
+      (record?.financials?.status==="missing"?"missing":"unknown"),
     failed_sections:[...new Set(errors.map(raw=>{
-      const match=/^(contacts|trucks):/.exec(String(raw));
+      const match=/^(contacts|trucks|financials):/.exec(String(raw));
       return match ? match[1] : "other";
     }))].sort()
   };
@@ -248,9 +251,28 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   const previousFleet=carry&&existingSaby.collection?.trucks==="verified"?
     verifiedStoredTrucks(existingSaby.trucks):null;
   const fleet=verifiedTrucks(record)||previousFleet;
+  // Revenue/headcount have their own independent Saby evidence, separate
+  // from phones, fleet and A/B/C. Only carry old facts when the exact same
+  // KPP or private card ID was verified on this attempt.
+  const observedFinancial=validSabyFinancialEvidence(record.financials);
+  const previousFinancial=carry?
+    validSabyFinancialEvidence(existingSaby.financials):null;
+  const financialCandidates=[observedFinancial,previousFinancial].filter(Boolean);
+  const latestRevenue=financialCandidates.filter(x=>Number.isSafeInteger(x.revenue_rub))
+    .sort((a,b)=>b.revenue_year-a.revenue_year)[0];
+  const headcount=observedFinancial?.employees??previousFinancial?.employees;
+  const financials=latestRevenue||Number.isSafeInteger(headcount)?{
+    status:"collected",
+    ...(latestRevenue?{
+      revenue_rub:latestRevenue.revenue_rub,
+      revenue_year:latestRevenue.revenue_year
+    }:{}),
+    ...(Number.isSafeInteger(headcount)?{employees:headcount}:{})
+  }:null;
   const collection=safeCollectionStatus(record);
   if(keepContacts||freshContacts)collection.contacts="collected";
   if(fleet)collection.trucks="verified";
+  if(financials)collection.financials="collected";
   evidence.saby = {
     // Never retain prior section evidence from a different Saby card.
     ...(carry?existingSaby:{}),
@@ -263,13 +285,29 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     verified_at: String(record.collected_at || new Date().toISOString()),
     phones, phone_details:phoneDetails, emails,
     collection,
-    ...(fleet ? {trucks: {...fleet, status:"verified",category:"Грузовые", source:"SABY"}} : {})
+    ...(fleet ? {trucks: {...fleet, status:"verified",category:"Грузовые", source:"SABY"}} : {}),
+    ...(financials ? {financials} : {})
   };
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;
   // This exact-INN, verified Saby card contributes e-mail to the visible
   // CRM column even when phones or fleet evidence remain incomplete.
   const emailAdded=mergeCompanyEmail(row,emails);
+
+  // Do not overwrite data already researched by stages 1-11 or edited in
+  // the original workbook. Financial data from Saby fill empty columns
+  // only; the accounting year remains in Saby provenance for auditing.
+  let revenueAdded=false,employeesAdded=false;
+  if(financials && String(row["Выручка последнего подтвержденного года"]??"").trim()==="" &&
+      Number.isSafeInteger(financials.revenue_rub)){
+    row["Выручка последнего подтвержденного года"]=financials.revenue_rub;
+    revenueAdded=true;
+  }
+  if(financials && String(row["Численность"]??"").trim()==="" &&
+      Number.isSafeInteger(financials.employees)){
+    row["Численность"]=financials.employees;
+    employeesAdded=true;
+  }
 
   let phoneAdded = false;
   if (!hasKnownPhone(row["Телефон"])) {
@@ -311,6 +349,10 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     phones.length ? "телефоны " + phones.join(", ") : "",
     emails.length ? "email " + emails.join(", ") : "",
     fleet ? "грузовые " + fleet.count + " шт." : "",
+    financials?.revenue_rub!==undefined?
+      "выручка "+financials.revenue_year+" г. "+financials.revenue_rub+" ₽":"",
+    financials?.employees!==undefined?
+      "сотрудников "+financials.employees:"",
     record.source_url
   ].filter(Boolean).join("; ");
   const existingComment=mergeCommentEmail(row.__comment,emails);
@@ -320,6 +362,7 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     row.__comment = existingComment;
   }
   return {status:"ok", phoneAdded, emailAdded, transportAdded,
+    revenueAdded,employeesAdded,
     phonesFound:phones.length, emailsFound:emails.length,
     verifiedTrucks:fleet?.count ?? null};
 }
