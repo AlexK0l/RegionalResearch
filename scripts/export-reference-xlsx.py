@@ -19,7 +19,7 @@ EMAIL_COL='Электронная почта'
 # Notes are Excel's legacy comments (VML objects). The default openpyxl
 # shape is only 144x79 pixels, so a long URL at the beginning hides all facts.
 # Set a readable size and remove XML-invalid characters before writing.
-XML_INVALID=re.compile(r'[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ufffe\\uffff]')
+XML_INVALID=re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')
 
 def safe_cell_text(value,limit=32767):
     if not isinstance(value,str):
