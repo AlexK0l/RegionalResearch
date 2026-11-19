@@ -14,6 +14,7 @@ export async function runSabyOnlyWithRecovery({
   runPass,completedInns=[],attemptedInns=[],
   total,startedAt=Date.now(),maxDurationMs,
   maxRestarts=SABY_ONLY_MAX_SESSION_RESTARTS,
+  minimumSessionMs=60000,
   signal,onProgress=async()=>{},
   onRecovery=async()=>{},wait=sleep
 }={}){
@@ -22,6 +23,8 @@ export async function runSabyOnlyWithRecovery({
   if(!Number.isFinite(maxDurationMs)||maxDurationMs<60000)
     throw TypeError("Invalid Saby-only deadline");
   const retries=Math.min(2,Math.max(0,Math.trunc(maxRestarts)));
+  const minRemaining=Math.max(1,Math.min(60000,
+    Math.floor(Number(minimumSessionMs)||60000)));
   const sums=Object.fromEntries(COUNTERS.map(key=>[key,0]));
   let completed=[...completedInns],attempted=[...attemptedInns];
   let last=null,lastStats=null,sessionRestarts=0;
@@ -40,7 +43,7 @@ export async function runSabyOnlyWithRecovery({
   for(let i=0;i<=retries;i++){
     if(signal?.aborted)throw Error("JOB_CANCELLED");
     const remaining=maxDurationMs-(Date.now()-startedAt);
-    if(remaining<60000)break;
+    if(remaining<minRemaining)break;
     last=await runPass({
       completedInns:completed,attemptedInns:attempted,
       maxDurationMs:remaining,
@@ -53,7 +56,7 @@ export async function runSabyOnlyWithRecovery({
       sums[key]+=Number(lastStats[key]||0);
     const failure=lastStats.circuitOpen===true||Boolean(lastStats.browserError);
     if(!failure||i===retries||lastStats.deadlineReached)break;
-    if(maxDurationMs-(Date.now()-startedAt)<60000)break;
+    if(maxDurationMs-(Date.now()-startedAt)<minRemaining)break;
     // Restart only the Playwright browser *session*, not the paid pipeline.
     // Each company already visited was durably checkpointed by the pass.
     sessionRestarts++;
