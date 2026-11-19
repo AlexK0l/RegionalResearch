@@ -4,6 +4,7 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
+import { readSabyFinancials } from "./sabyFinancials.js";
 import { submitSabyCompanySearch } from "./sabySearch.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
@@ -1027,7 +1028,12 @@ async function collectSabyCompanyAttempt(page, row, settings) {
   const result={identity,source:"SABY",source_url:page.url(),
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
-    errors:[]};
+    financials:{status:"missing"},errors:[]};
+  // Financial indicators live on the already-verified company card. Read
+  // them before opening contacts or the fleet overlay so this is one visit,
+  // not a new request, and the widgets remain company scoped.
+  try { result.financials=await readSabyFinancials(page); }
+  catch { result.errors.push("financials: unavailable"); }
   try { result.contacts=await ownContacts(page); }
   catch(error) { result.errors.push("contacts: "+error.message); }
   const fleetProgress={phase:"overlay"};
