@@ -53,11 +53,27 @@ test("stage10: after ALL primary INN checks, exhausted optional retry budget is 
     "deferred retry must not be falsely marked completed");
 });
 
-test("stage10: primary INN lookup exhaustion is still a resumable hard stop",async()=>{
+test("stage10: primary INN phase budget is a nonfatal defer, not a research error",async()=>{
   const rows=[row("a",{hint:false})];
-  await assert.rejects(run({rows,completedIds:new Set(),lookupBatch:async()=>{
-    throw budgetStop();
-  }}),/WEB_BUDGET_STOP:identity/);
+  const batches=[];
+  const result=await run({rows,completedIds:new Set(),
+    lookupBatch:async()=>{throw budgetStop();},
+    onBatch:async progress=>batches.push({
+      completedIds:[...progress.completedIds],
+      primaryBudgetDeferred:progress.primaryBudgetDeferred,
+      primaryBudgetDeferredIds:progress.primaryBudgetDeferredIds
+    })
+  });
+  assert.equal(result.primaryBudgetDeferred,1);
+  assert.deepEqual(result.primaryBudgetDeferredIds,["a"]);
+  assert.equal(result.attempted,0);
+  assert.equal(result.recovered,0);
+  assert.equal(result.completedIds.size,0,
+    "unchecked company must not be recorded as searched");
+  assert.equal(rows[0]["ИНН"],"");
+  assert.deepEqual(batches.at(-1),{
+    completedIds:[],primaryBudgetDeferred:1,primaryBudgetDeferredIds:["a"]
+  },"even if the first lookup failed, the checkpoint callback must run");
 });
 
 test("stage10: successful optional retries stay recorded as done and aren't repeated",async()=>{
@@ -107,4 +123,80 @@ test("stage10: resume preserves prior 680 completed checks and 283 found INNs in
   assert.equal(resumed.retried,20);
   assert.equal(resumed.retryBudgetDeferred,2);
   assert.equal(resumed.completedIds.size,2);
+});
+
+test("stage10: 591/600 and 1457/1850 never stop Stage11-13 for identity budget",async()=>{
+  const rows=Array.from({length:25},(_,i)=>row("company-"+i,{hint:false}));
+  const labels=[];
+  const checkpoints=[];
+  const result=await run({rows,lookupBatch:async({label})=>{
+    labels.push(label);
+    if(label.startsWith("1/"))throw budgetStop();
+    return {items:[]};
+  },onBatch:async state=>checkpoints.push({
+    attempted:state.attempted,
+    deferred:state.primaryBudgetDeferred||0,
+    ids:[...state.completedIds]
+  })});
+  assert.equal(labels.filter(s=>s==="5/5").length,0,
+    "once identity phase cap is reached, no queued batch launches");
+  assert.equal(result.primaryBudgetDeferred,25-result.attempted);
+  assert.equal(result.completedIds.size,result.attempted);
+  assert.equal(result.completedIds.has("company-0"),false);
+  assert.equal(result.primaryBudgetDeferredIds.includes("company-0"),true);
+  assert.equal(result.completedIds.size+result.primaryBudgetDeferredIds.length,25);
+  assert.equal(result.recovered,0);
+  assert.equal(rows.filter(x=>x["ИНН"]).length,0);
+  assert.equal(checkpoints.at(-1).deferred,result.primaryBudgetDeferred,
+    "the terminal snapshot must contain deferred primary count");
+});
+
+test("stage10: pending primary INN never retried as if it had been searched",async()=>{
+  const rows=[row("a"),row("b")];
+  const calls=[];
+  const result=await run({rows,
+    completedIds:new Set(["a"]),
+    lookupBatch:async({label})=>{
+      calls.push(label);
+      throw budgetStop();
+    }
+  });
+  assert.deepEqual(calls,["1/1"],
+    "optional retry cannot consume a second call after primary budget stop");
+  assert.equal(result.primaryBudgetDeferred,1);
+  assert.deepEqual(result.primaryBudgetDeferredIds,["b"]);
+  assert.equal(result.retryBudgetDeferred,1);
+  assert.deepEqual(result.retryBudgetDeferredIds,["a"]);
+  assert.equal(result.completedIds.has("retry:a"),false);
+  assert.equal(result.completedIds.has("b"),false);
+});
+
+test("stage10: budget deferral preserves cumulative 680 checked/283 recovered",async()=>{
+  const result=await run({
+    rows:[row("a",{hint:false}),row("b",{hint:false})],
+    completedIds:new Set(),
+    previousStats:{attempted:680,recovered:283,retried:20},
+    lookupBatch:async()=>{throw budgetStop();}
+  });
+  assert.equal(result.attempted,680);
+  assert.equal(result.recovered,283);
+  assert.equal(result.retried,20);
+  assert.equal(result.primaryBudgetDeferred,2);
+  assert.deepEqual(result.primaryBudgetDeferredIds,["a","b"]);
+});
+
+test("stage10: total/cost stop and unexpected API failures remain hard errors",async()=>{
+  for(const scope of ["total","estimated_cost_usd"]){
+    const error=budgetStop();
+    error.scope=scope;
+    await assert.rejects(run({rows:[row("a",{hint:false})],
+      lookupBatch:async()=>{throw error;}
+    }),err=>err===error);
+  }
+  await assert.rejects(run({rows:[row("a",{hint:false})],
+    lookupBatch:async()=>{throw Error("unexpected network failure");}
+  }),/unexpected network failure/);
+  await assert.rejects(run({rows:[row("a",{hint:false})],
+    lookupBatch:async()=>{throw Error("JOB_CANCELLED");}
+  }),/JOB_CANCELLED/);
 });
