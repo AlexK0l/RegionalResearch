@@ -698,10 +698,15 @@ async function poll(restoring=false){
       e.checkpoint.disabled=!d.resume_available;
       e.resultCard.hidden=false;
       const r=d.result||{};
-      const paused=d.mode==="saby_only"&&d.checkpoint?.phase==="saby";
+      const sabyInterrupted=Boolean(r.saby?.browserError||r.saby?.circuitOpen) &&
+        Number(r.saby?.scheduled||0)>0;
+      const paused=(d.mode==="saby_only"&&d.checkpoint?.phase==="saby") ||
+        (d.mode!=="saby_only"&&sabyInterrupted);
       e.resultEyebrow.textContent=paused?"Частичный результат":"Готово";
       e.resultTitle.textContent=paused?
-        "Saby приостановлен — все собранные данные сохранены":
+        (d.mode==="saby_only"
+          ?"Saby приостановлен — все собранные данные сохранены"
+          :"Исследование сохранено · Saby требует продолжения"):
         "Итоговый файл сформирован";
       if(paused)e.statusTitle.textContent="Saby: продолжение доступно";
       const c=r.counts||{};
@@ -725,7 +730,10 @@ async function poll(restoring=false){
         ". "+contactSummary+
         (paused?" Автоматические переподключения: "+
           Number(r.saby?.browserRestarts||0)+
-          ". Данные сохранены; продолжение доступно через эту страницу.":"")+
+          ". Данные сохранены; продолжение Saby доступно через эту страницу."+
+          (r.saby?.browserError
+            ?" Причина остановки Saby: "+
+              String(r.saby.browserError).slice(0,190)+".":""):"")+
         (r.quality
           ?" Финальная проверка: A "+(r.quality.grades?.A||0)+
             ", B "+(r.quality.grades?.B||0)+
