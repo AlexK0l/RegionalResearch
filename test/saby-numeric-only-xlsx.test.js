@@ -87,7 +87,7 @@ test("Saby financial columns export only digit-only Excel numbers on all 3 comme
       "      c=sh.cell(row,col)",
       "      pair.append([c.value,c.data_type,c.number_format])",
       "    out[tab].append(pair)",
-      "print(json.dumps(out,ensure_ascii=False))"
+      "print(json.dumps(out))"
     ].join("\n");
     const checked=exec(["-c",inspect,output]);
     assert.equal(checked.status,0,checked.stderr);
