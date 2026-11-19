@@ -34,6 +34,7 @@ function cleanFact(value){
     .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g,"$1")
     .replace(URL_RE,"")
     .replace(/(^|\n)\s*(?:источники?|url|ссылки|source(?:s)?)\s*:\s*(?:[,; ]*)/gim,"$1")
+    .replace(/\s+(?:источники?|url|ссылки|source(?:s)?)\s*:\s*(?=\s|$)/gim,"")
     .replace(/^[\s"'\-—•:]+|[\s"'\-—•:]+$/g,"")
     .replace(/^\s*[ABC]\s*[—–-]\s*/i,"")
     .replace(/\s+/g," ").trim();
@@ -59,7 +60,9 @@ function gradeOf(row){
 }
 function isGenericBasis(value){
   const v=text(value).replace(GRADE_RE,"");
-  return !v || GENERIC_BASIS.some(p=>p.test(v));
+  return !v || /^https?:\/\//i.test(v) ||
+    /^(?:источник|ссылка|url)\s*:/i.test(v) ||
+    GENERIC_BASIS.some(p=>p.test(v));
 }
 function activity(row){
   const comment=String(row?.__comment||"");
@@ -122,7 +125,10 @@ function basisAndNote(row){
   const canDescribe=Boolean(chosen?.value&&chosen.value.length>=32);
   const originalSpecific=!isGenericBasis(original);
   const specificBasis=originalSpecific?original:
-    canDescribe?grade+" — "+trimSentence(chosen.value,425):
+    canDescribe?grade+" — "+trimSentence(
+      chosen.attributed?chosen.value:
+        "По сохранённой записи (ссылка на конкретный факт не установлена): "+chosen.value,
+      425):
     original;
   const profile=activity(row);
   const source=sourceList(row,chosen);
