@@ -10,10 +10,38 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.properties import CalcProperties
+from validate_xlsx_package import validate_xlsx_package
 
 SHEETS=['Прямые покупатели','Лизинг','Посредники','Статистика','Легенда цветов']
 COUNTS={'Прямые покупатели':21,'Посредники':26,'Лизинг':27,'Статистика':6,'Легенда цветов':4}
 EMAIL_COL='Электронная почта'
+
+# Notes are Excel's legacy comments (VML objects). The default openpyxl
+# shape is only 144x79 pixels, so a long URL at the beginning hides all facts.
+# Set a readable size and remove XML-invalid characters before writing.
+XML_INVALID=re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')
+
+def safe_cell_text(value,limit=32767):
+    if not isinstance(value,str):
+        return value
+    return XML_INVALID.sub('',value)[:limit]
+
+def put_text(cell,value):
+    value=safe_cell_text(value)
+    cell.value=value
+    # Untrusted source fields are data, not spreadsheet formulas. An
+    # accidental leading '=' can otherwise produce a repairable Excel error.
+    if isinstance(value,str) and value.startswith('='):
+        cell.data_type='s'
+
+def put_note(cell,content,author,width=460,height=260):
+    value=safe_cell_text(str(content or '').strip(),16000)
+    if not value:return
+    comment=Comment(value,author)
+    comment.width=width
+    comment.height=height
+    cell.comment=comment
+
 SECTIONS=[('Прямые покупатели','direct_buyers'),('Посредники','intermediaries'),('Лизинг','leasing')]
 CHECKS={'Прямые покупатели':(1,9),'Посредники':(1,2,11),'Лизинг':(1,2,11)}
 NUMERIC={'Выручка последнего подтвержденного года','Численность'}
@@ -224,8 +252,8 @@ def render(wb,data):
                     if src.has_style:dest._style=copy.copy(src._style)
                 ws.row_dimensions[ri].height=ws.row_dimensions[2].height
             for ci,h in enumerate(headers,1):
-                if h==EMAIL_COL:ws.cell(ri,ci).value=safe_email_cell(row)
-                elif h and h in row:ws.cell(ri,ci).value=get_value(row,h)
+                if h==EMAIL_COL:put_text(ws.cell(ri,ci),safe_email_cell(row))
+                elif h and h in row:put_text(ws.cell(ri,ci),get_value(row,h))
                 if h=='ИНН':ws.cell(ri,ci).number_format='@'
                 # Like the original Google Sheet, "Основание" contains an
                 # individualized short reason in the visible cell AND a note
@@ -234,21 +262,33 @@ def render(wb,data):
                 if h=='Основание':
                     basis_note=str(row.get('__basis_comment') or '').strip()
                     if basis_note:
-                        ws.cell(ri,ci).comment=Comment(
-                            basis_note[:16000],'RegionalResearch · основания'
-                        )
+                        put_note(ws.cell(ri,ci),basis_note,
+                                 'RegionalResearch · основания',
+                                 width=500,height=300)
                 # Strict customer workbook has only 22 buyer columns; the old
                 # Google Sheets AK explanation column is not present. Preserve
                 # the five-tab layout by attaching Stage13's explanation to E.
                 if name=='Прямые покупатели' and h=='Итоговый коэффициент':
                     explanation=str(row.get('Обоснование коэффициента (Apps Script)') or '').strip()
                     if explanation:
-                        ws.cell(ri,ci).comment=Comment(explanation,'RegionalResearch · этап 13')
+                        put_note(ws.cell(ri,ci),explanation,
+                                 'RegionalResearch · этап 13',
+                                 width=460,height=300)
             for ci in CHECKS[name]:ws.cell(ri,ci).value=False
             note=str(row.get('__comment') or '').strip()
             if note:
-                ws.cell(ri,1).comment=Comment(note,'RegionalResearch')
-                ws.cell(ri,headers.index('Организация')+1).comment=Comment(note,'RegionalResearch')
+                # The original five-sheet contract also has a comment on
+                # column A. Keep it, but avoid duplicating the entire
+                # source/evidence payload: show a short summary and point to
+                # the full organization comment for links and requisites.
+                short_lines=[line.strip() for line in note.splitlines()
+                    if re.match(r'^(?:СВЕДЕНИЯ О КОМПАНИИ|Краткое основание:|Деятельность:|ИНН:|Email:)',line.strip(),re.I)]
+                short_note='\n'.join(short_lines[:5])[:900]
+                short_note+=("\nПодробности и источники — в примечании к названию организации.")
+                put_note(ws.cell(ri,1),short_note,
+                         'RegionalResearch',width=390,height=170)
+                put_note(ws.cell(ri,headers.index('Организация')+1),note,
+                         'RegionalResearch',width=500,height=300)
         end=max(2,len(records)+1)
         if ws.auto_filter.ref:ws.auto_filter.ref=f'A1:{get_column_letter(len(headers))}{end}'
         if name=='Прямые покупатели':
@@ -271,7 +311,7 @@ def render(wb,data):
     if not isinstance(stat_rows,list):raise ValueError('statistics must be an array')
     for ri,row in enumerate(stat_rows,2):
         if not isinstance(row,dict):raise ValueError('statistics entry is not an object')
-        for ci,h in enumerate(headers,1):stats.cell(ri,ci).value=row.get(h)
+        for ci,h in enumerate(headers,1):put_text(stats.cell(ri,ci),row.get(h))
     stats.auto_filter.ref=f'A1:F{max(2,len(stat_rows)+1)}'
     legend=wb['Легенда цветов']
     for ri in range(2,8):
@@ -299,5 +339,8 @@ def main():
     render(wb,payload)
     Path(out).parent.mkdir(parents=True,exist_ok=True)
     wb.save(out)
+    # Do not serve an unparseable package to Excel. Errors propagate to
+    # the HTTP endpoint as a clear export failure, never a corrupt download.
+    validate_xlsx_package(out)
 
 if __name__=='__main__':main()

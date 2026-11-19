@@ -138,7 +138,7 @@ test("exporter attaches basis notes to D/H without changing five-sheet layout or
     new URL("../src/referenceWorkbookExport.js",import.meta.url),"utf8");
   assert.match(exporter,/if h=='Основание':/);
   assert.match(exporter,/row\.get\('__basis_comment'\)/);
-  assert.match(exporter,/Comment\(\s*basis_note\[:16000\]/);
+  assert.match(exporter,/put_note\(ws\.cell\(ri,ci\),basis_note,/);
   assert.match(js,/decorateCompanyBasisForExport\(result \|\| \{\}\)/);
   assert.match(exporter,/SHEETS=\['Прямые покупатели','Лизинг','Посредники','Статистика','Легенда цветов'\]/);
 });
