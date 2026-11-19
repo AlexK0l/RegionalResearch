@@ -166,8 +166,9 @@ function readableCompanyComment(row,info){
     !isActivity(line)&&!isSource(line));
   const activityLine=activityLines[0]||
     (activity(row)?"Деятельность: "+activity(row):"");
+  const existingHeading=lines.find(isTitle);
   const top=[
-    "СВЕДЕНИЯ О КОМПАНИИ",
+    existingHeading||"СВЕДЕНИЯ О КОМПАНИИ",
     summary?"Краткое основание: "+summary:"",
     activityLine
   ].filter(Boolean);
