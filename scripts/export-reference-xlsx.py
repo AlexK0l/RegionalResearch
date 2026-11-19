@@ -282,8 +282,8 @@ def render(wb,data):
                 # source/evidence payload: show a short summary and point to
                 # the full organization comment for links and requisites.
                 short_lines=[line.strip() for line in note.splitlines()
-                    if re.match(r'^(?:СВЕДЕНИЯ О КОМПАНИИ|Краткое основание:|Деятельность:)',line.strip(),re.I)]
-                short_note='\n'.join(short_lines[:3])[:700]
+                    if re.match(r'^(?:СВЕДЕНИЯ О КОМПАНИИ|Краткое основание:|Деятельность:|ИНН:|Email:)',line.strip(),re.I)]
+                short_note='\n'.join(short_lines[:5])[:900]
                 short_note+=("\nПодробности и источники — в примечании к названию организации.")
                 put_note(ws.cell(ri,1),short_note,
                          'RegionalResearch',width=390,height=170)
