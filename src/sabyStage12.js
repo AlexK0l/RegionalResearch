@@ -125,7 +125,10 @@ export async function runSabyStage12({
     deferredInns:[],attemptedInns:[...attempted]};
 
   const phoneOwners=phoneOwnersForResult(result);
-  const startedAt=Date.now();
+  // The shared headed Chromium profile may be queued behind another
+  // region. Do not charge that serialization time against this study's
+  // actual Saby working deadline: the clock begins only after acquisition.
+  let startedAt=0;
   let consecutive=0;
 
   const flush=async () => {
@@ -140,6 +143,7 @@ export async function runSabyStage12({
 
   try {
     await sessionRunner(async ({page,settings:browserSettings})=>{
+      startedAt=Date.now();
       for(const entry of selected) {
         if(signal?.aborted) throw new Error("JOB_CANCELLED");
         if(Date.now()-startedAt>=settings.maxMs) {
