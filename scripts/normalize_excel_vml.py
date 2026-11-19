@@ -93,6 +93,9 @@ def normalize_comment_vml_ids(path):
                 dest.comment=source.comment
                 for info in source.infolist():
                     dest.writestr(info,modified.get(info.filename,source.read(info.filename)))
+            # On Windows the original ZIP file handle must be closed before
+            # os.replace; the with-block exit will close a second time safely.
+            source.close()
             # Atomic rename in same directory. If the process dies before
             # this point the original complete workbook remains available.
             os.replace(temp_path,path)
