@@ -270,4 +270,16 @@ test("one bounded hydration retry keeps source-bound financials without any new 
   },{});
   assert.equal(rejected.financials.status,"missing",
     "same INN on a different private company card cannot inherit revenue");
+
+  times=0;
+  const employeesOnly=record({status:"collected",employees:9},{
+    contacts:{status:"collected"},trucks:{status:"missing"}
+  });
+  const combined=await recoverSabyMissingSections(async()=>{
+    times++;return times===1?first:employeesOnly;
+  },{});
+  assert.deepEqual(combined.financials,{
+    status:"collected",revenue_rub:460300000,revenue_year:2025,
+    employees:9
+  },"new headcount may update while first-attempt revenue is retained");
 });
