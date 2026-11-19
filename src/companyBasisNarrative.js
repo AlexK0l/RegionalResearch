@@ -148,6 +148,32 @@ function basisAndNote(row){
   return {basis:specificBasis,note:lines.join("\n")};
 }
 
+// Legacy checkpoints start the company comment with a long URL. Excel's
+// default note popup is small, so the actual explanation used to be invisible.
+// Put the customer-useful facts FIRST, preserve all existing lines and source
+// URLs AFTER the description. The transformation is idempotent for saved JSON.
+function readableCompanyComment(row,info){
+  const previous=String(row?.__comment||"").replace(/\r\n/g,"\n");
+  const lines=previous.split("\n").map(x=>x.trim()).filter(Boolean);
+  const summary=trimSentence(text(info?.basis||"").replace(GRADE_RE,""),340);
+  const isTitle=line=>/^СВЕДЕНИЯ О КОМПАНИИ(?:\s*[—-].*)?$/i.test(line);
+  const isSummary=line=>/^Краткое основание\s*:/i.test(line);
+  const isActivity=line=>/^Деятельность\s*:/i.test(line);
+  const isSource=line=>/^Сайт\/источник\s*:/i.test(line);
+  const activityLines=lines.filter(isActivity);
+  const sourceLines=lines.filter(isSource);
+  const others=lines.filter(line=>!isTitle(line)&&!isSummary(line)&&
+    !isActivity(line)&&!isSource(line));
+  const activityLine=activityLines[0]||
+    (activity(row)?"Деятельность: "+activity(row):"");
+  const top=[
+    "СВЕДЕНИЯ О КОМПАНИИ",
+    summary?"Краткое основание: "+summary:"",
+    activityLine
+  ].filter(Boolean);
+  return unique([...top,...others,...sourceLines,...activityLines.slice(1)]).join("\n");
+}
+
 export function decorateCompanyBasisForExport(result){
   if(!result || typeof result!=="object")return result;
   const output={...result};
@@ -157,15 +183,11 @@ export function decorateCompanyBasisForExport(result){
       if(!row||typeof row!=="object")return row;
       const info=basisAndNote(row);
       if(!info)return {...row};
-      const prevNote=String(row.__comment||"").trim();
-      const summary=info.basis?info.basis.replace(GRADE_RE,""):"";
-      const append=summary&&!prevNote.includes("Краткое основание:")?
-        "\nКраткое основание: "+trimSentence(summary,420):"";
       return {
         ...row,
         "Основание":info.basis,
         [BASIS_NOTE_KEY]:info.note,
-        __comment:(prevNote+append).trim()
+        __comment:readableCompanyComment(row,info)
       };
     });
   }
