@@ -81,7 +81,7 @@ def validate_xlsx_package(path):
                     clusters=set()
                     for shape in root.iter(VML_NS+'shape'):
                         shape_id=shape.get('id','')
-                        match=re.fullmatch(r'_x0000_s(\\d+)',shape_id)
+                        match=re.fullmatch(r'_x0000_s(\d+)',shape_id)
                         if not match or shape_id in seen:
                             raise ValueError('XLSX duplicate/invalid VML shape id in '+name)
                         number=int(match.group(1))
@@ -105,7 +105,7 @@ def validate_xlsx_package(path):
                         if len(idmaps)!=1:
                             raise ValueError('XLSX VML idmap is missing/ambiguous in '+name)
                         data=idmaps[0].get('data','')
-                        if not re.fullmatch(r'\\d+(?:,\\d+)*',data):
+                        if not re.fullmatch(r'\d+(?:,\d+)*',data):
                             raise ValueError('XLSX invalid VML idmap data: '+name)
                         declared={int(x) for x in data.split(',')}
                         if clusters!=declared:
