@@ -2,7 +2,7 @@
 No network calls. Never copy source companies into an output workbook.
 Usage: python scripts/export-reference-xlsx.py TEMPLATE.xlsx OUTPUT.xlsx < result.json
 """
-import sys, json, copy, re
+import sys, json, copy, re, math
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
@@ -228,15 +228,28 @@ def clear_existing(wb):
                 if 'L33' in str(dv.sqref):
                     ws.data_validations.dataValidation.remove(dv)
 
+def strict_integer_cell(value,key):
+    # Monetary values are whole rubles; staff is a whole-person count.
+    # Only Excel numeric cells (not text, formatted currency or formulas)
+    # are permitted. Uncertain unit-bearing/decimal data stays blank.
+    if isinstance(value,bool):return None
+    if isinstance(value,int):number=value
+    elif isinstance(value,float) and math.isfinite(value) and value.is_integer():
+        number=int(value)
+    elif isinstance(value,str):
+        raw=value.strip().replace('\u00a0',' ').replace('\u202f',' ')
+        if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?: [0-9]{3})+)',raw):
+            return None
+        number=int(raw.replace(' ',''))
+    else:return None
+    limit=10**15 if key=='Выручка последнего подтвержденного года' else 10**7
+    return number if 0<=number<=limit else None
+
 def get_value(row,key):
     v=row.get(key)
     if v is None:return None
     if key=='Телефон':return safe_phone_cell(v)
-    if key in NUMERIC:
-        if isinstance(v,(int,float)) and not isinstance(v,bool):return v
-        if isinstance(v,str) and re.fullmatch(r'\s*[+-]?\d[\d ]*(?:[,.]\d+)?\s*',v):
-            return float(v.replace(' ','').replace(',','.'))
-        return None
+    if key in NUMERIC:return strict_integer_cell(v,key)
     if key=='ИНН':return str(v).strip() if v else None
     return v
 
@@ -256,6 +269,9 @@ def render(wb,data):
                 if h==EMAIL_COL:put_text(ws.cell(ri,ci),safe_email_cell(row))
                 elif h and h in row:put_text(ws.cell(ri,ci),get_value(row,h))
                 if h=='ИНН':ws.cell(ri,ci).number_format='@'
+                # Template custom formats can display 'чел.', 'руб.' or
+                # grouped digits. Force exactly whole-number ASCII digits.
+                if h in NUMERIC:ws.cell(ri,ci).number_format='0'
                 # Like the original Google Sheet, "Основание" contains an
                 # individualized short reason in the visible cell AND a note
                 # explaining the exact saved evidence, with source links.
