@@ -8,6 +8,7 @@ import {
 import {applySabyEnrichment,sabyStoredSectionCoverage}
   from "../src/sabyEnrichment.js";
 import {runSabyStage12} from "../src/sabyStage12.js";
+import { recoverSabyMissingSections } from "../src/sabyRecovery.js";
 
 // These values and selector shapes are taken from the HTML sent on 2026-11-19;
 // do not commit its private cookies, company identities or minified scripts.
@@ -239,4 +240,34 @@ test("old already completed company stays complete without financial recollectio
   });
   assert.equal(out.stats.processed,0);
   assert.equal(out.stats.previouslyCompleted,1);
+});
+
+
+test("one bounded hydration retry keeps source-bound financials without any new Saby search",async()=>{
+  const first=record(parseSabyFinancialSnapshot(exampleSnapshot()),{
+    contacts:{status:"missing"},trucks:{status:"missing"}
+  });
+  const retry=record({status:"missing"},{
+    contacts:{status:"collected",phones:[],emails:[]},
+    trucks:{status:"missing"}
+  });
+  let times=0;
+  const result=await recoverSabyMissingSections(async()=>{
+    times++;return times===1?first:retry;
+  },{});
+  assert.equal(times,2);
+  assert.equal(result.contacts.status,"collected");
+  assert.deepEqual(result.financials,{
+    status:"collected",revenue_rub:460300000,revenue_year:2025,employees:8
+  });
+  const other=record({status:"missing"},{
+    source_url:"https://profile.saby.ru/page/contractor-info?id=different-branch",
+    contacts:{status:"collected"},trucks:{status:"missing"}
+  });
+  times=0;
+  const rejected=await recoverSabyMissingSections(async()=>{
+    times++;return times===1?first:other;
+  },{});
+  assert.equal(rejected.financials.status,"missing",
+    "same INN on a different private company card cannot inherit revenue");
 });
