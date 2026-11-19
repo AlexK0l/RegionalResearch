@@ -7655,6 +7655,9 @@ ${JSON.stringify(groupBatch)}`,
     attempted: Number(resumeCheckpoint?.final_inn_attempted || 0),
     recovered: Number(resumeCheckpoint?.final_inn_recovered || 0),
     retried: Number(resumeCheckpoint?.final_inn_retried || 0),
+    primaryBudgetDeferred: Number(resumeCheckpoint?.final_inn_primary_budget_deferred || 0),
+    primaryBudgetDeferredIds: Array.isArray(resumeCheckpoint?.final_inn_primary_budget_deferred_ids)
+      ? [...resumeCheckpoint.final_inn_primary_budget_deferred_ids] : [],
     pendingTotal: rowCount(finalResult)
   };
   let finalInnProgressEvents = 0;
@@ -7674,6 +7677,8 @@ ${JSON.stringify(groupBatch)}`,
       final_inn_recovered: latestFinalInnProgress.recovered,
       final_inn_retried: latestFinalInnProgress.retried,
       final_inn_pending_total: latestFinalInnProgress.pendingTotal,
+      final_inn_primary_budget_deferred: Number(latestFinalInnProgress.primaryBudgetDeferred || 0),
+      final_inn_primary_budget_deferred_ids: latestFinalInnProgress.primaryBudgetDeferredIds || [],
       enrichment_completed_ids: []
     });
   });
@@ -7874,6 +7879,7 @@ ${JSON.stringify(groupBatch)}`,
     output_rows: rowCount(finalResult),
     qualification_counts: qualifiedFinal.counts,
     conflict_rechecks: innConflictRechecks,
+    primary_inn_budget_deferred: finalInnStats.primaryBudgetDeferred || 0,
     optional_retry_budget_deferred: finalInnStats.retryBudgetDeferred || 0,
     conflict_recheck_budget_deferred: innConflictBudgetDeferred,
     unresolved_conflict_groups_quarantined: unresolvedInnConflictClear.groups,
@@ -7900,6 +7906,8 @@ ${JSON.stringify(groupBatch)}`,
     final_inn_completed_ids: [...finalInnStats.completedIds],
     final_inn_attempted: finalInnStats.attempted,
     final_inn_retried: finalInnStats.retried,
+    final_inn_primary_budget_deferred: finalInnStats.primaryBudgetDeferred || 0,
+    final_inn_primary_budget_deferred_ids: finalInnStats.primaryBudgetDeferredIds || [],
     final_inn_retry_budget_deferred: finalInnStats.retryBudgetDeferred || 0,
     final_inn_retry_budget_deferred_ids: finalInnStats.retryBudgetDeferredIds || [],
     final_inn_conflict_budget_deferred: innConflictBudgetDeferred,
@@ -8371,6 +8379,9 @@ ${JSON.stringify(gaps)}
   finishStep(statuses[9]);
   statuses[9].detail =
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}` +
+    (finalInnStats.primaryBudgetDeferred
+      ? ` · первичные проверки ИНН отложены: ${finalInnStats.primaryBudgetDeferred} (лимит identity, данные сохранены)`
+      : "") +
     (finalInnStats.retryBudgetDeferred
       ? ` · дополнительные повторы ИНН отложены: ${finalInnStats.retryBudgetDeferred} (лимит)`
       : "") +
