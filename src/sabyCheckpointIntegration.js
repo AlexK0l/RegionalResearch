@@ -4,7 +4,9 @@
 //
 // The research pipeline owns final QA and XLSX generation; this adapter may
 // mutate only the already-vetted result rows, through runSabyStage12.
-import { runSabyStage12 } from "./sabyStage12.js";
+import { runSabyStage12, sabyStage12Settings } from "./sabyStage12.js";
+import { sabyEligibleRows, sabyInn, sabyStoredSectionCoverage } from "./sabyEnrichment.js";
+import { runSabyOnlyWithRecovery } from "./sabyOnlyRecovery.js";
 
 export async function runCheckpointedSabyStage12({
   result,
@@ -17,7 +19,11 @@ export async function runCheckpointedSabyStage12({
   onProgress = async () => {},
   persistCheckpoint = async () => {},
   sessionRunner,
-  collectCompany
+  collectCompany,
+  // Normal full/late resumes reconnect transient browser failures. Saby-only
+  // already has an outer recovery and must not multiply retry sessions.
+  recoverBrowserSession = false,
+  recoveryWait = undefined
 } = {}) {
   if (!result || !Array.isArray(result.direct_buyers) ||
       !Array.isArray(result.intermediaries) ||
@@ -44,5 +50,59 @@ export async function runCheckpointedSabyStage12({
   // deterministic stubs and cannot start a browser or paid API request.
   if (sessionRunner) options.sessionRunner = sessionRunner;
   if (collectCompany) options.collectCompany = collectCompany;
-  return runSabyStage12(options);
+  const settings = sabyStage12Settings(env);
+  if (!recoverBrowserSession || !settings.enabled) {
+    return runSabyStage12(options);
+  }
+  // Exactly the same fair-queue plan as runSabyStage12. This count is only
+  // for progress aggregation, never an excuse to treat unvisited records as
+  // completed when a browser could not start.
+  const completed = new Set(completedInns.map(sabyInn).filter(Boolean));
+  const eligible = sabyEligibleRows(result).eligible;
+  for (const entry of eligible) {
+    const inn = sabyInn(entry.row["ИНН"]);
+    if (!completed.has(inn)) continue;
+    const coverage = sabyStoredSectionCoverage(entry.row,
+      { transport: entry.transport });
+    if (coverage.trusted && !coverage.complete) completed.delete(inn);
+  }
+  const pending = eligible.filter(entry =>
+    !completed.has(sabyInn(entry.row["ИНН"])));
+  const total = Math.min(pending.length,
+    settings.maxCompanies || pending.length);
+  if (!total) return runSabyStage12(options);
+  const duration = maxDurationMs == null
+    ? settings.maxMs : Number(maxDurationMs);
+  return runSabyOnlyWithRecovery({
+    runPass: ({completedInns:done, attemptedInns:visited,
+      maxDurationMs:remaining, onProgress:report}) =>
+      runSabyStage12({
+        ...options,
+        completedInns:done,
+        attemptedInns:visited,
+        maxDurationMs:remaining,
+        onProgress:report
+      }),
+    completedInns, attemptedInns, total,
+    startedAt, maxDurationMs:duration, signal,
+    ...(recoveryWait ? {wait:recoveryWait} : {}),
+    onProgress,
+    onRecovery:async state=>{
+      console.warn("[SABY_STAGE12_BROWSER_RECONNECT] "+JSON.stringify({
+        attempt:state.browserRestarts,
+        max_attempts:state.maxBrowserRestarts,
+        processed:state.processed,
+        pending:state.deferred,
+        reason:state.reason
+      }));
+      await onProgress({
+        enabled:true,scheduled:total,
+        processed:state.processed,verified:0,
+        deferred:state.deferred,restarting:true,
+        browserRestarts:state.browserRestarts,
+        browserError:"",
+        recoveryReason:state.reason
+      });
+    }
+  });
 }
