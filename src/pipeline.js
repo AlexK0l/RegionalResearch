@@ -9217,6 +9217,7 @@ ${JSON.stringify(gaps)}
     signal:jobSignal,
     startedAt:stage12StartedAt,
     persistCheckpoint,
+    recoverBrowserSession:true,
     onProgress:async stats=>{
       statuses[11].detail = `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
       const ratio=stats.scheduled ? stats.processed/stats.scheduled : 1;
@@ -9227,10 +9228,25 @@ ${JSON.stringify(gaps)}
     }
   });
   const sabyStats=sabyOutcome.stats;
-  finishStep(statuses[11]);
-  statuses[11].detail = !sabyStats.enabled
-    ? "отключен (SABY_STAGE12_ENABLED=false)"
-    : `выполнен · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+  const sabySystemicFailure = sabyStats.enabled && sabyStats.scheduled>0 &&
+    (Boolean(sabyStats.browserError) || sabyStats.circuitOpen ||
+      (sabyStats.processed===0 && sabyStats.deferred>0));
+  if (sabySystemicFailure) {
+    // Stage13 can still finish safely, but a zero-visit Saby stage MUST NOT
+    // be labelled as successful. All unvisited INNs remain in SQLite for
+    // one-click Saby-only continuation from the normal browser UI.
+    statuses[11].status="waiting";
+    statuses[11].completedAt=Date.now();
+    statuses[11].detail=`Saby недоступен · проверено ${sabyStats.processed} / ${sabyStats.scheduled} · отложено ${sabyStats.deferred} · продолжите только Saby (без OpenAI)` +
+      (sabyStats.browserError
+        ? ` · причина: ${String(sabyStats.browserError).slice(0,180)}`
+        : " · браузер временно отключён после повторных ошибок");
+  } else {
+    finishStep(statuses[11]);
+    statuses[11].detail = !sabyStats.enabled
+      ? "отключен (SABY_STAGE12_ENABLED=false)"
+      : `${sabyStats.deferred>0?"частично выполнен":"выполнен"} · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+  }
   // Stage 13: exact 57-model catalog stays deterministic. Optionally classify
   // UNKNOWN models using the existing OpenAI client, without web search.
   // AI may establish only the ordinary 20-39 group, never green/white or A/B/C.
