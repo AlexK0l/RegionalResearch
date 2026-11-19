@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
 import {fileURLToPath} from "node:url";
 import {spawnSync} from "node:child_process";
 import {buildReferenceWorkbookBuffer} from "../src/referenceWorkbookExport.js";
 
 const root=fileURLToPath(new URL("../",import.meta.url));
-const templatePath=path.join(root,"data","SAT_reference_template.xlsx");
+// The private production template is intentionally NOT tracked in GitHub.
+// Create the approved five-sheet structural fixture in a temporary folder.
+const fixture=path.join(root,"test","fixtures","create-test-reference.py");
 function sample(grade,org,claim,source){
   return {
     "Организация":org,"ИНН":"7707083893","Основание":
@@ -36,6 +40,23 @@ test("real strict five-sheet Excel puts narrative in D/H and linked comments in 
     statistics:[]
   };
   const input=structuredClone(result);
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),"rr-basis-notes-"));
+  const templatePath=path.join(folder,"reference.xlsx");
+  const created=spawnSync("python",[fixture,templatePath],{cwd:root,timeout:15000});
+  assert.equal(created.status,0,String(created.stderr));
+  // The synthetic reference template has generic placeholder headings in
+  // E/F; declare the two user-facing coefficient headers for this test.
+  const editHeaders=[
+    "from openpyxl import load_workbook",
+    "import sys",
+    "w=load_workbook(sys.argv[1])",
+    "s=w['Прямые покупатели']",
+    "s['E1']='Итоговый коэффициент'",
+    "s['F1']='Расчётный коэффициент'",
+    "w.save(sys.argv[1])"
+  ].join("\n");
+  const patched=spawnSync("python",["-c",editHeaders,templatePath],{cwd:root,timeout:15000});
+  assert.equal(patched.status,0,String(patched.stderr));
   const bytes=await buildReferenceWorkbookBuffer(result,{templatePath});
   assert.equal(Buffer.isBuffer(bytes),true);
   const python=[
@@ -75,4 +96,5 @@ test("real strict five-sheet Excel puts narrative in D/H and linked comments in 
   assert.equal(x["Прямые покупатели"].score,23);
   assert.equal(x["Прямые покупатели"].untouched_f,13);
   assert.deepEqual(result,input,"export must not mutate source JSON");
+  fs.rmSync(folder,{recursive:true,force:true});
 });
