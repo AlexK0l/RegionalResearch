@@ -9228,8 +9228,9 @@ ${JSON.stringify(gaps)}
     }
   });
   const sabyStats=sabyOutcome.stats;
-  const sabySystemicFailure = sabyStats.enabled &&
-    (Boolean(sabyStats.browserError) || sabyStats.circuitOpen);
+  const sabySystemicFailure = sabyStats.enabled && sabyStats.scheduled>0 &&
+    (Boolean(sabyStats.browserError) || sabyStats.circuitOpen ||
+      (sabyStats.processed===0 && sabyStats.deferred>0));
   if (sabySystemicFailure) {
     // Stage13 can still finish safely, but a zero-visit Saby stage MUST NOT
     // be labelled as successful. All unvisited INNs remain in SQLite for
