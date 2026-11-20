@@ -303,6 +303,15 @@ export async function readSabyFinancials(page){
       financeHeadings:headings.length,financeNodes:financeNodes.length,
       financeItemMounted:document.querySelectorAll(
         '[data-qa="item"][item-key="finance"]').length>0,
+      dialogRoots:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"]').length,
+      profileScrollNodes:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"] '+
+        '.controls-SlidingPanel__scrollWrapper > '+
+        '[data-qa="controls-Scroll__content"]').length,
+      dialogScrollNodes:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"] '+
+        '[data-qa="controls-Scroll__content"]').length,
       reportFound:Boolean(report)};
   });
 
@@ -341,6 +350,9 @@ export async function readSabyFinancials(page){
       code,years:snapshot.years.length,rows:snapshot.revenueRows.length,
       finance_nodes:snapshot.financeNodes||0,
       finance_item:!!snapshot.financeItemMounted,
+      dialog_roots:snapshot.dialogRoots||0,
+      profile_scroll_nodes:snapshot.profileScrollNodes||0,
+      dialog_scroll_nodes:snapshot.dialogScrollNodes||0,
       scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps,
       scroll_selection:lazyDiag.selection||"none",
       scroll_lookup_attempts:lazyDiag.lookup_attempts||0
