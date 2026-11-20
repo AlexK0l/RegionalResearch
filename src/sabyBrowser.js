@@ -254,6 +254,13 @@ async function openCompany(page, row, settings) {
   await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
   if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
     throw new SabyReview("Saby: список организаций не подтверждён");
+  const publicFallback=settings.publicIdentityFallback===true;
+  // Wasaby shows several perpetual loading indicators even with a healthy
+  // result list. Sample BEFORE submitting the INN so those unrelated
+  // spinners cannot be misclassified as a systemic search stall.
+  // Read only safe flags, never the input value, DOM text or credentials.
+  const beforeSearch=publicFallback?
+    await readSabySearchState(page,inn).catch(()=>null):null;
   const submitted=await submitSabyCompanySearch(page,inn,{
     timeoutMs:Math.min(15000,settings.timeoutMs),
     actionTimeoutMs:Math.min(8000,settings.timeoutMs),
@@ -275,7 +282,6 @@ async function openCompany(page, row, settings) {
   }
   console.info("[SABY_SEARCH] "+submitted.method);
   const until=Date.now()+Math.min(18000,settings.timeoutMs);
-  const publicFallback=settings.publicIdentityFallback===true;
   let rows=[],selection="not_found",lastSelected=null;
   async function candidates() {
     // For optional fallback retain branch rows for Node-side
@@ -338,7 +344,8 @@ async function openCompany(page, row, settings) {
         await delay(500);
         sampleB=await readSabySearchState(page,inn);
         classification=classifySabySearchZeroState(sampleA,sampleB,{
-          onListRoute:sabyCardRoute(page.url())==="list"
+          onListRoute:sabyCardRoute(page.url())==="list",
+          beforeSearch
         });
       }catch{
         classification="probe_error";
@@ -348,6 +355,8 @@ async function openCompany(page, row, settings) {
         input_exact:sampleB?.inputExact===true,
         empty_message:sampleB?.explicitEmpty===true,
         busy:sampleB?.spinnerVisible===true,
+        busy_before_search:beforeSearch?.spinnerVisible===true,
+        baseline_available:beforeSearch!==null,
         service_error:sampleB?.serviceError===true,
         route_list:sabyCardRoute(page.url())==="list"
       }));
