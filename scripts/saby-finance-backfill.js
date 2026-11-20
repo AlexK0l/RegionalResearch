@@ -93,8 +93,7 @@ async function main(){
   // incorrectly marked attempted. Recover only that uniquely identifiable
   // one-card review from its original immutable parent, in memory.
   const previousId=String(chosen?.saby_finance_backfill_source_job_id||"");
-  if(previousId && !chosen?.saby_finance_backfill_outcomes &&
-     chosen?.saby_finance_backfill_stats?.review===1){
+  if(previousId && chosen?.saby_finance_backfill_stats?.review===1){
     const before=await loadCheckpoint(previousId);
     if(before){
       const restored=recoverLegacyFinanceReview(chosen,{...before,id:previousId});
