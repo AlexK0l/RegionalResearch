@@ -489,8 +489,17 @@ test("legacy one-card review is recovered for another bounded pass without chang
   assert.equal(recoverLegacyFinanceReview({...child,
     saby_finance_backfill_stats:{...child.saby_finance_backfill_stats,processed:2}},
     {...parent,id:UUID1}).recovered,0);
+  const reviewed={...child,
+    saby_finance_backfill_outcomes:{"4718000935":{
+      status:"review",reason:"collector_unavailable"
+    }}};
+  const recoveredReview=recoverLegacyFinanceReview(reviewed,
+    {...parent,id:UUID1});
+  assert.equal(recoveredReview.recovered,1);
+  assert.equal(recoveredReview.checkpoint.saby_finance_backfill_outcomes["4718000935"].reason,
+    "collector_unavailable");
   assert.equal(recoverLegacyFinanceReview({...child,
-    saby_finance_backfill_outcomes:{"4718000935":{status:"review"}}},
+    saby_finance_backfill_outcomes:{"4718000935":{status:"updated"}}},
     {...parent,id:UUID1}).recovered,0);
 });
 
