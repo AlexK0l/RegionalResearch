@@ -274,24 +274,42 @@ export async function runSabyFinanceBackfill({
       const rawDelay=Number(settings?.delayMs??env.SABY_DELAY_MS??1500);
       const delayMs=Number.isFinite(rawDelay)?
         Math.max(250,Math.min(30000,rawDelay)):1500;
+      let consecutiveReview=0;
       for(const [index,entry] of selected.entries()){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
         let outcome={status:"unavailable",reason:"financial_not_verified"};
         try{
-          const record=await collectCompany(page,row,settings);
+          let record;
+          try{
+            record=await collectCompany(page,row,settings);
+          }catch(error){
+            const failure=classifySabyFinanceFailure(error);
+            // Retry only a transient scanner/card hydration failure once.
+            // The legal INN and private card are reverified from scratch;
+            // no fallback to unverified search-result data is permitted.
+            if(!failure.retryable)throw error;
+            stats.retries++;
+            console.warn("[SABY_FINANCE_RETRY] "+JSON.stringify({
+              code:failure.code,attempt:2,max_attempts:2
+            }));
+            await waitBetweenCompanies(delayMs);
+            record=await collectCompany(page,row,settings);
+          }
           const applied=applySabyFinanceBackfill(row,record);
           if(applied.status==="updated"){
             stats.verified++;
             if(applied.revenueAdded)stats.revenueAdded++;
             if(applied.employeesAdded)stats.employeesAdded++;
-          } else if(applied.status==="review"){
+          }else if(applied.status==="review"){
             stats.review++;
-          } else if(applied.status==="unchanged"){
-            // Finance was observed, but nothing new was needed.
+          }else if(applied.status==="unchanged"){
+            // Both numbers may already be present, or Saby supplied only
+            // a number already saved in stages 1-11. Nothing to overwrite.
             stats.unchanged++;
-          } else {
-            // No year-specific financial figure is not a process error.
+          }else{
+            // A genuinely unavailable annual report is a terminal
+            // observation, NOT a zero value and not an identity failure.
             stats.unavailable++;
           }
           const reason=String(applied.reason||"");
@@ -300,22 +318,54 @@ export async function runSabyFinanceBackfill({
             "financial_not_verified"]).has(reason)?reason:"";
           outcome={status:applied.status,
             ...(safeReason?{reason:safeReason}:{})};
-        }catch{
-          // Never leak private page content or Playwright error messages.
+        }catch(error){
+          const failure=classifySabyFinanceFailure(error);
+          // Systemic Saby search failures pause this batch, rather than
+          // incorrectly treating hundreds of unvisited firms as reviewed.
+          if(["search_input_failed","search_scan_error"].includes(failure.code)){
+            stats.browserError="saby_search_unavailable";
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+              code:failure.code,scope:"systemic",action:"pause"
+            }));
+            break;
+          }
+          // Never log the raw Playwright error, company name or profile URL.
           stats.review++;
-          outcome={status:"review",reason:"collector_unavailable"};
+          outcome={status:"review",reason:failure.code};
+          console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+            code:failure.code,scope:"company",action:"defer"
+          }));
         }
         outcomes[entry.inn]={
           ...outcome,
           revenueStillMissing:!isSavedFinanceNumber(row[FINANCE_REVENUE_FIELD]),
           employeesStillMissing:!isSavedFinanceNumber(row[FINANCE_EMPLOYEES_FIELD])
         };
-        attempted.add(entry.inn);
+        if(outcome.status==="review"){
+          // A genuine INN/card mismatch is never retried automatically.
+          // Temporary failures get one LATER pass, after fresh firms.
+          const permanent=new Set(["identity_or_source",
+            "stored_saby_inn_mismatch","stored_saby_card_mismatch",
+            "search_ambiguous","card_changed"]).has(outcome.reason);
+          reviewCounts[entry.inn]=permanent?
+            FINANCE_REVIEW_MAX_PASSES:
+            Math.min(FINANCE_REVIEW_MAX_PASSES,reviewCount(entry.inn)+1);
+          consecutiveReview++;
+        }else{
+          attempted.add(entry.inn);
+          delete reviewCounts[entry.inn];
+          consecutiveReview=0;
+        }
         stats.processed++;
         await save();
         await onProgress({...stats});
-        // Match the usual Stage-12 pacing between searches; no repeated
-        // hits on the same company, and no delay after the final company.
+        if(consecutiveReview>=3){
+          stats.browserError="saby_consecutive_unverified_cards";
+          console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
+            JSON.stringify({code:"three_consecutive_reviews",action:"pause"}));
+          break;
+        }
+        // Match Stage12's pacing without adding a delay after last company.
         if(index+1<selected.length)await waitBetweenCompanies(delayMs);
       }
     },{env});
@@ -335,6 +385,6 @@ export async function runSabyFinanceBackfill({
     priority.commercial_postprocess=finalizeStage13CommercialOutput(result);
     snapshot={...snapshot,priority_stats:priority};
   }
-  await save(allVisited?"completed":"saby");
+  await save(allVisited&&stats.reviewExhausted===0?"completed":"saby");
   return {snapshot,stats:{...stats},childJobId};
 }
