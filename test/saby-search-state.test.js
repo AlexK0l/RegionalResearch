@@ -34,6 +34,26 @@ test("two visible provider service errors are systemic, not a company absence",(
     "uncertain");
 });
 
+test("two stable busy exact-INN samples after the search timeout are a systemic stall",()=>{
+  const busy={inputExact:true,explicitEmpty:false,
+    serviceError:false,spinnerVisible:true};
+  assert.equal(classifySabySearchZeroState(busy,busy),"loading_stalled");
+  assert.equal(classifySabySearchZeroState(busy,busy,
+    {onListRoute:false}),"uncertain");
+  for(const changed of [
+    {inputExact:false},{spinnerVisible:false},{explicitEmpty:true},
+    {serviceError:true}
+  ]){
+    assert.equal(classifySabySearchZeroState(busy,{...busy,...changed}),
+      "uncertain","a single non-busy or inconsistent sample must not be considered a stall");
+  }
+  assert.equal(classifySabySearchZeroState({...busy,spinnerVisible:false},
+    busy),"uncertain");
+  const explicit={...busy,explicitEmpty:true};
+  assert.equal(classifySabySearchZeroState(explicit,explicit),"uncertain",
+    "the visible empty banner with a spinner is ambiguous, never accepted as absence");
+});
+
 test("Saby DOM probe is self-contained in page.evaluate; never returns the INN or text",async()=>{
   const inn="4718000935";
   const input={
