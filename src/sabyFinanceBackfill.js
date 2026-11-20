@@ -11,6 +11,30 @@ import {withSabyBrowser,collectSabyFinancialsOnly} from "./sabyBrowser.js";
 export const FINANCE_REVENUE_FIELD="Выручка последнего подтвержденного года";
 export const FINANCE_EMPLOYEES_FIELD="Численность";
 const SECTIONS=["direct_buyers","intermediaries","leasing"];
+// One bounded in-session retry for temporary search/render failures. Failed
+// identity checks never authorize financial data. A reviewed company may
+// enter one later pass after the fresh/untested firms, then stays in review.
+export const FINANCE_REVIEW_MAX_PASSES=2;
+const TRANSIENT_SABY_CODES=new Set([
+  "search_scan_error","search_no_unique_result","card_render_timeout",
+  "browser_action_timeout"
+]);
+const NON_RETRYABLE_SABY_CODES=new Set([
+  "search_ambiguous","card_changed","search_input_failed"
+]);
+export function classifySabyFinanceFailure(error){
+  const code=String(error?.code||"");
+  if(TRANSIENT_SABY_CODES.has(code))
+    return {code,retryable:true};
+  if(NON_RETRYABLE_SABY_CODES.has(code))
+    return {code,retryable:false};
+  if(error?.name==="TimeoutError")
+    return {code:"browser_action_timeout",retryable:true};
+  if(error?.scope==="company")
+    return {code:"card_identity_unverified",retryable:false};
+  return {code:"collector_unavailable",retryable:false};
+}
+
 
 export function isSavedFinanceNumber(value){
   if(typeof value==="number")return Number.isSafeInteger(value)&&value>=0;
@@ -170,8 +194,19 @@ export async function runSabyFinanceBackfill({
   const sourcePlan=valid.plan;
   const attempted=new Set(Array.isArray(parent.saby_finance_backfill_attempted_inns)?
     parent.saby_finance_backfill_attempted_inns.map(sabyInn).filter(Boolean):[]);
-  const selected=sourcePlan.eligible.filter(entry=>
-    !attempted.has(entry.inn)&&(!target||entry.inn===target))
+  const reviewCounts={...(parent.saby_finance_backfill_review_attempts||{})};
+  const reviewCount=inn=>{
+    const n=Number(reviewCounts[inn]||0);
+    return Number.isSafeInteger(n)?Math.max(0,
+      Math.min(FINANCE_REVIEW_MAX_PASSES,n)):0;
+  };
+  const pending=()=>sourcePlan.eligible.filter(entry=>
+    !attempted.has(entry.inn)&&
+    reviewCount(entry.inn)<FINANCE_REVIEW_MAX_PASSES);
+  // A previously reviewed card may be rechecked at most once after fresh
+  // INNs; it must never monopolize the start of the regional queue.
+  const selected=pending().filter(entry=>!target||entry.inn===target)
+    .sort((a,b)=>reviewCount(a.inn)-reviewCount(b.inn))
     .slice(0,maxCompanies);
   if(target && selected.length!==1)
     throw new Error("FINANCE_BACKFILL_TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED");
@@ -189,8 +224,11 @@ export async function runSabyFinanceBackfill({
     missingEmployeesBefore:sourcePlan.missingEmployees,
     scheduled:selected.length,processed:0,
     revenueAdded:0,employeesAdded:0,
-    verified:0,review:0,unavailable:0,unchanged:0,
-    unvisited:sourcePlan.eligible.filter(x=>!attempted.has(x.inn)).length,
+    verified:0,review:0,unavailable:0,unchanged:0,retries:0,
+    unvisited:pending().length,
+    reviewRetryable:pending().filter(x=>reviewCount(x.inn)>0).length,
+    reviewExhausted:sourcePlan.eligible.filter(x=>
+      !attempted.has(x.inn)&&reviewCount(x.inn)>=FINANCE_REVIEW_MAX_PASSES).length,
     missingRevenueAfter:sourcePlan.missingRevenue,
     missingEmployeesAfter:sourcePlan.missingEmployees,
     browserError:""
@@ -205,23 +243,30 @@ export async function runSabyFinanceBackfill({
       parent.saby_finance_backfill_root_job_id||sourceJobId,
     saby_finance_backfill_attempted_inns:[...attempted],
     saby_finance_backfill_outcomes:outcomes,
+    saby_finance_backfill_review_attempts:reviewCounts,
     saby_finance_backfill_stats:stats
   };
   const save=async(phase="saby")=>{
     const after=planSabyFinanceBackfill(result);
     stats.missingRevenueAfter=after.missingRevenue;
     stats.missingEmployeesAfter=after.missingEmployees;
-    stats.unvisited=after.eligible.filter(entry=>!attempted.has(entry.inn)).length;
+    stats.unvisited=pending().length;
+    stats.reviewRetryable=pending().filter(x=>reviewCount(x.inn)>0).length;
+    stats.reviewExhausted=after.eligible.filter(x=>
+      !attempted.has(x.inn)&&
+      reviewCount(x.inn)>=FINANCE_REVIEW_MAX_PASSES).length;
     snapshot={...snapshot,phase,final_result:result,
       updated_at:new Date().toISOString(),
       saby_finance_backfill_attempted_inns:[...attempted],
       saby_finance_backfill_outcomes:{...outcomes},
+      saby_finance_backfill_review_attempts:{...reviewCounts},
       saby_finance_backfill_stats:{...stats}};
     await onCheckpoint(structuredClone(snapshot));
   };
   await save();
   if(!selected.length){
-    await save("completed");
+    // No new work does not mean that safety reviews were resolved.
+    await save(stats.reviewExhausted===0?"completed":"saby");
     return {snapshot,stats:{...stats},childJobId};
   }
   try{
