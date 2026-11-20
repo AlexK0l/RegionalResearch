@@ -81,7 +81,12 @@ test("Saby network counters report categories without leaking request details",(
   assert.equal(snapshot.submit.async_responses,1);
   assert.equal(snapshot.results.requests,1);
   assert.equal(snapshot.results.http_429,1);
+  assert.equal(snapshot.submit.http_2xx,1);
   assert.equal(snapshot.results.failed_requests,1);
+  const custom=blankSabyNetworkCounts();
+  updateSabyNetworkCounts(custom,"response",{status:404,asyncRequest:true});
+  assert.equal(custom.http_4xx_other,1);
+  assert.equal(custom.async_responses,1);
   assert.equal(snapshot.external_requests,1);
   assert.equal(snapshot.in_flight,0);
   assert.equal(snapshot.page_errors,1);
