@@ -29,6 +29,9 @@ def safe_cell_text(value,limit=32767):
 
 def put_text(cell,value):
     value=safe_cell_text(value)
+    # Do not serialize an empty inlineStr cell without its required <is>.
+    # Microsoft Excel normalizes these invalid blanks during repair.
+    if value=='':value=None
     cell.value=value
     # Untrusted source fields are data, not spreadsheet formulas. An
     # accidental leading '=' can otherwise produce a repairable Excel error.
