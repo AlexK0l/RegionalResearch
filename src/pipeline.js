@@ -10,6 +10,7 @@ import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalReca
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
+import { applyPreSabyFinancialFacts, preSabyFinancialCoverage } from "./preSabyFinancials.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
 import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
@@ -690,8 +691,17 @@ const ENRICHMENT_BATCH_SCHEMA = {
         "Выручка последнего подтвержденного года": { type: "string" },
         "Численность": { type: "string" }
       }, required: ["Управляющая компания", "Выручка последнего подтвержденного года", "Численность"] },
+      financial_facts: { type: "array", items: {
+        type: "object", additionalProperties: false, properties: {
+          field: { type: "string", enum: [
+            "Выручка последнего подтвержденного года", "Численность"
+          ] },
+          value: { type: "string" }, year: { type: "string" },
+          source_url: { type: "string" }, evidence_excerpt: { type: "string" }
+        }, required: ["field", "value", "year", "source_url", "evidence_excerpt"]
+      } },
       __comment: { type: "string" }
-    }, required: ["id", "fields", "__comment"]
+    }, required: ["id", "fields", "financial_facts", "__comment"]
   } } }, required: ["items"]
 };
 
@@ -1067,9 +1077,12 @@ statistics — ровно 8 показателей: население реги�
 
 function targetedSearchContract() {
   return `\n\nТОЧЕЧНОЕ ОБОГАЩЕНИЕ ОДНОЙ КОМПАНИИ — верни ТОЛЬКО JSON:
-{"fields":{},"__comment":""}.
+{"fields":{},"financial_facts":[],"__comment":""}.
 Ищи ТОЛЬКО указанную компанию и ТОЛЬКО перечисленные недостающие сведения.
+На этапе 10 ОБЯЗАТЕЛЬНО проверь выручку и численность до Saby: сначала официальный отчет/ГИР БО/ФНС, затем подтвержденную публичную карточку ТОГО ЖЕ ИНН.
 fields может содержать только: "Управляющая компания", "Выручка последнего подтвержденного года", "Численность".
+Каждую найденную выручку/численность ВСЕГДА продублируй отдельным элементом financial_facts: {"field":"...","value":"только целое число","year":"год для выручки, иначе пусто","source_url":"прямая HTTPS-ссылка","evidence_excerpt":"дословная выдержка источника с ИНН, названием показателя, числом и годом для выручки"}.
+Если не можешь привести такую выдержку именно об этом юридическом лице, не заполняй число ни в fields, ни в financial_facts. Не переносить показатели группы на дочернюю компанию. Ссылка без подтвержденной выдержки не является доказательством.
 ИНН на этом этапе НЕ ИЩИ и НЕ ИЗМЕНЯЙ: им владеет отдельный final-INN pass.
 Телефон и Руководитель / ЛПР на этом этапе НЕ ИЩИ: это отдельный этап 11.
 "__comment" должен содержать пять строк: Сайт/источник; ИНН; Деятельность; Холдинг/УК/группа; Email.
@@ -5533,30 +5546,15 @@ function compactEnrichmentTarget(row) {
   };
 }
 
-function strictResearchNumber(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? Math.round(value) : "";
-  const text = String(value ?? "").trim().replace(/\s+/g, "");
-  if (!/^\d+(?:[.,]\d+)?$/.test(text)) return "";
-  const parsed = Number(text.replace(",", "."));
-  return Number.isFinite(parsed) ? Math.round(parsed) : "";
-}
-
 function applyTargetedPatch(row, result) {
-  const allowed = new Set([
-    "Управляющая компания",
-    "Выручка последнего подтвержденного года",
-    "Численность"
-  ]);
-  for (const [key, value] of Object.entries(result?.fields || {})) {
-    if (!allowed.has(key)) continue;
-    if (value === undefined || value === null || String(value).trim() === "") continue;
-    if (key === "Выручка последнего подтвержденного года" || key === "Численность") {
-      const numeric = strictResearchNumber(value);
-      if (numeric !== "" && isMissingText(row[key])) row[key] = numeric;
-    } else if (!String(row[key] || "").trim() || /не подтвержд/i.test(String(row[key]))) {
-      row[key] = value;
-    }
+  // The model's bare numeric fields are NOT independent proof. Only values
+  // backed by a quoted exact-INN source (with revenue year) reach the CRM.
+  const manager=String(result?.fields?.["Управляющая компания"] || "").trim();
+  if(manager && (!String(row["Управляющая компания"] || "").trim() ||
+      /не подтвержд/i.test(String(row["Управляющая компания"])))) {
+    row["Управляющая компания"]=manager;
   }
+  applyPreSabyFinancialFacts(row,result);
   mergeResearchComment(row, String(result?.__comment || "").trim());
 }
 
@@ -8061,7 +8059,7 @@ ${JSON.stringify(groupBatch)}`,
         try {
           targetedSearches++;
           const result = await askJson(client, {
-            input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников) и __comment. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица. Если достоверное значение НЕ найдено, оставь его пустым: это завершённая проверка, а не ошибка, и повторного поиска не будет. Выполни не более ${ENRICHMENT_BATCH_MAX_TOOL_CALLS} web_search на весь пакет, верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
+            input: `ПАКЕТНОЕ ОБОГАЩЕНИЕ КОМПАНИЙ. РЕГИОН: ${region}. Компании уже проверены по ИНН. Для каждого id верни объект с id, fields (только УК, выручка целым числом рублей, численность целым числом сотрудников), financial_facts и __comment. Выручку и численность ПЕРВЫМИ проверяй до Saby по отчетности/ГИР БО/ФНС и публичным источникам конкретного ИНН. Каждое непустое финансовое значение продублируй в financial_facts как {"field":"полное имя колонки","value":"число без символов","year":"год для выручки, иначе пусто","source_url":"HTTPS-ссылка","evidence_excerpt":"дословная выдержка с ИНН, финансовым показателем, числом и годом для выручки"}. Без выдержки и года выручка не подтверждена — оставляй число пустым и financial_facts=[]. Не ищи ИНН, телефон и ЛПР. Не смешивай юрлица. Пустой результат — завершённая проверка, не ошибка. Выполни не более ${ENRICHMENT_BATCH_MAX_TOOL_CALLS} web_search на весь пакет, верни JSON. КОМПАНИИ: ${JSON.stringify(targets)}`,
             model: TARGETED_SEARCH_MODEL,
             maxOutputTokens: Math.max(TARGETED_SEARCH_MAX_OUTPUT_TOKENS, 4000),
             webSearch: true,
@@ -9183,6 +9181,10 @@ ${JSON.stringify(gaps)}
   finishStep(statuses[10]);
   statuses[10].detail =
     `выполнен · web-first ${googleCompanies.length - contactUnsearched.size} / ${googleCompanies.length} · отложено: ${contactUnsearched.size} · REVIEW: ${finalQuality.report.review_records} · QA: OK`;
+  // Finance is researched and checkpointed independently BEFORE Saby.
+  // Missing verified figures stay missing; Saby later supplements only.
+  const preSabyFinancialStats=preSabyFinancialCoverage(finalResult);
+  console.log("[PRE_SABY_FINANCIALS] "+JSON.stringify(preSabyFinancialStats));
   // The batcher flush above is not guaranteed to write if its last batch
   // already hit the flush threshold. Persist the *finished* Stage11, the
   // latest QA result, and the exact deferred/contact ledger unconditionally.
@@ -9190,6 +9192,7 @@ ${JSON.stringify(gaps)}
   await persistCheckpoint("contacts",{
     completed_stage:9,stage11_completed:true,
     final_result:finalResult,final_quality_gate:finalQuality.report,
+    pre_saby_financial_stats:preSabyFinancialStats,
     contact_completed_ids:[...contactCompleted],
     contact_primary_results:Object.fromEntries(primaryResults),
     contact_unsearched_ids:[...contactUnsearched],
