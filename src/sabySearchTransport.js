@@ -105,3 +105,18 @@ export function observeSabySearchTransport(page,inn){
   ACTIVE.set(page,self);
   return self;
 }
+
+
+// A silent Wasaby input occasionally accepts fill/Enter before the SPA
+// dispatches any first-party query. Retry the read-only search only once,
+// after a full observation window, and only when NO result rows exist.
+// An observed query, ambiguous candidate, changed route or prior recovery
+// must never trigger a speculative resubmission.
+export function shouldRecoverSilentSabySearch({
+  route="",reason="",observed=0,elapsedMs=0,
+  alreadyRecovered=false,exactTransportEvidence=null
+}={}){
+  return route==="list"&&reason==="not_found"&&observed===0&&
+    elapsedMs>=6500&&alreadyRecovered===false&&
+    exactTransportEvidence===false;
+}
