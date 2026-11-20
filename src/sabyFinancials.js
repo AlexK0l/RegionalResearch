@@ -128,29 +128,60 @@ let financeMissingDiagnostics=0;
 // This is a bounded attempt, not a claim that every firm has revenue. We
 // never use the banner alone to invent a fiscal year or amount.
 async function revealLazySabyFinance(page,inspect){
-  const diag={scroller:"unavailable",scroll_steps:0,finance_item:false};
+  const diag={scroller:"unavailable",scroll_steps:0,finance_item:false,
+    selection:"none",lookup_attempts:0};
   if(typeof page?.locator!=="function")return {snapshot:null,diag};
-  // The selector is grounded in the user's actual Saby 2026-11-20 HTML:
-  // [data-qa=controls-Scroll__content] -> .contractor-BaseInfoView ->
-  // [data-qa=item][item-key=finance] -> #finance.
-  let scroller,original,item;
+  // The user's captured Saby detail HTML places its main scroll node at
+  // [data-qa=contractorCard-dialog-Stack] >
+  //   ... .controls-SlidingPanel__scrollWrapper >
+  //   [data-qa=controls-Scroll__content].
+  // Do not filter by .contractor-BaseInfoView: that nested widget may be
+  // unmounted until this main scroll viewer is moved, which made the old
+  // locator unavailable precisely when finance was lazy-loaded.
+  const choices=[
+    ['profile_scroll',
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '.controls-SlidingPanel__scrollWrapper > '+
+      '[data-qa="controls-Scroll__content"]'],
+    ['dialog_scroll',
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '[data-qa="controls-Scroll__content"]']
+  ];
+  const wait=ms=>typeof page.waitForTimeout==="function"?
+    page.waitForTimeout(ms):new Promise(resolve=>setTimeout(resolve,ms));
+  let scroller=null,original=null,item=null;
+  // A mounted employee badge does not guarantee that the scroll wrapper has
+  // hydrated yet. Two bounded attempts; never inspect the global body scroller.
+  for(let attempt=0;attempt<2&&!scroller;attempt++){
+    diag.lookup_attempts++;
+    for(const [selection,selector] of choices){
+      try{
+        const candidate=page.locator(selector).first();
+        const position=await candidate.evaluate(el=>({
+          top:el.scrollTop,
+          max:Math.max(0,el.scrollHeight-el.clientHeight)
+        }),undefined,{timeout:2200});
+        if(!Number.isFinite(position?.top)||!Number.isFinite(position?.max))
+          continue;
+        scroller=candidate;
+        original=position;
+        diag.scroller=position.max>20?"scrollable":"static";
+        diag.selection=selection;
+        break;
+      }catch{
+        // A missing/virtualized wrapper is not a reason to scroll a
+        // different company's page or an unscoped document element.
+      }
+    }
+    if(!scroller&&attempt===0)await wait(450);
+  }
+  if(!scroller)return {snapshot:null,diag};
   try{
-    scroller=page.locator('[data-qa="controls-Scroll__content"]')
-      .filter({has:page.locator(".contractor-BaseInfoView")}).first();
     item=page.locator('[data-qa="item"][item-key="finance"]').first();
-    original=await scroller.evaluate(el=>({
-      top:el.scrollTop,
-      max:Math.max(0,el.scrollHeight-el.clientHeight)
-    }),undefined,{timeout:1800});
-    if(!Number.isFinite(original.top)||!Number.isFinite(original.max))
-      return {snapshot:null,diag};
-    diag.scroller=original.max>20?"scrollable":"static";
   }catch{
     return {snapshot:null,diag};
   }
   let snapshot=null;
-  const wait=ms=>typeof page.waitForTimeout==="function"?
-    page.waitForTimeout(ms):new Promise(resolve=>setTimeout(resolve,ms));
   try {
     // A mounted item can be brought into view directly. When virtualization
     // has not yet mounted it, sweep a few positions through the card scroller.
@@ -310,7 +341,9 @@ export async function readSabyFinancials(page){
       code,years:snapshot.years.length,rows:snapshot.revenueRows.length,
       finance_nodes:snapshot.financeNodes||0,
       finance_item:!!snapshot.financeItemMounted,
-      scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps
+      scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps,
+      scroll_selection:lazyDiag.selection||"none",
+      scroll_lookup_attempts:lazyDiag.lookup_attempts||0
     }));
   }
   return result;
