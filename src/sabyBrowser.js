@@ -1081,6 +1081,21 @@ async function collectSabyCompanyAttempt(page, row, settings) {
   return result;
 }
 
+// Finance scroll can remount DOM or move non-UI query parameters.
+// The exact private card ID must remain the same throughout the read.
+export function sameSabyDetailId(before,after){
+  try{
+    const a=new URL(String(before||""));
+    const b=new URL(String(after||""));
+    return a.protocol==="https:"&&b.protocol==="https:"&&
+      a.hostname==="profile.saby.ru"&&b.hostname==="profile.saby.ru"&&
+      a.pathname==="/page/contractor-info"&&
+      b.pathname==="/page/contractor-info"&&
+      Boolean(a.searchParams.get("id"))&&
+      a.searchParams.get("id")===b.searchParams.get("id");
+  }catch{return false;}
+}
+
 // Financial-only acceptance for an already known INN/name. Uses the same
 // strict Saby identity verification as Stage 12 and never opens fleet or
 // contact overlays. Intended only for one-company smoke runs; the normal
@@ -1090,6 +1105,9 @@ export async function collectSabyFinancialsOnly(page, row, settings = sabyBrowse
   await waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000));
   const source_url=page.url();
   const financials=await readSabyFinancials(page);
+  if(!sameSabyDetailId(source_url,page.url()))
+    throw new SabyReview("Saby: карточка изменилась во время финансовой проверки",
+      {scope:"company"});
   return {
     identity,source:"SABY",source_url,
     collected_at:new Date().toISOString(),
