@@ -119,8 +119,87 @@ export function validSabyFinancialEvidence(data){
  */
 let financeMissingDiagnostics=0;
 
-// Re-read only already-open, verified card DOM. No clicks or navigation.
-// Some finance grids render after the employee badge or as nested cells.
+// Saby's contractor card uses an internal scroll viewer and may not mount
+// its bottom "finance" item until the user scrolls the verified detail card.
+// A normal DOM/polling read then reports no_heading despite an available
+// annual table. Scroll ONLY the existing contractor viewer, never the list,
+// a linked counterparty, or an external page, and restore its position.
+//
+// This is a bounded attempt, not a claim that every firm has revenue. We
+// never use the banner alone to invent a fiscal year or amount.
+async function revealLazySabyFinance(page,inspect){
+  const diag={scroller:"unavailable",scroll_steps:0,finance_item:false};
+  if(typeof page?.locator!=="function")return {snapshot:null,diag};
+  // The selector is grounded in the user's actual Saby 2026-11-20 HTML:
+  // [data-qa=controls-Scroll__content] -> .contractor-BaseInfoView ->
+  // [data-qa=item][item-key=finance] -> #finance.
+  const scroller=page.locator('[data-qa="controls-Scroll__content"]')
+    .filter({has:page.locator(".contractor-BaseInfoView")}).first();
+  let original;
+  try{
+    original=await scroller.evaluate(el=>({
+      top:el.scrollTop,
+      max:Math.max(0,el.scrollHeight-el.clientHeight)
+    }),{timeout:1800});
+    if(!Number.isFinite(original.top)||!Number.isFinite(original.max))
+      return {snapshot:null,diag};
+    diag.scroller=original.max>20?"scrollable":"static";
+  }catch{
+    return {snapshot:null,diag};
+  }
+  const item=page.locator('[data-qa="item"][item-key="finance"]').first();
+  let snapshot=null;
+  const wait=ms=>typeof page.waitForTimeout==="function"?
+    page.waitForTimeout(ms):new Promise(resolve=>setTimeout(resolve,ms));
+  try {
+    // A mounted item can be brought into view directly. When virtualization
+    // has not yet mounted it, sweep a few positions through the card scroller.
+    // No arbitrary document.body scroll and no clicks on unrelated panels.
+    for(const fraction of [0.5,1,0.75,0.25]){
+      let moved=false;
+      if(diag.scroll_steps===0 && await item.count().catch(()=>0)>0){
+        diag.finance_item=true;
+        try{
+          await item.scrollIntoViewIfNeeded({timeout:1800});
+          moved=true;
+        }catch{
+          // A detached/hidden virtual item may need a scroll sweep instead.
+        }
+      }
+      if(!moved){
+        if(original.max<=20)break;
+        try{
+          await scroller.evaluate((el,part)=>{
+            const max=Math.max(0,el.scrollHeight-el.clientHeight);
+            el.scrollTop=Math.round(max*part);
+          },fraction,{timeout:1800});
+        }catch{
+          diag.scroller="scroll_failed";
+          break;
+        }
+      }
+      diag.scroll_steps++;
+      await wait(550);
+      try{snapshot=await inspect();}
+      catch{break;}
+      if(snapshot?.financeHeadings>0 && snapshot?.years?.length>0 &&
+         snapshot?.revenueRows?.length>0)break;
+    }
+  }finally{
+    try{
+      // Keep original interaction context for the following contacts and
+      // fleet readers even if the finance block failed to hydrate.
+      await scroller.evaluate((el,top)=>{el.scrollTop=top;},original.top,
+        {timeout:1500});
+    }catch{
+      diag.scroller="restore_failed";
+    }
+  }
+  return {snapshot,diag};
+}
+
+// Re-read only the already-verified card. A bounded in-card scroll is allowed
+// when Saby has not yet mounted the bottom finance section; no new search.
 export async function readSabyFinancials(page){
   const inspect=()=>page.evaluate(() => {
     const text=el=>(el?.textContent||"").replace(/\s+/gu," ").trim();
@@ -136,7 +215,8 @@ export async function readSabyFinancials(page){
 
     // "analytics-finanalysis" can wrap an entire widget; its textContent
     // then contains labels, years and figures, not only the heading.
-    const headings=[...document.querySelectorAll('[data-qa="analytics-finanalysis"]')]
+    const financeNodes=[...document.querySelectorAll('[data-qa="analytics-finanalysis"]')];
+    const headings=financeNodes
       .filter(el=>visible(el)&&/Выручк\p{L}*\s*\/\s*Финанс/iu.test(text(el)));
     const containers=headings.map(heading=>
       heading.closest?.(".analytics-FinAnalysis__margin") ||
@@ -189,7 +269,10 @@ export async function readSabyFinancials(page){
       }
     }
     return {employeeTexts:employees,banner,years,reportScale,revenueRows,
-      financeHeadings:headings.length,reportFound:Boolean(report)};
+      financeHeadings:headings.length,financeNodes:financeNodes.length,
+      financeItemMounted:Boolean(document.querySelector(
+        '[data-qa="item"][item-key="finance"]')),
+      reportFound:Boolean(report)};
   });
 
   let snapshot=await inspect();
@@ -204,15 +287,30 @@ export async function readSabyFinancials(page){
     snapshot=await inspect();
     result=parseSabyFinancialSnapshot(snapshot);
   }
+  // A visible employee badge does not mean the bottom finance card
+  // is mounted. Try the verified company's own bounded scroll viewer.
+  let lazyDiag={scroller:"not_needed",scroll_steps:0,finance_item:false};
+  if(result.revenue_rub===null && !snapshot.financeHeadings){
+    const attempted=await revealLazySabyFinance(page,inspect);
+    lazyDiag=attempted.diag;
+    if(attempted.snapshot){
+      snapshot=attempted.snapshot;
+      result=parseSabyFinancialSnapshot(snapshot);
+    }
+  }
   if(result.revenue_rub===null&&financeMissingDiagnostics<12){
     financeMissingDiagnostics++;
-    const code=!snapshot.financeHeadings?"no_heading":
+    const code=!snapshot.financeHeadings?
+        (snapshot.financeNodes?"heading_hidden":"no_heading"):
       !snapshot.reportFound?"no_report":
       !snapshot.years.length?"no_years":
       !snapshot.revenueRows.length?"no_2110_row":"year_value_or_banner_mismatch";
-    // No company text, INN, URL, raw HTML, auth token or profile details.
+    // Counts/flags only: no company name, INN, URL, DOM, session data.
     console.warn("[SABY_FINANCIAL_DIAG] "+JSON.stringify({
-      code,years:snapshot.years.length,rows:snapshot.revenueRows.length
+      code,years:snapshot.years.length,rows:snapshot.revenueRows.length,
+      finance_nodes:snapshot.financeNodes||0,
+      finance_item:!!snapshot.financeItemMounted,
+      scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps
     }));
   }
   return result;
