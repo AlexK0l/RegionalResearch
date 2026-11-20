@@ -20,7 +20,8 @@ const TRANSIENT_SABY_CODES=new Set([
   "browser_action_timeout"
 ]);
 const NON_RETRYABLE_SABY_CODES=new Set([
-  "search_ambiguous","card_changed","search_input_failed"
+  "search_ambiguous","card_changed","search_input_failed",
+  "search_confirmed_empty","search_service_unavailable"
 ]);
 export function classifySabyFinanceFailure(error){
   const code=String(error?.code||"");
@@ -412,21 +413,32 @@ export async function runSabyFinanceBackfill({
             ...(safeReason?{reason:safeReason}:{})};
         }catch(error){
           const failure=classifySabyFinanceFailure(error);
-          // Systemic Saby search failures pause this batch, rather than
-          // incorrectly treating hundreds of unvisited firms as reviewed.
-          if(["search_input_failed","search_scan_error"].includes(failure.code)){
+          // Only a STABLE, explicit first-party "no results" message
+          // for the exact query may be treated as an unavailable Saby
+          // source. No identity is inferred; no finance value is written.
+          if(failure.code==="search_confirmed_empty"){
+            stats.unavailable++;
+            outcome={status:"missing",reason:"saby_no_results"};
+            console.info("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+              code:"search_confirmed_empty",scope:"company",action:"skip_unavailable"
+            }));
+          }else if(["search_input_failed","search_scan_error",
+            "search_service_unavailable"].includes(failure.code)){
+            // Systemic search failure pauses this batch BEFORE consuming
+            // any current INN. Previously saved records stay intact.
             stats.browserError="saby_search_unavailable";
             console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
               code:failure.code,scope:"systemic",action:"pause"
             }));
             break;
+          }else{
+            // Never log raw Playwright errors, company names or profile URLs.
+            stats.review++;
+            outcome={status:"review",reason:failure.code};
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+              code:failure.code,scope:"company",action:"defer"
+            }));
           }
-          // Never log the raw Playwright error, company name or profile URL.
-          stats.review++;
-          outcome={status:"review",reason:failure.code};
-          console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
-            code:failure.code,scope:"company",action:"defer"
-          }));
         }
         outcomes[entry.inn]={
           ...outcome,
