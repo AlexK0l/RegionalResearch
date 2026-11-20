@@ -23,6 +23,7 @@ async function main(){
       '--region="Ленинградская область"\n'+
       "  To run one company, add: --run --limit=1\n"+
       "  To pin an exact saved source, add: --checkpoint=UUID\n"+
+      "  To test one eligible firm: --target-inn=4718000935 --limit=1\n"+
       "No OpenAI, no fleet or contacts. New SQLite child checkpoint; "+
       "original remains unchanged."
     );
@@ -43,6 +44,9 @@ async function main(){
      Number(rawLimit)>10000)
     throw new Error("--limit должен быть целым числом от 1 до 10000");
   const limit=Number(rawLimit);
+  const targetInn=option(args,"target-inn");
+  if(targetInn&&(!/^(?:\d{10}|\d{12})$/.test(targetInn)||limit!==1))
+    throw new Error("--target-inn требует ИНН из 10/12 цифр и --limit=1");
   const doRun=args.includes("--run");
   // Imported AFTER choosing the persistent DB path to prevent creating an
   // independent copy inside a Git worktree.
@@ -84,6 +88,8 @@ async function main(){
     chosen.saby_finance_backfill_attempted_inns:[]);
   const plan=planSabyFinanceBackfill(chosen.final_result);
   const unvisited=plan.eligible.filter(e=>!attempted.has(e.inn)).length;
+  if(targetInn && !plan.eligible.some(e=>e.inn===targetInn&&!attempted.has(e.inn)))
+    throw new Error("FINANCE_BACKFILL_TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED");
   console.log("[SABY_FINANCE_BACKFILL_PLAN] "+JSON.stringify({
     region:chosen.region,source_checkpoint:sourceId,
     source_mode:String(chosen.source_mode||"full"),
@@ -94,7 +100,8 @@ async function main(){
     unvisited,excluded_invalid:plan.invalid,
     excluded_duplicate_inn:plan.duplicate,
     already_complete:plan.alreadyComplete,
-    scheduled:Math.min(unvisited,limit),
+    scheduled:targetInn?1:Math.min(unvisited,limit),
+    ...(targetInn?{target_inn:targetInn}:{}),
     openai_requests:0
   }));
   if(!doRun) {
@@ -117,7 +124,7 @@ async function main(){
   };
   const {stats}=await runSabyFinanceBackfill({
     checkpoint:chosen,sourceJobId:sourceId,childJobId:childId,
-    maxCompanies:limit,env,
+    maxCompanies:limit,targetInn,env,
     onCheckpoint:cp=>saveCheckpoint(childId,cp),
     onProgress:s=>console.log("[SABY_FINANCE_BACKFILL_PROGRESS] "+
       JSON.stringify({processed:s.processed,scheduled:s.scheduled,
