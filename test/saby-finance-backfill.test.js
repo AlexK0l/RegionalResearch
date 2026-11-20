@@ -4,7 +4,8 @@ import {
   FINANCE_REVENUE_FIELD as REV,
   FINANCE_EMPLOYEES_FIELD as STAFF,
   planSabyFinanceBackfill,applySabyFinanceBackfill,
-  validateFinanceBackfillCheckpoint,runSabyFinanceBackfill
+  validateFinanceBackfillCheckpoint,runSabyFinanceBackfill,
+  recoverLegacyFinanceReview,classifySabyFinanceFailure
 } from "../src/sabyFinanceBackfill.js";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
@@ -465,4 +466,41 @@ test("three consecutive non-retryable identity failures stop a large finance bat
   assert.equal(out.stats.unvisited,1);
   assert.equal(out.snapshot.phase,"saby");
   assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+});
+
+test("legacy one-card review is recovered for another bounded pass without changing persisted source",()=>{
+  const parent=checkpoint([row("4718000935","Волховское, АО","",119)]);
+  const child={...structuredClone(parent),source_mode:"saby",phase:"saby",
+    saby_finance_backfill_source_job_id:UUID1,
+    saby_finance_backfill_attempted_inns:["4718000935"],
+    saby_finance_backfill_stats:{processed:1,review:1,revenueAdded:0,
+      employeesAdded:0,unavailable:0,verified:0}
+  };
+  const before=JSON.stringify(child);
+  const restored=recoverLegacyFinanceReview(child,{...parent,id:UUID1});
+  assert.equal(restored.recovered,1);
+  assert.deepEqual(restored.checkpoint.saby_finance_backfill_attempted_inns,[]);
+  assert.equal(restored.checkpoint.saby_finance_backfill_review_attempts["4718000935"],1);
+  assert.equal(restored.checkpoint.saby_finance_backfill_outcomes["4718000935"].status,"review");
+  assert.equal(restored.checkpoint.final_result.direct_buyers[0][REV],"");
+  assert.equal(JSON.stringify(child),before);
+  assert.equal(recoverLegacyFinanceReview(child,{...parent,id:UUID3}).recovered,0);
+  assert.equal(recoverLegacyFinanceReview({...child,
+    saby_finance_backfill_stats:{...child.saby_finance_backfill_stats,processed:2}},
+    {...parent,id:UUID1}).recovered,0);
+  assert.equal(recoverLegacyFinanceReview({...child,
+    saby_finance_backfill_outcomes:{"4718000935":{status:"review"}}},
+    {...parent,id:UUID1}).recovered,0);
+});
+
+test("finance search errors are classified without leaking private error messages",()=>{
+  assert.deepEqual(classifySabyFinanceFailure(
+    safeSabyFailure("search_no_unique_result")),{code:"search_no_unique_result",retryable:true});
+  assert.deepEqual(classifySabyFinanceFailure(
+    safeSabyFailure("search_ambiguous")),{code:"search_ambiguous",retryable:false});
+  assert.deepEqual(classifySabyFinanceFailure(
+    Object.assign(new Error("Private URL embedded"),{name:"TimeoutError"})),
+    {code:"browser_action_timeout",retryable:true});
+  assert.deepEqual(classifySabyFinanceFailure(new Error("Private URL embedded")),
+    {code:"collector_unavailable",retryable:false});
 });
