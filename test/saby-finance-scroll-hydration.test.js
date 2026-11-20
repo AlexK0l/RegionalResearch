@@ -6,11 +6,12 @@ const visible=(value,extra={})=>({
   textContent:value,isConnected:true,getClientRects:()=>[{}],...extra
 });
 
-function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=true}={}){
+function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=true,
+  employeeUnmountsAfterScroll=false,initialRestoreFails=false}={}){
   let financeMounted=false;
   let reads=0;
   let waits=0;
-  let itemClicks=0;
+  let itemClicks=0,restoreFailures=initialRestoreFails?1:0;
   const scrollPositions=[],lookedUp=[];
   const scroller={
     position:0,clientHeight:800,scrollHeight:2400,
@@ -43,7 +44,8 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=tru
   const employee=visible("119",{closest:()=>visible("119 сотрудников")});
   const document={
     querySelectorAll(selector){
-      if(selector==='[data-qa="ContractorCard_Employees"]')return [employee];
+      if(selector==='[data-qa="ContractorCard_Employees"]')
+        return employeeUnmountsAfterScroll&&financeMounted?[]:[employee];
       if(selector==='[data-qa="contractorCard-CardRatingBanner__Revenue"]')
         return [visible("Выручка: 440.1 млн ₽")];
       if(selector==='[data-qa="analytics-finanalysis"]')
@@ -57,6 +59,10 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=tru
     first(){return this;},
     evaluate:async(fn,arg)=>{
       if(!canScroll)throw new Error("scroller not attached");
+      if(restoreFailures>0&&String(fn).includes("el.scrollTop=top")){
+        restoreFailures--;
+        throw new Error("scroll node detached");
+      }
       return fn(scroller,arg);
     }
   };
@@ -167,4 +173,26 @@ test("Saby scoped scroll selectors do not depend on unmounted contractor-BaseInf
   assert.equal((await readSabyFinancials(page)).revenue_rub,440100000);
   assert.equal(metrics().lookedUp.some(x=>x.includes(".contractor-BaseInfoView")),false);
   assert.equal(metrics().lookedUp.some(x=>x.includes('body')),false);
+});
+
+test("verified employees survive virtualization after scrolling to the financial table",async()=>{
+  const {page,metrics}=lazyFinanceCard({employeeUnmountsAfterScroll:true});
+  const result=await readSabyFinancials(page);
+  assert.equal(result.revenue_rub,440100000);
+  assert.equal(result.revenue_year,2025);
+  assert.equal(result.employees,119);
+  assert.equal(metrics().scrollTop,0);
+});
+
+test("detached Saby scroll node can be reacquired to restore the original position",async()=>{
+  const {page,metrics}=lazyFinanceCard({initialRestoreFails:true});
+  const original=console.warn;
+  console.warn=()=>{};
+  try{
+    const result=await readSabyFinancials(page);
+    assert.equal(result.revenue_rub,440100000);
+    assert.equal(result.employees,119);
+    assert.equal(metrics().scrollTop,0);
+    assert.deepEqual(metrics().scrollPositions,[800,0]);
+  }finally{console.warn=original;}
 });
