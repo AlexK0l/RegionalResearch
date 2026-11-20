@@ -158,6 +158,47 @@ export function applySabyFinanceBackfill(row,record){
   return {status:"updated",revenueAdded,employeesAdded};
 }
 
+// Early PR #103 versions incorrectly marked review-only cards "attempted".
+// Recover the EXACT one-card reviewed delta from its immutable parent. Do not
+// infer identity for a multi-card or mixed successful/reviewed pass.
+export function recoverLegacyFinanceReview(child,parent){
+  const unchanged={checkpoint:child,recovered:0};
+  if(!child||!parent||child?.saby_finance_backfill_outcomes||
+     String(child.saby_finance_backfill_source_job_id||"")!==
+       String(parent.id||""))
+    return unchanged;
+  const stats=child.saby_finance_backfill_stats||{};
+  if(stats.processed!==1||stats.review!==1||
+     Number(stats.revenueAdded||0)!==0||
+     Number(stats.employeesAdded||0)!==0||
+     Number(stats.unavailable||0)!==0||
+     Number(stats.verified||0)!==0)
+    return unchanged;
+  const prior=new Set(Array.isArray(parent.saby_finance_backfill_attempted_inns)?
+    parent.saby_finance_backfill_attempted_inns.map(sabyInn).filter(Boolean):[]);
+  const current=Array.isArray(child.saby_finance_backfill_attempted_inns)?
+    child.saby_finance_backfill_attempted_inns.map(sabyInn).filter(Boolean):[];
+  const added=current.filter(inn=>!prior.has(inn));
+  if(added.length!==1 || current.length!==prior.size+1)return unchanged;
+  const inn=added[0];
+  // Only restore an INN that still exists, uniquely, with missing finance.
+  const eligible=planSabyFinanceBackfill(child.final_result).eligible;
+  const target=eligible.find(x=>x.inn===inn);
+  if(!target)return unchanged;
+  const normalized=structuredClone(child);
+  normalized.saby_finance_backfill_attempted_inns=current.filter(x=>x!==inn);
+  normalized.saby_finance_backfill_review_attempts={
+    ...(child.saby_finance_backfill_review_attempts||{}),[inn]:1
+  };
+  normalized.saby_finance_backfill_outcomes={
+    ...(child.saby_finance_backfill_outcomes||{}),
+    [inn]:{status:"review",reason:"legacy_review_unclassified",
+      revenueStillMissing:target.missingRevenue,
+      employeesStillMissing:target.missingEmployees}
+  };
+  return {checkpoint:normalized,recovered:1};
+}
+
 export function validateFinanceBackfillCheckpoint(source){
   const mode=String(source?.source_mode||"full");
   if(!source||source.version!==1||!source.region||
