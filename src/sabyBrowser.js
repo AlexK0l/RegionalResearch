@@ -1081,6 +1081,23 @@ async function collectSabyCompanyAttempt(page, row, settings) {
   return result;
 }
 
+// Financial-only acceptance for an already known INN/name. Uses the same
+// strict Saby identity verification as Stage 12 and never opens fleet or
+// contact overlays. Intended only for one-company smoke runs; the normal
+// collection path is unchanged.
+export async function collectSabyFinancialsOnly(page, row, settings = sabyBrowserSettings()) {
+  const identity=await openCompany(page,row,settings);
+  await waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000));
+  const source_url=page.url();
+  const financials=await readSabyFinancials(page);
+  return {
+    identity,source:"SABY",source_url,
+    collected_at:new Date().toISOString(),
+    contacts:{phones:[],emails:[],status:"missing"},
+    trucks:{status:"missing"},financials,errors:[]
+  };
+}
+
 export async function collectSabyCompany(page, row, settings = sabyBrowserSettings()) {
   return recoverSabyMissingSections(
     ()=>collectSabyCompanyAttempt(page,row,settings), {
