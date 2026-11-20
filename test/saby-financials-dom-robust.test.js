@@ -18,7 +18,9 @@ function fakePage({hydrateAfter=0,includeRevenue=true,
   let readCount=0,waitCount=0;
   const rows=[];
   function tableRow(cells) {
-    const row=visible("",{querySelectorAll(selector) {
+    // The supplied 2026-11-20 Saby GridReact HTML uses tw-contents, so
+    // its [data-qa=row] does not own a bounding box despite visible cells.
+    const row=visible("",{getClientRects:()=>[],querySelectorAll(selector) {
       if(selector!=='[data-qa="cell"]')return [];
       return cells.map(cell=>visible(cell,nestedCells?{
         closest:q=>q==='[data-qa="row"]'?row:null
