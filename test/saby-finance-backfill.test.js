@@ -594,3 +594,72 @@ test("previously verified real Saby smoke can be imported without another browse
     assert.throws(()=>verifiedSabyFinanceFromSmoke(sample,"4718000935"),
       /FINANCE_BACKFILL_SMOKE_NOT_VERIFIED/);
 });
+
+
+test("only confirmed no-results searches count as unavailable and allow the next INN",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО","",119),
+    row("7707083893","Сбербанк, ПАО")
+  ]);
+  const original=JSON.stringify(parent);
+  const seen=[],snapshots=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:2,
+    sessionRunner:async fn=>fn({page:{},settings:{}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      seen.push(subject["ИНН"]);
+      if(subject["ИНН"]==="4718000935")
+        throw safeSabyFailure("search_confirmed_empty");
+      return record("7707083893","Сбербанк, ПАО");
+    },
+    onCheckpoint:async cp=>snapshots.push(cp)
+  });
+  assert.deepEqual(seen,["4718000935","7707083893"]);
+  assert.equal(out.stats.processed,2);
+  assert.equal(out.stats.unavailable,1);
+  assert.equal(out.stats.verified,1);
+  assert.equal(out.stats.revenueAdded,1);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.unvisited,0);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(out.snapshot.phase,"completed");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["4718000935","7707083893"]);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_outcomes["4718000935"],{
+    status:"missing",reason:"saby_no_results",
+    revenueStillMissing:true,employeesStillMissing:false
+  });
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],"");
+  assert.equal(out.snapshot.final_result.direct_buyers[0][STAFF],119);
+  assert.equal(out.snapshot.final_result.direct_buyers[1][REV],440100000);
+  assert.equal(JSON.stringify(parent),original);
+  assert.equal(snapshots.length>=3,true);
+});
+
+test("Saby service unavailability pauses before consuming any further legal INN",async()=>{
+  const parent=checkpoint([
+    row(),row("7707083893","Сбербанк, ПАО")
+  ]);
+  const original=JSON.stringify(parent);
+  let calls=0;
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:2,
+    sessionRunner:async fn=>fn({page:{},settings:{}}),
+    collectCompany:async()=>{
+      calls++;
+      throw safeSabyFailure("search_service_unavailable","systemic");
+    }
+  });
+  assert.equal(calls,1,"site error cannot trigger a speculative second search");
+  assert.equal(out.stats.processed,0);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.unavailable,0);
+  assert.equal(out.stats.unvisited,2);
+  assert.equal(out.stats.browserError,"saby_search_unavailable");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+  assert.equal(out.snapshot.phase,"saby");
+  assert.equal(JSON.stringify(parent),original);
+});

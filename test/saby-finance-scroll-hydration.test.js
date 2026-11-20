@@ -7,11 +7,13 @@ const visible=(value,extra={})=>({
 });
 
 function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=true,
-  employeeUnmountsAfterScroll=false,initialRestoreFails=false}={}){
+  employeeUnmountsAfterScroll=false,initialRestoreFails=false,
+  scrollMoveFailures=0}={}){
   let financeMounted=false;
   let reads=0;
   let waits=0;
   let itemClicks=0,restoreFailures=initialRestoreFails?1:0;
+  let moveFailures=scrollMoveFailures;
   const scrollPositions=[],lookedUp=[];
   const scroller={
     position:0,clientHeight:800,scrollHeight:2400,
@@ -62,6 +64,10 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=tru
       if(restoreFailures>0&&String(fn).includes("el.scrollTop=top")){
         restoreFailures--;
         throw new Error("scroll node detached");
+      }
+      if(moveFailures>0&&String(fn).includes("el.scrollTop=Math.round")){
+        moveFailures--;
+        throw new Error("scroll wrapper remounted");
       }
       return fn(scroller,arg);
     }
@@ -194,5 +200,42 @@ test("detached Saby scroll node can be reacquired to restore the original positi
     assert.equal(result.employees,119);
     assert.equal(metrics().scrollTop,0);
     assert.deepEqual(metrics().scrollPositions,[800,0]);
+  }finally{console.warn=original;}
+});
+
+test("Wasaby finance scroll recovers one transient wrapper remount in same verified card",async()=>{
+  const {page,metrics}=lazyFinanceCard({scrollMoveFailures:1});
+  const original=console.warn;
+  console.warn=()=>{};
+  try{
+    const facts=await readSabyFinancials(page);
+    assert.equal(facts.revenue_rub,440100000);
+    assert.equal(facts.revenue_year,2025);
+    assert.equal(facts.employees,119);
+    assert.equal(metrics().scrollTop,0);
+    assert.deepEqual(metrics().scrollPositions,[800,0]);
+    assert.equal(metrics().itemClicks,0);
+    assert.ok(metrics().lookedUp.every(x=>
+      x.includes('[data-qa="contractorCard-dialog-Stack"]')||
+      x.includes('item-key="finance"')),
+      "reacquisition remains inside the known contractor card");
+  }finally{console.warn=original;}
+});
+
+test("two consecutive finance scroll failures remain safely missing, never invent revenue",async()=>{
+  const {page,metrics}=lazyFinanceCard({scrollMoveFailures:3});
+  const original=console.warn,diag=[];
+  console.warn=x=>diag.push(x);
+  try{
+    const facts=await readSabyFinancials(page);
+    assert.equal(facts.revenue_rub,null);
+    assert.equal(facts.revenue_year,null);
+    assert.equal(facts.employees,119);
+    assert.equal(metrics().scrollTop,0);
+    assert.equal(metrics().itemClicks,0);
+    assert.equal(diag.length,1);
+    assert.match(diag[0],/"scroll":"scroll_failed"/);
+    assert.match(diag[0],/"scroll_retries":1/);
+    assert.doesNotMatch(diag[0],/company-list-prof|4718000935|440\.1/);
   }finally{console.warn=original;}
 });

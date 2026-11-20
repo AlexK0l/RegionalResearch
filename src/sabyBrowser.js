@@ -6,6 +6,8 @@ import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { readSabyFinancials } from "./sabyFinancials.js";
 import { submitSabyCompanySearch } from "./sabySearch.js";
+import {readSabySearchState,classifySabySearchZeroState}
+  from "./sabySearchState.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
@@ -54,7 +56,8 @@ export class SabyReview extends Error {
     // Machine-readable, privacy-safe reason for bounded Stage12 recovery.
     this.code=new Set(["review","search_scan_error","search_no_unique_result",
       "search_ambiguous","card_render_timeout","card_changed",
-      "search_input_failed"]).has(code)?code:"review";
+      "search_input_failed","search_confirmed_empty",
+      "search_service_unavailable"]).has(code)?code:"review";
   }
 }
 
@@ -324,6 +327,37 @@ async function openCompany(page, row, settings) {
     await delay(450);
   }
   if(rows.length!==1){
+    // "observed:0" means our scanner saw no result rows; it cannot
+    // independently tell an explicit Saby zero-results message from an
+    // unhydrated/blocked list. Check two bounded, visible DOM samples.
+    if(publicFallback&&selection==="not_found"&&
+       Number(lastSelected?.observed)===0){
+      let classification="uncertain",sampleA=null,sampleB=null;
+      try{
+        sampleA=await readSabySearchState(page,inn);
+        await delay(500);
+        sampleB=await readSabySearchState(page,inn);
+        classification=classifySabySearchZeroState(sampleA,sampleB,{
+          onListRoute:sabyCardRoute(page.url())==="list"
+        });
+      }catch{
+        classification="probe_error";
+      }
+      console.warn("[SABY_SEARCH_ZERO_DIAG] "+JSON.stringify({
+        state:classification,
+        input_exact:sampleB?.inputExact===true,
+        empty_message:sampleB?.explicitEmpty===true,
+        busy:sampleB?.spinnerVisible===true,
+        service_error:sampleB?.serviceError===true,
+        route_list:sabyCardRoute(page.url())==="list"
+      }));
+      if(classification==="service_unavailable")
+        throw new SabyReview("Saby: сервис поиска временно недоступен",
+          {code:"search_service_unavailable"});
+      if(classification==="confirmed_empty")
+        throw new SabyReview("Saby: явное сообщение об отсутствии результатов",
+          {scope:"company",code:"search_confirmed_empty"});
+    }
     // The previous backfill log showed only [SABY_SEARCH] before a generic
     // review. Distinguish a blank/late result grid from identity rejection.
     // No INN, names, URLs or page text are emitted.
@@ -1155,27 +1189,39 @@ async function openSavedSabyFinanceCard(page,row,settings){
   if(!url)return null;
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
+  let reason="not_verified";
   try{
     await page.goto(url,{waitUntil:"commit",timeout:settings.timeoutMs});
-    const limit=Date.now()+Math.min(4500,settings.timeoutMs);
+    // Private details and their scoped requisites may mount slowly as
+    // Wasaby replaces the card. Wait boundedly, without trusting a URL.
+    const limit=Date.now()+Math.min(8500,settings.timeoutMs);
     do{
-      if(!sameSabyDetailId(url,page.url()))break;
+      if(!sameSabyDetailId(url,page.url())){
+        reason="route_changed";
+        break;
+      }
       try{
         const assessment=await verifySabyCard(page,inn,name);
         if(assessment.ok&&assessment.detail?.hasScopedInn){
           console.info("[SABY_FINANCE_SAVED_CARD] verified");
           return {inn,name:assessment.verifiedName,verified:true};
         }
+        // Only allowlisted classification; never emit raw names or page DOM.
+        const candidate=String(assessment.reason||"");
+        reason=new Set(["no_scoped_inn","no_scoped_inn_kpp",
+          "legal_name_not_verified","not_detail_page",
+          "detail_loading","inn_not_verified","title_missing"]).has(candidate)?
+          candidate:"not_verified";
       }catch{
-        // Keep the strict identity gate closed during slow Wasaby hydration.
+        reason="verify_unavailable";
       }
       await delay(400);
     }while(Date.now()<limit);
   }catch{
-    // Stale saved link or a transient navigation failure; standard exact-INN
-    // search remains the only fallback, never inferred identity.
+    reason="navigation_unavailable";
   }
   console.info("[SABY_FINANCE_SAVED_CARD] not_verified_fallback_search");
+  console.info("[SABY_FINANCE_SAVED_CARD_DIAG] "+JSON.stringify({reason}));
   return null;
 }
 

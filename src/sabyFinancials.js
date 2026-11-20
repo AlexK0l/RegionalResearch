@@ -129,7 +129,8 @@ let financeMissingDiagnostics=0;
 // never use the banner alone to invent a fiscal year or amount.
 async function revealLazySabyFinance(page,inspect){
   const diag={scroller:"unavailable",scroll_steps:0,finance_item:false,
-    selection:"none",lookup_attempts:0};
+    selection:"none",lookup_attempts:0,scroll_retries:0,
+    scroll_reacquired:false};
   if(typeof page?.locator!=="function")return {snapshot:null,diag};
   // The user's captured Saby detail HTML places its main scroll node at
   // [data-qa=contractorCard-dialog-Stack] >
@@ -182,6 +183,37 @@ async function revealLazySabyFinance(page,inspect){
     return {snapshot:null,diag};
   }
   let snapshot=null;
+  // Scrolling Wasaby can temporarily detach its own scroll wrapper, even
+  // while the company card and strict ID remain unchanged. Re-select ONLY
+  // the same scoped wrapper once. Do not open any card or use body.scrollTop.
+  const moveWithinCard=async fraction=>{
+    const targetSelector=choices.find(([name])=>name===diag.selection)?.[1];
+    const move=locator=>locator.evaluate((el,part)=>{
+      const max=Math.max(0,el.scrollHeight-el.clientHeight);
+      el.scrollTop=Math.round(max*part);
+    },fraction,{timeout:1800});
+    try{
+      await move(scroller);
+      return true;
+    }catch{
+      if(!targetSelector)return false;
+      diag.scroll_retries++;
+      await wait(400);
+      try{
+        const replacement=page.locator(targetSelector).first();
+        const geometry=await replacement.evaluate(el=>({
+          max:Math.max(0,el.scrollHeight-el.clientHeight),
+          mounted:el.isConnected!==false
+        }),undefined,{timeout:1800});
+        if(!geometry?.mounted||!Number.isFinite(geometry.max)||
+           geometry.max<=20)return false;
+        await move(replacement);
+        scroller=replacement;
+        diag.scroll_reacquired=true;
+        return true;
+      }catch{return false;}
+    }
+  };
   try {
     // A mounted item can be brought into view directly. When virtualization
     // has not yet mounted it, sweep a few positions through the card scroller.
@@ -199,12 +231,7 @@ async function revealLazySabyFinance(page,inspect){
       }
       if(!moved){
         if(original.max<=20)break;
-        try{
-          await scroller.evaluate((el,part)=>{
-            const max=Math.max(0,el.scrollHeight-el.clientHeight);
-            el.scrollTop=Math.round(max*part);
-          },fraction,{timeout:1800});
-        }catch{
+        if(!await moveWithinCard(fraction)){
           diag.scroller="scroll_failed";
           break;
         }
@@ -371,6 +398,8 @@ export async function readSabyFinancials(page){
       scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps,
       scroll_selection:lazyDiag.selection||"none",
       scroll_lookup_attempts:lazyDiag.lookup_attempts||0,
+      scroll_retries:lazyDiag.scroll_retries||0,
+      scroll_reacquired:lazyDiag.scroll_reacquired===true,
       scroll_restore:lazyDiag.scroll_restore||"original"
     }));
   }
