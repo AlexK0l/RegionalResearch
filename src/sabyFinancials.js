@@ -164,13 +164,16 @@ export async function readSabyFinancials(page){
     if(report&&years.length){
       const rows=[...report.querySelectorAll('[data-qa="row"]')];
       for(const row of rows){
-        if(!visible(row))continue;
-        // Real cards may nest data-qa cells under layout wrappers.
+        // Saby GridReact renders rows with CSS display: contents (tw-contents).
+        // Such rows have zero client rects even when their cells are visible;
+        // requiring visible(row) silently dropped ALL revenue rows.
+        if(!row.isConnected)continue;
         const cells=[...row.querySelectorAll('[data-qa="cell"]')]
           .filter(el=>visible(el)&&
             (!el.closest?.('[data-qa="row"]')||
               el.closest('[data-qa="row"]')===row))
           .map(text);
+        if(!cells.length)continue;
         // One to three descriptor cells precede exactly one value for
         // each year. Never shift amounts into a different accounting year.
         const labelCount=cells.length-years.length;
