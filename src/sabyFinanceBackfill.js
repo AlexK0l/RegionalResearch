@@ -199,6 +199,52 @@ export function recoverLegacyFinanceReview(child,parent){
   return {checkpoint:normalized,recovered:1};
 }
 
+// Reuse a prior one-company Saby smoke already VERIFIED by Stage12. The
+// saved smoke artifact is provenance, never a shortcut to guessed identity.
+// The target region row is independently cross-checked by apply... below.
+export function verifiedSabyFinanceFromSmoke(smoke,expectedInn){
+  const fail=()=>{throw new Error("FINANCE_BACKFILL_SMOKE_NOT_VERIFIED");};
+  const expected=sabyInn(expectedInn);
+  const result=smoke?.final_result;
+  const stats=smoke?.saby_stage12;
+  const selection=smoke?.saby_smoke_selection;
+  if(!expected||smoke?.source!=="single_company"||
+     !result||!Array.isArray(result.direct_buyers)||
+     result.direct_buyers.length!==1||
+     ["intermediaries","leasing","statistics"].some(key=>
+       !Array.isArray(result[key])||result[key].length!==0)||
+     selection?.limit!==1||
+     stats?.verified!==1||stats?.review!==0||
+     stats?.browserError||stats?.revenuesAdded!==1||
+     stats?.employeesAdded!==1)
+    fail();
+  const row=result.direct_buyers[0];
+  const saved=row?.__evidence?.saby;
+  const financial=validSabyFinancialEvidence(saved?.financials);
+  const sourceUrl=String(saved?.source_url||"");
+  const verifiedAt=String(saved?.verified_at||"");
+  if(sabyInn(row?.["ИНН"])!==expected||
+     sabyInn(saved?.inn)!==expected||
+     !sabyNameTokens(row?.["Организация"]).length||
+     saved?.collection?.financials!=="collected"||
+     !cardId(sourceUrl)||
+     !financial||!Number.isSafeInteger(financial.revenue_rub)||
+     !Number.isSafeInteger(financial.revenue_year)||
+     !Number.isSafeInteger(financial.employees)||
+     !Number.isFinite(Date.parse(verifiedAt))||
+     row[FINANCE_REVENUE_FIELD]!==financial.revenue_rub||
+     row[FINANCE_EMPLOYEES_FIELD]!==financial.employees)
+    fail();
+  return {
+    identity:{verified:true,inn:expected,
+      name:String(row["Организация"]||"").trim(),
+      ...(String(saved.kpp||"").match(/^\d{9}$/)?
+        {kpp:String(saved.kpp)}:{})},
+    source:"SABY",source_url:sourceUrl,
+    collected_at:verifiedAt,financials:financial
+  };
+}
+
 export function validateFinanceBackfillCheckpoint(source){
   const mode=String(source?.source_mode||"full");
   if(!source||source.version!==1||!source.region||
