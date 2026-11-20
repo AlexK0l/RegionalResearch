@@ -153,7 +153,8 @@ export async function runSabyFinanceBackfill({
   sessionRunner=withSabyBrowser,
   collectCompany=collectSabyFinancialsOnly,
   onCheckpoint=async()=>{},
-  onProgress=()=>{}
+  onProgress=()=>{},
+  waitBetweenCompanies=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 }={}){
   const valid=validateFinanceBackfillCheckpoint(parent);
   if(!valid.ok)throw new Error(valid.code);
@@ -225,7 +226,10 @@ export async function runSabyFinanceBackfill({
   }
   try{
     await sessionRunner(async ({page,settings})=>{
-      for(const entry of selected){
+      const rawDelay=Number(settings?.delayMs??env.SABY_DELAY_MS??1500);
+      const delayMs=Number.isFinite(rawDelay)?
+        Math.max(250,Math.min(30000,rawDelay)):1500;
+      for(const [index,entry] of selected.entries()){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
         let outcome={status:"unavailable",reason:"financial_not_verified"};
@@ -265,6 +269,9 @@ export async function runSabyFinanceBackfill({
         stats.processed++;
         await save();
         await onProgress({...stats});
+        // Match the usual Stage-12 pacing between searches; no repeated
+        // hits on the same company, and no delay after the final company.
+        if(index+1<selected.length)await waitBetweenCompanies(delayMs);
       }
     },{env});
   }catch{
