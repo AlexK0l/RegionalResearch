@@ -123,6 +123,9 @@ async function main(){
   const pending=plan.eligible.filter(e=>!attempted.has(e.inn)&&count(e.inn)<2);
   const unvisited=pending.length;
   const reviewRetryable=pending.filter(e=>count(e.inn)>0).length;
+  const previousLoadingDeferred=pending.filter(e=>
+    chosen.saby_finance_backfill_outcomes?.[e.inn]?.status==="deferred"&&
+    chosen.saby_finance_backfill_outcomes?.[e.inn]?.reason==="search_loading_stalled").length;
   const reviewExhausted=plan.eligible.filter(e=>
     !attempted.has(e.inn)&&count(e.inn)>=2).length;
   if(targetInn && !pending.some(e=>e.inn===targetInn))
@@ -135,6 +138,7 @@ async function main(){
     employees_missing:plan.missingEmployees,
     eligible_unique_inn:plan.eligible.length,
     unvisited,review_retryable:reviewRetryable,
+    loading_deferred_pending:previousLoadingDeferred,
     review_exhausted:reviewExhausted,
     excluded_invalid:plan.invalid,
     excluded_duplicate_inn:plan.duplicate,
@@ -191,6 +195,7 @@ async function main(){
       JSON.stringify({processed:s.processed,scheduled:s.scheduled,
         revenue_added:s.revenueAdded,employees_added:s.employeesAdded,
         review:s.review,unavailable:s.unavailable,unchanged:s.unchanged,
+        loading_deferred:s.loadingDeferred,
         retries:s.retries,review_retryable:s.reviewRetryable,
         review_exhausted:s.reviewExhausted}))
   });
@@ -201,6 +206,7 @@ async function main(){
     employees_added:stats.employeesAdded,
     source_unavailable:stats.unavailable,
     no_new_numbers:stats.unchanged,review:stats.review,
+    loading_deferred:stats.loadingDeferred,
     retries:stats.retries,review_retryable:stats.reviewRetryable,
     review_exhausted:stats.reviewExhausted,
     revenue_missing_after:stats.missingRevenueAfter,

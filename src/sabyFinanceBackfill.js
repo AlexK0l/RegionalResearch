@@ -297,10 +297,15 @@ export async function runSabyFinanceBackfill({
   const pending=()=>sourcePlan.eligible.filter(entry=>
     !attempted.has(entry.inn)&&
     reviewCount(entry.inn)<FINANCE_REVIEW_MAX_PASSES);
-  // A previously reviewed card may be rechecked at most once after fresh
-  // INNs; it must never monopolize the start of the regional queue.
+  // An isolated stalled query is kept pending but must not monopolize each
+  // successive run. Prioritize fresh INNs, then previously deferred stalls,
+  // then ordinary reviewed cards. Sort remains stable within each group.
+  const priorStall=inn=>
+    parent.saby_finance_backfill_outcomes?.[inn]?.status==="deferred"&&
+    parent.saby_finance_backfill_outcomes?.[inn]?.reason==="search_loading_stalled";
+  const tier=inn=>reviewCount(inn)>0?2:priorStall(inn)?1:0;
   const selected=pending().filter(entry=>!target||entry.inn===target)
-    .sort((a,b)=>reviewCount(a.inn)-reviewCount(b.inn))
+    .sort((a,b)=>tier(a.inn)-tier(b.inn))
     .slice(0,maxCompanies);
   if(target && selected.length!==1)
     throw new Error("FINANCE_BACKFILL_TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED");
@@ -319,6 +324,7 @@ export async function runSabyFinanceBackfill({
     scheduled:selected.length,processed:0,
     revenueAdded:0,employeesAdded:0,
     verified:0,review:0,unavailable:0,unchanged:0,retries:0,
+    loadingDeferred:0,
     unvisited:pending().length,
     reviewRetryable:pending().filter(x=>reviewCount(x.inn)>0).length,
     reviewExhausted:sourcePlan.eligible.filter(x=>
@@ -369,6 +375,7 @@ export async function runSabyFinanceBackfill({
       const delayMs=Number.isFinite(rawDelay)?
         Math.max(250,Math.min(30000,rawDelay)):1500;
       let consecutiveReview=0;
+      let consecutiveStalls=0;
       for(const [index,entry] of selected.entries()){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
@@ -423,14 +430,22 @@ export async function runSabyFinanceBackfill({
             console.info("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
               code:"search_confirmed_empty",scope:"company",action:"skip_unavailable"
             }));
+          }else if(failure.code==="search_loading_stalled"){
+            // One timed-out exact-INN search is NOT proof of a site-wide
+            // outage. Save a temporary deferral without consuming either
+            // the INN or an identity review allowance. Other firms remain
+            // eligible for this same browser session.
+            stats.loadingDeferred++;
+            outcome={status:"deferred",reason:"search_loading_stalled"};
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+              code:"search_loading_stalled",scope:"company",
+              action:"defer_and_continue"
+            }));
           }else if(["search_input_failed","search_scan_error",
-            "search_service_unavailable","search_loading_stalled"]
-            .includes(failure.code)){
-            // Saby is still loading the exact INN after the full result
-            // deadline. PAUSE immediately. Never mark this INN reviewed,
-            // never retry on the same stuck UI, and preserve other INNs.
-            stats.browserError=failure.code==="search_loading_stalled"?
-              "saby_search_loading_stalled":"saby_search_unavailable";
+            "search_service_unavailable"].includes(failure.code)){
+            // Proven unsafe search state: pause immediately and preserve the
+            // current and future INNs. Never infer a company's identity.
+            stats.browserError="saby_search_unavailable";
             console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
               code:failure.code,scope:"systemic",action:"pause"
             }));
@@ -449,7 +464,13 @@ export async function runSabyFinanceBackfill({
           revenueStillMissing:!isSavedFinanceNumber(row[FINANCE_REVENUE_FIELD]),
           employeesStillMissing:!isSavedFinanceNumber(row[FINANCE_EMPLOYEES_FIELD])
         };
-        if(outcome.status==="review"){
+        if(outcome.status==="deferred"){
+          // The company stays pending, with prior review budget untouched.
+          // Three consecutive such stalls indicate a broader Saby issue.
+          consecutiveStalls++;
+          consecutiveReview=0;
+        }else if(outcome.status==="review"){
+          consecutiveStalls=0;
           // A genuine INN/card mismatch is never retried automatically.
           // Temporary failures get one LATER pass, after fresh firms.
           const permanent=new Set(["identity_or_source",
@@ -460,6 +481,7 @@ export async function runSabyFinanceBackfill({
             Math.min(FINANCE_REVIEW_MAX_PASSES,reviewCount(entry.inn)+1);
           consecutiveReview++;
         }else{
+          consecutiveStalls=0;
           attempted.add(entry.inn);
           delete reviewCounts[entry.inn];
           consecutiveReview=0;
@@ -467,6 +489,13 @@ export async function runSabyFinanceBackfill({
         stats.processed++;
         await save();
         await onProgress({...stats});
+        if(consecutiveStalls>=3){
+          stats.browserError="saby_consecutive_loading_stalls";
+          console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
+            JSON.stringify({code:"three_consecutive_loading_stalls",
+              action:"pause",deferred:stats.loadingDeferred}));
+          break;
+        }
         if(consecutiveReview>=3){
           stats.browserError="saby_consecutive_unverified_cards";
           console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+

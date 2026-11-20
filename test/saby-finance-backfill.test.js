@@ -665,39 +665,150 @@ test("Saby service unavailability pauses before consuming any further legal INN"
 });
 
 
-test("Saby persistent loading stalls immediately, leaving all regional INNs pending",async()=>{
+test("one stalled Saby search is safely deferred while other firms add verified numbers",async()=>{
   const parent=checkpoint([
     row("4718000935","Волховское, АО"),
     row("7707083893","Сбербанк, ПАО"),
     row("7801014560","Транспорт, ООО")
   ]);
   const original=JSON.stringify(parent);
+  const visits=[],saved=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:3,
+    sessionRunner:async fn=>fn({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      visits.push(subject["ИНН"]);
+      if(subject["ИНН"]==="4718000935")
+        throw safeSabyFailure("search_loading_stalled","systemic");
+      return record(subject["ИНН"],subject["Организация"]);
+    },
+    onCheckpoint:async cp=>saved.push(cp)
+  });
+  assert.deepEqual(visits,["4718000935","7707083893","7801014560"]);
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.loadingDeferred,1);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.reviewRetryable,0);
+  assert.equal(out.stats.reviewExhausted,0);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.verified,2);
+  assert.equal(out.stats.revenueAdded,2);
+  assert.equal(out.stats.employeesAdded,2);
+  assert.equal(out.stats.unvisited,1);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(out.snapshot.phase,"saby",
+    "one still-pending INN cannot make backfill completed");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["7707083893","7801014560"]);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_review_attempts,{});
+  assert.deepEqual(out.snapshot.saby_finance_backfill_outcomes["4718000935"],{
+    status:"deferred",reason:"search_loading_stalled",
+    revenueStillMissing:true,employeesStillMissing:true
+  });
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],"");
+  assert.equal(out.snapshot.final_result.direct_buyers[1][REV],440100000);
+  assert.ok(saved.length>=5,"after every visit an immutable child snapshot is saved");
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("three consecutive Saby search stalls safely pause a large batch",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО"),
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО")
+  ]);
+  const original=JSON.stringify(parent);
   let calls=0;
   const saved=[];
   const out=await runSabyFinanceBackfill({
     checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
-    maxCompanies:3,
+    maxCompanies:4,
     sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
     collectCompany:async()=>{
       calls++;
       throw safeSabyFailure("search_loading_stalled","systemic");
     },
     onCheckpoint:async cp=>saved.push(cp)
   });
-  assert.equal(calls,1,"no second search or company when previous exact-INN search is still loading");
-  assert.equal(out.stats.processed,0);
+  assert.equal(calls,3,"site-wide issue pauses before four or hundreds of additional searches");
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.loadingDeferred,3);
   assert.equal(out.stats.retries,0);
   assert.equal(out.stats.review,0);
   assert.equal(out.stats.unavailable,0);
   assert.equal(out.stats.revenueAdded,0);
   assert.equal(out.stats.employeesAdded,0);
-  assert.equal(out.stats.unvisited,3);
-  assert.equal(out.stats.browserError,"saby_search_loading_stalled");
+  assert.equal(out.stats.unvisited,4);
+  assert.equal(out.stats.browserError,"saby_consecutive_loading_stalls");
   assert.equal(out.snapshot.phase,"saby");
   assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
-  assert.deepEqual(out.snapshot.saby_finance_backfill_outcomes,{});
   assert.deepEqual(out.snapshot.saby_finance_backfill_review_attempts,{});
-  assert.ok(saved.length>=2,"initial and terminal SQLite child checkpoints saved");
+  assert.equal(Object.keys(out.snapshot.saby_finance_backfill_outcomes).length,3);
+  for(const entry of Object.values(out.snapshot.saby_finance_backfill_outcomes)){
+    assert.equal(entry.status,"deferred");
+    assert.equal(entry.reason,"search_loading_stalled");
+  }
+  assert.ok(saved.length>=5,"progress saves survive the controlled circuit breaker");
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("saved Saby search stalls follow fresh INNs on continuation",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО"),
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО")
+  ]);
+  parent.source_mode="saby";
+  parent.phase="saby";
+  parent.saby_finance_backfill_outcomes={
+    "4718000935":{status:"deferred",reason:"search_loading_stalled"}
+  };
+  const original=JSON.stringify(parent);
+  const visited=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:2,
+    sessionRunner:async fn=>fn({page:{},settings:{delayMs:250}}),
+    collectCompany:async(_page,subject)=>{
+      visited.push(subject["ИНН"]);
+      return record(subject["ИНН"],subject["Организация"]);
+    },
+    waitBetweenCompanies:async()=>{}
+  });
+  assert.deepEqual(visited,["7707083893","7801014560"],
+    "fresh companies take precedence over previously stalled search");
+  assert.equal(out.stats.processed,2);
+  assert.equal(out.stats.loadingDeferred,0);
+  assert.equal(out.stats.unvisited,2);
+  assert.equal(out.snapshot.saby_finance_backfill_outcomes["4718000935"].status,
+    "deferred");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["7707083893","7801014560"]);
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("a stalled previously reviewed INN does not use another review allowance",async()=>{
+  const parent=checkpoint([row()]);
+  parent.saby_finance_backfill_review_attempts={"4718000935":1};
+  const original=JSON.stringify(parent);
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:1,
+    sessionRunner:async fn=>fn({page:{},settings:{delayMs:250}}),
+    collectCompany:async()=>{throw safeSabyFailure("search_loading_stalled");}
+  });
+  assert.equal(out.stats.loadingDeferred,1);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.reviewRetryable,1);
+  assert.equal(out.stats.reviewExhausted,0);
+  assert.equal(out.stats.unvisited,1);
+  assert.equal(out.snapshot.saby_finance_backfill_review_attempts["4718000935"],1);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
   assert.equal(JSON.stringify(parent),original);
 });
 
