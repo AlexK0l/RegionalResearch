@@ -140,7 +140,7 @@ async function revealLazySabyFinance(page,inspect){
     original=await scroller.evaluate(el=>({
       top:el.scrollTop,
       max:Math.max(0,el.scrollHeight-el.clientHeight)
-    }),{timeout:1800});
+    }),undefined,{timeout:1800});
     if(!Number.isFinite(original.top)||!Number.isFinite(original.max))
       return {snapshot:null,diag};
     diag.scroller=original.max>20?"scrollable":"static";
@@ -270,8 +270,8 @@ export async function readSabyFinancials(page){
     }
     return {employeeTexts:employees,banner,years,reportScale,revenueRows,
       financeHeadings:headings.length,financeNodes:financeNodes.length,
-      financeItemMounted:Boolean(document.querySelector(
-        '[data-qa="item"][item-key="finance"]')),
+      financeItemMounted:document.querySelectorAll(
+        '[data-qa="item"][item-key="finance"]').length>0,
       reportFound:Boolean(report)};
   });
 
