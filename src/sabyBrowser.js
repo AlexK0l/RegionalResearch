@@ -5,7 +5,10 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { readSabyFinancials } from "./sabyFinancials.js";
-import { submitSabyCompanySearch } from "./sabySearch.js";
+import {submitSabyCompanySearch,waitForSabySearchHydration}
+  from "./sabySearch.js";
+import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
+  from "./sabySearchTransport.js";
 import {readSabySearchState,classifySabySearchZeroState}
   from "./sabySearchState.js";
 import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
@@ -255,21 +258,46 @@ async function openCompany(page, row, settings) {
   if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
     throw new SabyReview("Saby: список организаций не подтверждён");
   const publicFallback=settings.publicIdentityFallback===true;
-  // Wasaby shows several perpetual loading indicators even with a healthy
-  // result list. Sample BEFORE submitting the INN so those unrelated
-  // spinners cannot be misclassified as a systemic search stall.
-  // Read only safe flags, never the input value, DOM text or credentials.
-  const beforeSearch=publicFallback?
-    await readSabySearchState(page,inn).catch(()=>null):null;
-  const submitted=await submitSabyCompanySearch(page,inn,{
+  const isListRoute=()=>sabyCardRoute(page.url())==="list";
+  const searchOptions={
     timeoutMs:Math.min(15000,settings.timeoutMs),
     actionTimeoutMs:Math.min(8000,settings.timeoutMs),
-    isListRoute:()=>sabyCardRoute(page.url())==="list",
+    isListRoute,
     onRetry:({stage,attempt})=>console.warn(
       "[SABY_SEARCH_RETRY] "+JSON.stringify({stage,attempt,reason:"action_timeout"})
     )
-  });
+  };
+  // In the successful VPS probe Wasaby had 1200 ms to mount search handlers
+  // AFTER navigation commit. Finance previously entered INN immediately
+  // when it saw the first generic input. Require bounded hydration first;
+  // look up the safe field again after the settle delay.
+  const settleSearch=async()=>{
+    if(!publicFallback)return;
+    const state=await waitForSabySearchHydration(page,{
+      isListRoute,timeoutMs:Math.min(8000,settings.timeoutMs)
+    });
+    if(!state.ok){
+      console.warn("[SABY_SEARCH_HYDRATION_DIAG] "+JSON.stringify({
+        status:"not_ready",
+        reason:new Set(["route_changed","no_safe_visible_input",
+          "ambiguous_visible_inputs","multiple_search_fields",
+          "not_rendered","search_not_rendered","search_not_stable"])
+          .has(state.reason)?state.reason:"other"
+      }));
+      throw new SabyReview("Saby: поле поиска ещё не готово",
+        {code:"search_input_failed"});
+    }
+    console.info("[SABY_SEARCH_HYDRATION_DIAG] ready");
+  };
+  await settleSearch();
+  // Some loading indicators persist even with a successful result list.
+  // Sample AFTER hydration and BEFORE entering the exact INN.
+  let beforeSearch=publicFallback?
+    await readSabySearchState(page,inn).catch(()=>null):null;
+  let transport=publicFallback?observeSabySearchTransport(page,inn):null;
+  const submitted=await submitSabyCompanySearch(page,inn,searchOptions);
   if(!submitted.ok){
+    transport?.stop();
     // Strict, allowlisted statuses only. Never print INN, DOM, URL or
     // the raw Playwright exception, which can include private context.
     console.warn("[SABY_SEARCH_DIAG] "+JSON.stringify({
@@ -281,7 +309,8 @@ async function openCompany(page, row, settings) {
       {code:"search_input_failed"});
   }
   console.info("[SABY_SEARCH] "+submitted.method);
-  const until=Date.now()+Math.min(18000,settings.timeoutMs);
+  let until=Date.now()+Math.min(18000,settings.timeoutMs);
+  let submissionAt=Date.now(),transportRecoveryUsed=false;
   let rows=[],selection="not_found",lastSelected=null;
   async function candidates() {
     // For optional fallback retain branch rows for Node-side
@@ -308,6 +337,7 @@ async function openCompany(page, row, settings) {
       // Never print the raw Playwright exception, which may include a URL.
       console.warn("[SABY_SEARCH_CANDIDATE_DIAG] "+
         JSON.stringify({code:"scan_error"}));
+      transport?.stop();
       throw new SabyReview("Saby: результаты поиска временно недоступны",
         {code:"search_scan_error"});
     }
@@ -325,14 +355,67 @@ async function openCompany(page, row, settings) {
           raw_capped:selected.rawCapped===true,
           foreign_inn_rows:selected.foreignInnRows||0,
           primary_candidates:selected.primaryCandidates||0}));
+      transport?.stop();
       throw new SabyReview("Saby: неоднозначный результат по ИНН",
         {scope:"company",code:"search_ambiguous"});
     }
     rows=selected.row?[selected.row]:[];
     if(rows.length===1)break;
+    if(publicFallback&&shouldRecoverSilentSabySearch({
+      route:sabyCardRoute(page.url()),reason:selected.reason,
+      observed:Number(selected.observed||0),
+      elapsedMs:Date.now()-submissionAt,
+      alreadyRecovered:transportRecoveryUsed,
+      exactTransportEvidence:transport?.hasExactInnEvidence()
+    })){
+      // No exact-INN request was observed after 6.5s despite safe
+      // fill/Enter and zero result cards. This is consistent with a
+      // still-hydrating input that had no event handler. A SINGLE reload
+      // and re-submit is permitted; never repeat a dispatched query.
+      transportRecoveryUsed=true;
+      console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
+        state:"exact_inn_transport_not_observed",
+        action:"reload_and_submit_once",
+        ...(transport?.summary()||{})
+      }));
+      transport?.stop();
+      try{
+        await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
+        if(!isListRoute()||!isSabyProfileUrl(page.url()))
+          throw new SabyReview("Saby: каталог изменился при восстановлении поиска",
+            {code:"search_input_failed"});
+        await settleSearch();
+        beforeSearch=await readSabySearchState(page,inn).catch(()=>null);
+        transport=observeSabySearchTransport(page,inn);
+        const second=await submitSabyCompanySearch(page,inn,searchOptions);
+        if(!second.ok)
+          throw new SabyReview("Saby: повторный безопасный ввод не завершён",
+            {code:"search_input_failed"});
+        console.info("[SABY_SEARCH] "+second.method+"_after_hydration_recovery");
+        submissionAt=Date.now();
+        until=submissionAt+Math.min(18000,settings.timeoutMs);
+        lastSelected=null;
+        selection="not_found";
+        continue;
+      }catch(error){
+        transport?.stop();
+        if(error instanceof SabyReview)throw error;
+        throw new SabyReview("Saby: восстановление поиска не завершилось",
+          {code:"search_loading_stalled"});
+      }
+    }
     await delay(450);
   }
   if(rows.length!==1){
+    if(publicFallback){
+      const observed=transport?.summary()||{};
+      console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
+        state:"no_verified_candidate",
+        recovered:transportRecoveryUsed,
+        ...observed
+      }));
+    }
+    transport?.stop();
     // "observed:0" means our scanner saw no result rows; it cannot
     // independently tell an explicit Saby zero-results message from an
     // unhydrated/blocked list. Check two bounded, visible DOM samples.
@@ -387,6 +470,7 @@ async function openCompany(page, row, settings) {
     throw new SabyReview("Saby: однозначная организация по ИНН не найдена",
       {scope:"company",code:"search_no_unique_result"});
   }
+  transport?.stop();
   if(publicFallback){
     const final=lastSelected||{};
     console.info("[SABY_SEARCH_FILTER_DIAG] "+JSON.stringify({

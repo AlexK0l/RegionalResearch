@@ -168,3 +168,36 @@ export async function submitSabyCompanySearch(page, inn, {
   }
   return {ok:false,reason:"search_action_timeout",stage,attempts:limit};
 }
+
+
+/**
+ * The Wasaby company-list can show one editable input before its search
+ * handlers have been hydrated. A successful VPS network probe waited 1200ms
+ * after opening the same route; the production collector used only navigation
+ * commit and immediately pressed Enter. Reacquire the only safe search field
+ * after a bounded settling period, without assuming that a visible input is
+ * already wired to the Saby search API.
+ *
+ * This is an opt-in readiness gate for financial-only fallback searches.
+ * Never read or log any input value, DOM text, URL or credentials.
+ */
+export async function waitForSabySearchHydration(page,{
+  isListRoute=()=>false,
+  findSearch=findSabyCompanySearch,
+  timeoutMs=7000,settleMs=1400,
+  wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))
+}={}){
+  if(typeof isListRoute!=="function"||!isListRoute())
+    return {ok:false,reason:"route_changed"};
+  const readyTimeout=Math.max(500,Math.min(10000,Number(timeoutMs)||7000));
+  const first=await findSearch(page,{timeoutMs:readyTimeout});
+  if(!first?.field)return {ok:false,reason:first?.reason||"search_not_rendered"};
+  const settle=Math.max(1200,Math.min(2500,Number(settleMs)||1400));
+  await wait(settle);
+  if(!isListRoute())return {ok:false,reason:"route_changed"};
+  // The first field may have been removed by Wasaby between paint and
+  // hydration. Re-find rather than typing into a detached locator.
+  const second=await findSearch(page,{timeoutMs:Math.min(3000,readyTimeout)});
+  if(!second?.field)return {ok:false,reason:second?.reason||"search_not_stable"};
+  return {ok:true,method:second.method};
+}
