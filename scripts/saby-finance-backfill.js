@@ -54,7 +54,8 @@ async function main(){
   const {PIPELINE_VERSION,loadCheckpoint,listRegionCheckpoints,saveCheckpoint}
     =await import("../src/checkpointStore.js");
   const {validateFinanceBackfillCheckpoint,runSabyFinanceBackfill,
-    planSabyFinanceBackfill}=await import("../src/sabyFinanceBackfill.js");
+    planSabyFinanceBackfill,recoverLegacyFinanceReview}
+    =await import("../src/sabyFinanceBackfill.js");
   let chosen=null,sourceId=requested||"";
   if(requested){
     chosen=await loadCheckpoint(requested);
@@ -77,6 +78,24 @@ async function main(){
     }
     if(!chosen)throw new Error(
       "Не найдено завершённое исследование региона в SQLite");
+  }
+  // In the first one-company pilot, an unsuccessful card search was
+  // incorrectly marked attempted. Recover only that uniquely identifiable
+  // one-card review from its original immutable parent, in memory.
+  const previousId=String(chosen?.saby_finance_backfill_source_job_id||"");
+  if(previousId && !chosen?.saby_finance_backfill_outcomes &&
+     chosen?.saby_finance_backfill_stats?.review===1){
+    const before=await loadCheckpoint(previousId);
+    if(before){
+      const restored=recoverLegacyFinanceReview(chosen,{...before,id:previousId});
+      if(restored.recovered){
+        chosen=restored.checkpoint;
+        console.log("[SABY_FINANCE_BACKFILL_LEGACY_REVIEW] "+JSON.stringify({
+          restored:restored.recovered,source_checkpoint:sourceId,
+          sqlite_changed:false
+        }));
+      }
+    }
   }
   const valid=validateFinanceBackfillCheckpoint(chosen);
   if(!valid.ok)throw new Error(valid.code);
