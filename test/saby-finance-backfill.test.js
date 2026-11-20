@@ -253,6 +253,21 @@ test("CLI preview is explicit and error checks cannot create another DB file",()
   assert.match(missing.stderr,/абсолютный путь --db/);
 });
 
+test("finance-only Saby collector must stay on the verified private card ID",async()=>{
+  const {sameSabyDetailId}=await import("../src/sabyBrowser.js");
+  const a="https://profile.saby.ru/page/contractor-info?id=valid-id&anchor=about&local=false";
+  assert.equal(sameSabyDetailId(a,
+    "https://profile.saby.ru/page/contractor-info?tab=all&id=valid-id"),true);
+  assert.equal(sameSabyDetailId(a,
+    "https://profile.saby.ru/page/contractor-info?id=another-id"),false);
+  assert.equal(sameSabyDetailId(a,
+    "https://profile.saby.ru/page/company-list-prof?id=valid-id"),false);
+  assert.equal(sameSabyDetailId(a,
+    "https://other.example.org/page/contractor-info?id=valid-id"),false);
+  assert.equal(sameSabyDetailId(a,
+    "http://profile.saby.ru/page/contractor-info?id=valid-id"),false);
+});
+
 test("incomplete paid source is rejected before any Saby or SQLite side effect",()=>{
   const cp=checkpoint([]);
   cp.phase="contacts";
