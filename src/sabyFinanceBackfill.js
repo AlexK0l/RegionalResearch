@@ -148,7 +148,7 @@ export function validateFinanceBackfillCheckpoint(source){
 }
 
 export async function runSabyFinanceBackfill({
-  checkpoint:parent,sourceJobId,childJobId,maxCompanies=1,
+  checkpoint:parent,sourceJobId,childJobId,maxCompanies=1,targetInn="",
   env=process.env,
   sessionRunner=withSabyBrowser,
   collectCompany=collectSabyFinancialsOnly,
@@ -163,11 +163,17 @@ export async function runSabyFinanceBackfill({
     throw new Error("FINANCE_BACKFILL_SOURCE_OR_CHILD_ID_INVALID");
   if(!Number.isSafeInteger(maxCompanies)||maxCompanies<1||maxCompanies>10000)
     throw new Error("FINANCE_BACKFILL_MAX_COMPANIES_INVALID");
+  const target=targetInn?sabyInn(targetInn):"";
+  if(targetInn && (!target||maxCompanies!==1))
+    throw new Error("FINANCE_BACKFILL_TARGET_INVALID");
   const sourcePlan=valid.plan;
   const attempted=new Set(Array.isArray(parent.saby_finance_backfill_attempted_inns)?
     parent.saby_finance_backfill_attempted_inns.map(sabyInn).filter(Boolean):[]);
-  const selected=sourcePlan.eligible.filter(entry=>!attempted.has(entry.inn))
+  const selected=sourcePlan.eligible.filter(entry=>
+    !attempted.has(entry.inn)&&(!target||entry.inn===target))
     .slice(0,maxCompanies);
+  if(target && selected.length!==1)
+    throw new Error("FINANCE_BACKFILL_TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED");
   const result=structuredClone(parent.final_result);
   const lookup=new Map();
   for(const section of SECTIONS)
