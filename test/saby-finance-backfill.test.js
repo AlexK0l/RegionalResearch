@@ -186,11 +186,12 @@ test("Saby missing report is recorded, source stays unchanged, next legal INN pr
   const second=row("7707083893","Сбербанк, ПАО");
   const parent=checkpoint([first,second]);
   const original=JSON.stringify(parent);
-  const seen=[];
+  const seen=[],pauses=[];
   const versions=[];
   const outcome=await runSabyFinanceBackfill({
     checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
     maxCompanies:2,env:{OPENAI_API_KEY:""},
+    waitBetweenCompanies:async ms=>pauses.push(ms),
     sessionRunner:async task=>task({page:{},settings:{}}),
     collectCompany:async (_page,target)=>{
       seen.push(target["ИНН"]);
@@ -202,6 +203,7 @@ test("Saby missing report is recorded, source stays unchanged, next legal INN pr
     onCheckpoint:cp=>versions.push(cp)
   });
   assert.deepEqual(seen,["4718000935","7707083893"]);
+  assert.deepEqual(pauses,[1500]);
   assert.equal(outcome.stats.processed,2);
   assert.equal(outcome.stats.unchanged,1);
   assert.equal(outcome.stats.unavailable,0);
