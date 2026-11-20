@@ -1,0 +1,184 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {EventEmitter} from "node:events";
+import fs from "node:fs";
+import {
+  firstPartySabySearchTransport,exactSabyInnTransportToken,
+  observeSabySearchTransport,shouldRecoverSilentSabySearch
+} from "../src/sabySearchTransport.js";
+import {waitForSabySearchHydration} from "../src/sabySearch.js";
+
+const INN="4718000935";
+
+test("hydration gate waits at least 1200ms and reacquires safe search after Wasaby mount",async()=>{
+  const events=[];
+  const first={id:"original",safe:true};
+  const later={id:"new_mount",safe:true};
+  const fields=[{field:first,method:"single_visible_input"},
+    {field:later,method:"search_selector"}];
+  const result=await waitForSabySearchHydration({},{
+    isListRoute:()=>true,
+    findSearch:async(_page,{timeoutMs})=>{
+      events.push(["find",timeoutMs]);
+      return fields.shift();
+    },
+    timeoutMs:7000,
+    settleMs:100,
+    wait:async ms=>{events.push(["wait",ms]);}
+  });
+  assert.deepEqual(result,{ok:true,method:"search_selector"});
+  assert.deepEqual(events,[["find",7000],["wait",1200],
+    ["find",3000]],"reacquire rather than typing into the old search element");
+});
+
+test("hydration gate fails safely if list route changed or field never mounted",async()=>{
+  let onList=true,calls=0;
+  const result=await waitForSabySearchHydration({},{
+    isListRoute:()=>onList,
+    findSearch:async()=>{
+      calls++;
+      return {field:{},method:"single_visible_input"};
+    },
+    wait:async()=>{onList=false;}
+  });
+  assert.deepEqual(result,{ok:false,reason:"route_changed"});
+  assert.equal(calls,1);
+  assert.deepEqual(await waitForSabySearchHydration({},{
+    isListRoute:()=>true,
+    findSearch:async()=>({field:null,reason:"no_safe_visible_input"}),
+    wait:async()=>{throw Error("must never wait for unsafe field");}
+  }),{ok:false,reason:"no_safe_visible_input"});
+  assert.deepEqual(await waitForSabySearchHydration({},{
+    isListRoute:()=>false,
+    findSearch:async()=>{throw Error("must not search after redirect");}
+  }),{ok:false,reason:"route_changed"});
+});
+
+test("the transport tracker only observes authenticated first-party HTTPS/WSS hostnames",()=>{
+  for(const url of [
+    "https://profile.saby.ru/page/company-list-prof",
+    "https://online.sbis.ru/api",
+    "wss://profile.saby.ru/ws"
+  ])assert.equal(firstPartySabySearchTransport(url),true,url);
+  for(const url of [
+    "https://profile.saby.ru.attacker.example/path",
+    "https://fake-saby.ru/path",
+    "http://profile.saby.ru/path",
+    "file:///etc/passwd"
+  ])assert.equal(firstPartySabySearchTransport(url),false,url);
+  assert.equal(exactSabyInnTransportToken('{"inn":"'+INN+'"}',INN),true);
+  assert.equal(exactSabyInnTransportToken("q="+INN+"0",INN),false);
+  assert.equal(exactSabyInnTransportToken("0"+INN,INN),false);
+  assert.equal(exactSabyInnTransportToken(INN,"invalid"),false);
+});
+
+test("exact INN XHR traffic is counted without ever exporting URL, INN or body",()=>{
+  const page=new EventEmitter();
+  const probe=observeSabySearchTransport(page,INN);
+  const request={
+    url:()=>"https://profile.saby.ru/service/?secret=PRIVATE_API_TOKEN",
+    resourceType:()=>"fetch",
+    postData:()=>JSON.stringify({inn:INN,access:"SENSITIVE_COOKIE_VALUE"})
+  };
+  page.emit("request",request);
+  page.emit("response",{request:()=>request,status:()=>200});
+  page.emit("requestfinished",request);
+  assert.equal(probe.hasExactInnEvidence(),true);
+  assert.equal(probe.summary().exact_inn_async_requests,1);
+  assert.equal(probe.summary().async_responses,1);
+  assert.equal(probe.summary().failed_requests,0);
+  assert.doesNotMatch(JSON.stringify(probe.summary()),
+    /4718000935|PRIVATE_API_TOKEN|SENSITIVE_COOKIE_VALUE|https?:\/\//);
+  probe.stop();
+  assert.equal(page.listenerCount("request"),0);
+  assert.equal(page.listenerCount("response"),0);
+});
+
+test("unrelated and non-async traffic never authorizes a search-query conclusion",()=>{
+  const page=new EventEmitter();
+  const probe=observeSabySearchTransport(page,INN);
+  const notFirst={
+    url:()=>"https://evil.example/?inn="+INN,
+    resourceType:()=>"xhr",
+    postData:()=>INN
+  };
+  const notAjax={
+    url:()=>"https://profile.saby.ru/assets/main.js?inn="+INN,
+    resourceType:()=>"script",
+    postData:()=>INN
+  };
+  page.emit("request",notFirst);
+  page.emit("request",notAjax);
+  assert.equal(probe.hasExactInnEvidence(),false);
+  assert.equal(probe.summary().first_party_async_requests,0);
+  const searchNoInn={
+    url:()=>"https://profile.saby.ru/service/request",
+    resourceType:()=>"xhr",
+    postData:()=>JSON.stringify({type:"currentUser"})
+  };
+  page.emit("request",searchNoInn);
+  page.emit("response",{request:()=>searchNoInn,status:()=>429});
+  page.emit("requestfailed",searchNoInn);
+  assert.equal(probe.summary().first_party_async_requests,1);
+  assert.equal(probe.summary().exact_inn_async_requests,0);
+  assert.equal(probe.summary().http_429,1);
+  assert.equal(probe.summary().failed_requests,1);
+  probe.stop();
+});
+
+test("WebSocket frames may establish safe exact-INN transport evidence",()=>{
+  const page=new EventEmitter(),ws=new EventEmitter();
+  ws.url=()=>"wss://online.saby.ru/ws";
+  const probe=observeSabySearchTransport(page,INN);
+  page.emit("websocket",ws);
+  ws.emit("framesent",{payload:"query="+INN+"1"});
+  assert.equal(probe.hasExactInnEvidence(),false);
+  ws.emit("framesent",{payload:JSON.stringify({q:INN})});
+  assert.equal(probe.hasExactInnEvidence(),true);
+  assert.equal(probe.summary().exact_inn_ws_frames,1);
+  probe.stop();
+  assert.equal(ws.listenerCount("framesent"),0);
+});
+
+test("a new tracker replaces the previous one without accumulating listeners",()=>{
+  const page=new EventEmitter();
+  const old=observeSabySearchTransport(page,INN);
+  assert.equal(page.listenerCount("request"),1);
+  const current=observeSabySearchTransport(page,"7707083893");
+  assert.equal(page.listenerCount("request"),1);
+  old.stop();
+  assert.equal(page.listenerCount("request"),1);
+  current.stop();
+  assert.equal(page.listenerCount("request"),0);
+});
+
+test("one safe reload is allowed only after an unobserved exact-INN submission",()=>{
+  const safe={
+    route:"list",reason:"not_found",observed:0,
+    elapsedMs:6500,alreadyRecovered:false,exactTransportEvidence:false
+  };
+  assert.equal(shouldRecoverSilentSabySearch(safe),true);
+  const unsafe=[
+    {route:"detail"},{route:"other_profile"},
+    {reason:"ambiguous_exact"},{reason:"no_primary"},
+    {observed:1},{elapsedMs:6499},
+    {alreadyRecovered:true},
+    {exactTransportEvidence:true},{exactTransportEvidence:null}
+  ];
+  for(const value of unsafe)
+    assert.equal(shouldRecoverSilentSabySearch({...safe,...value}),false,
+      "must never re-dispatch when observed query, ambiguous row, or changed route");
+});
+
+test("production search uses hydration and read-only transport only in opted-in fallback",()=>{
+  const source=fs.readFileSync(new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
+  assert.match(source,/const publicFallback=settings\.publicIdentityFallback===true;/);
+  assert.match(source,/if\(!publicFallback\)return;/);
+  assert.match(source,/await settleSearch\(\);/);
+  assert.match(source,/observeSabySearchTransport\(page,inn\)/);
+  assert.match(source,/shouldRecoverSilentSabySearch\(/);
+  assert.match(source,/action:"reload_and_submit_once"/);
+  assert.match(source,/transportRecoveryUsed=true/);
+  assert.match(source,/sameSabyDetailId\(/);
+  assert.doesNotMatch(source,/console\.\w+\([^)]*postData\(|console\.\w+\([^)]*request\.url\(/);
+});
