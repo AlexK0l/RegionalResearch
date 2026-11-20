@@ -34,6 +34,7 @@ export function blankSabyNetworkCounts(){
   return {
     requests:0,async_requests:0,async_post:0,async_get:0,
     async_requests_with_inn:0,responses:0,async_responses:0,
+    http_2xx:0,http_3xx:0,http_4xx_other:0,
     http_401:0,http_403:0,http_429:0,http_5xx:0,
     failed_requests:0,ws_sent:0,ws_received:0,
     ws_sent_with_inn:0
@@ -52,6 +53,10 @@ export function updateSabyNetworkCounts(counts,event,detail={}){
     counts.responses++;
     if(detail.asyncRequest)counts.async_responses++;
     const status=Number(detail.status);
+    if(status>=200&&status<300)counts.http_2xx++;
+    if(status>=300&&status<400)counts.http_3xx++;
+    if(status>=400&&status<500&&
+       ![401,403,429].includes(status))counts.http_4xx_other++;
     if(status===401)counts.http_401++;
     if(status===403)counts.http_403++;
     if(status===429)counts.http_429++;
