@@ -86,3 +86,35 @@ test("legacy unsourced field values are never trusted as new verified facts",()=
   assert.equal(coverage.revenue_present,1);
   assert.equal(coverage.stage10_source_backed_revenue,0);
 });
+
+test("Saby is only a supplement: existing stage-10 values win, missing fields may be filled",async()=>{
+  const {applySabyEnrichment}=await import("../src/sabyEnrichment.js");
+  const row=company();
+  applyPreSabyFinancialFacts(row,{financial_facts:[revenue(),staff]});
+  const saby={identity:{inn:"6732001114",name:"ООО «Карьер»",verified:true},
+    source:"SABY",source_url:"https://profile.saby.ru/page/contractor-info?id=company-1",
+    collected_at:"2026-11-20T08:00:00.000Z",
+    contacts:{status:"collected",phones:[],emails:[]},trucks:{status:"missing"},
+    financials:{status:"collected",revenue_rub:500000000,revenue_year:2024,employees:6},errors:[]};
+  assert.equal(applySabyEnrichment(row,saby).status,"ok");
+  assert.equal(row[REVENUE_FIELD],1200000000);
+  assert.equal(row[STAFF_FIELD],124);
+  assert.equal(row.__evidence.saby.financials.revenue_rub,500000000);
+  const incomplete=company();
+  incomplete[REVENUE_FIELD]="не найдено";
+  incomplete[STAFF_FIELD]="12 человек";
+  assert.equal(applySabyEnrichment(incomplete,saby).status,"ok");
+  assert.equal(incomplete[REVENUE_FIELD],500000000);
+  assert.equal(incomplete[STAFF_FIELD],6);
+});
+
+test("pipeline budgets stay unchanged and source-backed figures checkpoint before Saby",async()=>{
+  const {readFile}=await import("node:fs/promises");
+  const source=await readFile(new URL("../src/pipeline.js",import.meta.url),"utf8");
+  assert.match(source,/applyPreSabyFinancialFacts\(row,result\)/);
+  assert.match(source,/pre_saby_financial_stats:preSabyFinancialStats/);
+  assert.ok(source.indexOf("pre_saby_financial_stats:preSabyFinancialStats")<
+    source.indexOf("const sabyOutcome = await runCheckpointedSabyStage12"));
+  assert.match(source,/financial_facts: \{ type: "array"/);
+  assert.match(source,/const ENRICHMENT_BATCH_MAX_TOOL_CALLS = Math.max\(1, Math.min\(3, Number\(process.env.OPENAI_ENRICHMENT_BATCH_MAX_TOOL_CALLS \|\| 1\)\)\)/);
+});
