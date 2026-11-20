@@ -163,7 +163,7 @@ export function applySabyFinanceBackfill(row,record){
 // infer identity for a multi-card or mixed successful/reviewed pass.
 export function recoverLegacyFinanceReview(child,parent){
   const unchanged={checkpoint:child,recovered:0};
-  if(!child||!parent||child?.saby_finance_backfill_outcomes||
+  if(!child||!parent||
      String(child.saby_finance_backfill_source_job_id||"")!==
        String(parent.id||""))
     return unchanged;
@@ -181,6 +181,10 @@ export function recoverLegacyFinanceReview(child,parent){
   const added=current.filter(inn=>!prior.has(inn));
   if(added.length!==1 || current.length!==prior.size+1)return unchanged;
   const inn=added[0];
+  const oldOutcome=child.saby_finance_backfill_outcomes?.[inn];
+  // Both first pilot variants existed: one wrote no outcome and the next
+  // wrote status=review, but BOTH incorrectly consumed this exact INN.
+  if(oldOutcome&&oldOutcome.status!=="review")return unchanged;
   // Only restore an INN that still exists, uniquely, with missing finance.
   const eligible=planSabyFinanceBackfill(child.final_result).eligible;
   const target=eligible.find(x=>x.inn===inn);
@@ -192,7 +196,8 @@ export function recoverLegacyFinanceReview(child,parent){
   };
   normalized.saby_finance_backfill_outcomes={
     ...(child.saby_finance_backfill_outcomes||{}),
-    [inn]:{status:"review",reason:"legacy_review_unclassified",
+    [inn]:{status:"review",
+      reason:oldOutcome?.reason||"legacy_review_unclassified",
       revenueStillMissing:target.missingRevenue,
       employeesStillMissing:target.missingEmployees}
   };
