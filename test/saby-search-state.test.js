@@ -34,24 +34,55 @@ test("two visible provider service errors are systemic, not a company absence",(
     "uncertain");
 });
 
-test("two stable busy exact-INN samples after the search timeout are a systemic stall",()=>{
+test("search stall requires a NEW spinner after a measured pre-search baseline",()=>{
   const busy={inputExact:true,explicitEmpty:false,
     serviceError:false,spinnerVisible:true};
-  assert.equal(classifySabySearchZeroState(busy,busy),"loading_stalled");
-  assert.equal(classifySabySearchZeroState(busy,busy,
-    {onListRoute:false}),"uncertain");
+  const idle={inputExact:false,explicitEmpty:false,
+    serviceError:false,spinnerVisible:false};
+  assert.equal(classifySabySearchZeroState(busy,busy),"uncertain",
+    "a missing baseline cannot prove that loading belongs to the query");
+  assert.equal(classifySabySearchZeroState(busy,busy,{
+    beforeSearch:busy
+  }),"uncertain",
+    "real VPS case: 4 global loading indicators already visible before a successful search");
+  assert.equal(classifySabySearchZeroState(busy,busy,{
+    beforeSearch:idle
+  }),"loading_stalled",
+    "a newly visible persistent spinner after the FULL deadline may be systemic");
+  assert.equal(classifySabySearchZeroState(busy,busy,{
+    onListRoute:false,beforeSearch:idle
+  }),"uncertain");
   for(const changed of [
     {inputExact:false},{spinnerVisible:false},{explicitEmpty:true},
     {serviceError:true}
   ]){
-    assert.equal(classifySabySearchZeroState(busy,{...busy,...changed}),
-      "uncertain","a single non-busy or inconsistent sample must not be considered a stall");
+    assert.equal(classifySabySearchZeroState(busy,{...busy,...changed},{
+      beforeSearch:idle
+    }),"uncertain",
+    "one inconsistent or non-busy sample is insufficient for a systemic stall");
   }
   assert.equal(classifySabySearchZeroState({...busy,spinnerVisible:false},
-    busy),"uncertain");
+    busy,{beforeSearch:idle}),"uncertain");
   const explicit={...busy,explicitEmpty:true};
-  assert.equal(classifySabySearchZeroState(explicit,explicit),"uncertain",
-    "the visible empty banner with a spinner is ambiguous, never accepted as absence");
+  assert.equal(classifySabySearchZeroState(explicit,explicit,{
+    beforeSearch:idle
+  }),"uncertain",
+    "a visible empty banner with a spinner is ambiguous");
+});
+
+test("preexisting Saby chrome spinner cannot hide an actual first-party empty result",()=>{
+  const oldBusy={inputExact:false,explicitEmpty:false,
+    serviceError:false,spinnerVisible:true};
+  const stableEmpty={inputExact:true,explicitEmpty:true,
+    serviceError:false,spinnerVisible:false};
+  assert.equal(classifySabySearchZeroState(stableEmpty,stableEmpty,{
+    beforeSearch:oldBusy
+  }),"confirmed_empty");
+  const stableService={...stableEmpty,explicitEmpty:false,serviceError:true,
+    spinnerVisible:true};
+  assert.equal(classifySabySearchZeroState(stableService,stableService,{
+    beforeSearch:oldBusy
+  }),"service_unavailable");
 });
 
 test("Saby DOM probe is self-contained in page.evaluate; never returns the INN or text",async()=>{
