@@ -311,3 +311,158 @@ test("incomplete paid source is rejected before any Saby or SQLite side effect",
     ok:false,code:"FINANCE_BACKFILL_FINAL_CHECKPOINT_REQUIRED"
   });
 });
+
+function safeSabyFailure(code,scope="company"){
+  const error=new Error("Private Playwright error must never be logged");
+  error.code=code;
+  error.scope=scope;
+  return error;
+}
+
+test("temporary Saby search miss is retried once, then verified finance is saved",async()=>{
+  const parent=checkpoint([row("4718000935","Волховское, АО","",119)]);
+  let calls=0;
+  const pauses=[];
+  const initial=JSON.stringify(parent);
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,maxCompanies:1,
+    waitBetweenCompanies:async ms=>pauses.push(ms),
+    sessionRunner:async fn=>fn({page:{},settings:{delayMs:800}}),
+    collectCompany:async()=>{
+      if(++calls===1)throw safeSabyFailure("search_no_unique_result");
+      return record();
+    }
+  });
+  assert.equal(calls,2);
+  assert.deepEqual(pauses,[800]);
+  assert.equal(out.stats.retries,1);
+  assert.equal(out.stats.processed,1);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.revenueAdded,1);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["4718000935"]);
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],440100000);
+  assert.equal(out.snapshot.phase,"completed");
+  assert.equal(JSON.stringify(parent),initial);
+});
+
+test("two failed card verifications do not consume the INN; one later run remains possible",async()=>{
+  const parent=checkpoint([row()]);
+  const original=JSON.stringify(parent);
+  let calls=0;
+  const run={
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    collectCompany:async()=>{
+      calls++;
+      throw safeSabyFailure("card_render_timeout");
+    },
+    waitBetweenCompanies:async()=>{}
+  };
+  const first=await runSabyFinanceBackfill({
+    ...run,checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:1
+  });
+  assert.equal(first.stats.retries,1);
+  assert.equal(first.stats.review,1);
+  assert.equal(first.stats.processed,1);
+  assert.equal(first.stats.unvisited,1);
+  assert.equal(first.stats.reviewRetryable,1);
+  assert.equal(first.stats.reviewExhausted,0);
+  assert.equal(first.snapshot.saby_finance_backfill_attempted_inns.length,0);
+  assert.equal(first.snapshot.saby_finance_backfill_review_attempts["4718000935"],1);
+  assert.equal(first.snapshot.saby_finance_backfill_outcomes["4718000935"].reason,
+    "card_render_timeout");
+  assert.equal(first.snapshot.phase,"saby");
+
+  const second=await runSabyFinanceBackfill({
+    ...run,checkpoint:first.snapshot,sourceJobId:UUID2,childJobId:UUID3,
+    maxCompanies:1
+  });
+  assert.equal(second.stats.retries,1);
+  assert.equal(second.stats.unvisited,0);
+  assert.equal(second.stats.reviewExhausted,1);
+  assert.equal(second.snapshot.saby_finance_backfill_review_attempts["4718000935"],2);
+  assert.equal(second.snapshot.saby_finance_backfill_attempted_inns.length,0);
+  assert.equal(second.snapshot.phase,"saby",
+    "review exhaustion cannot be falsely labeled completed");
+  assert.equal(calls,4);
+
+  let unexpected=0;
+  const third=await runSabyFinanceBackfill({
+    ...run,checkpoint:second.snapshot,sourceJobId:UUID3,
+    childJobId:"12345678-1234-4234-8234-123456789015",
+    collectCompany:async()=>{unexpected++;throw Error("unexpected");}
+  });
+  assert.equal(third.stats.scheduled,0);
+  assert.equal(unexpected,0);
+  assert.equal(third.stats.reviewExhausted,1);
+  assert.equal(third.snapshot.phase,"saby");
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("cross-card identity warning never triggers an automatic retry or claims success",async()=>{
+  const parent=checkpoint([row()]);
+  let count=0;
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    sessionRunner:async fn=>fn({page:{},settings:{}}),
+    collectCompany:async()=>{
+      count++;
+      throw safeSabyFailure("card_changed");
+    }
+  });
+  assert.equal(count,1);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.reviewExhausted,1);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+  assert.equal(out.snapshot.saby_finance_backfill_outcomes["4718000935"].reason,
+    "card_changed");
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],"");
+});
+
+test("systemic Saby search scanner failure pauses the batch, not mark other firms reviewed",async()=>{
+  const parent=checkpoint([row(),row("7707083893","Сбербанк, ПАО")]);
+  let count=0;
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,maxCompanies:2,
+    sessionRunner:async task=>task({page:{},settings:{}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async()=>{
+      count++;
+      throw safeSabyFailure("search_scan_error","systemic");
+    }
+  });
+  assert.equal(count,2,"one bounded immediate retry only");
+  assert.equal(out.stats.retries,1);
+  assert.equal(out.stats.processed,0);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.browserError,"saby_search_unavailable");
+  assert.equal(out.stats.unvisited,2);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+  assert.equal(out.snapshot.phase,"saby");
+});
+
+test("three consecutive non-retryable identity failures stop a large finance batch",async()=>{
+  const parent=checkpoint([
+    row(),row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО")
+  ]);
+  let calls=0;
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,maxCompanies:4,
+    sessionRunner:async fn=>fn({page:{},settings:{}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async()=>{
+      calls++;
+      throw safeSabyFailure("search_ambiguous");
+    }
+  });
+  assert.equal(calls,3);
+  assert.equal(out.stats.browserError,"saby_consecutive_unverified_cards");
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.reviewExhausted,3);
+  assert.equal(out.stats.unvisited,1);
+  assert.equal(out.snapshot.phase,"saby");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+});
