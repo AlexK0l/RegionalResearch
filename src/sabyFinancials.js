@@ -119,8 +119,118 @@ export function validSabyFinancialEvidence(data){
  */
 let financeMissingDiagnostics=0;
 
-// Re-read only already-open, verified card DOM. No clicks or navigation.
-// Some finance grids render after the employee badge or as nested cells.
+// Saby's contractor card uses an internal scroll viewer and may not mount
+// its bottom "finance" item until the user scrolls the verified detail card.
+// A normal DOM/polling read then reports no_heading despite an available
+// annual table. Scroll ONLY the existing contractor viewer, never the list,
+// a linked counterparty, or an external page, and restore its position.
+//
+// This is a bounded attempt, not a claim that every firm has revenue. We
+// never use the banner alone to invent a fiscal year or amount.
+async function revealLazySabyFinance(page,inspect){
+  const diag={scroller:"unavailable",scroll_steps:0,finance_item:false,
+    selection:"none",lookup_attempts:0};
+  if(typeof page?.locator!=="function")return {snapshot:null,diag};
+  // The user's captured Saby detail HTML places its main scroll node at
+  // [data-qa=contractorCard-dialog-Stack] >
+  //   ... .controls-SlidingPanel__scrollWrapper >
+  //   [data-qa=controls-Scroll__content].
+  // Do not filter by .contractor-BaseInfoView: that nested widget may be
+  // unmounted until this main scroll viewer is moved, which made the old
+  // locator unavailable precisely when finance was lazy-loaded.
+  const choices=[
+    ['profile_scroll',
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '.controls-SlidingPanel__scrollWrapper > '+
+      '[data-qa="controls-Scroll__content"]'],
+    ['dialog_scroll',
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '[data-qa="controls-Scroll__content"]']
+  ];
+  const wait=ms=>typeof page.waitForTimeout==="function"?
+    page.waitForTimeout(ms):new Promise(resolve=>setTimeout(resolve,ms));
+  let scroller=null,original=null,item=null;
+  // A mounted employee badge does not guarantee that the scroll wrapper has
+  // hydrated yet. Two bounded attempts; never inspect the global body scroller.
+  for(let attempt=0;attempt<2&&!scroller;attempt++){
+    diag.lookup_attempts++;
+    for(const [selection,selector] of choices){
+      try{
+        const candidate=page.locator(selector).first();
+        const position=await candidate.evaluate(el=>({
+          top:el.scrollTop,
+          max:Math.max(0,el.scrollHeight-el.clientHeight)
+        }),undefined,{timeout:2200});
+        if(!Number.isFinite(position?.top)||!Number.isFinite(position?.max))
+          continue;
+        scroller=candidate;
+        original=position;
+        diag.scroller=position.max>20?"scrollable":"static";
+        diag.selection=selection;
+        break;
+      }catch{
+        // A missing/virtualized wrapper is not a reason to scroll a
+        // different company's page or an unscoped document element.
+      }
+    }
+    if(!scroller&&attempt===0)await wait(450);
+  }
+  if(!scroller)return {snapshot:null,diag};
+  try{
+    item=page.locator('[data-qa="item"][item-key="finance"]').first();
+  }catch{
+    return {snapshot:null,diag};
+  }
+  let snapshot=null;
+  try {
+    // A mounted item can be brought into view directly. When virtualization
+    // has not yet mounted it, sweep a few positions through the card scroller.
+    // No arbitrary document.body scroll and no clicks on unrelated panels.
+    for(const fraction of [0.5,1,0.75,0.25]){
+      let moved=false;
+      if(diag.scroll_steps===0 && await item.count().catch(()=>0)>0){
+        diag.finance_item=true;
+        try{
+          await item.scrollIntoViewIfNeeded({timeout:1800});
+          moved=true;
+        }catch{
+          // A detached/hidden virtual item may need a scroll sweep instead.
+        }
+      }
+      if(!moved){
+        if(original.max<=20)break;
+        try{
+          await scroller.evaluate((el,part)=>{
+            const max=Math.max(0,el.scrollHeight-el.clientHeight);
+            el.scrollTop=Math.round(max*part);
+          },fraction,{timeout:1800});
+        }catch{
+          diag.scroller="scroll_failed";
+          break;
+        }
+      }
+      diag.scroll_steps++;
+      await wait(550);
+      try{snapshot=await inspect();}
+      catch{break;}
+      if(snapshot?.financeHeadings>0 && snapshot?.years?.length>0 &&
+         snapshot?.revenueRows?.length>0)break;
+    }
+  }finally{
+    try{
+      // Keep original interaction context for the following contacts and
+      // fleet readers even if the finance block failed to hydrate.
+      await scroller.evaluate((el,top)=>{el.scrollTop=top;},original.top,
+        {timeout:1500});
+    }catch{
+      diag.scroller="restore_failed";
+    }
+  }
+  return {snapshot,diag};
+}
+
+// Re-read only the already-verified card. A bounded in-card scroll is allowed
+// when Saby has not yet mounted the bottom finance section; no new search.
 export async function readSabyFinancials(page){
   const inspect=()=>page.evaluate(() => {
     const text=el=>(el?.textContent||"").replace(/\s+/gu," ").trim();
@@ -136,7 +246,8 @@ export async function readSabyFinancials(page){
 
     // "analytics-finanalysis" can wrap an entire widget; its textContent
     // then contains labels, years and figures, not only the heading.
-    const headings=[...document.querySelectorAll('[data-qa="analytics-finanalysis"]')]
+    const financeNodes=[...document.querySelectorAll('[data-qa="analytics-finanalysis"]')];
+    const headings=financeNodes
       .filter(el=>visible(el)&&/Выручк\p{L}*\s*\/\s*Финанс/iu.test(text(el)));
     const containers=headings.map(heading=>
       heading.closest?.(".analytics-FinAnalysis__margin") ||
@@ -189,7 +300,19 @@ export async function readSabyFinancials(page){
       }
     }
     return {employeeTexts:employees,banner,years,reportScale,revenueRows,
-      financeHeadings:headings.length,reportFound:Boolean(report)};
+      financeHeadings:headings.length,financeNodes:financeNodes.length,
+      financeItemMounted:document.querySelectorAll(
+        '[data-qa="item"][item-key="finance"]').length>0,
+      dialogRoots:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"]').length,
+      profileScrollNodes:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"] '+
+        '.controls-SlidingPanel__scrollWrapper > '+
+        '[data-qa="controls-Scroll__content"]').length,
+      dialogScrollNodes:document.querySelectorAll(
+        '[data-qa="contractorCard-dialog-Stack"] '+
+        '[data-qa="controls-Scroll__content"]').length,
+      reportFound:Boolean(report)};
   });
 
   let snapshot=await inspect();
@@ -204,15 +327,35 @@ export async function readSabyFinancials(page){
     snapshot=await inspect();
     result=parseSabyFinancialSnapshot(snapshot);
   }
+  // A visible employee badge does not mean the bottom finance card
+  // is mounted. Try the verified company's own bounded scroll viewer.
+  let lazyDiag={scroller:"not_needed",scroll_steps:0,finance_item:false};
+  if(result.revenue_rub===null && !snapshot.financeHeadings){
+    const attempted=await revealLazySabyFinance(page,inspect);
+    lazyDiag=attempted.diag;
+    if(attempted.snapshot){
+      snapshot=attempted.snapshot;
+      result=parseSabyFinancialSnapshot(snapshot);
+    }
+  }
   if(result.revenue_rub===null&&financeMissingDiagnostics<12){
     financeMissingDiagnostics++;
-    const code=!snapshot.financeHeadings?"no_heading":
+    const code=!snapshot.financeHeadings?
+        (snapshot.financeNodes?"heading_hidden":"no_heading"):
       !snapshot.reportFound?"no_report":
       !snapshot.years.length?"no_years":
       !snapshot.revenueRows.length?"no_2110_row":"year_value_or_banner_mismatch";
-    // No company text, INN, URL, raw HTML, auth token or profile details.
+    // Counts/flags only: no company name, INN, URL, DOM, session data.
     console.warn("[SABY_FINANCIAL_DIAG] "+JSON.stringify({
-      code,years:snapshot.years.length,rows:snapshot.revenueRows.length
+      code,years:snapshot.years.length,rows:snapshot.revenueRows.length,
+      finance_nodes:snapshot.financeNodes||0,
+      finance_item:!!snapshot.financeItemMounted,
+      dialog_roots:snapshot.dialogRoots||0,
+      profile_scroll_nodes:snapshot.profileScrollNodes||0,
+      dialog_scroll_nodes:snapshot.dialogScrollNodes||0,
+      scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps,
+      scroll_selection:lazyDiag.selection||"none",
+      scroll_lookup_attempts:lazyDiag.lookup_attempts||0
     }));
   }
   return result;

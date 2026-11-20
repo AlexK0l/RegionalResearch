@@ -4,7 +4,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { withSabyBrowser } from "../src/sabyBrowser.js";
+import { withSabyBrowser, collectSabyFinancialsOnly } from "../src/sabyBrowser.js";
 import { sabyFleetScreenshotPath } from "../src/sabyFleetPanelSnapshot.js";
 import { authenticateSaby, waitForSabySession, sabyLoginDiagnostic } from "../src/sabyAuth.js";
 import { runSabyStage12 } from "../src/sabyStage12.js";
@@ -25,6 +25,7 @@ async function main() {
     console.log("  npm run saby:smoke -- --inn=7707083893 --name=\\\"ПАО Сбербанк\\\" --limit=1");
     console.log("  npm run saby:smoke -- --result=SAT_Region.json --limit=3 --xlsx");
     console.log("  Exact eligible INN: --result=SAT_Region.json --target-inn=7707083893 --limit=1");
+    console.log("  Finance-only (no fleet): --inn=... --name=... --limit=1 --finance-only");
     console.log("  Optional: --offset=10 --profile=PATH --out=data/saby-smoke.json --headless");
     console.log("  Experimental safe matching: --public-identity-fallback (off by default)");
     console.log("  Private local fleet-panel image: --fleet-panel-screenshot (opt-in, only with --result and fallback)");
@@ -40,6 +41,8 @@ async function main() {
     SABY_HEADLESS:args.includes("--headless")?"true":"false",
     // Explicit test flag; never enables experimental fallback on the live site.
     SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:args.includes("--public-identity-fallback")?"true":"false"};
+  if(args.includes("--finance-only") && env.SABY_MAX_COMPANIES!=="1")
+    throw new Error("--finance-only допускается только с --limit=1");
   if(option(args,"profile"))env.SABY_PROFILE_DIR=option(args,"profile");
   if(args.includes("--login")) {
     await withSabyBrowser(async ({page,settings})=>{
@@ -139,7 +142,10 @@ async function main() {
   else if(offset)console.log("Saby: пропускаю первые "+offset+
     " компаний отсортированной исходной выборки.");
   const response=await runSabyStage12({
-    result,env,offset,onProgress:async stats=>{
+    result,env,offset,
+    ...(args.includes("--finance-only")?
+      {collectCompany:collectSabyFinancialsOnly}:{}),
+    onProgress:async stats=>{
       console.log("Saby: "+stats.processed+"/"+stats.scheduled+
         " | проверено: "+stats.verified+" | review: "+stats.review);
     }
@@ -161,12 +167,28 @@ async function main() {
     xlsx=target;
   }
   const targetRow=selectedTarget?result[selectedTarget.section]?.[0]:null;
+  const financeRow=args.includes("--finance-only")
+    ? [...(result.direct_buyers||[]),...(result.intermediaries||[]),
+       ...(result.leasing||[])][0]:null;
+  const financeRecord=financeRow?.__evidence?.saby?.financials||null;
+  const financePassed=Number.isSafeInteger(financeRecord?.revenue_rub)&&
+    Number.isSafeInteger(financeRecord?.revenue_year)&&
+    Number.isSafeInteger(financeRecord?.employees);
   const trucks=targetRow?.__evidence?.saby?.trucks;
   const recordedVehicles=Array.isArray(trucks?.vehicles)?trucks.vehicles.length:0;
   console.log(JSON.stringify({
     checked:response.stats.verified,review:response.stats.review,
     contactUpdates:response.stats.phonesAdded,
     transportUpdates:response.stats.transportsAdded,
+    ...(args.includes("--finance-only")?{
+      revenue_rub:Number.isSafeInteger(financeRecord?.revenue_rub)?
+        financeRecord.revenue_rub:null,
+      revenue_year:Number.isSafeInteger(financeRecord?.revenue_year)?
+        financeRecord.revenue_year:null,
+      employees:Number.isSafeInteger(financeRecord?.employees)?
+        financeRecord.employees:null,
+      finance_only:true,finance_complete:financePassed
+    }:{}),
     deferred:response.stats.deferred,
     browserError:response.stats.browserError||null,
     ...(selectedTarget?{
@@ -183,7 +205,8 @@ async function main() {
     openai_requests:0,google_sheets_writes:0,source_file_unchanged:true
   },null,2));
   if(response.stats.browserError||response.stats.review||
-     (!response.stats.verified&&response.stats.scheduled))process.exitCode=2;
+     (!response.stats.verified&&response.stats.scheduled)||
+     (args.includes("--finance-only")&&!financePassed))process.exitCode=2;
 }
 
 main().catch(error=>{console.error("Saby smoke:",error.message||String(error));process.exitCode=1;});
