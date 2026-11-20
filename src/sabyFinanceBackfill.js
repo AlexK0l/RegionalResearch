@@ -21,7 +21,8 @@ const TRANSIENT_SABY_CODES=new Set([
 ]);
 const NON_RETRYABLE_SABY_CODES=new Set([
   "search_ambiguous","card_changed","search_input_failed",
-  "search_confirmed_empty","search_service_unavailable"
+  "search_confirmed_empty","search_service_unavailable",
+  "search_loading_stalled"
 ]);
 export function classifySabyFinanceFailure(error){
   const code=String(error?.code||"");
@@ -423,10 +424,13 @@ export async function runSabyFinanceBackfill({
               code:"search_confirmed_empty",scope:"company",action:"skip_unavailable"
             }));
           }else if(["search_input_failed","search_scan_error",
-            "search_service_unavailable"].includes(failure.code)){
-            // Systemic search failure pauses this batch BEFORE consuming
-            // any current INN. Previously saved records stay intact.
-            stats.browserError="saby_search_unavailable";
+            "search_service_unavailable","search_loading_stalled"]
+            .includes(failure.code)){
+            // Saby is still loading the exact INN after the full result
+            // deadline. PAUSE immediately. Never mark this INN reviewed,
+            // never retry on the same stuck UI, and preserve other INNs.
+            stats.browserError=failure.code==="search_loading_stalled"?
+              "saby_search_loading_stalled":"saby_search_unavailable";
             console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
               code:failure.code,scope:"systemic",action:"pause"
             }));
