@@ -58,17 +58,22 @@ export async function readSabySearchState(page,inn){
   };
 }
 
-export function classifySabySearchZeroState(first,last,{onListRoute=true}={}){
+export function classifySabySearchZeroState(first,last,{
+  onListRoute=true,beforeSearch=null
+}={}){
   const stable=Boolean(onListRoute&&first&&last);
   if(!stable)return "uncertain";
   if(first.serviceError&&last.serviceError)
     return "service_unavailable";
-  // After the FULL search-result deadline, two consecutive snapshots still
-  // show a busy Wasaby interface for this exact query. Treat as systemic
-  // loading failure, not "company not found" and not a retryable company
-  // review. This is conservative even if the spinner is from an unrelated
-  // area: no legal entity is accepted or skipped.
-  if(first.inputExact&&last.inputExact&&
+  // Live 2026-11-20 VPS probe observed FOUR visible
+  // .controls-LoadingIndicator nodes BEFORE searching and AFTER a successful
+  // 40-result search. Global spinnerVisible is NOT evidence of a stalled
+  // company search. Require a measured pre-search baseline with NO spinner
+  // before identifying newly-present, persistent loading as systemic.
+  // When the baseline is missing or already busy, fail closed as uncertain:
+  // do not mark the company absent and do not guess at a site-wide outage.
+  if(beforeSearch?.spinnerVisible===false&&
+     first.inputExact&&last.inputExact&&
      first.spinnerVisible&&last.spinnerVisible&&
      !first.explicitEmpty&&!last.explicitEmpty&&
      !first.serviceError&&!last.serviceError)
