@@ -504,3 +504,32 @@ test("finance search errors are classified without leaking private error message
   assert.deepEqual(classifySabyFinanceFailure(new Error("Private URL embedded")),
     {code:"collector_unavailable",retryable:false});
 });
+
+test("saved Saby finance card is a strict navigation hint, not accepted identity",async()=>{
+  const {savedSabyFinanceCardUrl}=await import("../src/sabyBrowser.js");
+  const approved="https://profile.saby.ru/page/contractor-info?anchor=about&"+
+    "tab=all&page=public&local=false&id=7f794800-63b5-11e0-adec-00c30e012283";
+  const allowed=row();
+  allowed.__evidence.saby.source_url=approved;
+  allowed.__evidence.saby.verified_at="2026-11-20T08:50:02.150Z";
+  assert.equal(savedSabyFinanceCardUrl(allowed),approved);
+  const wrongInn=structuredClone(allowed);
+  wrongInn.__evidence.saby.inn="4718000936";
+  assert.equal(savedSabyFinanceCardUrl(wrongInn),null);
+  const oldUnverified=structuredClone(allowed);
+  delete oldUnverified.__evidence.saby.verified_at;
+  assert.equal(savedSabyFinanceCardUrl(oldUnverified),null);
+  const badUrl=structuredClone(allowed);
+  badUrl.__evidence.saby.source_url=
+    "https://other.example.org/page/contractor-info?id=7f794800-63b5-11e0-adec-00c30e012283";
+  assert.equal(savedSabyFinanceCardUrl(badUrl),null);
+  badUrl.__evidence.saby.source_url=
+    "http://profile.saby.ru/page/contractor-info?id=7f794800-63b5-11e0-adec-00c30e012283";
+  assert.equal(savedSabyFinanceCardUrl(badUrl),null);
+  badUrl.__evidence.saby.source_url=
+    "https://profile.saby.ru/page/company-list-prof?id=7f794800-63b5-11e0-adec-00c30e012283";
+  assert.equal(savedSabyFinanceCardUrl(badUrl),null);
+  badUrl.__evidence.saby.source_url=
+    "https://profile.saby.ru/page/contractor-info?id=not-a-uuid";
+  assert.equal(savedSabyFinanceCardUrl(badUrl),null);
+});
