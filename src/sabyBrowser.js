@@ -57,7 +57,7 @@ export class SabyReview extends Error {
     this.code=new Set(["review","search_scan_error","search_no_unique_result",
       "search_ambiguous","card_render_timeout","card_changed",
       "search_input_failed","search_confirmed_empty",
-      "search_service_unavailable"]).has(code)?code:"review";
+      "search_service_unavailable","search_loading_stalled"]).has(code)?code:"review";
   }
 }
 
@@ -354,6 +354,9 @@ async function openCompany(page, row, settings) {
       if(classification==="service_unavailable")
         throw new SabyReview("Saby: сервис поиска временно недоступен",
           {code:"search_service_unavailable"});
+      if(classification==="loading_stalled")
+        throw new SabyReview("Saby: поиск не завершил загрузку результатов",
+          {code:"search_loading_stalled"});
       if(classification==="confirmed_empty")
         throw new SabyReview("Saby: явное сообщение об отсутствии результатов",
           {scope:"company",code:"search_confirmed_empty"});

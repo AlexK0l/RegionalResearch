@@ -663,3 +663,46 @@ test("Saby service unavailability pauses before consuming any further legal INN"
   assert.equal(out.snapshot.phase,"saby");
   assert.equal(JSON.stringify(parent),original);
 });
+
+
+test("Saby persistent loading stalls immediately, leaving all regional INNs pending",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО"),
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО")
+  ]);
+  const original=JSON.stringify(parent);
+  let calls=0;
+  const saved=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:3,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    collectCompany:async()=>{
+      calls++;
+      throw safeSabyFailure("search_loading_stalled","systemic");
+    },
+    onCheckpoint:async cp=>saved.push(cp)
+  });
+  assert.equal(calls,1,"no second search or company when previous exact-INN search is still loading");
+  assert.equal(out.stats.processed,0);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.unavailable,0);
+  assert.equal(out.stats.revenueAdded,0);
+  assert.equal(out.stats.employeesAdded,0);
+  assert.equal(out.stats.unvisited,3);
+  assert.equal(out.stats.browserError,"saby_search_loading_stalled");
+  assert.equal(out.snapshot.phase,"saby");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_outcomes,{});
+  assert.deepEqual(out.snapshot.saby_finance_backfill_review_attempts,{});
+  assert.ok(saved.length>=2,"initial and terminal SQLite child checkpoints saved");
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("Saby loading stall classification is not company-specific or retryable",()=>{
+  assert.deepEqual(classifySabyFinanceFailure(
+    safeSabyFailure("search_loading_stalled","systemic")),
+    {code:"search_loading_stalled",retryable:false});
+});

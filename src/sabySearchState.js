@@ -63,6 +63,16 @@ export function classifySabySearchZeroState(first,last,{onListRoute=true}={}){
   if(!stable)return "uncertain";
   if(first.serviceError&&last.serviceError)
     return "service_unavailable";
+  // After the FULL search-result deadline, two consecutive snapshots still
+  // show a busy Wasaby interface for this exact query. Treat as systemic
+  // loading failure, not "company not found" and not a retryable company
+  // review. This is conservative even if the spinner is from an unrelated
+  // area: no legal entity is accepted or skipped.
+  if(first.inputExact&&last.inputExact&&
+     first.spinnerVisible&&last.spinnerVisible&&
+     !first.explicitEmpty&&!last.explicitEmpty&&
+     !first.serviceError&&!last.serviceError)
+    return "loading_stalled";
   if(first.inputExact&&last.inputExact&&
     first.explicitEmpty&&last.explicitEmpty&&
     !first.spinnerVisible&&!last.spinnerVisible&&
