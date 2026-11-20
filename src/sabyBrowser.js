@@ -1129,12 +1129,61 @@ export function sameSabyDetailId(before,after){
   }catch{return false;}
 }
 
-// Financial-only acceptance for an already known INN/name. Uses the same
-// strict Saby identity verification as Stage 12 and never opens fleet or
-// contact overlays. Intended only for one-company smoke runs; the normal
-// collection path is unchanged.
+// The source checkpoint may already contain a first-party card URL that was
+// verified by the earlier Stage12 run. It is a navigation hint only; never
+// accept its ownership without fresh, on-page strict INN/name verification.
+export function savedSabyFinanceCardUrl(row){
+  const saved=row?.__evidence?.saby;
+  const inn=sabyInn(row?.["ИНН"]);
+  if(!inn||sabyInn(saved?.inn)!==inn||
+     !String(row?.["Организация"]||"").trim()||
+     !String(saved?.verified_at||"").trim())return null;
+  try{
+    const target=new URL(String(saved.source_url||""));
+    const id=String(target.searchParams.get("id")||"");
+    if(target.protocol!=="https:"||target.hostname!=="profile.saby.ru"||
+       target.pathname!=="/page/contractor-info"||
+       !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
+      return null;
+    return target.href;
+  }catch{return null;}
+}
+
+async function openSavedSabyFinanceCard(page,row,settings){
+  const url=savedSabyFinanceCardUrl(row);
+  if(!url)return null;
+  const inn=sabyInn(row?.["ИНН"]);
+  const name=String(row?.["Организация"]||"").trim();
+  try{
+    await page.goto(url,{waitUntil:"commit",timeout:settings.timeoutMs});
+    const limit=Date.now()+Math.min(4500,settings.timeoutMs);
+    do{
+      if(!sameSabyDetailId(url,page.url()))break;
+      try{
+        const assessment=await verifySabyCard(page,inn,name);
+        if(assessment.ok&&assessment.detail?.hasScopedInn){
+          console.info("[SABY_FINANCE_SAVED_CARD] verified");
+          return {inn,name:assessment.verifiedName,verified:true};
+        }
+      }catch{
+        // Keep the strict identity gate closed during slow Wasaby hydration.
+      }
+      await delay(400);
+    }while(Date.now()<limit);
+  }catch{
+    // Stale saved link or a transient navigation failure; standard exact-INN
+    // search remains the only fallback, never inferred identity.
+  }
+  console.info("[SABY_FINANCE_SAVED_CARD] not_verified_fallback_search");
+  return null;
+}
+
+// Financial-only collector: accept only a freshly verified legal card,
+// whether opened from its previously verified same-card URL or exact-INN
+// search. It never opens fleet/contacts or calls paid language models.
 export async function collectSabyFinancialsOnly(page, row, settings = sabyBrowserSettings()) {
-  const identity=await openCompany(page,row,settings);
+  const identity=await openSavedSabyFinanceCard(page,row,settings)||
+    await openCompany(page,row,settings);
   await waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000));
   const source_url=page.url();
   const financials=await readSabyFinancials(page);
