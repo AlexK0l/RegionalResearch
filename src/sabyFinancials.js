@@ -217,13 +217,22 @@ async function revealLazySabyFinance(page,inspect){
          snapshot?.revenueRows?.length>0)break;
     }
   }finally{
+    // Wasaby may replace the scroll node while mounting the finance panel.
+    // Restore on the original locator, then reacquire the SAME verified
+    // dialog scroll node if it detached. Never touch document.body.
     try{
-      // Keep original interaction context for the following contacts and
-      // fleet readers even if the finance block failed to hydrate.
       await scroller.evaluate((el,top)=>{el.scrollTop=top;},original.top,
         {timeout:1500});
     }catch{
-      diag.scroller="restore_failed";
+      try{
+        const scoped=choices.find(([key])=>key===diag.selection)?.[1];
+        if(!scoped)throw Error("scoped_scroller_missing");
+        await page.locator(scoped).first().evaluate(
+          (el,top)=>{el.scrollTop=top;},original.top,{timeout:1500});
+        diag.scroll_restore="reacquired";
+      }catch{
+        diag.scroll_restore="not_restored";
+      }
     }
   }
   return {snapshot,diag};
@@ -317,6 +326,9 @@ export async function readSabyFinancials(page){
 
   let snapshot=await inspect();
   let result=parseSabyFinancialSnapshot(snapshot);
+  // The employee badge is often above the lazy finance section; preserve
+  // this verified observation while Saby unmounts it during scroll.
+  const initialEmployees=result.employees;
   // Saby is a SPA: the year grid can hydrate after the already visible
   // employees badge. Small bounded DOM retries do NOT revisit the company.
   for(let attempt=0;attempt<2&&!result.revenue_rub&&
@@ -338,6 +350,9 @@ export async function readSabyFinancials(page){
       result=parseSabyFinancialSnapshot(snapshot);
     }
   }
+  if(initialEmployees!==null&&result.employees===null){
+    result={...result,status:"collected",employees:initialEmployees};
+  }
   if(result.revenue_rub===null&&financeMissingDiagnostics<12){
     financeMissingDiagnostics++;
     const code=!snapshot.financeHeadings?
@@ -355,7 +370,8 @@ export async function readSabyFinancials(page){
       dialog_scroll_nodes:snapshot.dialogScrollNodes||0,
       scroll:lazyDiag.scroller,scroll_steps:lazyDiag.scroll_steps,
       scroll_selection:lazyDiag.selection||"none",
-      scroll_lookup_attempts:lazyDiag.lookup_attempts||0
+      scroll_lookup_attempts:lazyDiag.lookup_attempts||0,
+      scroll_restore:lazyDiag.scroll_restore||"original"
     }));
   }
   return result;
