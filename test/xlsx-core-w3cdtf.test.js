@@ -34,8 +34,10 @@ test("normalizes invalid +00:00Z core metadata without touching worksheet or com
       "with ZipFile(sys.argv[1],'w') as z:",
       "  for info,payload in files:",
       "    if info.filename=='docProps/core.xml':",
-      "      assert b'2026-11-20T05:32:42Z' in payload",
-      "      payload=payload.replace(b'2026-11-20T05:32:42Z',b'2026-11-20T05:32:42+00:00Z')",
+      "      start=payload.index(b'<dcterms:modified')",
+      "      text_start=payload.index(b'>',start)+1",
+      "      text_end=payload.index(b'</dcterms:modified>',text_start)",
+      "      payload=payload[:text_start]+b'2026-11-20T05:32:42+00:00Z'+payload[text_end:]",
       "    z.writestr(info,payload)"
     ].join("\n");
     const create=run("-c",[python,filename]);
