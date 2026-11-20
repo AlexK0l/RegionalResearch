@@ -143,7 +143,9 @@ export async function readSabyFinancials(page){
       heading.querySelector?.(".analytics-FinAnalysis__margin") ||
       heading.parentElement?.querySelector?.(".analytics-FinAnalysis__margin") ||
       (heading.querySelectorAll?.('[data-qa="row"]').length?heading:null)
-    ).filter(visible);
+    ).filter(Boolean);
+    // The visible heading already anchors this exact financial container;
+    // a container may not itself expose a layout rectangle in Saby.
     const distinct=[...new Set(containers)];
     const report=distinct.length===1?distinct[0]:null;
 
