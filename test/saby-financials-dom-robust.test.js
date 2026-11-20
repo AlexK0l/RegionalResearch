@@ -12,9 +12,10 @@ const visible=(s,extra={})=>({
 
 function fakePage({hydrateAfter=0,includeRevenue=true,
   headingText="Выручка / Финансы 2023 2024 2025",
-  nestedCells=true}={}){
+  nestedCells=true,yearLabels=years,revenueAmounts=values,employeeCount="8",
+  bannerAmount="460.3"}={}){
   let hydrated=hydrateAfter===0;
-  const yearHeaders=years.map(year=>visible(year));
+  const yearHeaders=yearLabels.map(year=>visible(year));
   let readCount=0,waitCount=0;
   const rows=[];
   function tableRow(cells) {
@@ -28,9 +29,9 @@ function fakePage({hydrateAfter=0,includeRevenue=true,
     }});
     return row;
   }
-  rows.push(tableRow(["Доходы","2110+2320",...values]));
-  if(includeRevenue)rows.push(tableRow(["От основной","деятельности",...values]));
-  rows.push(tableRow(["Расходы","2120",...values]));
+  rows.push(tableRow(["Доходы","2110+2320",...revenueAmounts]));
+  if(includeRevenue)rows.push(tableRow(["От основной","деятельности",...revenueAmounts]));
+  rows.push(tableRow(["Расходы","2120",...revenueAmounts]));
   const report={
     querySelectorAll(selector) {
       if(selector===".analytics-FinAnalysis__stickerHeader_right")
@@ -46,12 +47,12 @@ function fakePage({hydrateAfter=0,includeRevenue=true,
   };
   const heading=visible(headingText,{closest:selector=>
     selector===".analytics-FinAnalysis__margin"?report:null});
-  const employee=visible("8",{closest:()=>visible("8 сотрудников")});
+  const employee=visible(employeeCount,{closest:()=>visible(employeeCount+" сотрудников")});
   const document={
     querySelectorAll(selector){
       if(selector==='[data-qa="ContractorCard_Employees"]')return [employee];
       if(selector==='[data-qa="contractorCard-CardRatingBanner__Revenue"]')
-        return [visible("Выручка: 460.3 млн ₽")];
+        return [visible("Выручка: "+bannerAmount+" млн ₽")];
       if(selector==='[data-qa="analytics-finanalysis"]')return [heading];
       return [];
     }
@@ -118,4 +119,24 @@ test("bad financial banner with extra text cannot veto a matched, year-aligned f
     years,reportScale:"млн ₽",revenueRows:[values],
     banner:"Выручка: 460.3 млн ₽, рост за год +65%",employeeTexts:["8"]
   },{nowYear:2026}).revenue_rub,460300000);
+});
+
+test("real Saby 2026-11-20 DOM structure: 22 years, display:contents rows, 2025 revenue and staff",async()=>{
+  // Numeric annual series and CSS structure transcribed from supplied Saby
+  // card; no private profile HTML, company identity or login metadata.
+  const yearLabels=Array.from({length:22},(_,i)=>String(i+2004));
+  const revenueAmounts=[
+    "51.4","50.9","63.5","63.8","92.2","93.7","104.5","123.2",
+    "126.8","118.6","153.9","208.0","232.3","270.3","294.7",
+    "289.1","308.5","313.1","350.2","336.7","403.1","440.1"
+  ];
+  const {page,stats}=fakePage({
+    yearLabels,revenueAmounts,employeeCount:"119",bannerAmount:"440.1",
+    headingText:"Выручка / Финансы"
+  });
+  assert.deepEqual(await readSabyFinancials(page),{
+    status:"collected",revenue_rub:440100000,revenue_year:2025,employees:119
+  });
+  assert.equal(stats().readCount,1,
+    "Saby finance table is already hydrated; one DOM read suffices");
 });
