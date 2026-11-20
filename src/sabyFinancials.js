@@ -133,10 +133,11 @@ async function revealLazySabyFinance(page,inspect){
   // The selector is grounded in the user's actual Saby 2026-11-20 HTML:
   // [data-qa=controls-Scroll__content] -> .contractor-BaseInfoView ->
   // [data-qa=item][item-key=finance] -> #finance.
-  const scroller=page.locator('[data-qa="controls-Scroll__content"]')
-    .filter({has:page.locator(".contractor-BaseInfoView")}).first();
-  let original;
+  let scroller,original,item;
   try{
+    scroller=page.locator('[data-qa="controls-Scroll__content"]')
+      .filter({has:page.locator(".contractor-BaseInfoView")}).first();
+    item=page.locator('[data-qa="item"][item-key="finance"]').first();
     original=await scroller.evaluate(el=>({
       top:el.scrollTop,
       max:Math.max(0,el.scrollHeight-el.clientHeight)
@@ -147,7 +148,6 @@ async function revealLazySabyFinance(page,inspect){
   }catch{
     return {snapshot:null,diag};
   }
-  const item=page.locator('[data-qa="item"][item-key="finance"]').first();
   let snapshot=null;
   const wait=ms=>typeof page.waitForTimeout==="function"?
     page.waitForTimeout(ms):new Promise(resolve=>setTimeout(resolve,ms));
