@@ -5,7 +5,8 @@ import {
   FINANCE_EMPLOYEES_FIELD as STAFF,
   planSabyFinanceBackfill,applySabyFinanceBackfill,
   validateFinanceBackfillCheckpoint,runSabyFinanceBackfill,
-  recoverLegacyFinanceReview,classifySabyFinanceFailure
+  recoverLegacyFinanceReview,classifySabyFinanceFailure,
+  verifiedSabyFinanceFromSmoke
 } from "../src/sabyFinanceBackfill.js";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
@@ -532,4 +533,55 @@ test("saved Saby finance card is a strict navigation hint, not accepted identity
   badUrl.__evidence.saby.source_url=
     "https://profile.saby.ru/page/contractor-info?id=not-a-uuid";
   assert.equal(savedSabyFinanceCardUrl(badUrl),null);
+});
+
+test("previously verified real Saby smoke can be imported without another browser visit",()=>{
+  const source="https://profile.saby.ru/page/contractor-info?"+
+    "id=7f794800-63b5-11e0-adec-00c30e012283&anchor=about";
+  const smokeRow=row();
+  smokeRow[REV]=440100000;
+  smokeRow[STAFF]=119;
+  smokeRow.__evidence.saby.source_url=source;
+  smokeRow.__evidence.saby.verified_at="2026-11-20T08:50:02.150Z";
+  smokeRow.__evidence.saby.collection.financials="collected";
+  smokeRow.__evidence.saby.financials={
+    status:"collected",revenue_rub:440100000,revenue_year:2025,employees:119
+  };
+  const smoke={source:"single_company",final_result:result([smokeRow]),
+    saby_smoke_selection:{limit:1},saby_stage12:{
+      verified:1,review:0,browserError:"",
+      revenuesAdded:1,employeesAdded:1
+    }};
+  const existing=row("4718000935","Волховское, АО","",119);
+  existing.__evidence.saby.source_url=source;
+  const sourceBefore=JSON.stringify(existing.__evidence.saby);
+  const imported=verifiedSabyFinanceFromSmoke(smoke,"4718000935");
+  assert.equal(imported.identity.verified,true);
+  assert.equal(imported.financials.revenue_rub,440100000);
+  assert.equal(imported.financials.revenue_year,2025);
+  assert.equal(imported.financials.employees,119);
+  const applied=applySabyFinanceBackfill(existing,imported);
+  assert.equal(applied.revenueAdded,true);
+  assert.equal(applied.employeesAdded,false);
+  assert.equal(existing[REV],440100000);
+  assert.equal(existing[STAFF],119);
+  assert.equal(JSON.stringify(existing.__evidence.saby),sourceBefore);
+
+  const broken=[
+    {...smoke,saby_stage12:{...smoke.saby_stage12,verified:0}},
+    {...smoke,saby_smoke_selection:{limit:2}},
+    {...smoke,final_result:{...smoke.final_result,direct_buyers:[smokeRow,smokeRow]}},
+    {...smoke,final_result:{...smoke.final_result,
+      direct_buyers:[{...smokeRow,[REV]:23}]}},
+    {...smoke,final_result:{...smoke.final_result,direct_buyers:[{
+      ...smokeRow,__evidence:{saby:{...smokeRow.__evidence.saby,
+        source_url:"https://other.example.org/page/contractor-info?id=7f794800-63b5-11e0-adec-00c30e012283"}}
+    }]}},
+    {...smoke,final_result:{...smoke.final_result,direct_buyers:[{
+      ...smokeRow,"ИНН":"4718000936"
+    }]}}
+  ];
+  for(const sample of broken)
+    assert.throws(()=>verifiedSabyFinanceFromSmoke(sample,"4718000935"),
+      /FINANCE_BACKFILL_SMOKE_NOT_VERIFIED/);
 });
