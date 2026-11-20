@@ -78,6 +78,7 @@ test("real Excel has large legible VML notes and only one company note",async()=
         "https://example.org/dealer")],
       statistics:[]
     };
+    result.direct_buyers[1]["Телефон"]="";
     const saved=structuredClone(result);
     const book=await buildReferenceWorkbookBuffer(result,{templatePath:template});
     fs.writeFileSync(out,book);
@@ -107,6 +108,12 @@ test("real Excel has large legible VML notes and only one company note",async()=
       "with zipfile.ZipFile(sys.argv[1]) as z:",
       "  v=z.read('xl/drawings/commentsDrawing1.vml').decode('utf-8')",
       "  out['wide_note']=bool(re.search(r'width:500px;height:300px',v))",
+      "  import xml.etree.ElementTree as ET",
+      "  out['orphan_inline_strings']=0",
+      "  for i in range(1,6):",
+      "    root=ET.fromstring(z.read('xl/worksheets/sheet'+str(i)+'.xml'))",
+      "    ns='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'",
+      "    out['orphan_inline_strings']+=sum(1 for c in root.iter(ns+'c') if c.get('t')=='inlineStr' and c.find(ns+'is') is None)",
       "sys.stdout.buffer.write(json.dumps(out,ensure_ascii=False).encode('utf-8'))"
     ].join("\n");
     const checked=run("python",["-c",inspect,out]);
@@ -128,6 +135,8 @@ test("real Excel has large legible VML notes and only one company note",async()=
         "checkbox must not duplicate long source URL lists");
     }
     assert.equal(report.wide_note,true);
+    assert.equal(report.orphan_inline_strings,0,
+      "empty Excel cells must not have inlineStr type without <is>");
     assert.equal(report.formulaType,"s",
       "source text with leading '=' must not be an active Excel formula");
     assert.equal(report.formulaText,"=1+1");
