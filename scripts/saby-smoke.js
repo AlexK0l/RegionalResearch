@@ -171,6 +171,9 @@ async function main() {
     ? [...(result.direct_buyers||[]),...(result.intermediaries||[]),
        ...(result.leasing||[])][0]:null;
   const financeRecord=financeRow?.__evidence?.saby?.financials||null;
+  const financePassed=Number.isSafeInteger(financeRecord?.revenue_rub)&&
+    Number.isSafeInteger(financeRecord?.revenue_year)&&
+    Number.isSafeInteger(financeRecord?.employees);
   const trucks=targetRow?.__evidence?.saby?.trucks;
   const recordedVehicles=Array.isArray(trucks?.vehicles)?trucks.vehicles.length:0;
   console.log(JSON.stringify({
@@ -184,7 +187,7 @@ async function main() {
         financeRecord.revenue_year:null,
       employees:Number.isSafeInteger(financeRecord?.employees)?
         financeRecord.employees:null,
-      finance_only:true
+      finance_only:true,finance_complete:financePassed
     }:{}),
     deferred:response.stats.deferred,
     browserError:response.stats.browserError||null,
@@ -202,7 +205,8 @@ async function main() {
     openai_requests:0,google_sheets_writes:0,source_file_unchanged:true
   },null,2));
   if(response.stats.browserError||response.stats.review||
-     (!response.stats.verified&&response.stats.scheduled))process.exitCode=2;
+     (!response.stats.verified&&response.stats.scheduled)||
+     (args.includes("--finance-only")&&!financePassed))process.exitCode=2;
 }
 
 main().catch(error=>{console.error("Saby smoke:",error.message||String(error));process.exitCode=1;});
