@@ -12,6 +12,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.properties import CalcProperties
 from validate_xlsx_package import validate_xlsx_package
 from normalize_excel_vml import normalize_comment_vml_ids
+from normalize_excel_core import normalize_core_timestamps
 
 SHEETS=['Прямые покупатели','Лизинг','Посредники','Статистика','Легенда цветов']
 COUNTS={'Прямые покупатели':21,'Посредники':26,'Лизинг':27,'Статистика':6,'Легенда цветов':4}
@@ -356,6 +357,8 @@ def main():
     render(wb,payload)
     Path(out).parent.mkdir(parents=True,exist_ok=True)
     wb.save(out)
+    # Avoid Excel recovery prompts from invalid timestamps such as +00:00Z.
+    normalize_core_timestamps(out)
     # openpyxl reuses _x0000_s1026 and idmap=1 on EACH worksheet, even if
     # previous sheets already reserved those 1024-ID shape clusters. Assign
     # non-overlapping VML blocks before validating/serving the workbook.

@@ -6,6 +6,7 @@ and unsupported legacy comment length *before* HTTP sends the workbook.
 They do not replace opening it in desktop Microsoft Excel.
 """
 import posixpath
+from datetime import datetime
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -65,6 +66,23 @@ def validate_xlsx_package(path):
                         part=_relationship_path(name,target)
                         if part not in parts:
                             raise ValueError('XLSX broken link '+name+' -> '+part)
+                elif name=='docProps/core.xml':
+                    # Well-formed XML is not enough: Excel rejects timestamp
+                    # strings combining a UTC offset and a trailing Z.
+                    for kind in ('created', 'modified'):
+                        date_node=root.find('{http://purl.org/dc/terms/}'+kind)
+                        if date_node is None:
+                            continue
+                        value=str(date_node.text or '')
+                        if not re.fullmatch(
+                            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})',
+                            value,
+                        ):
+                            raise ValueError('XLSX invalid W3CDTF core timestamp: '+kind+'='+value)
+                        try:
+                            datetime.fromisoformat(value.replace('Z','+00:00'))
+                        except ValueError as error:
+                            raise ValueError('XLSX invalid W3CDTF core timestamp: '+kind+'='+value) from error
                 elif name.startswith('xl/comments/') and name.endswith('.xml'):
                     seen=set()
                     for note in root.findall('.//'+MAIN_NS+'comment'):
