@@ -298,12 +298,19 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   // the original workbook. Financial data from Saby fill empty columns
   // only; the accounting year remains in Saby provenance for auditing.
   let revenueAdded=false,employeesAdded=false;
-  if(financials && String(row["Выручка последнего подтвержденного года"]??"").trim()==="" &&
+  // Stage 10 remains authoritative. Saby supplements absent/unusable
+  // financial fields but never replaces an existing nonnegative integer.
+  const hasUsableNumber=value=>{
+    if(typeof value==="number")return Number.isSafeInteger(value)&&value>=0;
+    if(typeof value!=="string"||!/^\d+$/.test(value.trim()))return false;
+    return Number.isSafeInteger(Number(value.trim()));
+  };
+  if(financials && !hasUsableNumber(row["Выручка последнего подтвержденного года"]) &&
       Number.isSafeInteger(financials.revenue_rub)){
     row["Выручка последнего подтвержденного года"]=financials.revenue_rub;
     revenueAdded=true;
   }
-  if(financials && String(row["Численность"]??"").trim()==="" &&
+  if(financials && !hasUsableNumber(row["Численность"]) &&
       Number.isSafeInteger(financials.employees)){
     row["Численность"]=financials.employees;
     employeesAdded=true;
