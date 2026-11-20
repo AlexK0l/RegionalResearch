@@ -1142,6 +1142,7 @@ export function savedSabyFinanceCardUrl(row){
     const target=new URL(String(saved.source_url||""));
     const id=String(target.searchParams.get("id")||"");
     if(target.protocol!=="https:"||target.hostname!=="profile.saby.ru"||
+       target.username||target.password||target.port||
        target.pathname!=="/page/contractor-info"||
        !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
       return null;
