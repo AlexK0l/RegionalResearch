@@ -173,13 +173,16 @@ export async function runSabyFinanceBackfill({
   for(const section of SECTIONS)
     for(const row of result[section])
       lookup.set(section+":"+sabyInn(row["ИНН"]),row);
+  // A missing Saby financial report is not an application failure. Keep a
+  // compact outcome for each verified legal entity in the immutable child.
+  const outcomes={...(parent.saby_finance_backfill_outcomes||{})};
   const stats={
     eligible:sourcePlan.eligible.length,
     missingRevenueBefore:sourcePlan.missingRevenue,
     missingEmployeesBefore:sourcePlan.missingEmployees,
     scheduled:selected.length,processed:0,
     revenueAdded:0,employeesAdded:0,
-    verified:0,review:0,unavailable:0,
+    verified:0,review:0,unavailable:0,unchanged:0,
     unvisited:sourcePlan.eligible.filter(x=>!attempted.has(x.inn)).length,
     missingRevenueAfter:sourcePlan.missingRevenue,
     missingEmployeesAfter:sourcePlan.missingEmployees,
@@ -194,6 +197,7 @@ export async function runSabyFinanceBackfill({
     saby_finance_backfill_root_job_id:
       parent.saby_finance_backfill_root_job_id||sourceJobId,
     saby_finance_backfill_attempted_inns:[...attempted],
+    saby_finance_backfill_outcomes:outcomes,
     saby_finance_backfill_stats:stats
   };
   const save=async(phase="saby")=>{
@@ -204,6 +208,7 @@ export async function runSabyFinanceBackfill({
     snapshot={...snapshot,phase,final_result:result,
       updated_at:new Date().toISOString(),
       saby_finance_backfill_attempted_inns:[...attempted],
+      saby_finance_backfill_outcomes:{...outcomes},
       saby_finance_backfill_stats:{...stats}};
     await onCheckpoint(structuredClone(snapshot));
   };
@@ -217,6 +222,7 @@ export async function runSabyFinanceBackfill({
       for(const entry of selected){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
+        let outcome={status:"unavailable",reason:"financial_not_verified"};
         try{
           const record=await collectCompany(page,row,settings);
           const applied=applySabyFinanceBackfill(row,record);
@@ -224,12 +230,31 @@ export async function runSabyFinanceBackfill({
             stats.verified++;
             if(applied.revenueAdded)stats.revenueAdded++;
             if(applied.employeesAdded)stats.employeesAdded++;
-          } else if(applied.status==="review")stats.review++;
-          else stats.unavailable++;
+          } else if(applied.status==="review"){
+            stats.review++;
+          } else if(applied.status==="unchanged"){
+            // Finance was observed, but nothing new was needed.
+            stats.unchanged++;
+          } else {
+            // No year-specific financial figure is not a process error.
+            stats.unavailable++;
+          }
+          const reason=String(applied.reason||"");
+          const safeReason=new Set(["identity_or_source",
+            "stored_saby_inn_mismatch","stored_saby_card_mismatch",
+            "financial_not_verified"]).has(reason)?reason:"";
+          outcome={status:applied.status,
+            ...(safeReason?{reason:safeReason}:{})};
         }catch{
           // Never leak private page content or Playwright error messages.
           stats.review++;
+          outcome={status:"review",reason:"collector_unavailable"};
         }
+        outcomes[entry.inn]={
+          ...outcome,
+          revenueStillMissing:!isSavedFinanceNumber(row[FINANCE_REVENUE_FIELD]),
+          employeesStillMissing:!isSavedFinanceNumber(row[FINANCE_EMPLOYEES_FIELD])
+        };
         attempted.add(entry.inn);
         stats.processed++;
         await save();
