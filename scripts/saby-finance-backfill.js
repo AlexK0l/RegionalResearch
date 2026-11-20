@@ -24,6 +24,8 @@ async function main(){
       "  To run one company, add: --run --limit=1\n"+
       "  To pin an exact saved source, add: --checkpoint=UUID\n"+
       "  To test one eligible firm: --target-inn=4718000935 --limit=1\n"+
+      "  To import prior verified smoke without browser: --run --limit=1 "+
+      "--target-inn=... --import-smoke-json=/absolute/path.json\n"+
       "No OpenAI, no fleet or contacts. New SQLite child checkpoint; "+
       "original remains unchanged."
     );
@@ -48,13 +50,21 @@ async function main(){
   if(targetInn&&(!/^(?:\d{10}|\d{12})$/.test(targetInn)||limit!==1))
     throw new Error("--target-inn требует ИНН из 10/12 цифр и --limit=1");
   const doRun=args.includes("--run");
+  const smokeFile=option(args,"import-smoke-json");
+  if(smokeFile&&(!doRun||!targetInn||limit!==1||
+     !path.isAbsolute(smokeFile)||
+     !fs.existsSync(smokeFile)||
+     !fs.statSync(smokeFile).isFile()||
+     fs.statSync(smokeFile).size>5_000_000))
+    throw new Error("SMOKE_IMPORT_REQUIRES_EXPLICIT_RUN_TARGET_AND_FILE");
   // Imported AFTER choosing the persistent DB path to prevent creating an
   // independent copy inside a Git worktree.
   process.env.CHECKPOINT_DB_PATH=db;
   const {PIPELINE_VERSION,loadCheckpoint,listRegionCheckpoints,saveCheckpoint}
     =await import("../src/checkpointStore.js");
   const {validateFinanceBackfillCheckpoint,runSabyFinanceBackfill,
-    planSabyFinanceBackfill,recoverLegacyFinanceReview}
+    planSabyFinanceBackfill,recoverLegacyFinanceReview,
+    verifiedSabyFinanceFromSmoke}
     =await import("../src/sabyFinanceBackfill.js");
   let chosen=null,sourceId=requested||"";
   if(requested){
@@ -132,6 +142,7 @@ async function main(){
     already_complete:plan.alreadyComplete,
     scheduled:targetInn?1:Math.min(unvisited,limit),
     ...(targetInn?{target_inn:targetInn}:{}),
+    evidence_mode:smokeFile?"verified_smoke_offline":"saby_browser",
     openai_requests:0
   }));
   if(!doRun) {
@@ -144,6 +155,19 @@ async function main(){
     return;
   }
   const childId=randomUUID();
+  let importedRecord=null;
+  if(smokeFile){
+    let payload;
+    try{payload=JSON.parse(fs.readFileSync(smokeFile,"utf8"));}
+    catch{throw Error("FINANCE_BACKFILL_SMOKE_JSON_INVALID");}
+    importedRecord=verifiedSabyFinanceFromSmoke(payload,targetInn);
+    console.log("[SABY_FINANCE_SMOKE_IMPORT] "+JSON.stringify({
+      status:"verified",revenue_rub:importedRecord.financials.revenue_rub,
+      revenue_year:importedRecord.financials.revenue_year,
+      employees:importedRecord.financials.employees,
+      browser_requests:0
+    }));
+  }
   const env={
     ...process.env,
     SABY_STAGE12_ENABLED:"true",
@@ -155,6 +179,14 @@ async function main(){
   const {stats}=await runSabyFinanceBackfill({
     checkpoint:chosen,sourceJobId:sourceId,childJobId:childId,
     maxCompanies:limit,targetInn,env,
+    ...(importedRecord?{
+      sessionRunner:async task=>task({page:null,settings:{delayMs:250}}),
+      collectCompany:async(_page,row)=>{
+        if(String(row?.["ИНН"]||"")!==targetInn)
+          throw Error("SMOKE_IMPORT_TARGET_MISMATCH");
+        return importedRecord;
+      }
+    }:{}),
     onCheckpoint:cp=>saveCheckpoint(childId,cp),
     onProgress:s=>console.log("[SABY_FINANCE_BACKFILL_PROGRESS] "+
       JSON.stringify({processed:s.processed,scheduled:s.scheduled,
@@ -175,7 +207,9 @@ async function main(){
     revenue_missing_after:stats.missingRevenueAfter,
     employees_missing_after:stats.missingEmployeesAfter,
     unvisited:stats.unvisited,browser_error:stats.browserError||null,
-    openai_requests:0,original_checkpoint_unchanged:true
+    openai_requests:0,
+    browser_requests:importedRecord?0:null,
+    original_checkpoint_unchanged:true
   }));
   // An unavailable Saby finance heading is not evidence of zero revenue
   // and not a failed command. Keep the gap and continue other legal INNs.
