@@ -2,9 +2,11 @@
 // raw Saby page text, cookies, hidden input values or login credentials.
 // This is a diagnostic and strictly bounded no-results policy; it is NOT
 // legal identity proof and cannot authorize collection from another firm.
-const EMPTY=/^(?:ничего не найдено|ничего не найдено по вашему запросу|по вашему запросу ничего не найдено|не найдено ни одной (?:компании|организации)|(?:компании|организации|результаты|записи) не найдены|нет результатов(?: поиска)?|совпадений не найдено)[.!]?\s*$/iu;
-const SERVICE_ERROR=/^(?:сервис временно недоступен|ошибка загрузки данных|не удалось загрузить данные|слишком много запросов|превышен лимит запросов|попробуйте позже|повторите попытку позже)[.!]?\s*$/iu;
 export function inspectSabySearchDOM({inn}={}){
+  // This function is serialized verbatim into browser page.evaluate:
+  // keep all referenced regexes and helpers INSIDE its own closure.
+  const EMPTY=/^(?:ничего не найдено|ничего не найдено по вашему запросу|по вашему запросу ничего не найдено|не найдено ни одной (?:компании|организации)|(?:компании|организации|результаты|записи) не найдены|нет результатов(?: поиска)?|совпадений не найдено)[.!]?\s*$/iu;
+  const SERVICE_ERROR=/^(?:сервис временно недоступен|ошибка загрузки данных|не удалось загрузить данные|слишком много запросов|превышен лимит запросов|попробуйте позже|повторите попытку позже)[.!]?\s*$/iu;
   const expected=String(inn||"");
   const valid=/^(?:\d{10}|\d{12})$/.test(expected);
   const visible=el=>{
