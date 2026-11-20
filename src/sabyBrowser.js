@@ -1189,27 +1189,39 @@ async function openSavedSabyFinanceCard(page,row,settings){
   if(!url)return null;
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
+  let reason="not_verified";
   try{
     await page.goto(url,{waitUntil:"commit",timeout:settings.timeoutMs});
-    const limit=Date.now()+Math.min(4500,settings.timeoutMs);
+    // Private details and their scoped requisites may mount slowly as
+    // Wasaby replaces the card. Wait boundedly, without trusting a URL.
+    const limit=Date.now()+Math.min(8500,settings.timeoutMs);
     do{
-      if(!sameSabyDetailId(url,page.url()))break;
+      if(!sameSabyDetailId(url,page.url())){
+        reason="route_changed";
+        break;
+      }
       try{
         const assessment=await verifySabyCard(page,inn,name);
         if(assessment.ok&&assessment.detail?.hasScopedInn){
           console.info("[SABY_FINANCE_SAVED_CARD] verified");
           return {inn,name:assessment.verifiedName,verified:true};
         }
+        // Only allowlisted classification; never emit raw names or page DOM.
+        const candidate=String(assessment.reason||"");
+        reason=new Set(["no_scoped_inn","no_scoped_inn_kpp",
+          "legal_name_not_verified","not_detail_page",
+          "detail_loading","inn_not_verified","title_missing"]).has(candidate)?
+          candidate:"not_verified";
       }catch{
-        // Keep the strict identity gate closed during slow Wasaby hydration.
+        reason="verify_unavailable";
       }
       await delay(400);
     }while(Date.now()<limit);
   }catch{
-    // Stale saved link or a transient navigation failure; standard exact-INN
-    // search remains the only fallback, never inferred identity.
+    reason="navigation_unavailable";
   }
   console.info("[SABY_FINANCE_SAVED_CARD] not_verified_fallback_search");
+  console.info("[SABY_FINANCE_SAVED_CARD_DIAG] "+JSON.stringify({reason}));
   return null;
 }
 
