@@ -236,6 +236,39 @@ test("Saby no finance widget is not mistaken for zero revenue or a hard failure"
   assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["4718000935"].reason,"financial_not_verified");
 });
 
+test("targeted Saby recovery selects a known eligible INN, not the first queue item",async()=>{
+  const parent=checkpoint([
+    row("7707083893","Сбербанк, ПАО"),
+    row("4718000935","Волховское, АО","",119)
+  ]);
+  parent.saby_finance_backfill_attempted_inns=["7707083893"];
+  const original=JSON.stringify(parent);
+  let seen="";
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,maxCompanies:1,
+    targetInn:"4718000935",
+    sessionRunner:async task=>task({page:{},settings:{}}),
+    collectCompany:async(_page,source)=>{
+      seen=source["ИНН"];
+      return record();
+    }
+  });
+  assert.equal(seen,"4718000935");
+  assert.equal(out.stats.revenueAdded,1);
+  assert.equal(out.stats.employeesAdded,0);
+  assert.equal(out.snapshot.final_result.direct_buyers[1][REV],440100000);
+  assert.equal(out.snapshot.final_result.direct_buyers[1][STAFF],119);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["7707083893","4718000935"]);
+  assert.equal(JSON.stringify(parent),original);
+  await assert.rejects(
+    runSabyFinanceBackfill({
+      checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+      maxCompanies:1,targetInn:"7707083893",
+      sessionRunner:()=>{throw Error("Must not be called");}
+    }),/TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED/);
+});
+
 test("CLI preview is explicit and error checks cannot create another DB file",()=>{
   const script=path.resolve(fileURLToPath(new URL("../scripts/saby-finance-backfill.js",import.meta.url)));
   const help=spawnSync(process.execPath,[script,"--help"],{
@@ -244,6 +277,7 @@ test("CLI preview is explicit and error checks cannot create another DB file",()
   assert.equal(help.status,0,help.stderr);
   assert.match(help.stdout,/READ-ONLY by default/);
   assert.match(help.stdout,/--run --limit=1/);
+  assert.match(help.stdout,/--target-inn=4718000935/);
   const missing=spawnSync(process.execPath,[script,
     "--db=/definitely/missing/checkpoints.sqlite",
     "--region=Ленинградская область"],{
