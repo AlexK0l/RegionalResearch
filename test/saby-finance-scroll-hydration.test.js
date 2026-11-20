@@ -6,12 +6,12 @@ const visible=(value,extra={})=>({
   textContent:value,isConnected:true,getClientRects:()=>[{}],...extra
 });
 
-function lazyFinanceCard({mountOnScroll=true,canScroll=true}={}){
+function lazyFinanceCard({mountOnScroll=true,canScroll=true,primaryAvailable=true}={}){
   let financeMounted=false;
   let reads=0;
   let waits=0;
   let itemClicks=0;
-  const scrollPositions=[];
+  const scrollPositions=[],lookedUp=[];
   const scroller={
     position:0,clientHeight:800,scrollHeight:2400,
     get scrollTop(){return this.position;},
@@ -60,6 +60,10 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true}={}){
       return fn(scroller,arg);
     }
   };
+  const missingLocator={
+    first(){return this;},
+    evaluate:async()=>{throw new Error("main scroll wrapper not mounted yet");}
+  };
   const itemLocator={
     first(){return this;},
     count:async()=>financeMounted?1:0,
@@ -70,9 +74,14 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true}={}){
   };
   const page={
     locator(selector){
-      if(selector==='[data-qa="controls-Scroll__content"]')
-        return {filter:()=>scrollerLocator};
-      if(selector===".contractor-BaseInfoView")return {};
+      lookedUp.push(selector);
+      if(selector==='[data-qa="contractorCard-dialog-Stack"] '+
+         '.controls-SlidingPanel__scrollWrapper > '+
+         '[data-qa="controls-Scroll__content"]')
+        return primaryAvailable?scrollerLocator:missingLocator;
+      if(selector==='[data-qa="contractorCard-dialog-Stack"] '+
+         '[data-qa="controls-Scroll__content"]')
+        return scrollerLocator;
       if(selector==='[data-qa="item"][item-key="finance"]')
         return itemLocator;
       throw new Error("Unexpected selector: "+selector);
@@ -89,7 +98,7 @@ function lazyFinanceCard({mountOnScroll=true,canScroll=true}={}){
     waitForTimeout:async()=>{waits++;}
   };
   return {page,metrics:()=>({financeMounted,reads,waits,
-    scrollTop:scroller.scrollTop,scrollPositions,itemClicks})};
+    scrollTop:scroller.scrollTop,scrollPositions,itemClicks,lookedUp})};
 }
 
 test("Saby scrolls only inside detail viewer to mount missing finance and restores position",async()=>{
@@ -139,4 +148,23 @@ test("missing contractor scroll viewer leaves already verified employee count in
   }finally{console.warn=warn;}
   assert.equal(metrics().scrollPositions.length,0);
   assert.equal(metrics().itemClicks,0);
+});
+
+test("Saby uses scoped fallback when the profile child scroll wrapper is not ready",async()=>{
+  const {page,metrics}=lazyFinanceCard({primaryAvailable:false});
+  const result=await readSabyFinancials(page);
+  assert.equal(result.revenue_rub,440100000);
+  assert.equal(result.revenue_year,2025);
+  assert.equal(result.employees,119);
+  assert.equal(metrics().scrollTop,0);
+  assert.equal(metrics().scrollPositions.length,2);
+  assert.ok(metrics().lookedUp.some(x=>
+    x.includes('[data-qa="contractorCard-dialog-Stack"] [data-qa="controls-Scroll__content"]')));
+});
+
+test("Saby scoped scroll selectors do not depend on unmounted contractor-BaseInfoView",async()=>{
+  const {page,metrics}=lazyFinanceCard();
+  assert.equal((await readSabyFinancials(page)).revenue_rub,440100000);
+  assert.equal(metrics().lookedUp.some(x=>x.includes(".contractor-BaseInfoView")),false);
+  assert.equal(metrics().lookedUp.some(x=>x.includes('body')),false);
 });
