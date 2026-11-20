@@ -180,6 +180,62 @@ test("limited passes advance to unvisited unique INNs without re-checking alread
   assert.deepEqual(parent.final_result.direct_buyers.map(x=>x[REV]),["",""]);
 });
 
+test("Saby missing report is recorded, source stays unchanged, next legal INN proceeds",async()=>{
+  const first=row();
+  first[STAFF]=119; // The exact case in the 2026-11-20 VPS smoke.
+  const second=row("7707083893","Сбербанк, ПАО");
+  const parent=checkpoint([first,second]);
+  const original=JSON.stringify(parent);
+  const seen=[];
+  const versions=[];
+  const outcome=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:2,env:{OPENAI_API_KEY:""},
+    sessionRunner:async task=>task({page:{},settings:{}}),
+    collectCompany:async (_page,target)=>{
+      seen.push(target["ИНН"]);
+      if(target["ИНН"]==="4718000935")
+        return record(target["ИНН"],target["Организация"],
+          {status:"collected",revenue_rub:null,revenue_year:null,employees:119});
+      return record(target["ИНН"],target["Организация"]);
+    },
+    onCheckpoint:cp=>versions.push(cp)
+  });
+  assert.deepEqual(seen,["4718000935","7707083893"]);
+  assert.equal(outcome.stats.processed,2);
+  assert.equal(outcome.stats.unchanged,1);
+  assert.equal(outcome.stats.unavailable,0);
+  assert.equal(outcome.stats.verified,1);
+  assert.equal(outcome.stats.revenueAdded,1);
+  assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["4718000935"].status,"unchanged");
+  assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["4718000935"].revenueStillMissing,true);
+  assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["7707083893"].status,"updated");
+  assert.equal(outcome.snapshot.final_result.direct_buyers[0][REV],"");
+  assert.equal(outcome.snapshot.final_result.direct_buyers[0][STAFF],119);
+  assert.equal(outcome.snapshot.final_result.direct_buyers[1][REV],440100000);
+  assert.equal(outcome.snapshot.phase,"completed");
+  assert.equal(versions.at(-1).saby_finance_backfill_attempted_inns.length,2);
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("Saby no finance widget is not mistaken for zero revenue or a hard failure",async()=>{
+  const parent=checkpoint([row()]);
+  const outcome=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:1,
+    sessionRunner:async fn=>fn({page:{},settings:{}}),
+    collectCompany:async()=>record("4718000935","Волховское, АО",
+      {status:"missing",revenue_rub:null,revenue_year:null,employees:null})
+  });
+  assert.equal(outcome.stats.unavailable,1);
+  assert.equal(outcome.stats.review,0);
+  assert.equal(outcome.stats.browserError,"");
+  assert.equal(outcome.stats.unvisited,0);
+  assert.equal(outcome.snapshot.final_result.direct_buyers[0][REV],"");
+  assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["4718000935"].status,"missing");
+  assert.equal(outcome.snapshot.saby_finance_backfill_outcomes["4718000935"].reason,"financial_not_verified");
+});
+
 test("CLI preview is explicit and error checks cannot create another DB file",()=>{
   const script=path.resolve(fileURLToPath(new URL("../scripts/saby-finance-backfill.js",import.meta.url)));
   const help=spawnSync(process.execPath,[script,"--help"],{
