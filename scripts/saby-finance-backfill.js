@@ -87,8 +87,17 @@ async function main(){
   const attempted=new Set(Array.isArray(chosen.saby_finance_backfill_attempted_inns)?
     chosen.saby_finance_backfill_attempted_inns:[]);
   const plan=planSabyFinanceBackfill(chosen.final_result);
-  const unvisited=plan.eligible.filter(e=>!attempted.has(e.inn)).length;
-  if(targetInn && !plan.eligible.some(e=>e.inn===targetInn&&!attempted.has(e.inn)))
+  const reviewAttempts=chosen.saby_finance_backfill_review_attempts||{};
+  const count=inn=>{
+    const n=Number(reviewAttempts[inn]||0);
+    return Number.isSafeInteger(n)?Math.min(2,Math.max(0,n)):0;
+  };
+  const pending=plan.eligible.filter(e=>!attempted.has(e.inn)&&count(e.inn)<2);
+  const unvisited=pending.length;
+  const reviewRetryable=pending.filter(e=>count(e.inn)>0).length;
+  const reviewExhausted=plan.eligible.filter(e=>
+    !attempted.has(e.inn)&&count(e.inn)>=2).length;
+  if(targetInn && !pending.some(e=>e.inn===targetInn))
     throw new Error("FINANCE_BACKFILL_TARGET_NOT_ELIGIBLE_OR_ALREADY_ATTEMPTED");
   console.log("[SABY_FINANCE_BACKFILL_PLAN] "+JSON.stringify({
     region:chosen.region,source_checkpoint:sourceId,
@@ -97,7 +106,9 @@ async function main(){
     revenue_missing:plan.missingRevenue,
     employees_missing:plan.missingEmployees,
     eligible_unique_inn:plan.eligible.length,
-    unvisited,excluded_invalid:plan.invalid,
+    unvisited,review_retryable:reviewRetryable,
+    review_exhausted:reviewExhausted,
+    excluded_invalid:plan.invalid,
     excluded_duplicate_inn:plan.duplicate,
     already_complete:plan.alreadyComplete,
     scheduled:targetInn?1:Math.min(unvisited,limit),
@@ -129,7 +140,9 @@ async function main(){
     onProgress:s=>console.log("[SABY_FINANCE_BACKFILL_PROGRESS] "+
       JSON.stringify({processed:s.processed,scheduled:s.scheduled,
         revenue_added:s.revenueAdded,employees_added:s.employeesAdded,
-        review:s.review,unavailable:s.unavailable,unchanged:s.unchanged}))
+        review:s.review,unavailable:s.unavailable,unchanged:s.unchanged,
+        retries:s.retries,review_retryable:s.reviewRetryable,
+        review_exhausted:s.reviewExhausted}))
   });
   console.log("[SABY_FINANCE_BACKFILL_DONE] "+JSON.stringify({
     child_checkpoint:childId,
@@ -138,6 +151,8 @@ async function main(){
     employees_added:stats.employeesAdded,
     source_unavailable:stats.unavailable,
     no_new_numbers:stats.unchanged,review:stats.review,
+    retries:stats.retries,review_retryable:stats.reviewRetryable,
+    review_exhausted:stats.reviewExhausted,
     revenue_missing_after:stats.missingRevenueAfter,
     employees_missing_after:stats.missingEmployeesAfter,
     unvisited:stats.unvisited,browser_error:stats.browserError||null,
