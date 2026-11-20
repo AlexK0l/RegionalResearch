@@ -122,19 +122,24 @@ async function main(){
     onProgress:s=>console.log("[SABY_FINANCE_BACKFILL_PROGRESS] "+
       JSON.stringify({processed:s.processed,scheduled:s.scheduled,
         revenue_added:s.revenueAdded,employees_added:s.employeesAdded,
-        review:s.review,unavailable:s.unavailable}))
+        review:s.review,unavailable:s.unavailable,unchanged:s.unchanged}))
   });
   console.log("[SABY_FINANCE_BACKFILL_DONE] "+JSON.stringify({
     child_checkpoint:childId,
     parent_checkpoint:sourceId,
     processed:stats.processed,revenue_added:stats.revenueAdded,
     employees_added:stats.employeesAdded,
+    source_unavailable:stats.unavailable,
+    no_new_numbers:stats.unchanged,review:stats.review,
     revenue_missing_after:stats.missingRevenueAfter,
     employees_missing_after:stats.missingEmployeesAfter,
     unvisited:stats.unvisited,browser_error:stats.browserError||null,
     openai_requests:0,original_checkpoint_unchanged:true
   }));
-  if(stats.browserError||stats.review>0||stats.unavailable>0)
+  // An unavailable Saby finance heading is not evidence of zero revenue
+  // and not a failed command. Keep the gap and continue other legal INNs.
+  // Identity mismatches and browser/session failures still require review.
+  if(stats.browserError||stats.review>0)
     process.exitCode=2;
 }
 main().catch(error=>{
