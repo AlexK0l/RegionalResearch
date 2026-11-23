@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   eligibleSabyPostRouteProof,assessSabyPostRouteSnapshot,
-  verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
+  verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic,
+  safeSabyPublicProofReason
 } from "../src/sabyPostRouteIdentity.js";
 import {compareSabyPublicRequisites} from "../src/sabyPublicRegisteredIdentity.js";
 import {sabyBrowserSettings} from "../src/sabyBrowser.js";
@@ -217,6 +218,73 @@ test("public profile must independently verify exact registered INN/KPP and name
   assert.equal(publicCalls,1);
   assert.equal(result.ok,false);
   assert.equal(result.reason,"public_identity_unverified");
+});
+
+test("real VPS case: stable selected H1 and exact private pair but public Saby proof unavailable stays review with safe cause",async()=>{
+  const {page}=fakePage();
+  let calls=0;
+  const sourceResult={
+    status:"review",reason:"registered_name_not_rendered",
+    diagnostic:{
+      http_status:200,h1_count:2,h1_has_text:true,
+      requisites_heading_visible:true,registered_name_label_visible:false,
+      inn_label_visible:true,kpp_label_visible:true,
+      challenge_observed:false,
+      requisite_layout:{anchors:2,field_layouts:[
+        {name_values:0,inn_values:1,kpp_values:1,ambiguous:false},
+        {name_values:1,inn_values:1,kpp_values:1,ambiguous:false}
+      ]},
+      private_text:"SECRET_COMPANY_OWNER",company_name:name,
+      kpp,raw_url:route,token:"SENSITIVE_COOKIE"
+    }
+  };
+  const result=await verifySabyPostRouteOwnerIdentity(page,inn,name,
+    assessment,{
+      priorFailure:prior,selectedSearchTitle:short,
+      verifyPublic:async()=>{calls++;return sourceResult;}
+    });
+  assert.equal(calls,1);
+  assert.equal(result.ok,false);
+  assert.equal(result.reason,"public_identity_unverified");
+  assert.equal(result.stable_private_pair,true);
+  const diag=safeSabyPostRouteDiagnostic(result);
+  assert.equal(diag.public_reason,"registered_name_not_rendered");
+  assert.equal(diag.public_http_status,200);
+  assert.equal(diag.public_requisite_blocks,2);
+  assert.equal(diag.public_complete_registered_blocks,1);
+  assert.equal(diag.public_h1_count,2);
+  assert.equal(diag.public_registered_name_label_visible,false);
+  assert.equal(diag.public_inn_label_visible,true);
+  assert.equal(diag.public_kpp_label_visible,true);
+  assert.equal(diag.registered_public_verified,false);
+  assert.doesNotMatch(JSON.stringify(diag),
+    /SECRET_COMPANY_OWNER|SENSITIVE_COOKIE|6700018766|670001001|contractorId|Смоленская/);
+});
+
+test("public verification failure codes are an allowlist, never arbitrary source text",()=>{
+  const unknown=safeSabyPublicProofReason({
+    reason:"ERROR_SECRET_PRIVATE_URL",
+    diagnostic:{
+      http_status:100000000,h1_count:9999,
+      requisite_layout:{anchors:9000,field_layouts:Array.from(
+        {length:70},()=>({
+          name_values:1,inn_values:1,kpp_values:1,ambiguous:false
+        }))},
+      raw_text:"SENSITIVE_DO_NOT_LOG"
+    }
+  });
+  assert.equal(unknown.public_reason,"unknown");
+  assert.equal(unknown.public_http_status,599);
+  assert.equal(unknown.public_h1_count,100);
+  assert.equal(unknown.public_requisite_blocks,24);
+  assert.equal(unknown.public_complete_registered_blocks,8);
+  assert.doesNotMatch(JSON.stringify(unknown),
+    /ERROR_SECRET_PRIVATE_URL|SENSITIVE_DO_NOT_LOG/);
+  const legalMismatch=safeSabyPublicProofReason({
+    reason:"name_not_matched_to_registered_entity"
+  });
+  assert.equal(legalMismatch.public_reason,
+    "name_not_matched_to_registered_entity");
 });
 
 test("after public proof, a switched company heading or KPP must reject enrichment",async()=>{
