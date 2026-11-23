@@ -4,7 +4,7 @@
 // This read-only module never writes data back to Stage 12, the final XLSX,
 // the checkpoint or the Saby authenticated account.
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
-import {auditLegalForm} from "./sabyIdentityAudit.js";
+import {auditLegalForm,auditCompareName} from "./sabyIdentityAudit.js";
 
 const compact=s=>String(s??"").normalize("NFKC")
   .replace(/\s+/g," ").trim();
@@ -141,6 +141,28 @@ export function extractSabyPublicRequisites(text) {
   }
   return [...found.values()].slice(0,12);
 }
+// Multiple H1 elements are common in Saby's public SPA. The first one may
+// be a generic page heading rather than this company's display name.
+// Select only one VISIBLE name that strictly matches the expected company.
+// Never use a similar heading from another legal form or guess an alias.
+export function selectSabyPublicOwnerTitle(titles,expectedName){
+  const distinct=[...new Set((Array.isArray(titles)?titles:[])
+    .slice(0,8).map(compact)
+    .filter(x=>x.length>=3&&x.length<=220))];
+  const expectedForm=auditLegalForm(expectedName);
+  const matched=distinct.filter(title=>{
+    const observedForm=auditLegalForm(title);
+    return sabyNameMatches(expectedName,title) &&
+      !(expectedForm&&observedForm&&expectedForm!==observedForm);
+  });
+  return {
+    title:matched.length===1?matched[0]:
+      matched.length===0&&distinct.length===1?distinct[0]:"",
+    matched:matched.length===1,
+    visible:distinct.length
+  };
+}
+
 export function compareSabyPublicRequisites({
   expectedInn,expectedKpp,expectedName,publicTitle,records,url
 }) {
@@ -176,7 +198,12 @@ export function compareSabyPublicRequisites({
     result.status="verified";
     result.reason="exact_registered_name_and_inn_kpp";
     result.match_type="registered_full_name";
-  } else if(sabyNameMatches(expectedName,publicTitle)){
+  } else if(sabyNameMatches(expectedName,publicTitle) &&
+    // A title with a different stated legal form is NOT a valid alias,
+    // even when its non-legal tokens happen to match exactly.
+    (!auditLegalForm(publicTitle) ||
+      (formA&&auditLegalForm(publicTitle)===formA) ||
+      (!formA&&formB&&auditLegalForm(publicTitle)===formB))){
     // The short header and full legal title are linked by one exact
     // Saby INN+KPP requisites record, not by guessed abbreviation.
     result.status="verified";
@@ -246,8 +273,14 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
         return {status:"review",reason:"public_route_untrusted",diagnostic};
       observation=await tab.evaluate(()=>{
         const headings=[...document.querySelectorAll("h1")];
-        const short=headings.map(e=>String(e.innerText||e.textContent||"").trim())
-          .find(Boolean)||"";
+        const titles=headings.slice(0,8).filter(e=>{
+          const rect=e.getBoundingClientRect();
+          const style=getComputedStyle(e);
+          return rect.width>0&&rect.height>0&&
+            style.display!=="none"&&style.visibility!=="hidden";
+        }).map(e=>String(e.innerText||"").trim())
+          .filter(Boolean).slice(0,8);
+        const short=titles[0]||"";
         // Only public visible text is used for proof. Other DOM text is
         // reduced to a length number; no raw response is returned/logged.
         const body=String(document.body?.innerText||"");
@@ -255,6 +288,7 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
           body.slice(0,40000)+"\n"+body.slice(-200000) : body;
         return {
           title:short.slice(0,220),
+          titles:titles.map(x=>x.slice(0,220)),
           body:candidate,
           bodyChars:body.length,
           domTextChars:String(document.body?.textContent||"").length,
@@ -262,6 +296,11 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
         };
       });
       diagnostic=safeSabyPublicLoadDiagnostic(observation,status);
+      const owner=selectSabyPublicOwnerTitle(
+        Array.isArray(observation.titles)?
+          observation.titles:[observation.title],sourceName);
+      diagnostic.public_visible_h1_count=owner.visible;
+      diagnostic.public_source_h1_matched=owner.matched;
       diagnostic.requisite_layout=diagnoseSabyPublicRequisiteLayout(
         safeSabyVisibleRequisitesText(observation.body));
       if(status && status!==200)
@@ -271,10 +310,15 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
       const records=extractSabyPublicRequisites(
         safeSabyVisibleRequisitesText(observation.body));
       if(records.length){
+        const exact=records.filter(x=>x.inn===sabyInn(inn)&&
+          x.kpp===String(kpp));
+        const legalName=exact.length===1?exact[0].name:"";
+        diagnostic.name_vs_registered=auditCompareName(sourceName,legalName);
+        diagnostic.name_vs_public_title=auditCompareName(sourceName,owner.title);
         return {
           ...compareSabyPublicRequisites({
             expectedInn:inn,expectedKpp:kpp,expectedName:sourceName,
-            publicTitle:observation.title,records,url:tab.url()
+            publicTitle:owner.title,records,url:tab.url()
           }),
           diagnostic
         };

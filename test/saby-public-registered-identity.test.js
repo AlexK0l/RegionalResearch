@@ -4,7 +4,8 @@ import {
   sabyPublicProfileRoute,canonicalSabyPublicRoute,
   extractSabyPublicRequisites,compareSabyPublicRequisites,
   verifyPublicSabyIdentity,safeSabyPublicLoadDiagnostic,
-  safeSabyVisibleRequisitesText,diagnoseSabyPublicRequisiteLayout
+  safeSabyVisibleRequisitesText,diagnoseSabyPublicRequisiteLayout,
+  selectSabyPublicOwnerTitle
 } from "../src/sabyPublicRegisteredIdentity.js";
 
 const inn="7725104641",kpp="504301001",ogrn="1027739058258";
@@ -92,8 +93,37 @@ test("source display mismatch and legal-form conflict remain review",()=>{
   }).reason,"public_route_untrusted");
 });
 
+test("two public H1 headings: use only unique visible strict source-name match",()=>{
+  const selected=selectSabyPublicOwnerTitle([
+    "Компании и контрагенты",short
+  ],source);
+  assert.deepEqual(selected,{title:short,matched:true,visible:2});
+  const accepted=compareSabyPublicRequisites({
+    expectedInn:inn,expectedKpp:kpp,expectedName:source,
+    publicTitle:selected.title,records:extractSabyPublicRequisites(text),
+    url:route
+  });
+  assert.equal(accepted.status,"verified");
+  assert.equal(accepted.match_type,"short_title_registered_alias");
+  assert.deepEqual(selectSabyPublicOwnerTitle([
+    "Компании и контрагенты","Другая организация, АО"
+  ],source),{title:"",matched:false,visible:2});
+  // Ambiguous distinct matching headings cannot be guessed.
+  assert.equal(selectSabyPublicOwnerTitle([
+    short,"АО ДСК Автобан"
+  ],source).title,"");
+  // Matching lexical tokens alone are insufficient with a conflicting form.
+  const wrongForm=compareSabyPublicRequisites({
+    expectedInn:inn,expectedKpp:kpp,expectedName:source,
+    publicTitle:"ООО ДСК Автобан",
+    records:extractSabyPublicRequisites(text),url:route
+  });
+  assert.equal(wrongForm.status,"review");
+  assert.equal(wrongForm.reason,"name_not_matched_to_registered_entity");
+});
+
 function fakeBrowser({
-  body=text,title=short,
+  body=text,title=short,titles=null,
   landed=route
 }={}) {
   let opened=0,closed=0,requested="";
@@ -104,7 +134,7 @@ function fakeBrowser({
         return {
           goto:async url=>{requested=url;},
           url:()=>landed,
-          evaluate:async()=>({body,title}),
+          evaluate:async()=>({body,title,...(titles?{titles}:{})}),
           waitForTimeout:async()=>{},
           close:async()=>{closed++;}
         };
@@ -113,6 +143,32 @@ function fakeBrowser({
     stats:()=>({opened,closed,requested})
   };
 }
+
+test("public verifier recovers company H1 after unrelated first H1 without guessing",async()=>{
+  const {page,stats}=fakeBrowser({
+    title:"Поиск компаний",titles:["Поиск компаний",short]
+  });
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source);
+  assert.equal(result.status,"verified");
+  assert.equal(result.public_short_name,short);
+  assert.equal(result.diagnostic.public_source_h1_matched,true);
+  assert.equal(result.diagnostic.public_visible_h1_count,2);
+  assert.equal(result.diagnostic.name_vs_public_title,"normalized_equal");
+  assert.equal(result.diagnostic.name_vs_registered,"partial_overlap");
+  assert.equal(stats().closed,1);
+});
+
+test("public verifier cannot accept different company after unmatched H1s",async()=>{
+  const {page,stats}=fakeBrowser({
+    title:"Поиск компаний",titles:["Поиск компаний","Другая компания, ООО"]
+  });
+  const result=await verifyPublicSabyIdentity(page,inn,kpp,source);
+  assert.equal(result.status,"review");
+  assert.equal(result.reason,"name_not_matched_to_registered_entity");
+  assert.equal(result.diagnostic.public_source_h1_matched,false);
+  assert.equal(result.diagnostic.public_visible_h1_count,2);
+  assert.equal(stats().closed,1);
+});
 
 test("public browser verified request preserves original tab and closes child tab",async()=>{
   const {page,stats}=fakeBrowser();
