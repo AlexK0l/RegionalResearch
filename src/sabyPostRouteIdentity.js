@@ -47,6 +47,18 @@ const SAFE_NAME_RELATION=new Set([
 ]);
 const safeNameRelation=value=>SAFE_NAME_RELATION.has(String(value||""))?
   String(value):"unknown";
+const INDEPENDENT_BRIDGE_REASONS=new Set([
+  "invalid_registry_request","independent_requisites_unavailable",
+  "independent_registry_identifier_mismatch",
+  "independent_registered_name_mismatch",
+  "independent_short_name_mismatch",
+  "independent_registry_alias_verified",
+  "independent_registry_route_untrusted",
+  "independent_registry_http_error",
+  "independent_registry_unavailable"
+]);
+const safeBridgeReason=value=>INDEPENDENT_BRIDGE_REASONS.has(String(value||""))?
+  String(value):"unknown";
 export function safeSabyPublicProofReason(result){
   const reason=String(result?.reason||"");
   const obs=result?.diagnostic||{};
@@ -58,6 +70,10 @@ export function safeSabyPublicProofReason(result){
     public_http_status:cap(obs.http_status,599),
     public_h1_count:cap(obs.h1_count,100),
     public_h1_has_text:obs.h1_has_text===true,
+    independent_bridge_attempted:obs.independent_bridge_attempted===true,
+    independent_bridge_verified:obs.independent_bridge_verified===true,
+    independent_bridge_reason:
+      safeBridgeReason(obs.independent_bridge_reason),
     public_visible_h1_count:cap(obs.public_visible_h1_count,8),
     public_source_h1_matched:obs.public_source_h1_matched===true,
     public_name_vs_registered:
@@ -208,6 +224,8 @@ export async function verifySabyPostRouteOwnerIdentity(page,inn,name,
       return fail("public_identity_unverified");
     }
     diag.registered_public_verified=true;
+    if(publicResult?.diagnostic?.independent_bridge_verified===true)
+      diag.independent_bridge_verified=true;
     third=await read();
     if(!third)return fail("private_url_changed_during_proof");
     if(!third.ok || third.kpp!==second.kpp ||
@@ -240,6 +258,8 @@ export function safeSabyPostRouteDiagnostic(result) {
     stable_private_pair:result?.stable_private_pair===true,
     public_check_made:result?.public_check_made===true,
     registered_public_verified:result?.registered_public_verified===true,
+    ...(result?.independent_bridge_verified===true?
+      {independent_bridge_verified:true}:{}),
     post_public_owner_confirmed:result?.post_public_owner_confirmed===true,
     ...(result?.public_reason?{
       public_reason:PUBLIC_REASON_CODES.has(result.public_reason)?
@@ -247,6 +267,12 @@ export function safeSabyPostRouteDiagnostic(result) {
       public_http_status:cap(result.public_http_status,599),
       public_h1_count:cap(result.public_h1_count),
       public_h1_has_text:result.public_h1_has_text===true,
+      independent_bridge_attempted:
+        result.independent_bridge_attempted===true,
+      independent_bridge_verified:
+        result.independent_bridge_verified===true,
+      independent_bridge_reason:
+        safeBridgeReason(result.independent_bridge_reason),
       public_visible_h1_count:cap(result.public_visible_h1_count,8),
       public_source_h1_matched:result.public_source_h1_matched===true,
       public_name_vs_registered:
