@@ -94,6 +94,71 @@ test("independent full/short bridge requires all three exact identifiers",()=>{
   }
 });
 
+test("Saby requisites may show FULL registered name while H1 shows SHORT",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  const out=compareIndependentRegistryAlias({
+    ...expected,
+    sabyShortName:full,
+    sabyPublicTitle:sabyShort,
+    record
+  });
+  assert.equal(out.status,"verified");
+  assert.equal(out.requisites_role,"full");
+  assert.equal(out.title_role,"short");
+  assert.equal(out.official_full_name,full);
+  // The word "ГУП" abbreviates the legal form of the full name, not
+  // arbitrary similar substrings in a related company name.
+  const another=compareIndependentRegistryAlias({
+    ...expected,
+    sabyShortName:source,
+    sabyPublicTitle:sabyShort,
+    record
+  });
+  assert.equal(another.status,"verified");
+  assert.equal(another.requisites_role,"full");
+  assert.equal(another.title_role,"short");
+});
+
+test("Saby registered requisites and H1 are each checked independently",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  for(const [requisites,title,wantedReq,wantedTitle] of [
+    [full,full,"full","full"],
+    [short,short,"short","short"],
+    [short,full,"short","full"],
+    [full,sabyShort,"full","short"]
+  ]){
+    const out=compareIndependentRegistryAlias({
+      ...expected,sabyShortName:requisites,sabyPublicTitle:title,record
+    });
+    assert.equal(out.status,"verified");
+    assert.equal(out.requisites_role,wantedReq);
+    assert.equal(out.title_role,wantedTitle);
+  }
+});
+
+test("registered roles reject unrelated, prefix-only or wrong-form names",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  for(const [requisites,title,wantedReq,wantedTitle] of [
+    ['ГУП "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ И САНКТ-ПЕТЕРБУРГА"',
+      sabyShort,"none","short"],
+    ['МУП "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"',
+      sabyShort,"none","short"],
+    [full,'ЛЕНОБЛВОДОКАНАЛ-СЕРВИС, ГУП',"full","none"],
+    [full,'ЛЕНОБЛВОДОКАНАЛ, МУП',"full","none"],
+    [full,"ДРУГОЙ ПОСТАВЩИК, ГУП","full","none"],
+    [short,"ГУП «Водоканал»","short","none"]
+  ]){
+    const out=compareIndependentRegistryAlias({
+      ...expected,sabyShortName:requisites,sabyPublicTitle:title,record
+    });
+    assert.equal(out.status,"review");
+    assert.equal(out.reason,"independent_short_name_mismatch");
+    assert.equal(out.requisites_role,wantedReq);
+    assert.equal(out.title_role,wantedTitle);
+    assert.equal(Object.hasOwn(out,"official_full_name"),false);
+  }
+});
+
 test("a merely overlapping name never bridges source and Saby",()=>{
   const record=extractIndependentRegistryIdentity(pageText);
   for(const change of [
