@@ -72,6 +72,11 @@ const INDEPENDENT_BRIDGE_REASONS=new Set([
 ]);
 const safeBridgeReason=value=>INDEPENDENT_BRIDGE_REASONS.has(String(value||""))?
   String(value):"unknown";
+const SAFE_REGISTERED_ROLE=new Set(["full","short","both","none"]);
+const safeRegisteredRole=value=>SAFE_REGISTERED_ROLE.has(String(value||""))?
+  String(value):"unknown";
+const safeBridgeProvider=value=>value==="vbr"?"vbr":
+  value==="tbank"?"tbank":"unknown";
 export function safeSabyPublicProofReason(result){
   const reason=String(result?.reason||"");
   const obs=result?.diagnostic||{};
@@ -88,8 +93,11 @@ export function safeSabyPublicProofReason(result){
     independent_bridge_reason:
       safeBridgeReason(obs.independent_bridge_reason),
     independent_bridge_provider:
-      obs.independent_bridge_provider==="vbr"?"vbr":
-      obs.independent_bridge_provider==="tbank"?"tbank":"unknown",
+      safeBridgeProvider(obs.independent_bridge_provider),
+    independent_requisites_name_role:
+      safeRegisteredRole(obs.independent_requisites_name_role),
+    independent_title_name_role:
+      safeRegisteredRole(obs.independent_title_name_role),
     public_visible_h1_count:cap(obs.public_visible_h1_count,8),
     public_source_h1_matched:obs.public_source_h1_matched===true,
     public_name_vs_registered:
@@ -240,8 +248,15 @@ export async function verifySabyPostRouteOwnerIdentity(page,inn,name,
       return fail("public_identity_unverified");
     }
     diag.registered_public_verified=true;
-    if(publicResult?.diagnostic?.independent_bridge_verified===true)
+    if(publicResult?.diagnostic?.independent_bridge_verified===true){
       diag.independent_bridge_verified=true;
+      diag.independent_bridge_provider=safeBridgeProvider(
+        publicResult.diagnostic.independent_bridge_provider);
+      diag.independent_requisites_name_role=safeRegisteredRole(
+        publicResult.diagnostic.independent_requisites_name_role);
+      diag.independent_title_name_role=safeRegisteredRole(
+        publicResult.diagnostic.independent_title_name_role);
+    }
     third=await read();
     if(!third)return fail("private_url_changed_during_proof");
     if(!third.ok || third.kpp!==second.kpp ||
@@ -274,8 +289,15 @@ export function safeSabyPostRouteDiagnostic(result) {
     stable_private_pair:result?.stable_private_pair===true,
     public_check_made:result?.public_check_made===true,
     registered_public_verified:result?.registered_public_verified===true,
-    ...(result?.independent_bridge_verified===true?
-      {independent_bridge_verified:true}:{}),
+    ...(result?.independent_bridge_verified===true?{
+      independent_bridge_verified:true,
+      independent_bridge_provider:
+        safeBridgeProvider(result.independent_bridge_provider),
+      independent_requisites_name_role:
+        safeRegisteredRole(result.independent_requisites_name_role),
+      independent_title_name_role:
+        safeRegisteredRole(result.independent_title_name_role)
+    }:{}),
     post_public_owner_confirmed:result?.post_public_owner_confirmed===true,
     ...(result?.public_reason?{
       public_reason:PUBLIC_REASON_CODES.has(result.public_reason)?
@@ -290,8 +312,11 @@ export function safeSabyPostRouteDiagnostic(result) {
       independent_bridge_reason:
         safeBridgeReason(result.independent_bridge_reason),
       independent_bridge_provider:
-        result.independent_bridge_provider==="vbr"?"vbr":
-        result.independent_bridge_provider==="tbank"?"tbank":"unknown",
+        safeBridgeProvider(result.independent_bridge_provider),
+      independent_requisites_name_role:
+        safeRegisteredRole(result.independent_requisites_name_role),
+      independent_title_name_role:
+        safeRegisteredRole(result.independent_title_name_role),
       public_visible_h1_count:cap(result.public_visible_h1_count,8),
       public_source_h1_matched:result.public_source_h1_matched===true,
       public_name_vs_registered:
