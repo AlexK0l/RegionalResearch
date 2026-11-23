@@ -106,3 +106,25 @@ export function safeCardDiagnostic(assessment, extra={}) {
     navigationObserved:Boolean(extra.navigationObserved)
   };
 }
+
+
+/**
+ * A fully rendered private Saby card with the correct scoped INN but an
+ * unverified legal name is not a transient *rendering* timeout. Re-searching
+ * that same visible company in the very same browser session duplicates
+ * public verification without strengthening legal proof.
+ *
+ * Leave the INN pending for a later separate pass; never copy its finance.
+ * Bare/not-rendered/wrong-route cards remain transient render failures.
+ */
+export function classifySabyCardReviewCode(assessment,{
+  publicIdentityAttempted=false
+}={}){
+  if(publicIdentityAttempted===true&&
+     assessment?.reason==="legal_name_not_verified"&&
+     assessment?.detail?.route==="detail"&&
+     assessment?.detail?.hasScopedInn===true&&
+     assessment?.detail?.detailContentPresent===true)
+    return "card_legal_name_unverified";
+  return "card_render_timeout";
+}
