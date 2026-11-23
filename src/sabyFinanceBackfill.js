@@ -342,13 +342,17 @@ export async function runSabyFinanceBackfill({
   const pending=()=>sourcePlan.eligible.filter(entry=>
     !attempted.has(entry.inn)&&
     reviewCount(entry.inn)<FINANCE_REVIEW_MAX_PASSES);
-  // An isolated stalled query is kept pending but must not monopolize each
-  // successive run. Prioritize fresh INNs, then previously deferred stalls,
-  // then ordinary reviewed cards. Sort remains stable within each group.
-  const priorStall=inn=>
-    parent.saby_finance_backfill_outcomes?.[inn]?.status==="deferred"&&
-    parent.saby_finance_backfill_outcomes?.[inn]?.reason==="search_loading_stalled";
-  const tier=inn=>reviewCount(inn)>0?2:priorStall(inn)?1:0;
+  // Keep temporary search uncertainty pending, but never let it consume
+  // the next session before untouched INNs. Prioritize never-observed INNs,
+  // then both kinds of deferred search, then prior identity reviews.
+  // Stable sort preserves original row order inside each tier.
+  const priorDeferredSearch=inn=>{
+    const outcome=parent.saby_finance_backfill_outcomes?.[inn];
+    return outcome?.status==="deferred"&&
+      (outcome.reason==="search_loading_stalled"||
+       outcome.reason==="search_zero_unconfirmed");
+  };
+  const tier=inn=>reviewCount(inn)>0?2:priorDeferredSearch(inn)?1:0;
   const selected=pending().filter(entry=>!target||entry.inn===target)
     .sort((a,b)=>tier(a.inn)-tier(b.inn))
     .slice(0,maxCompanies);
@@ -435,15 +439,19 @@ export async function runSabyFinanceBackfill({
         if(!canary)return false;
         stats.canaryChecks++;
         let proven=false;
+        let reason="identity_or_card_unverified";
         try{
           const found=await collectCompany(page,canary.row,settings);
           proven=verifySabyFinanceSearchCanary(found,canary);
-        }catch{
-          // A failed health check never grants legal identity or finance.
+          if(proven)reason="verified";
+        }catch(error){
+          // Classified codes are an explicit allowlist. Never log raw
+          // exceptions, company names, identifiers, URLs or page content.
+          reason=classifySabyFinanceFailure(error).code;
         }
         console.info("[SABY_FINANCE_SEARCH_CANARY_DIAG] "+
           JSON.stringify({verified:proven,checks:stats.canaryChecks,
-            trigger}));
+            trigger,reason}));
         if(proven){
           stats.canaryPassed++;
           lastCanarySuccess=Date.now();

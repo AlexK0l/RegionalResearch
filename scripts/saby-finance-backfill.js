@@ -126,6 +126,9 @@ async function main(){
   const previousLoadingDeferred=pending.filter(e=>
     chosen.saby_finance_backfill_outcomes?.[e.inn]?.status==="deferred"&&
     chosen.saby_finance_backfill_outcomes?.[e.inn]?.reason==="search_loading_stalled").length;
+  const previousUnconfirmedSearch=pending.filter(e=>
+    chosen.saby_finance_backfill_outcomes?.[e.inn]?.status==="deferred"&&
+    chosen.saby_finance_backfill_outcomes?.[e.inn]?.reason==="search_zero_unconfirmed").length;
   const reviewExhausted=plan.eligible.filter(e=>
     !attempted.has(e.inn)&&count(e.inn)>=2).length;
   if(targetInn && !pending.some(e=>e.inn===targetInn))
@@ -139,6 +142,7 @@ async function main(){
     eligible_unique_inn:plan.eligible.length,
     unvisited,review_retryable:reviewRetryable,
     loading_deferred_pending:previousLoadingDeferred,
+    search_unconfirmed_pending:previousUnconfirmedSearch,
     review_exhausted:reviewExhausted,
     excluded_invalid:plan.invalid,
     excluded_duplicate_inn:plan.duplicate,
