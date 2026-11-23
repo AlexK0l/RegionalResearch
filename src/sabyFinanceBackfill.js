@@ -22,7 +22,7 @@ const TRANSIENT_SABY_CODES=new Set([
 const NON_RETRYABLE_SABY_CODES=new Set([
   "search_ambiguous","card_changed","search_input_failed",
   "search_confirmed_empty","search_service_unavailable",
-  "search_loading_stalled"
+  "search_loading_stalled","card_legal_name_unverified"
 ]);
 export function classifySabyFinanceFailure(error){
   const code=String(error?.code||"");

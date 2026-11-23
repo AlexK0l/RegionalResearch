@@ -27,8 +27,44 @@ const reasonNames=new Set([
   "post_route_registered_identity_verified","private_inn_not_scoped"
 ]);
 const maxReads=3;
-const cap=n=>Number.isFinite(Number(n))?
-  Math.max(0,Math.min(100,Math.floor(Number(n)))):0;
+// Public verification reasons are fixed first-party policy codes, not raw
+// page contents or external error messages. Never log URLs, INNs, KPPs,
+// company names, profile titles or snippets.
+const PUBLIC_REASON_CODES=new Set([
+  "invalid_request","browser_context_unavailable","public_route_untrusted",
+  "http_status_not_ok","public_page_challenge","requisites_unavailable",
+  "public_body_empty","requisites_section_not_rendered",
+  "registered_name_not_rendered","public_page_unavailable",
+  "ambiguous_requisites","inn_kpp_conflict","legal_form_conflict",
+  "name_not_matched_to_registered_entity",
+  "exact_registered_name_and_inn_kpp",
+  "same_public_profile_short_and_registered_name"
+]);
+export function safeSabyPublicProofReason(result){
+  const reason=String(result?.reason||"");
+  const obs=result?.diagnostic||{};
+  const layout=obs?.requisite_layout||{};
+  const blocks=Array.isArray(layout.field_layouts)?
+    layout.field_layouts.slice(0,8):[];
+  return {
+    public_reason:PUBLIC_REASON_CODES.has(reason)?reason:"unknown",
+    public_http_status:cap(obs.http_status,599),
+    public_h1_count:cap(obs.h1_count,100),
+    public_h1_has_text:obs.h1_has_text===true,
+    public_requisites_heading_visible:obs.requisites_heading_visible===true,
+    public_registered_name_label_visible:
+      obs.registered_name_label_visible===true,
+    public_inn_label_visible:obs.inn_label_visible===true,
+    public_kpp_label_visible:obs.kpp_label_visible===true,
+    public_challenge_observed:obs.challenge_observed===true,
+    public_requisite_blocks:cap(layout.anchors,24),
+    public_complete_registered_blocks:Math.min(8,blocks.filter(block=>
+      block.name_values===1&&block.inn_values===1&&
+      block.kpp_values===1&&block.ambiguous!==true).length)
+  };
+}
+const cap=(n,max=100)=>Number.isFinite(Number(n))?
+  Math.max(0,Math.min(max,Math.floor(Number(n)))):0;
 const reject=(reason,extra={})=>({ok:false,reason,...extra});
 
 // The original verifier's value-free report proves the old/new URLs had
@@ -151,8 +187,13 @@ export async function verifySabyPostRouteOwnerIdentity(page,inn,name,
     diag.public_check_made=true;
     publicResult=await verifyPublic(page,expected,second.kpp,name);
     if(!stillStable())return fail("private_url_changed_during_proof");
-    if(publicResult?.status!=="verified")
+    if(publicResult?.status!=="verified"){
+      // A public source can fail because its UI, requisites, legal form
+      // or source name is unavailable. Explain which safely, but NEVER
+      // accept private INN/KPP alone as legal company proof.
+      Object.assign(diag,safeSabyPublicProofReason(publicResult));
       return fail("public_identity_unverified");
+    }
     diag.registered_public_verified=true;
     third=await read();
     if(!third)return fail("private_url_changed_during_proof");
@@ -186,6 +227,23 @@ export function safeSabyPostRouteDiagnostic(result) {
     stable_private_pair:result?.stable_private_pair===true,
     public_check_made:result?.public_check_made===true,
     registered_public_verified:result?.registered_public_verified===true,
-    post_public_owner_confirmed:result?.post_public_owner_confirmed===true
+    post_public_owner_confirmed:result?.post_public_owner_confirmed===true,
+    ...(result?.public_reason?{
+      public_reason:PUBLIC_REASON_CODES.has(result.public_reason)?
+        result.public_reason:"unknown",
+      public_http_status:cap(result.public_http_status,599),
+      public_h1_count:cap(result.public_h1_count),
+      public_h1_has_text:result.public_h1_has_text===true,
+      public_requisites_heading_visible:
+        result.public_requisites_heading_visible===true,
+      public_registered_name_label_visible:
+        result.public_registered_name_label_visible===true,
+      public_inn_label_visible:result.public_inn_label_visible===true,
+      public_kpp_label_visible:result.public_kpp_label_visible===true,
+      public_challenge_observed:result.public_challenge_observed===true,
+      public_requisite_blocks:cap(result.public_requisite_blocks,24),
+      public_complete_registered_blocks:
+        cap(result.public_complete_registered_blocks,8)
+    }:{})
   };
 }
