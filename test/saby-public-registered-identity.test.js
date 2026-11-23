@@ -170,6 +170,70 @@ test("public verifier cannot accept different company after unmatched H1s",async
   assert.equal(stats().closed,1);
 });
 
+test("source legal full name is linked to public Saby short name only by independent registered aliases",async()=>{
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const registryName='ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"';
+  const i="4703144282",k="470401001",o="1167847156300";
+  const sabyTitle="Леноблводоканал, ГУП";
+  const sabyProfile="https://saby.ru/profile/"+i+"-"+k;
+  const publicBody=[
+    "Реквизиты","Название",sabyTitle,
+    "ИНН",i,"КПП",k,"ОГРН",o,"Контакты"
+  ].join("\n");
+  const {page,stats}=fakeBrowser({
+    title:sabyTitle,body:publicBody,landed:sabyProfile
+  });
+  let calls=0;
+  const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+    verifyIndependent:async(_page,requested)=>{
+      calls++;
+      assert.equal(requested.expectedInn,i);
+      assert.equal(requested.expectedKpp,k);
+      assert.equal(requested.expectedOgrn,o);
+      assert.equal(requested.sourceName,sourceName);
+      assert.equal(requested.sabyShortName,sabyTitle);
+      assert.equal(requested.sabyPublicTitle,sabyTitle);
+      return {status:"verified",reason:"independent_registry_alias_verified",
+        official_full_name:registryName,inn:i,kpp:k,ogrn:o};
+    }
+  });
+  assert.equal(result.status,"verified");
+  assert.equal(result.reason,"independent_registry_alias_verified");
+  assert.equal(result.match_type,"independent_registry_full_short_bridge");
+  assert.equal(result.official_name,registryName);
+  assert.equal(result.official_inn,i);
+  assert.equal(result.official_kpp,k);
+  assert.equal(result.official_ogrn,o);
+  assert.equal(result.diagnostic.independent_bridge_verified,true);
+  assert.equal(calls,1);
+  assert.equal(stats().closed,1);
+});
+
+test("public aliases remain unverified when independent registry rejects or proof is incomplete",async()=>{
+  const i="4703144282",k="470401001",o="1167847156300";
+  const title="Леноблводоканал, ГУП";
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const body=["Реквизиты","Название",title,"ИНН",i,
+    "КПП",k,"ОГРН",o,"Контакты"].join("\n");
+  for(const proof of [
+    {status:"review",reason:"independent_short_name_mismatch"},
+    {status:"verified",reason:"independent_registry_alias_verified",
+      official_full_name:"ДРУГАЯ КОМПАНИЯ",inn:i,kpp:k,ogrn:"1167847156301"}
+  ]){
+    const {page,stats}=fakeBrowser({
+      title,body,landed:"https://saby.ru/profile/"+i+"-"+k
+    });
+    const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+      verifyIndependent:async()=>proof
+    });
+    assert.equal(result.status,"review");
+    assert.equal(result.reason,"name_not_matched_to_registered_entity");
+    assert.equal(result.diagnostic.independent_bridge_attempted,true);
+    assert.equal(result.diagnostic.independent_bridge_verified,false);
+    assert.equal(stats().closed,1);
+  }
+});
+
 test("public browser verified request preserves original tab and closes child tab",async()=>{
   const {page,stats}=fakeBrowser();
   const result=await verifyPublicSabyIdentity(page,inn,kpp,source);
