@@ -963,6 +963,83 @@ test("saved Saby search stalls follow fresh INNs on continuation",async()=>{
   assert.equal(JSON.stringify(parent),original);
 });
 
+test("uncertain zero and loading deferrals follow untouched firms and precede reviews",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО"),
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО")
+  ]);
+  parent.source_mode="saby";
+  parent.phase="saby";
+  parent.saby_finance_backfill_outcomes={
+    "4718000935":{status:"deferred",reason:"search_zero_unconfirmed"},
+    "7707083893":{status:"review",reason:"card_legal_name_unverified"},
+    "7801014560":{status:"deferred",reason:"search_loading_stalled"}
+  };
+  parent.saby_finance_backfill_review_attempts={"7707083893":1};
+  const before=JSON.stringify(parent),visited=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,maxCompanies:5,
+    sessionRunner:async run=>run({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      visited.push(subject["ИНН"]);
+      return record(subject["ИНН"],subject["Организация"]);
+    }
+  });
+  assert.deepEqual(visited,[
+    "7812019999","7707049999",
+    "4718000935","7801014560","7707083893"
+  ]);
+  assert.equal(out.stats.processed,5);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.unvisited,0);
+  assert.equal(JSON.stringify(parent),before);
+});
+
+test("failed search canary logs only an allowlisted diagnostic code, not browser errors",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const parent=checkpoint([
+    known,row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО")
+  ]);
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const messages=[],original=console.info;
+  console.info=(...parts)=>messages.push(parts.join(" "));
+  let result;
+  try{
+    result=await runSabyFinanceBackfill({
+      checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+      maxCompanies:3,
+      sessionRunner:async fn=>fn({page:{},settings:{delayMs:250}}),
+      waitBetweenCompanies:async()=>{},
+      collectCompany:async(_page,subject)=>{
+        if(subject["ИНН"]==="4718000935")
+          throw Error("SECRET URL and company name in browser exception");
+        throw safeSabyFailure("card_legal_name_unverified");
+      }
+    });
+  }finally{console.info=original;}
+  assert.equal(result.stats.browserError,"saby_review_canary_unverified");
+  assert.equal(result.stats.processed,3);
+  assert.equal(result.stats.canaryChecks,1);
+  const line=messages.find(line=>
+    line.startsWith("[SABY_FINANCE_SEARCH_CANARY_DIAG] "));
+  assert.ok(line,"failed canary must report a safe reason");
+  const diag=JSON.parse(line.slice(line.indexOf("{")));
+  assert.deepEqual(diag,{
+    verified:false,checks:1,trigger:"consecutive_reviews",
+    reason:"collector_unavailable"
+  });
+  assert.doesNotMatch(messages.join("\n"),/SECRET|URL and company/);
+});
+
 test("a stalled previously reviewed INN does not use another review allowance",async()=>{
   const parent=checkpoint([row()]);
   parent.saby_finance_backfill_review_attempts={"4718000935":1};
