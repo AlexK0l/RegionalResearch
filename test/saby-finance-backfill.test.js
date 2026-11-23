@@ -512,6 +512,134 @@ test("three consecutive non-retryable identity failures stop a large finance bat
   assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
 });
 
+test("three distinct legal review outcomes do not pause a healthy large batch",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const parent=checkpoint([
+    known,row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО")
+  ]);
+  parent.source_mode="saby";
+  parent.phase="saby";
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const original=JSON.stringify(parent),visits=[],saved=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:4,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      const inn=subject["ИНН"];
+      visits.push(inn);
+      if(inn==="4718000935")return record();
+      if(inn==="7707049999")
+        return record("7707049999","Оператор, ООО");
+      const code=inn==="7707083893"?"card_legal_name_unverified":
+        inn==="7801014560"?"card_identity_unverified":
+        "search_ambiguous";
+      throw safeSabyFailure(code);
+    },
+    onCheckpoint:async cp=>saved.push(cp)
+  });
+  assert.deepEqual(visits,[
+    "7707083893","7801014560","7812019999",
+    "4718000935","7707049999"
+  ]);
+  assert.equal(out.stats.processed,4);
+  assert.equal(out.stats.review,3);
+  assert.equal(out.stats.revenueAdded,1);
+  assert.equal(out.stats.canaryChecks,1);
+  assert.equal(out.stats.canaryPassed,1);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(out.stats.unvisited,2);
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],440100000);
+  assert.equal(out.snapshot.final_result.direct_buyers[4][REV],440100000);
+  assert.ok(saved.length>=6);
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("three reviewed firms safely stop if previously verified company cannot be found",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const parent=checkpoint([
+    known,row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО")
+  ]);
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const original=JSON.stringify(parent),seen=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:4,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      const inn=subject["ИНН"];
+      seen.push(inn);
+      if(inn==="4718000935")
+        return record("7707083893","Сбербанк, ПАО");
+      throw safeSabyFailure("card_legal_name_unverified");
+    }
+  });
+  assert.deepEqual(seen,[
+    "7707083893","7801014560","7812019999",
+    "4718000935"
+  ]);
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.review,3);
+  assert.equal(out.stats.canaryChecks,1);
+  assert.equal(out.stats.canaryPassed,0);
+  assert.equal(out.stats.browserError,"saby_review_canary_unverified");
+  assert.equal(out.stats.unvisited,4);
+  assert.equal(out.stats.revenueAdded,0);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["4718000935"]);
+  assert.equal(JSON.stringify(parent),original);
+});
+
+test("review canary health proof is cached during one healthy browser session",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const pending=[
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО"),
+    row("7727015959","Инвестор, ООО"),
+    row("7802001999","Перевозчик, ООО"),
+    row("7812002999","Поставщик, ООО")
+  ];
+  const parent=checkpoint([known,...pending]);
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const seen=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:7,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      const inn=subject["ИНН"];
+      seen.push(inn);
+      if(inn==="4718000935")return record();
+      if(inn==="7812002999")
+        return record("7812002999","Поставщик, ООО");
+      throw safeSabyFailure("card_legal_name_unverified");
+    }
+  });
+  assert.equal(out.stats.processed,7);
+  assert.equal(out.stats.review,6);
+  assert.equal(out.stats.canaryChecks,1,
+    "second three-review streak reuses recent verified canary proof");
+  assert.equal(out.stats.canaryPassed,1);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(seen.filter(inn=>inn==="4718000935").length,1);
+  assert.equal(out.stats.revenueAdded,1);
+});
+
 test("legacy one-card review is recovered for another bounded pass without changing persisted source",()=>{
   const parent=checkpoint([row("4718000935","Волховское, АО","",119)]);
   const child={...structuredClone(parent),source_mode:"saby",phase:"saby",
