@@ -261,6 +261,40 @@ test("real VPS case: stable selected H1 and exact private pair but public Saby p
     /SECRET_COMPANY_OWNER|SENSITIVE_COOKIE|6700018766|670001001|contractorId|Смоленская/);
 });
 
+test("public name reconciliation diagnostics expose categories only",()=>{
+  const proof=safeSabyPublicProofReason({
+    status:"review",reason:"name_not_matched_to_registered_entity",
+    diagnostic:{
+      public_visible_h1_count:2,public_source_h1_matched:false,
+      name_vs_registered:"partial_overlap",
+      name_vs_public_title:"different",
+      source_name:"SECRET_COMPANY_NAME",
+      page_body:"SECRET_PAGE_HTML"
+    }
+  });
+  assert.equal(proof.public_reason,"name_not_matched_to_registered_entity");
+  assert.equal(proof.public_visible_h1_count,2);
+  assert.equal(proof.public_source_h1_matched,false);
+  assert.equal(proof.public_name_vs_registered,"partial_overlap");
+  assert.equal(proof.public_name_vs_public_title,"different");
+  const result=safeSabyPostRouteDiagnostic({
+    reason:"public_identity_unverified",ok:false,
+    ...proof
+  });
+  assert.equal(result.public_name_vs_registered,"partial_overlap");
+  assert.equal(result.public_name_vs_public_title,"different");
+  assert.doesNotMatch(JSON.stringify(result),/SECRET_COMPANY_NAME|SECRET_PAGE_HTML/);
+  const unknown=safeSabyPublicProofReason({
+    reason:"name_not_matched_to_registered_entity",
+    diagnostic:{
+      name_vs_registered:"SECRET_COMPANY_NAME",
+      name_vs_public_title:"SECRET_PAGE_HTML"
+    }
+  });
+  assert.equal(unknown.public_name_vs_registered,"unknown");
+  assert.equal(unknown.public_name_vs_public_title,"unknown");
+});
+
 test("public verification failure codes are an allowlist, never arbitrary source text",()=>{
   const unknown=safeSabyPublicProofReason({
     reason:"ERROR_SECRET_PRIVATE_URL",
