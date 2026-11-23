@@ -40,6 +40,13 @@ const PUBLIC_REASON_CODES=new Set([
   "exact_registered_name_and_inn_kpp",
   "same_public_profile_short_and_registered_name"
 ]);
+const SAFE_NAME_RELATION=new Set([
+  "source_name_invalid","not_available","legal_form_conflict",
+  "normalized_equal","initials_candidate","short_name_candidate",
+  "partial_overlap","different"
+]);
+const safeNameRelation=value=>SAFE_NAME_RELATION.has(String(value||""))?
+  String(value):"unknown";
 export function safeSabyPublicProofReason(result){
   const reason=String(result?.reason||"");
   const obs=result?.diagnostic||{};
@@ -51,6 +58,12 @@ export function safeSabyPublicProofReason(result){
     public_http_status:cap(obs.http_status,599),
     public_h1_count:cap(obs.h1_count,100),
     public_h1_has_text:obs.h1_has_text===true,
+    public_visible_h1_count:cap(obs.public_visible_h1_count,8),
+    public_source_h1_matched:obs.public_source_h1_matched===true,
+    public_name_vs_registered:
+      safeNameRelation(obs.name_vs_registered),
+    public_name_vs_public_title:
+      safeNameRelation(obs.name_vs_public_title),
     public_requisites_heading_visible:obs.requisites_heading_visible===true,
     public_registered_name_label_visible:
       obs.registered_name_label_visible===true,
@@ -234,6 +247,12 @@ export function safeSabyPostRouteDiagnostic(result) {
       public_http_status:cap(result.public_http_status,599),
       public_h1_count:cap(result.public_h1_count),
       public_h1_has_text:result.public_h1_has_text===true,
+      public_visible_h1_count:cap(result.public_visible_h1_count,8),
+      public_source_h1_matched:result.public_source_h1_matched===true,
+      public_name_vs_registered:
+        safeNameRelation(result.public_name_vs_registered),
+      public_name_vs_public_title:
+        safeNameRelation(result.public_name_vs_public_title),
       public_requisites_heading_visible:
         result.public_requisites_heading_visible===true,
       public_registered_name_label_visible:
