@@ -22,7 +22,8 @@ const TRANSIENT_SABY_CODES=new Set([
 const NON_RETRYABLE_SABY_CODES=new Set([
   "search_ambiguous","card_changed","search_input_failed",
   "search_confirmed_empty","search_service_unavailable",
-  "search_loading_stalled","card_legal_name_unverified"
+  "search_loading_stalled","search_zero_unconfirmed",
+  "card_legal_name_unverified"
 ]);
 export function classifySabyFinanceFailure(error){
   const code=String(error?.code||"");
@@ -37,6 +38,50 @@ export function classifySabyFinanceFailure(error){
   return {code:"collector_unavailable",retryable:false};
 }
 
+
+// A known-good search health check can only use an ALREADY attempted firm
+// with fresh, verified finance evidence from an earlier immutable checkpoint.
+// It must exercise exact-INN Saby search, not skip it via a saved direct URL.
+export function selectSabyFinanceSearchCanary(checkpoint){
+  const attempted=new Set(
+    (checkpoint?.saby_finance_backfill_attempted_inns||[])
+      .map(sabyInn).filter(Boolean));
+  for(const section of SECTIONS){
+    const rows=checkpoint?.final_result?.[section];
+    if(!Array.isArray(rows))continue;
+    for(const row of rows){
+      const inn=sabyInn(row?.["ИНН"]);
+      const saved=row?.__evidence?.saby_finance_backfill;
+      if(!attempted.has(inn)||sabyInn(saved?.inn)!==inn||
+         !sabyNameTokens(row?.["Организация"]).length||
+         !cardId(saved?.source_url)||
+         !Number.isFinite(Date.parse(String(saved?.verified_at||""))))
+        continue;
+      const revenueMatch=Number.isSafeInteger(saved?.revenue_rub)&&
+        isSavedFinanceNumber(row[FINANCE_REVENUE_FIELD])&&
+        Number(row[FINANCE_REVENUE_FIELD])===saved.revenue_rub;
+      const staffMatch=Number.isSafeInteger(saved?.employees)&&
+        isSavedFinanceNumber(row[FINANCE_EMPLOYEES_FIELD])&&
+        Number(row[FINANCE_EMPLOYEES_FIELD])===saved.employees;
+      if(!revenueMatch&&!staffMatch)continue;
+      const searchRow=structuredClone(row);
+      // Do not let openSavedSabyFinanceCard bypass Saby search: this
+      // health check is specifically proving the exact-INN SEARCH works.
+      if(searchRow.__evidence)delete searchRow.__evidence.saby;
+      return {row:searchRow,source_url:saved.source_url,inn};
+    }
+  }
+  return null;
+}
+export function verifySabyFinanceSearchCanary(record,canary){
+  const identity=record?.identity;
+  return !!canary&&identity?.verified===true&&
+    sabyInn(identity.inn)===canary.inn&&
+    sabyNameMatches(canary.row?.["Организация"],identity.name)&&
+    record?.source==="SABY"&&
+    cardId(record?.source_url)!==""&&
+    cardId(record.source_url)===cardId(canary.source_url);
+}
 
 export function isSavedFinanceNumber(value){
   if(typeof value==="number")return Number.isSafeInteger(value)&&value>=0;
@@ -324,7 +369,8 @@ export async function runSabyFinanceBackfill({
     scheduled:selected.length,processed:0,
     revenueAdded:0,employeesAdded:0,
     verified:0,review:0,unavailable:0,unchanged:0,retries:0,
-    loadingDeferred:0,
+    loadingDeferred:0,unconfirmedSearches:0,
+    canaryChecks:0,canaryPassed:0,
     unvisited:pending().length,
     reviewRetryable:pending().filter(x=>reviewCount(x.inn)>0).length,
     reviewExhausted:sourcePlan.eligible.filter(x=>
@@ -376,6 +422,9 @@ export async function runSabyFinanceBackfill({
         Math.max(250,Math.min(30000,rawDelay)):1500;
       let consecutiveReview=0;
       let consecutiveStalls=0;
+      let consecutiveUnconfirmed=0;
+      let lastCanarySuccess=0;
+      const canary=selectSabyFinanceSearchCanary(parent);
       for(const [index,entry] of selected.entries()){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
@@ -430,6 +479,17 @@ export async function runSabyFinanceBackfill({
             console.info("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
               code:"search_confirmed_empty",scope:"company",action:"skip_unavailable"
             }));
+          }else if(failure.code==="search_zero_unconfirmed"){
+            // Exact-INN input and transport were observed, but the visible
+            // list offered neither a result nor a proven empty message.
+            // An immediate retry cannot add legal proof. Do not consume
+            // either identity-review budget or the company as attempted.
+            stats.unconfirmedSearches++;
+            outcome={status:"deferred",reason:"search_zero_unconfirmed"};
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+JSON.stringify({
+              code:"search_zero_unconfirmed",scope:"company",
+              action:"defer_without_review"
+            }));
           }else if(failure.code==="search_loading_stalled"){
             // One timed-out exact-INN search is NOT proof of a site-wide
             // outage. Save a temporary deferral without consuming either
@@ -465,11 +525,19 @@ export async function runSabyFinanceBackfill({
           employeesStillMissing:!isSavedFinanceNumber(row[FINANCE_EMPLOYEES_FIELD])
         };
         if(outcome.status==="deferred"){
-          // The company stays pending, with prior review budget untouched.
-          // Three consecutive such stalls indicate a broader Saby issue.
-          consecutiveStalls++;
+          // A generic Wasaby spinner may be visible before search, even
+          // when it is healthy. Such uncertain zeros need a separate
+          // known-good search check, not a loading-stall conclusion.
+          if(outcome.reason==="search_zero_unconfirmed"){
+            consecutiveUnconfirmed++;
+            consecutiveStalls=0;
+          }else{
+            consecutiveStalls++;
+            consecutiveUnconfirmed=0;
+          }
           consecutiveReview=0;
         }else if(outcome.status==="review"){
+          consecutiveUnconfirmed=0;
           consecutiveStalls=0;
           // A genuine INN/card mismatch is never retried automatically.
           // Temporary failures get one LATER pass, after fresh firms.
@@ -482,6 +550,7 @@ export async function runSabyFinanceBackfill({
           consecutiveReview++;
         }else{
           consecutiveStalls=0;
+          consecutiveUnconfirmed=0;
           attempted.add(entry.inn);
           delete reviewCounts[entry.inn];
           consecutiveReview=0;
@@ -489,6 +558,43 @@ export async function runSabyFinanceBackfill({
         stats.processed++;
         await save();
         await onProgress({...stats});
+        if(consecutiveUnconfirmed>=3){
+          // Three silent zero-row queries may mean several contractors
+          // are absent OR the whole Saby search has stopped working.
+          // Re-search an ALREADY VERIFIED firm with no writes to tell
+          // the cases apart; never conclude identity from query transport.
+          const recentlyProven=lastCanarySuccess>0&&
+            Date.now()-lastCanarySuccess<5*60*1000;
+          let proven=recentlyProven;
+          if(!proven&&canary){
+            stats.canaryChecks++;
+            try{
+              const found=await collectCompany(page,canary.row,settings);
+              proven=verifySabyFinanceSearchCanary(found,canary);
+            }catch{
+              proven=false;
+            }
+            console.info("[SABY_FINANCE_SEARCH_CANARY_DIAG] "+
+              JSON.stringify({verified:proven,checks:stats.canaryChecks}));
+            if(proven){
+              stats.canaryPassed++;
+              lastCanarySuccess=Date.now();
+            }
+          }
+          if(!proven){
+            stats.browserError=canary?
+              "saby_search_canary_unverified":
+              "saby_search_canary_unavailable";
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
+              JSON.stringify({code:canary?"search_canary_unverified":
+                "search_canary_unavailable",action:"pause",
+                unconfirmed:stats.unconfirmedSearches}));
+            break;
+          }
+          // A known-good INN succeeded. Other zero-row responses remain
+          // deferred as company-specific uncertainty; proceed with new INNs.
+          consecutiveUnconfirmed=0;
+        }
         if(consecutiveStalls>=3){
           stats.browserError="saby_consecutive_loading_stalls";
           console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
