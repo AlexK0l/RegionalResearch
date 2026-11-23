@@ -85,3 +85,18 @@ export function classifySabySearchZeroState(first,last,{
     return "confirmed_empty";
   return "uncertain";
 }
+
+/**
+ * A zero-row exact-INN search with no explicit "not found" message is NOT
+ * evidence that the contractor is absent. Saby's global loading indicators
+ * can be visible even before a healthy search; unlike a proven new spinner
+ * stall, this uncertain result must be deferred without consuming a review.
+ */
+export function isUnconfirmedSabyZeroResult(first,last,{
+  onListRoute=true,classification="uncertain"
+}={}){
+  return onListRoute===true&&classification==="uncertain"&&
+    first?.inputExact===true&&last?.inputExact===true&&
+    first?.explicitEmpty!==true&&last?.explicitEmpty!==true&&
+    first?.serviceError!==true&&last?.serviceError!==true;
+}
