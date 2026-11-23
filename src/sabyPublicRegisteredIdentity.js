@@ -5,6 +5,8 @@
 // the checkpoint or the Saby authenticated account.
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
 import {auditLegalForm,auditCompareName} from "./sabyIdentityAudit.js";
+import {verifyIndependentRegistryAlias}
+  from "./sabyIndependentNameBridge.js";
 
 const compact=s=>String(s??"").normalize("NFKC")
   .replace(/\s+/g," ").trim();
@@ -250,7 +252,8 @@ export function safeSabyVisibleRequisitesText(text) {
  * contact details, or remote addresses.
  */
 export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
-  timeoutMs=14000
+  timeoutMs=14000,
+  verifyIndependent=verifyIndependentRegistryAlias
 }={}) {
   const url=sabyPublicProfileRoute(inn,kpp);
   if(!url||!sourceName)return {status:"review",reason:"invalid_request"};
@@ -315,13 +318,41 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
         const legalName=exact.length===1?exact[0].name:"";
         diagnostic.name_vs_registered=auditCompareName(sourceName,legalName);
         diagnostic.name_vs_public_title=auditCompareName(sourceName,owner.title);
-        return {
-          ...compareSabyPublicRequisites({
-            expectedInn:inn,expectedKpp:kpp,expectedName:sourceName,
-            publicTitle:owner.title,records,url:tab.url()
-          }),
-          diagnostic
-        };
+        const checked=compareSabyPublicRequisites({
+          expectedInn:inn,expectedKpp:kpp,expectedName:sourceName,
+          publicTitle:owner.title,records,url:tab.url()
+        });
+        // Saby sometimes prints only the REGISTERED short name as
+        // "Название". A mismatch cannot be fixed by token overlap.
+        // Require an INDEPENDENT public registrar profile to link
+        // source full title <-> registered full title and Saby short title
+        // <-> registered short title, on one exact INN/KPP/OGRN.
+        // This conditional does not change the original matching path.
+        if(checked.reason==="name_not_matched_to_registered_entity"&&
+          records.length===1&&exact.length===1&&
+          /^d{13}$/.test(exact[0].ogrn||"")&&owner.title&&
+          typeof verifyIndependent==="function"){
+          diagnostic.independent_bridge_attempted=true;
+          const proof=await verifyIndependent(page,{
+            expectedInn:inn,expectedKpp:kpp,expectedOgrn:exact[0].ogrn,
+            sourceName, sabyShortName:exact[0].name,
+            sabyPublicTitle:owner.title
+          });
+          diagnostic.independent_bridge_verified=proof?.status==="verified";
+          diagnostic.independent_bridge_reason=String(proof?.reason||"unknown");
+          if(proof?.status==="verified"&&proof.inn===sabyInn(inn)&&
+            proof.kpp===String(kpp)&&proof.ogrn===exact[0].ogrn&&
+            proof.official_full_name){
+            return {
+              ...checked,status:"verified",
+              reason:"independent_registry_alias_verified",
+              match_type:"independent_registry_full_short_bridge",
+              official_name:proof.official_full_name,
+              diagnostic
+            };
+          }
+        }
+        return {...checked,diagnostic};
       }
       // Saby public pages can mount sections much later than
       // DOMContentLoaded. A single navigation-tab scroll can trigger lazy
