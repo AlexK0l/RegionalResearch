@@ -402,6 +402,48 @@ test("two failed card verifications do not consume the INN; one later run remain
   assert.equal(JSON.stringify(parent),original);
 });
 
+test("fully rendered legal-name mismatch is not retried in the same Saby session",async()=>{
+  const parent=checkpoint([
+    row("4718000935","Волховское, АО"),
+    row("7707083893","Сбербанк, ПАО")
+  ]);
+  const before=JSON.stringify(parent);
+  const calls=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:2,
+    sessionRunner:async fn=>fn({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      calls.push(subject["ИНН"]);
+      if(subject["ИНН"]==="4718000935")
+        throw safeSabyFailure("card_legal_name_unverified","company");
+      return record(subject["ИНН"],subject["Организация"]);
+    }
+  });
+  assert.deepEqual(calls,["4718000935","7707083893"],
+    "no duplicate Saby search for an already rendered but unverified alias");
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.review,1);
+  assert.equal(out.stats.reviewRetryable,1);
+  assert.equal(out.stats.reviewExhausted,0);
+  assert.equal(out.stats.processed,2);
+  assert.equal(out.stats.revenueAdded,1);
+  assert.equal(out.stats.employeesAdded,1);
+  assert.equal(out.stats.unvisited,1);
+  assert.equal(out.stats.browserError,"");
+  assert.equal(out.snapshot.saby_finance_backfill_review_attempts["4718000935"],1);
+  assert.equal(out.snapshot.saby_finance_backfill_outcomes["4718000935"].reason,
+    "card_legal_name_unverified");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["7707083893"]);
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],"");
+  assert.equal(JSON.stringify(parent),before);
+  assert.deepEqual(classifySabyFinanceFailure(
+    safeSabyFailure("card_legal_name_unverified")),
+    {code:"card_legal_name_unverified",retryable:false});
+});
+
 test("cross-card identity warning never triggers an automatic retry or claims success",async()=>{
   const parent=checkpoint([row()]);
   let count=0;
