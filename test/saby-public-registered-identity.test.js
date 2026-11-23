@@ -234,6 +234,89 @@ test("public aliases remain unverified when independent registry rejects or proo
   }
 });
 
+test("VBR fallback can prove registered aliases only after T-Bank transport failure",async()=>{
+  const i="4703144282",k="470401001",o="1167847156300";
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const title="Леноблводоканал, ГУП";
+  const full='ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"';
+  const body=["Реквизиты","Название",title,"ИНН",i,"КПП",k,
+    "ОГРН",o,"Контакты"].join("\n");
+  let fallbackCalled=0,primaryCalled=0;
+  const {page,stats}=fakeBrowser({
+    title,body,landed:"https://saby.ru/profile/"+i+"-"+k
+  });
+  const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+    verifyIndependent:async()=>{
+      primaryCalled++;
+      return {status:"review",reason:"independent_registry_navigation_failed"};
+    },
+    verifyVbr:async(_page,expected)=>{
+      fallbackCalled++;
+      assert.deepEqual(expected,{
+        expectedInn:i,expectedKpp:k,expectedOgrn:o,sourceName,
+        sabyShortName:title,sabyPublicTitle:title
+      });
+      return {status:"verified",reason:"independent_registry_alias_verified",
+        official_full_name:full,inn:i,kpp:k,ogrn:o};
+    }
+  });
+  assert.equal(result.status,"verified");
+  assert.equal(result.reason,"independent_registry_alias_verified");
+  assert.equal(result.official_name,full);
+  assert.equal(result.diagnostic.independent_bridge_provider,"vbr");
+  assert.equal(result.diagnostic.independent_bridge_verified,true);
+  assert.equal(primaryCalled,1);
+  assert.equal(fallbackCalled,1);
+  assert.equal(stats().closed,1);
+});
+
+test("explicit T-Bank name conflict cannot be bypassed using VBR",async()=>{
+  const i="4703144282",k="470401001",o="1167847156300";
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const title="Леноблводоканал, ГУП";
+  const body=["Реквизиты","Название",title,"ИНН",i,"КПП",k,
+    "ОГРН",o,"Контакты"].join("\n");
+  let called=0;
+  const {page}=fakeBrowser({
+    title,body,landed:"https://saby.ru/profile/"+i+"-"+k
+  });
+  const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+    verifyIndependent:async()=>({
+      status:"review",reason:"independent_registered_name_mismatch"
+    }),
+    verifyVbr:async()=>{
+      called++;
+      return {status:"verified"};
+    }
+  });
+  assert.equal(result.status,"review");
+  assert.equal(called,0);
+  assert.equal(result.diagnostic.independent_bridge_provider,"tbank");
+});
+
+test("incomplete VBR evidence is rejected after transport failure",async()=>{
+  const i="4703144282",k="470401001",o="1167847156300";
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const title="Леноблводоканал, ГУП";
+  const body=["Реквизиты","Название",title,"ИНН",i,"КПП",k,
+    "ОГРН",o,"Контакты"].join("\n");
+  const {page}=fakeBrowser({
+    title,body,landed:"https://saby.ru/profile/"+i+"-"+k
+  });
+  const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+    verifyIndependent:async()=>({
+      status:"review",reason:"independent_registry_navigation_failed"
+    }),
+    verifyVbr:async()=>({
+      status:"verified",reason:"independent_registry_alias_verified",
+      official_full_name:"UNVERIFIED COMPANY",inn:i,kpp:k,ogrn:"1167847156301"
+    })
+  });
+  assert.equal(result.status,"review");
+  assert.equal(result.diagnostic.independent_bridge_provider,"vbr");
+  assert.equal(result.diagnostic.independent_bridge_verified,false);
+});
+
 test("public browser verified request preserves original tab and closes child tab",async()=>{
   const {page,stats}=fakeBrowser();
   const result=await verifyPublicSabyIdentity(page,inn,kpp,source);
