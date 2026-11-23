@@ -8,6 +8,7 @@ import {compareSabyPrivateDetailUrl,summarizeSabyPrivateRouteDelta} from "./saby
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
 import {auditSelectSearchResult,auditExtractRequisites} from "./sabyIdentityAudit.js";
 import {verifyPublicSabyIdentity} from "./sabyPublicRegisteredIdentity.js";
+import {sameRegisteredName} from "./sabyIndependentNameBridge.js";
 
 const label=(line,key)=>{
   const s=String(line||"").trim();
@@ -259,9 +260,17 @@ export function acceptSabyPublicIdentityFallback({
     return reject("selected_private_heading_disconnected");
   const publicName=String(publicResult.public_short_name||"");
   const registered=String(publicResult.official_name||"");
+  const independentlyProven=
+    publicResult.match_type==="independent_registry_full_short_bridge";
   const privateName=titles.find(x=>
     (publicName&&sabyNameMatches(x,publicName)) ||
-    sabyNameMatches(x,registered));
+    sabyNameMatches(x,registered) ||
+    // A registered full/short bridge may place the organizational form
+    // at opposite ends of Saby's title. Allow only strict form-aware
+    // comparison after all independent INN/KPP/OGRN proof succeeded.
+    (independentlyProven&&(
+      (publicName&&sameRegisteredName(x,publicName)) ||
+      sameRegisteredName(x,registered))));
   if(!privateName)return reject("private_public_name_disconnected");
   return {
     ok:true,reason:"registered_alias_verified",

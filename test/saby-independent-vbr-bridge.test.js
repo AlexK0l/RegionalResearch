@@ -114,6 +114,19 @@ test("real VBR search dynamically resolves company and strictly verifies full/sh
   assert.equal(stats().closed,1);
 });
 
+test("VBR browser verifies full Saby requisites name against the registry full field",async()=>{
+  const {page,stats}=browser();
+  const result=await verifyVbrIndependentRegistryAlias(page,{
+    ...opts,sabyShortName:full,
+    sabyPublicTitle:sabyShort
+  });
+  assert.equal(result.status,"verified");
+  assert.equal(result.requisites_role,"full");
+  assert.equal(result.title_role,"short");
+  assert.equal(result.official_full_name,full);
+  assert.equal(stats().closed,1);
+});
+
 test("VBR identity conflicts never authorize an alias, even with the same search OGRN",async()=>{
   for(const change of [
     {text:pageText.replace(short+short,"ГУП ДРУГАЯ ОРГАНИЗАЦИЯ")},

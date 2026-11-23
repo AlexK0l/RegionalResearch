@@ -270,6 +270,44 @@ test("VBR fallback can prove registered aliases only after T-Bank transport fail
   assert.equal(stats().closed,1);
 });
 
+test("Saby public verifier accepts VBR full registered requisites plus short owner H1",async()=>{
+  const i="4703144282",k="470401001",o="1167847156300";
+  const sourceName='ГУП «Водоканал Ленинградской области»';
+  const full='ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"';
+  const short='ГУП "ЛЕНОБЛВОДОКАНАЛ"';
+  const title="Леноблводоканал, ГУП";
+  // The company's Saby "Название" is FULL, not necessarily SHORT.
+  const body=["Реквизиты","Название",full,"ИНН",i,"КПП",k,
+    "ОГРН",o,"Контакты"].join("\n");
+  const {page,stats}=fakeBrowser({
+    title,body,landed:"https://saby.ru/profile/"+i+"-"+k
+  });
+  let vbrCalls=0;
+  const result=await verifyPublicSabyIdentity(page,i,k,sourceName,{
+    verifyIndependent:async()=>({
+      status:"review",reason:"independent_registry_navigation_failed"
+    }),
+    verifyVbr:async(_page,options)=>{
+      vbrCalls++;
+      const {compareIndependentRegistryAlias}=await import(
+        "../src/sabyIndependentNameBridge.js");
+      return compareIndependentRegistryAlias({...options,
+        record:{full_name:full,short_name:short,inn:i,kpp:k,ogrn:o}
+      });
+    }
+  });
+  assert.equal(result.status,"verified");
+  assert.equal(result.match_type,"independent_registry_full_short_bridge");
+  assert.equal(result.official_name,full);
+  assert.equal(result.public_short_name,title);
+  assert.equal(result.diagnostic.independent_bridge_provider,"vbr");
+  assert.equal(result.diagnostic.independent_requisites_name_role,"full");
+  assert.equal(result.diagnostic.independent_title_name_role,"short");
+  assert.equal(result.diagnostic.independent_bridge_verified,true);
+  assert.equal(vbrCalls,1);
+  assert.equal(stats().closed,1);
+});
+
 test("explicit T-Bank name conflict cannot be bypassed using VBR",async()=>{
   const i="4703144282",k="470401001",o="1167847156300";
   const sourceName='ГУП «Водоканал Ленинградской области»';
