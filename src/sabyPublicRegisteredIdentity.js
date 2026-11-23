@@ -333,16 +333,24 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
           /^d{13}$/.test(exact[0].ogrn||"")&&owner.title&&
           typeof verifyIndependent==="function"){
           diagnostic.independent_bridge_attempted=true;
-          const proof=await verifyIndependent(page,{
-            expectedInn:inn,expectedKpp:kpp,expectedOgrn:exact[0].ogrn,
-            sourceName, sabyShortName:exact[0].name,
-            sabyPublicTitle:owner.title
-          });
-          diagnostic.independent_bridge_verified=proof?.status==="verified";
-          diagnostic.independent_bridge_reason=String(proof?.reason||"unknown");
-          if(proof?.status==="verified"&&proof.inn===sabyInn(inn)&&
+          let proof;
+          try {
+            proof=await verifyIndependent(page,{
+              expectedInn:inn,expectedKpp:kpp,expectedOgrn:exact[0].ogrn,
+              sourceName, sabyShortName:exact[0].name,
+              sabyPublicTitle:owner.title
+            });
+          } catch {
+            proof={status:"review",reason:"independent_registry_unavailable"};
+          }
+          const verified=proof?.status==="verified"&&
+            proof.inn===sabyInn(inn)&&
             proof.kpp===String(kpp)&&proof.ogrn===exact[0].ogrn&&
-            proof.official_full_name){
+            typeof proof.official_full_name==="string"&&
+            proof.official_full_name.length>0;
+          diagnostic.independent_bridge_verified=verified;
+          diagnostic.independent_bridge_reason=String(proof?.reason||"unknown");
+          if(verified){
             return {
               ...checked,status:"verified",
               reason:"independent_registry_alias_verified",
