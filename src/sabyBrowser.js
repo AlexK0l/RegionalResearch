@@ -11,7 +11,8 @@ import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
   from "./sabySearchTransport.js";
 import {readSabySearchState,classifySabySearchZeroState}
   from "./sabySearchState.js";
-import { verifySabyCard, sabyCardRoute, safeCardDiagnostic } from "./sabyCard.js";
+import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
+  classifySabyCardReviewCode} from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
@@ -60,7 +61,8 @@ export class SabyReview extends Error {
     this.code=new Set(["review","search_scan_error","search_no_unique_result",
       "search_ambiguous","card_render_timeout","card_changed",
       "search_input_failed","search_confirmed_empty",
-      "search_service_unavailable","search_loading_stalled"]).has(code)?code:"review";
+      "search_service_unavailable","search_loading_stalled",
+      "card_legal_name_unverified"]).has(code)?code:"review";
   }
 }
 
@@ -581,8 +583,11 @@ async function openCompany(page, row, settings) {
     clicked:true,
     navigationObserved:page.url()!==listingUrl
   })));
+  const reviewCode=classifySabyCardReviewCode(last,{
+    publicIdentityAttempted:publicFallbackAttempted
+  });
   throw new SabyReview("Saby: карточка не подтверждена: "+last.reason,
-    {scope:"company",code:"card_render_timeout"});
+    {scope:"company",code:reviewCode});
 }
 
 async function ownContacts(page) {
