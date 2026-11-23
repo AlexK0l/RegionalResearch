@@ -55,7 +55,10 @@ const INDEPENDENT_BRIDGE_REASONS=new Set([
   "independent_registry_alias_verified",
   "independent_registry_route_untrusted",
   "independent_registry_http_error",
-  "independent_registry_unavailable"
+  "independent_registry_unavailable",
+  "independent_registry_navigation_failed",
+  "independent_registry_browser_unavailable",
+  "independent_registry_snapshot_unavailable"
 ]);
 const safeBridgeReason=value=>INDEPENDENT_BRIDGE_REASONS.has(String(value||""))?
   String(value):"unknown";
