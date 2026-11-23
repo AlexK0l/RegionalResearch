@@ -7,6 +7,8 @@ import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
 import {auditLegalForm,auditCompareName} from "./sabyIdentityAudit.js";
 import {verifyIndependentRegistryAlias}
   from "./sabyIndependentNameBridge.js";
+import {verifyVbrIndependentRegistryAlias}
+  from "./sabyIndependentVbrBridge.js";
 
 const compact=s=>String(s??"").normalize("NFKC")
   .replace(/\s+/g," ").trim();
@@ -253,7 +255,8 @@ export function safeSabyVisibleRequisitesText(text) {
  */
 export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
   timeoutMs=14000,
-  verifyIndependent=verifyIndependentRegistryAlias
+  verifyIndependent=verifyIndependentRegistryAlias,
+  verifyVbr=verifyVbrIndependentRegistryAlias
 }={}) {
   const url=sabyPublicProfileRoute(inn,kpp);
   if(!url||!sourceName)return {status:"review",reason:"invalid_request"};
@@ -343,12 +346,40 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
           } catch {
             proof={status:"review",reason:"independent_registry_unavailable"};
           }
+          // Only a transport/UI failure can fall back to VBR.
+          // A verified contradictory identity from T-Bank remains a hard
+          // rejection: never shop for a more favourable registered name.
+          const recoverable=new Set([
+            "independent_registry_unavailable",
+            "independent_registry_navigation_failed",
+            "independent_registry_browser_unavailable",
+            "independent_registry_snapshot_unavailable",
+            "independent_registry_http_error",
+            "independent_requisites_unavailable"
+          ]);
+          let provider="tbank";
+          if(proof?.status!=="verified"&&
+            recoverable.has(String(proof?.reason||""))&&
+            typeof verifyVbr==="function"){
+            provider="vbr";
+            try{
+              proof=await verifyVbr(page,{
+                expectedInn:inn,expectedKpp:kpp,
+                expectedOgrn:exact[0].ogrn,
+                sourceName,sabyShortName:exact[0].name,
+                sabyPublicTitle:owner.title
+              });
+            }catch{
+              proof={status:"review",reason:"vbr_browser_unavailable"};
+            }
+          }
           const verified=proof?.status==="verified"&&
             proof.inn===sabyInn(inn)&&
             proof.kpp===String(kpp)&&proof.ogrn===exact[0].ogrn&&
             typeof proof.official_full_name==="string"&&
             proof.official_full_name.length>0;
           diagnostic.independent_bridge_verified=verified;
+          diagnostic.independent_bridge_provider=provider;
           diagnostic.independent_bridge_reason=String(proof?.reason||"unknown");
           if(verified){
             return {

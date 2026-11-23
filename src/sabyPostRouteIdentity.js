@@ -58,7 +58,17 @@ const INDEPENDENT_BRIDGE_REASONS=new Set([
   "independent_registry_unavailable",
   "independent_registry_navigation_failed",
   "independent_registry_browser_unavailable",
-  "independent_registry_snapshot_unavailable"
+  "independent_registry_snapshot_unavailable",
+  "vbr_invalid_request","vbr_search_route_untrusted",
+  "vbr_search_http_error","vbr_search_result_unavailable",
+  "vbr_search_result_ambiguous","vbr_company_route_untrusted",
+  "vbr_company_http_error","vbr_registry_record_unavailable",
+  "vbr_browser_unavailable","vbr_search_navigation_failed",
+  "vbr_search_snapshot_unavailable","vbr_company_navigation_failed",
+  "vbr_company_snapshot_unavailable",
+  "independent_registry_identifier_mismatch",
+  "independent_registered_name_mismatch",
+  "independent_short_name_mismatch"
 ]);
 const safeBridgeReason=value=>INDEPENDENT_BRIDGE_REASONS.has(String(value||""))?
   String(value):"unknown";
@@ -77,6 +87,9 @@ export function safeSabyPublicProofReason(result){
     independent_bridge_verified:obs.independent_bridge_verified===true,
     independent_bridge_reason:
       safeBridgeReason(obs.independent_bridge_reason),
+    independent_bridge_provider:
+      obs.independent_bridge_provider==="vbr"?"vbr":
+      obs.independent_bridge_provider==="tbank"?"tbank":"unknown",
     public_visible_h1_count:cap(obs.public_visible_h1_count,8),
     public_source_h1_matched:obs.public_source_h1_matched===true,
     public_name_vs_registered:
@@ -276,6 +289,9 @@ export function safeSabyPostRouteDiagnostic(result) {
         result.independent_bridge_verified===true,
       independent_bridge_reason:
         safeBridgeReason(result.independent_bridge_reason),
+      independent_bridge_provider:
+        result.independent_bridge_provider==="vbr"?"vbr":
+        result.independent_bridge_provider==="tbank"?"tbank":"unknown",
       public_visible_h1_count:cap(result.public_visible_h1_count,8),
       public_source_h1_matched:result.public_source_h1_matched===true,
       public_name_vs_registered:
