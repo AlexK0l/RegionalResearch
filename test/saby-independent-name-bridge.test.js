@@ -109,28 +109,35 @@ test("a merely overlapping name never bridges source and Saby",()=>{
 });
 
 function mockBrowser({body=pageText,landed=independentRegistryRoute(ogrn),
-  status=200,throwOnGoto=false}={}){
-  let opened=0,closed=0;
+  status=200,throwOnGoto=false,throwOnEvaluate=false,
+  throwOnNewTab=false}={}){
+  let opened=0,closed=0,options=null;
   return {
     page:{context:()=>({newPage:async()=>{
+      if(throwOnNewTab)throw Error("secret browser error");
       opened++;
       return {
-        goto:async()=>{if(throwOnGoto)throw Error("secret error");
+        goto:async(_url,opts)=>{options=opts;
+          if(throwOnGoto)throw Error("secret error");
           return {status:()=>status};},
         url:()=>landed,
-        evaluate:async()=>body,
+        evaluate:async()=>{if(throwOnEvaluate)throw Error("secret DOM");
+          return body;},
         waitForTimeout:async()=>{},
         close:async()=>{closed++;}
       };
     }})},
-    count:()=>({opened,closed})
+    count:()=>({opened,closed}),
+    navigation:()=>options
   };
 }
 
 test("independent page closes and verifies without changing the Saby page",async()=>{
-  const {page,count}=mockBrowser();
+  const {page,count,navigation}=mockBrowser();
   const result=await verifyIndependentRegistryAlias(page,expected);
   assert.equal(result.status,"verified");
+  assert.equal(navigation().waitUntil,"commit");
+  assert.equal(navigation().timeout,12000);
   assert.deepEqual(count(),{opened:1,closed:1});
 });
 
@@ -147,5 +154,20 @@ test("redirect, unavailable source and inconsistent registry fail closed",async(
       {timeoutMs:1500});
     assert.equal(result.status,"review");
     assert.equal(count().closed,1);
+  }
+});
+
+test("public registry failures have safe, stage-specific reason codes",async()=>{
+  for(const [failure,expectedReason] of [
+    [{throwOnNewTab:true},"independent_registry_browser_unavailable"],
+    [{throwOnGoto:true},"independent_registry_navigation_failed"],
+    [{throwOnEvaluate:true},"independent_registry_snapshot_unavailable"]
+  ]){
+    const {page,count}=mockBrowser(failure);
+    const result=await verifyIndependentRegistryAlias(page,expected);
+    assert.equal(result.status,"review");
+    assert.equal(result.reason,expectedReason);
+    assert.equal(count().closed,failure.throwOnNewTab?0:1);
+    assert.doesNotMatch(JSON.stringify(result),/secret|4703144282|1167847156300/);
   }
 });
