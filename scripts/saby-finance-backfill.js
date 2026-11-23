@@ -196,6 +196,8 @@ async function main(){
         revenue_added:s.revenueAdded,employees_added:s.employeesAdded,
         review:s.review,unavailable:s.unavailable,unchanged:s.unchanged,
         loading_deferred:s.loadingDeferred,
+        search_unconfirmed:s.unconfirmedSearches,
+        canary_checks:s.canaryChecks,canary_passed:s.canaryPassed,
         retries:s.retries,review_retryable:s.reviewRetryable,
         review_exhausted:s.reviewExhausted}))
   });
@@ -207,6 +209,8 @@ async function main(){
     source_unavailable:stats.unavailable,
     no_new_numbers:stats.unchanged,review:stats.review,
     loading_deferred:stats.loadingDeferred,
+    search_unconfirmed:stats.unconfirmedSearches,
+    canary_checks:stats.canaryChecks,canary_passed:stats.canaryPassed,
     retries:stats.retries,review_retryable:stats.reviewRetryable,
     review_exhausted:stats.reviewExhausted,
     revenue_missing_after:stats.missingRevenueAfter,
