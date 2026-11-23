@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   sabyCardRoute, assessSabyCardEvidence,
-  safeCardDiagnostic, verifySabyCard
+  safeCardDiagnostic, verifySabyCard,
+  classifySabyCardReviewCode
 } from "../src/sabyCard.js";
 
 import {safeSabySectionDiagnostic} from "../src/sabyBrowser.js";
@@ -86,6 +87,34 @@ test("diagnostics never expose company identifiers or original DOM text",()=>{
   assert.match(browser,/\[SABY_CARD_DIAG\]/);
   assert.match(browser,/verifySabyCard\(/);
   assert.doesNotMatch(browser,/verifyOpenCard\(/);
+});
+
+test("fully rendered scoped-INN card with unverified legal alias does not trigger redundant same-session search",()=>{
+  const observed=assessSabyCardEvidence(DETAIL,INN,NAME,snapshot({
+    headings:["Другая организация, ООО"],
+    introLines:["Другая организация, ООО","ИНН 6027087063"]
+  }));
+  assert.equal(observed.reason,"legal_name_not_verified");
+  assert.equal(classifySabyCardReviewCode(observed,{
+    publicIdentityAttempted:true
+  }),"card_legal_name_unverified");
+  assert.equal(classifySabyCardReviewCode(observed,{
+    publicIdentityAttempted:false
+  }),"card_render_timeout");
+  assert.equal(classifySabyCardReviewCode({
+    reason:"detail_loading",detail:{route:"detail"}
+  },{publicIdentityAttempted:true}),"card_render_timeout");
+  assert.equal(classifySabyCardReviewCode({
+    reason:"legal_name_not_verified",
+    detail:{route:"list",hasScopedInn:true,detailContentPresent:true}
+  },{publicIdentityAttempted:true}),"card_render_timeout");
+  assert.equal(classifySabyCardReviewCode({
+    reason:"legal_name_not_verified",
+    detail:{route:"detail",hasScopedInn:false,detailContentPresent:true}
+  },{publicIdentityAttempted:true}),"card_render_timeout");
+  const source=readFileSync(new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
+  assert.match(source,/classifySabyCardReviewCode\(last,/);
+  assert.match(source,/code:reviewCode/);
 });
 
 test("Saby section diagnostics contain only booleans even if the DOM returns private data",async()=>{
