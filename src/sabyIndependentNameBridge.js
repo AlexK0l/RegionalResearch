@@ -142,11 +142,17 @@ export async function verifyIndependentRegistryAlias(page,options,{
   if(!url||typeof page?.context!=="function")
     return {status:"review",reason:"invalid_registry_request"};
   let tab;
+  let phase="open_tab";
   try {
     tab=await page.context().newPage();
+    phase="navigate";
+    // A third-party SPA may commit an HTTP response long before firing
+    // DOMContentLoaded. Await only a committed document; the bounded,
+    // company-scoped requisites poll below verifies actual content.
     const response=await tab.goto(url,{
-      waitUntil:"domcontentloaded",timeout:Math.min(20000,timeoutMs)
+      waitUntil:"commit",timeout:Math.min(20000,timeoutMs)
     });
+    phase="read_document";
     if(!canonicalIndependentRegistryRoute(tab.url(),options.expectedOgrn))
       return {status:"review",reason:"independent_registry_route_untrusted"};
     if(Number(response?.status?.()||0)!==200)
@@ -163,7 +169,13 @@ export async function verifyIndependentRegistryAlias(page,options,{
     }
     return {status:"review",reason:"independent_requisites_unavailable"};
   } catch{
-    return {status:"review",reason:"independent_registry_unavailable"};
+    // Do not disclose the browser exception, target URL, page HTML or
+    // identifiers. Distinguish an unreachable site from a broken page
+    // reader so the operator can test network access without running Saby.
+    return {status:"review",reason:phase==="navigate"?
+      "independent_registry_navigation_failed":
+      phase==="open_tab"?"independent_registry_browser_unavailable":
+      "independent_registry_snapshot_unavailable"};
   } finally {
     if(tab)await tab.close().catch(()=>{});
   }
