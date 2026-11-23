@@ -115,6 +115,51 @@ test("confirmed registered full title and private short Saby title can accept al
   assert.equal(str.includes(name),false);
 });
 
+test("only independently registered full/short aliases can reconcile private title form order",()=>{
+  const companyInn="4703144282",companyKpp="470401001";
+  const expectedName='ГУП «Водоканал Ленинградской области»';
+  const full='ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"';
+  const publicName="Леноблводоканал, ГУП";
+  const currentPrivateName='ГУП «Леноблводоканал»';
+  const detail=[
+    "О компании",currentPrivateName,"Контакты","Реквизиты",
+    "ИНН",companyInn,"КПП",companyKpp,"Контакты"
+  ].join("\n");
+  const params={
+    expectedInn:companyInn,expectedName,
+    privateRoute:"https://profile.saby.ru/page/contractor-info?id=OPAQUE",
+    cardAssessment:assessment,privateText:detail,
+    privateHeadings:[currentPrivateName],
+    selectedSearchTitle:currentPrivateName,
+    publicResult:{
+      status:"verified",official_inn:companyInn,official_kpp:companyKpp,
+      official_name:full,public_short_name:publicName,
+      match_type:"independent_registry_full_short_bridge"
+    }
+  };
+  const verified=acceptSabyPublicIdentityFallback(params);
+  assert.equal(verified.ok,true);
+  assert.equal(verified.reason,"registered_alias_verified");
+  assert.equal(verified.identity.registered_name,full);
+  const withoutIndependent=acceptSabyPublicIdentityFallback({
+    ...params,publicResult:{...params.publicResult,match_type:""}
+  });
+  assert.equal(withoutIndependent.ok,false);
+  assert.equal(withoutIndependent.reason,"private_public_name_disconnected");
+  const wrong=acceptSabyPublicIdentityFallback({
+    ...params,privateHeadings:["МУП «Леноблводоканал»"],
+    selectedSearchTitle:"МУП «Леноблводоканал»"
+  });
+  assert.equal(wrong.ok,false);
+  assert.equal(wrong.reason,"private_public_name_disconnected");
+  const unrelated=acceptSabyPublicIdentityFallback({
+    ...params,privateHeadings:["ГУП «Леноблводоканал-Сервис»"],
+    selectedSearchTitle:"ГУП «Леноблводоканал-Сервис»"
+  });
+  assert.equal(unrelated.ok,false);
+  assert.equal(unrelated.reason,"private_public_name_disconnected");
+});
+
 test("reject mismatched detail, nonverified public profile and unconnected private header",()=>{
   const params={
     expectedInn:inn,expectedName:name,privateRoute,
