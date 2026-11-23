@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import {
-  inspectSabySearchDOM,classifySabySearchZeroState,readSabySearchState
+  inspectSabySearchDOM,classifySabySearchZeroState,readSabySearchState,
+  isUnconfirmedSabyZeroResult
 } from "../src/sabySearchState.js";
 
 const stable={inputExact:true,explicitEmpty:true,
@@ -150,4 +151,20 @@ test("hidden and unrelated Saby empty messages are not grounds for skipping an I
     });
   assert.equal(value.inputExact,true);
   assert.equal(value.explicitEmpty,false);
+});
+
+test("unconfirmed zero results are not proven absent or loading",()=>{
+  const sample={inputExact:true,spinnerVisible:true,
+    explicitEmpty:false,serviceError:false};
+  assert.equal(classifySabySearchZeroState(sample,sample,{
+    beforeSearch:sample}),"uncertain");
+  assert.equal(isUnconfirmedSabyZeroResult(sample,sample),true);
+  assert.equal(isUnconfirmedSabyZeroResult(sample,sample,{
+    onListRoute:false}),false);
+  assert.equal(isUnconfirmedSabyZeroResult(sample,{
+    ...sample,explicitEmpty:true}),false);
+  assert.equal(isUnconfirmedSabyZeroResult(sample,{
+    ...sample,inputExact:false}),false);
+  assert.equal(isUnconfirmedSabyZeroResult(sample,sample,{
+    classification:"loading_stalled"}),false);
 });

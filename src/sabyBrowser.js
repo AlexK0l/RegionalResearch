@@ -9,8 +9,8 @@ import {submitSabyCompanySearch,waitForSabySearchHydration}
   from "./sabySearch.js";
 import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
   from "./sabySearchTransport.js";
-import {readSabySearchState,classifySabySearchZeroState}
-  from "./sabySearchState.js";
+import {readSabySearchState,classifySabySearchZeroState,
+  isUnconfirmedSabyZeroResult} from "./sabySearchState.js";
 import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
   classifySabyCardReviewCode} from "./sabyCard.js";
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
@@ -62,7 +62,7 @@ export class SabyReview extends Error {
       "search_ambiguous","card_render_timeout","card_changed",
       "search_input_failed","search_confirmed_empty",
       "search_service_unavailable","search_loading_stalled",
-      "card_legal_name_unverified"]).has(code)?code:"review";
+      "search_zero_unconfirmed","card_legal_name_unverified"]).has(code)?code:"review";
   }
 }
 
@@ -454,6 +454,16 @@ async function openCompany(page, row, settings) {
       if(classification==="confirmed_empty")
         throw new SabyReview("Saby: явное сообщение об отсутствии результатов",
           {scope:"company",code:"search_confirmed_empty"});
+      if(isUnconfirmedSabyZeroResult(sampleA,sampleB,{
+        classification,onListRoute:sabyCardRoute(page.url())==="list"
+      })){
+        // The exact search was dispatched but neither result rows nor an
+        // explicit empty banner were observed. Global spinner flags cannot
+        // prove a stall here. Never consume identity review budget or
+        // re-submit the same ambiguous search immediately.
+        throw new SabyReview("Saby: отсутствие результатов не подтверждено",
+          {scope:"company",code:"search_zero_unconfirmed"});
+      }
     }
     // The previous backfill log showed only [SABY_SEARCH] before a generic
     // review. Distinguish a blank/late result grid from identity rejection.

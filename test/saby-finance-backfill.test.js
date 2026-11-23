@@ -6,7 +6,8 @@ import {
   planSabyFinanceBackfill,applySabyFinanceBackfill,
   validateFinanceBackfillCheckpoint,runSabyFinanceBackfill,
   recoverLegacyFinanceReview,classifySabyFinanceFailure,
-  verifiedSabyFinanceFromSmoke
+  verifiedSabyFinanceFromSmoke,
+  selectSabyFinanceSearchCanary,verifySabyFinanceSearchCanary
 } from "../src/sabyFinanceBackfill.js";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
@@ -858,4 +859,160 @@ test("Saby loading stall classification is not company-specific or retryable",()
   assert.deepEqual(classifySabyFinanceFailure(
     safeSabyFailure("search_loading_stalled","systemic")),
     {code:"search_loading_stalled",retryable:false});
+});
+
+test("finance watchdog uses verified attempted company only, forcing exact-INN search",()=>{
+  const ok=row();
+  const parent=checkpoint([ok,row("7707083893","Сбербанк, ПАО")]);
+  assert.equal(selectSabyFinanceSearchCanary(parent),null,
+    "no verified finance supplement cannot become a health canary");
+  assert.equal(applySabyFinanceBackfill(ok,record()).status,"updated");
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const before=JSON.stringify(parent);
+  const canary=selectSabyFinanceSearchCanary(parent);
+  assert.equal(canary.inn,"4718000935");
+  assert.equal(canary.source_url,SABY);
+  assert.equal(canary.row.__evidence.saby,undefined,
+    "direct saved-card lookup must not bypass the search being tested");
+  assert.equal(verifySabyFinanceSearchCanary(record(),canary),true);
+  for(const bad of [
+    record("7707083893","Сбербанк, ПАО"),
+    {...record(),source_url:"https://profile.saby.ru/page/contractor-info?id=other"},
+    {...record(),identity:{...record().identity,verified:false}},
+    {...record(),source:"ANOTHER"},
+    {...record(),source_url:"https://evil.test/contractor-info?id=valid-main-card"}
+  ])assert.equal(verifySabyFinanceSearchCanary(bad,canary),false);
+  assert.equal(JSON.stringify(parent),before,
+    "canary selection does not mutate source or existing evidence");
+  assert.equal(selectSabyFinanceSearchCanary({
+    ...parent,saby_finance_backfill_attempted_inns:[]
+  }),null);
+});
+
+test("three unconfirmed zero-row searches use one known-good canary, then continue",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const pending=[
+    row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО")
+  ];
+  const parent=checkpoint([known,...pending]);
+  parent.source_mode="saby";
+  parent.phase="saby";
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const initial=JSON.stringify(parent),visits=[],saves=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:4,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      visits.push(subject["ИНН"]);
+      if(subject["ИНН"]==="4718000935")return record();
+      if(subject["ИНН"]==="7707049999")
+        return record("7707049999","Оператор, ООО");
+      throw safeSabyFailure("search_zero_unconfirmed","company");
+    },
+    onCheckpoint:async cp=>saves.push(cp)
+  });
+  assert.deepEqual(visits,[
+    "7707083893","7801014560","7812019999",
+    "4718000935","7707049999"
+  ]);
+  assert.equal(out.stats.processed,4);
+  assert.equal(out.stats.unconfirmedSearches,3);
+  assert.equal(out.stats.loadingDeferred,0);
+  assert.equal(out.stats.canaryChecks,1);
+  assert.equal(out.stats.canaryPassed,1);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.revenueAdded,1);
+  assert.equal(out.stats.unvisited,3);
+  assert.equal(out.stats.browserError,"");
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["4718000935","7707049999"]);
+  assert.equal(Object.keys(
+    out.snapshot.saby_finance_backfill_review_attempts).length,0);
+  for(const inn of ["7707083893","7801014560","7812019999"]){
+    assert.deepEqual(out.snapshot.saby_finance_backfill_outcomes[inn],{
+      status:"deferred",reason:"search_zero_unconfirmed",
+      revenueStillMissing:true,employeesStillMissing:true
+    });
+  }
+  assert.equal(out.snapshot.final_result.direct_buyers[0][REV],440100000);
+  assert.ok(saves.length>=6);
+  assert.equal(JSON.stringify(parent),initial);
+});
+
+test("unconfirmed zero-row batch stops if known-good canary is unverified",async()=>{
+  const known=row();
+  assert.equal(applySabyFinanceBackfill(known,record()).status,"updated");
+  const parent=checkpoint([
+    known,row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО"),
+    row("7707049999","Оператор, ООО")
+  ]);
+  parent.saby_finance_backfill_attempted_inns=["4718000935"];
+  const visited=[];
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:4,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async(_page,subject)=>{
+      visited.push(subject["ИНН"]);
+      if(subject["ИНН"]==="4718000935")
+        return record("7707083893","Сбербанк, ПАО");
+      throw safeSabyFailure("search_zero_unconfirmed","company");
+    }
+  });
+  assert.deepEqual(visited,[
+    "7707083893","7801014560","7812019999","4718000935"
+  ]);
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.unconfirmedSearches,3);
+  assert.equal(out.stats.canaryChecks,1);
+  assert.equal(out.stats.canaryPassed,0);
+  assert.equal(out.stats.browserError,"saby_search_canary_unverified");
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.retries,0);
+  assert.equal(out.stats.unvisited,4);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,
+    ["4718000935"]);
+});
+
+test("unconfirmed zero-row batch without verified canary stops after three",async()=>{
+  const parent=checkpoint([
+    row(),row("7707083893","Сбербанк, ПАО"),
+    row("7801014560","Транспорт, ООО"),
+    row("7812019999","Логистика, ООО")
+  ]);
+  let calls=0;
+  const out=await runSabyFinanceBackfill({
+    checkpoint:parent,sourceJobId:UUID1,childJobId:UUID2,
+    maxCompanies:4,
+    sessionRunner:async task=>task({page:{},settings:{delayMs:250}}),
+    waitBetweenCompanies:async()=>{},
+    collectCompany:async()=>{
+      calls++;
+      throw safeSabyFailure("search_zero_unconfirmed","company");
+    }
+  });
+  assert.equal(calls,3);
+  assert.equal(out.stats.processed,3);
+  assert.equal(out.stats.review,0);
+  assert.equal(out.stats.unconfirmedSearches,3);
+  assert.equal(out.stats.canaryChecks,0);
+  assert.equal(out.stats.browserError,"saby_search_canary_unavailable");
+  assert.equal(out.stats.unvisited,4);
+  assert.deepEqual(out.snapshot.saby_finance_backfill_attempted_inns,[]);
+});
+
+test("uncertain Saby zero-row failure is nonretryable and not an identity review",()=>{
+  assert.deepEqual(classifySabyFinanceFailure(
+    safeSabyFailure("search_zero_unconfirmed","company")),
+    {code:"search_zero_unconfirmed",retryable:false});
 });
