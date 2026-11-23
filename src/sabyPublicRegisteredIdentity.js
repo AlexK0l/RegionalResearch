@@ -330,7 +330,7 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
         // This conditional does not change the original matching path.
         if(checked.reason==="name_not_matched_to_registered_entity"&&
           records.length===1&&exact.length===1&&
-          /^d{13}$/.test(exact[0].ogrn||"")&&owner.title&&
+          /^\d{13}$/.test(exact[0].ogrn||"")&&owner.title&&
           typeof verifyIndependent==="function"){
           diagnostic.independent_bridge_attempted=true;
           let proof;
