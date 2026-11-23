@@ -129,11 +129,23 @@ export function compareIndependentRegistryAlias({
     return reject("independent_registry_identifier_mismatch");
   if(!sameRegisteredName(sourceName,record.full_name))
     return reject("independent_registered_name_mismatch");
-  if(!sameRegisteredName(sabyShortName,record.short_name)||
-     !sameRegisteredName(sabyPublicTitle,sabyShortName))
-    return reject("independent_short_name_mismatch");
+  // Saby's "Название" in registered requisites is not guaranteed to be
+  // the SHORT registered name. Its legal panel may display the full name,
+  // while the H1 on the SAME canonical profile displays the short name.
+  // Both must independently equal exactly one of the two registered names.
+  // Exact INN/KPP/OGRN and full source-name proof were checked above.
+  const registryRole=value=>{
+    const full=sameRegisteredName(value,record.full_name);
+    const short=sameRegisteredName(value,record.short_name);
+    return full&&short?"both":full?"full":short?"short":"none";
+  };
+  const requisitesRole=registryRole(sabyShortName);
+  const titleRole=registryRole(sabyPublicTitle);
+  const roles={requisites_role:requisitesRole,title_role:titleRole};
+  if(requisitesRole==="none"||titleRole==="none")
+    return {status:"review",reason:"independent_short_name_mismatch",...roles};
   return {status:"verified",reason:"independent_registry_alias_verified",
-    official_full_name:record.full_name,inn,kpp,ogrn};
+    official_full_name:record.full_name,inn,kpp,ogrn,...roles};
 }
 export async function verifyIndependentRegistryAlias(page,options,{
   timeoutMs=12000
