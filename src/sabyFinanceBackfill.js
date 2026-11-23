@@ -425,6 +425,31 @@ export async function runSabyFinanceBackfill({
       let consecutiveUnconfirmed=0;
       let lastCanarySuccess=0;
       const canary=selectSabyFinanceSearchCanary(parent);
+      // A previous company-specific review is not evidence of a site-wide
+      // malfunction. When multiple reviews occur in a row, prove search
+      // health against a previously verified contractor before halting the
+      // batch. Search is forced; no saved-card shortcut or write is allowed.
+      const verifySearchHealth=async trigger=>{
+        if(lastCanarySuccess>0&&Date.now()-lastCanarySuccess<5*60*1000)
+          return true;
+        if(!canary)return false;
+        stats.canaryChecks++;
+        let proven=false;
+        try{
+          const found=await collectCompany(page,canary.row,settings);
+          proven=verifySabyFinanceSearchCanary(found,canary);
+        }catch{
+          // A failed health check never grants legal identity or finance.
+        }
+        console.info("[SABY_FINANCE_SEARCH_CANARY_DIAG] "+
+          JSON.stringify({verified:proven,checks:stats.canaryChecks,
+            trigger}));
+        if(proven){
+          stats.canaryPassed++;
+          lastCanarySuccess=Date.now();
+        }
+        return proven;
+      };
       for(const [index,entry] of selected.entries()){
         const row=lookup.get(entry.section+":"+entry.inn);
         if(!row)throw new Error("FINANCE_BACKFILL_ROW_MISMATCH");
@@ -563,24 +588,7 @@ export async function runSabyFinanceBackfill({
           // are absent OR the whole Saby search has stopped working.
           // Re-search an ALREADY VERIFIED firm with no writes to tell
           // the cases apart; never conclude identity from query transport.
-          const recentlyProven=lastCanarySuccess>0&&
-            Date.now()-lastCanarySuccess<5*60*1000;
-          let proven=recentlyProven;
-          if(!proven&&canary){
-            stats.canaryChecks++;
-            try{
-              const found=await collectCompany(page,canary.row,settings);
-              proven=verifySabyFinanceSearchCanary(found,canary);
-            }catch{
-              proven=false;
-            }
-            console.info("[SABY_FINANCE_SEARCH_CANARY_DIAG] "+
-              JSON.stringify({verified:proven,checks:stats.canaryChecks}));
-            if(proven){
-              stats.canaryPassed++;
-              lastCanarySuccess=Date.now();
-            }
-          }
+          const proven=await verifySearchHealth("unconfirmed_zero");
           if(!proven){
             stats.browserError=canary?
               "saby_search_canary_unverified":
@@ -603,10 +611,25 @@ export async function runSabyFinanceBackfill({
           break;
         }
         if(consecutiveReview>=3){
-          stats.browserError="saby_consecutive_unverified_cards";
-          console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
-            JSON.stringify({code:"three_consecutive_reviews",action:"pause"}));
-          break;
+          // Diverse companies can legitimately fail legal-name, KPP or
+          // public-profile checks in succession. The failed rows remain
+          // under review, but must not stop other firms when exact-INN
+          // Saby search is independently shown to work.
+          const proven=await verifySearchHealth("consecutive_reviews");
+          if(!proven){
+            stats.browserError=canary?
+              "saby_review_canary_unverified":
+              "saby_consecutive_unverified_cards";
+            console.warn("[SABY_FINANCE_BACKFILL_DIAG] "+
+              JSON.stringify({code:canary?
+                "review_canary_unverified":"three_consecutive_reviews",
+                action:"pause",reviews:stats.review}));
+            break;
+          }
+          console.info("[SABY_FINANCE_BACKFILL_DIAG] "+
+            JSON.stringify({code:"review_canary_verified",
+              action:"continue",reviews:stats.review}));
+          consecutiveReview=0;
         }
         // Match Stage12's pacing without adding a delay after last company.
         if(index+1<selected.length)await waitBetweenCompanies(delayMs);
