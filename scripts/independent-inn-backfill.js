@@ -24,7 +24,7 @@ async function main(){
       "--db=/absolute/checkpoints.sqlite --checkpoint=<UUID> "+
       "[--limit=1] [--target-id=<canonical_id>] "+
       "[--provider=fns|vbr] [--run --max-pages=80] \n"+
-      "Default: offline plan only. --run: official FNS search + independent T-Bank verification (VBR optional), no OpenAI or Saby.");
+      "Default: offline plan only. --run: official FNS search + independent T-Bank or VBR confirmation by OGRN, no OpenAI or Saby.");
     return;
   }
   const file=arg("db"),sourceId=arg("checkpoint");
@@ -69,7 +69,7 @@ async function main(){
           canary=await checkFnsRegistryCanary(checkpoint,lookup);
         }catch(error){
           const allowed=new Set(["navigation_budget","registry_http_unavailable",
-            "registry_route_untrusted","registry_browser_unavailable",
+            "registry_route_untrusted","registry_browser_unavailable","registry_confirmation_unavailable",
             "fns_invalid_query","fns_form_unavailable",
           "fns_query_input_unavailable","fns_submit_button_unavailable",
           "fns_query_not_set","fns_exact_checkbox_unavailable",
@@ -98,7 +98,7 @@ async function main(){
           ...stats,page_navigations:lookup.pages
         })});
       return {...out,page_navigations:lookup.pages};
-    },{maxPages,provider});
+    },{maxPages,provider,onDiagnostic:value=>metric("INDEPENDENT_INN_REGISTRY_DIAG",value)});
   }catch{
     metric("INDEPENDENT_INN_ERROR",{reason:"registry_run_unavailable",
       child_checkpoint:saved?childId:null,parent_checkpoint:sourceId});
