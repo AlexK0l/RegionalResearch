@@ -57,34 +57,46 @@ export function inspectRegistrySearch(snapshot,query){
     !snapshot?.hasMore&&!snapshot?.truncated;
   return {links:[...links.values()],complete,empty,inputExact,total};
 }
-function activeAtTop(raw){
+function activeAtTop(raw,identity){
   const head=lines(raw).slice(0,35);
-  return head.some(l=>/^действующая организация(?:\.|$)/iu.test(l))&&
-    !head.some(l=>/^(?:ликвидирован[ао]?|организация ликвидирована|деятельность прекращена|организация в процессе ликвидации|организация в процессе банкротства)(?:[.! ]|$)/iu.test(l));
+  const index=head.findIndex(line=>
+    sameRegisteredName(line,identity.full_name)||
+    sameRegisteredName(line,identity.short_name));
+  if(index<0)return false;
+  const status=head.slice(Math.max(0,index-3),index+7);
+  return status.some(l=>/^действующая организация(?:\.|$)/iu.test(l))&&
+    !status.some(l=>/^(?:ликвидирован[ао]?|организация ликвидирована|деятельность прекращена|организация в процессе ликвидации|организация в процессе банкротства)(?:[.! ]|$)/iu.test(l));
 }
 export function extractRegistryVbrRecord(raw){
-  const identity=extractVbrGeneralIdentity(raw);
-  if(!identity)return null;
+  // Identity and address must originate in the same single panel. Never
+  // stitch together an address-only section and a different legal record.
+  const whole=extractVbrGeneralIdentity(raw);
+  if(!whole)return null;
   const list=lines(raw),blocks=[];
   for(let i=0;i<list.length;i++){
     if(list[i]!=="Общая информация")continue;
-    const end=Math.min(list.length,i+85);
-    let values=new Set();
+    let end=Math.min(list.length,i+85);
+    const values=new Set();
     for(let j=i+1;j<end;j++){
-      if(/^(?:Сведения об организации|Финансы(?: за \d{4})?|Учредители|Виды деятельности|Вид деятельности по ОКВЭД|Лицензии|Структура и связи|Проверки|Мониторинг организаций)$/iu.test(list[j]))break;
-      if(list[j]!=="Юридический адрес")continue;
+      if(/^(?:Сведения об организации|Финансы(?: за \d{4})?|Учредители|Виды деятельности|Вид деятельности по ОКВЭД|Лицензии|Структура и связи|Проверки|Мониторинг организаций)$/iu.test(list[j])){
+        end=j;break;
+      }
+      if(list[j]!=="Юридический адрес"||j+1>=end)continue;
       const address=clean(list[j+1]);
       if(address&&address.length>=12&&address.length<=500&&/\d/.test(address))
         values.add(address);
     }
-    if(values.size===1)blocks.push([...values][0]);
+    const identity=extractVbrGeneralIdentity(list.slice(i,end).join("\n"));
+    if(identity&&identity.inn===whole.inn&&identity.ogrn===whole.ogrn&&
+      identity.kpp===whole.kpp&&values.size===1)
+      blocks.push({...identity,address:[...values][0]});
   }
   if(blocks.length!==1)return null;
-  return {...identity,address:blocks[0],active:activeAtTop(raw)};
+  return {...blocks[0],active:activeAtTop(raw,blocks[0])};
 }
 export function extractRegistryTbankRecord(raw){
   const identity=extractIndependentRegistryIdentity(raw);
-  return identity?{...identity,active:activeAtTop(raw)}:null;
+  return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
   maxPages=80,delayMs=900,maxCandidates=8
