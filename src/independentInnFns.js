@@ -94,7 +94,10 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody}){
   query=clean(query);
   if(!query||query.length>250)throw fail("fns_invalid_query");
   const exactName=!/^(?:\d{10}|\d{13})$/.test(query);
-  const ok=await navigate(origin+"/",isFnsFormRoute);
+  // The root HTTPS URL can return a 307 downgrade to HTTP. The VPS
+  // cannot reach that HTTP endpoint, while the direct HTTPS form returns
+  // 200. Start on the canonical form; never follow a downgrade on purpose.
+  const ok=await navigate(origin+"/index.html",isFnsFormRoute);
   if(!ok)throw fail("registry_http_unavailable");
   await readBody(isFnsFormRoute);
   const input=page.getByPlaceholder(/Укажите ИНН или ОГРН/i);
