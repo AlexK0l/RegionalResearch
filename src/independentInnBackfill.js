@@ -168,6 +168,14 @@ export async function hydrateFnsSearchAddresses(search,target,lookup){
   }
   return {search:{...search,records},confirmations};
 }
+// An unanchored incomplete FNS result cannot establish a unique legal
+// name/locality, regardless of how many visible extracts we download.
+function incompleteUnanchoredFnsSearch(search,row,target){
+  return search?.state==="observed"&&search.provider==="fns"&&
+    (search.complete!==true||search.allCardsRead!==true)&&
+    !usableHint(target)&&!identityOgrns(row).length&&
+    !clean(row?.["Юридический адрес"]||row?.__evidence?.identity_verification?.legal_address);
+}
 export function chooseIndependentInnCandidate({row,target,search,owners=new Set(),region=""}){
   const review=(reason,candidates=[])=>({status:"review",reason,candidates});
   if(unsafeName(target.organization))return review("source_legal_name_unresolved");
@@ -190,6 +198,8 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
   const hint=usableHint(target);
   const storedOgrns=identityOgrns(row);
   if(storedOgrns.length>1)return review("source_ogrn_conflict",candidates);
+  if(incompleteUnanchoredFnsSearch(search,row,target))
+    return review("registry_name_search_incomplete",candidates);
   // For address/name-only identity, an unread competing address prevents
   // a unique geographical choice even if another candidate is local.
   // A saved exact identifier may narrow the set, but its own required
@@ -312,6 +322,9 @@ export function planIndependentInnBackfill(checkpoint,{limit=10000,targetId="",p
 }
 // The actual FNS form must work for an existing, independently evidenced
 // company and its registered name BEFORE running any missing-INN queue.
+// An incomplete broad name result can still prove that the FNS service
+// works when the exact known identity and current official extract match.
+// Per-row completeness/ownership checks remain mandatory for recovery.
 // This health check never writes a row or consumes a review allowance.
 export async function checkFnsRegistryCanary(checkpoint,lookup){
   const candidates=entries(checkpoint).map(e=>e.row).filter(row=>{
@@ -380,6 +393,14 @@ export async function checkFnsRegistryCanary(checkpoint,lookup){
       lastReason="fns_canary_name_unverified";continue;
     }
     if(byName.complete!==true||byName.allCardsRead!==true){
+      // The actual name search returned the known company, and its
+      // official extract has already passed all identifier, address and
+      // active-status checks above. This is a service-health signal, not
+      // permission to resolve any incomplete unanchored row. Keep the
+      // former strict canary for legacy third-party confirmation.
+      if(confirmation.kind==="fns_extract")
+        return {verified:true,reason:"verified_name_search_incomplete",
+          name_search_complete:false};
       lastReason="fns_canary_name_incomplete";continue;
     }
     return {verified:true,reason:"verified"};
@@ -425,7 +446,8 @@ export async function runIndependentInnBackfill({
     else{
       try{
         const rawSearch=await lookup.search(target,usableHint(target));
-        const {search,confirmations}=provider==="fns"?
+        const {search,confirmations}=provider==="fns"&&
+          !incompleteUnanchoredFnsSearch(rawSearch,row,target)?
           await hydrateFnsSearchAddresses(rawSearch,target,lookup):
           {search:rawSearch,confirmations:new Map()};
         const selection=chooseIndependentInnCandidate({row,target,search,owners,

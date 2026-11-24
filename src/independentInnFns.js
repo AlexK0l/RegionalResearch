@@ -67,17 +67,26 @@ export function parseFnsSearchResult(payload,{query,exactName=false,completeName
     }});
   }
   const totals=new Set(raw.map(r=>asCount(r?.tot)));
+  const distinctOgrns=new Set(rows.map(r=>r.record.ogrn)).size;
   const allRead=raw.length===rows.length&&raw.length<=100&&
-    new Set(rows.map(r=>r.record.ogrn)).size===rows.length;
+    distinctOgrns===rows.length;
   const countProven=raw.length>0&&totals.size===1&&totals.has(raw.length);
-  const complete=allRead&&countProven&&
-    raw.every(r=>r.pg===undefined||asCount(r.pg)===1);
+  const firstPage=raw.every(r=>r?.pg===undefined||asCount(r.pg)===1);
+  const complete=allRead&&countProven&&firstPage;
+  // Fixed, count-only diagnostics; never log names, identifiers or tokens.
+  const reportedTotal=totals.size===1?[...totals][0]:null;
+  const completeness={raw_rows:raw.length,parsed_rows:rows.length,
+    distinct_ogrns:distinctOgrns,reported_total:reportedTotal,
+    total_proven:countProven,first_page_only:firstPage,
+    missing_or_invalid_total_rows:raw.filter(r=>asCount(r?.tot)===null).length,
+    missing_page_rows:raw.filter(r=>r?.pg===undefined).length,
+    all_cards_read:allRead};
   const numeric=/^(?:\d{10}|\d{13})$/.test(query);
   return {state:"observed",provider:"fns",
     complete:complete&&(numeric||exactName===true||completeNameSearch===true),
     allCardsRead:allRead,records:rows,
     query_kind:numeric?"identifier":exactName?"exact_name":completeNameSearch?"complete_normal_name":"name",
-    total_reported:countProven?raw.length:null};
+    total_reported:countProven?raw.length:null,completeness};
 }
 function observedRequest(response,query,exactName){
   try{
