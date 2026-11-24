@@ -308,6 +308,41 @@ test("Saby public verifier accepts VBR full registered requisites plus short own
   assert.equal(stats().closed,1);
 });
 
+test("public VBR bridge accepts registered SHORT source with full Saby requisites/H1",async()=>{
+  const i="7725104641",k="504301001",o="1027739058258";
+  const full='АКЦИОНЕРНОЕ ОБЩЕСТВО "ДОРОЖНО-СТРОИТЕЛЬНАЯ КОМПАНИЯ "АВТОБАН"';
+  const short='ДСК "Автобан", АО';
+  const body=["Реквизиты","Название",full,"ИНН",i,"КПП",k,
+    "ОГРН",o,"Контакты"].join("\n");
+  const {page,stats}=fakeBrowser({
+    title:full,body,landed:"https://saby.ru/profile/"+i+"-"+k
+  });
+  let used=0;
+  const result=await verifyPublicSabyIdentity(page,i,k,short,{
+    verifyIndependent:async()=>({
+      status:"review",reason:"independent_registry_navigation_failed"
+    }),
+    verifyVbr:async(_page,options)=>{
+      used++;
+      const {compareIndependentRegistryAlias}=await import(
+        "../src/sabyIndependentNameBridge.js");
+      return compareIndependentRegistryAlias({...options,
+        record:{full_name:full,short_name:short,inn:i,kpp:k,ogrn:o}
+      });
+    }
+  });
+  assert.equal(used,1);
+  assert.equal(result.status,"verified");
+  assert.equal(result.match_type,"independent_registry_full_short_bridge");
+  assert.equal(result.official_name,full);
+  assert.equal(result.diagnostic.independent_bridge_verified,true);
+  assert.equal(result.diagnostic.independent_bridge_provider,"vbr");
+  assert.equal(result.diagnostic.independent_source_name_role,"short");
+  assert.equal(result.diagnostic.independent_requisites_name_role,"full");
+  assert.equal(result.diagnostic.independent_title_name_role,"full");
+  assert.equal(stats().closed,1);
+});
+
 test("explicit T-Bank name conflict cannot be bypassed using VBR",async()=>{
   const i="4703144282",k="470401001",o="1167847156300";
   const sourceName='ГУП «Водоканал Ленинградской области»';
