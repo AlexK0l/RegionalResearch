@@ -50,6 +50,7 @@ const safeNameRelation=value=>SAFE_NAME_RELATION.has(String(value||""))?
 const INDEPENDENT_BRIDGE_REASONS=new Set([
   "invalid_registry_request","independent_requisites_unavailable",
   "independent_registry_identifier_mismatch",
+  "independent_registry_legal_form_conflict",
   "independent_registered_name_mismatch",
   "independent_short_name_mismatch",
   "independent_registry_alias_verified",
