@@ -96,9 +96,12 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
   if(clean(row["ИНН"]))return review("nonempty_invalid_inn");
   if(search?.state!=="observed")return review("registry_search_unconfirmed");
   const observed=Array.isArray(search.records)?search.records:[];
-  const exact=observed.filter(item=>validRecord(item.record)&&
+  // An inactive or unverified exact-name entity is still a conflicting
+  // name candidate; do not use active status alone to resolve its owner.
+  const allExact=observed.filter(item=>item.record&&
     registeredSourceName(target.organization,item.record)&&
     isVbrCompanyUrl(item.url,item.record.ogrn));
+  const exact=allExact.filter(item=>validRecord(item.record));
   const unique=[...new Map(exact.map(item=>[item.record.ogrn,item])).values()];
   const candidates=unique.map(({record,url})=>({inn:record.inn,kpp:record.kpp,
     ogrn:record.ogrn,source_url:url}));
@@ -129,8 +132,11 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
     // an exact legal name using a specific original locality.
     const local=unique.filter(({record})=>
       preciseLocalityMatch(row["Город/район"],record.address));
-    if(!search.complete||!search.allCardsRead||local.length!==1)
-      return review(local.length>1||unique.length>1?
+    const localConflicts=allExact.filter(({record})=>
+      preciseLocalityMatch(row["Город/район"],record.address));
+    if(!search.complete||!search.allCardsRead||local.length!==1||
+      new Set(localConflicts.map(item=>item.record.ogrn)).size!==1)
+      return review(local.length>1||unique.length>1||localConflicts.length>1?
         "registry_identity_ambiguous":unique.length?
         "source_link_not_proven":"registry_no_exact_legal_name",candidates);
     match=local[0];
@@ -194,7 +200,8 @@ export async function runIndependentInnBackfill({
   checkpoint,sourceId,childId,limit=1,targetId="",lookup,onCheckpoint,
   onProgress=()=>{}
 }){
-  if(typeof lookup!=="function"||typeof onCheckpoint!=="function"||
+  if(typeof lookup?.search!=="function"||typeof lookup?.confirm!=="function"||
+    typeof onCheckpoint!=="function"||
     !sourceId||!childId||sourceId===childId)
     throw Error("REGISTRY_INN_INVALID_RUN");
   const parent=structuredClone(checkpoint);
