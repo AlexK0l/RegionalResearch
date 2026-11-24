@@ -5,6 +5,7 @@ import {chromium} from "playwright";
 import {extractVbrGeneralIdentity,isVbrCompanyUrl,unwrapVbrDuplicate,chooseVbrCompanyUrl}
   from "./sabyIndependentVbrBridge.js";
 import {lookupFnsViaBrowser} from "./independentInnFns.js";
+import {downloadOfficialFnsExtract} from "./independentInnFnsExtract.js";
 import {extractIndependentRegistryIdentity,independentRegistryRoute,
   canonicalIndependentRegistryRoute,sameRegisteredName}
   from "./sabyIndependentNameBridge.js";
@@ -114,15 +115,18 @@ export function extractRegistryTbankRecord(raw){
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
-  maxPages=80,delayMs=900,maxCandidates=8,provider="vbr",onDiagnostic=()=>{}
+  maxPages=80,delayMs=900,maxCandidates=8,provider="vbr",confirmationMode="registry",onDiagnostic=()=>{}
 }={}){
   if(!["vbr","fns"].includes(provider)||
+     !["registry","extract"].includes(confirmationMode)||
+     (confirmationMode==="extract"&&provider!=="fns")||
      !Number.isSafeInteger(maxPages)||maxPages<1||maxPages>3000||
      !Number.isSafeInteger(maxCandidates)||maxCandidates<1||maxCandidates>12)
     throw Error("REGISTRY_LOOKUP_BAD_BUDGET");
   const delay=Math.max(provider==="fns"?2000:500,
     Math.min(10000,Number(delayMs)||900));
-  let pages=0,uncertain=0;
+  let pages=0,uncertain=0,extractDownloads=0,extractFailures=0,lastFnsSearch=null;
+  const useExtract=provider==="fns"&&confirmationMode==="extract";
   const unavailable=new Set(),failures=new Map();
   const diag=(source,stage,reason,extra={})=>
     onDiagnostic({provider:source,stage,reason,page_navigations:pages,...extra});
@@ -279,10 +283,16 @@ export async function createPublicRegistryLookup(page,{
   }
   return {
     get pages(){return pages;},
+    get extractDownloads(){return extractDownloads;},
     async search(target,hint){
       const query=clean(hint?.inn||target.organization);
-      if(provider==="fns")
-        return lookupFnsViaBrowser(page,{query,navigate,readBody});
+      if(provider==="fns"){
+        lastFnsSearch=null;
+        const observed=await lookupFnsViaBrowser(page,{query,navigate,readBody,
+          completeNameSearch:useExtract});
+        lastFnsSearch=observed;
+        return observed;
+      }
       const check=value=>exactRegistrySearchRoute(value,query);
       if(!await navigate(registrySearchUrl(query),check))
         throw fail("registry_http_unavailable");
@@ -320,6 +330,36 @@ export async function createPublicRegistryLookup(page,{
           records.length===selected.length,records};
     },
     async confirm(ogrn,expected){
+      if(useExtract){
+        if(!expected||expected.ogrn!==ogrn||!/^\d{13}$/.test(ogrn))return null;
+        // Reuse the actual current single-result page only if all three
+        // identifiers and both names match. Otherwise perform a normal
+        // visible-form query by the official OGRN, not a fabricated URL.
+        let observed=lastFnsSearch;
+        const uniqueMatch=result=>result?.state==="observed"&&result.complete===true&&
+          result.allCardsRead===true&&result.records.length===1&&
+          sameIdsAndNames(expected,result.records[0].record);
+        if(!uniqueMatch(observed)){
+          observed=await lookupFnsViaBrowser(page,{query:ogrn,navigate,readBody,
+            completeNameSearch:true});
+        }
+        lastFnsSearch=null;
+        if(!uniqueMatch(observed)){
+          diag("fns","extract_lookup","fns_extract_identity_unproven");
+          return null;
+        }
+        // Count the download in the existing hard navigation/request budget.
+        if(pages>=maxPages)throw fail("navigation_budget");
+        await page.waitForTimeout(delay);
+        pages++;extractDownloads++;
+        const downloaded=await downloadOfficialFnsExtract(page,expected,{
+          onDiagnostic:value=>{const {reason,...extra}=value;
+            diag("fns","extract",reason,extra);}
+        });
+        if(downloaded)extractFailures=0;
+        else if(++extractFailures>=3)throw fail("fns_extract_unavailable");
+        return downloaded;
+      }
       const url=independentRegistryRoute(ogrn);
       if(!url)return null;
       const check=value=>canonicalIndependentRegistryRoute(value,ogrn)&&!new URL(value).hash;

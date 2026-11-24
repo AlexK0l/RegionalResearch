@@ -8,6 +8,7 @@ import {sameRegisteredName,canonicalIndependentRegistryRoute}
   from "./sabyIndependentNameBridge.js";
 import {isVbrCompanyUrl} from "./sabyIndependentVbrBridge.js";
 import {isFnsSourceUrl} from "./independentInnFns.js";
+import {isOfficialExtractProof} from "./independentInnFnsExtract.js";
 import {identityOgrns,normalizedOgrn} from "./legalIdentity.js";
 
 const clean=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
@@ -122,9 +123,11 @@ function validRecord(record,provider){
 function matchingIndependentRecord(item,second,target){
   const a=item?.record,b=second?.record;
   return Boolean(trustedRegistryItem(item)&&validRegistryIdentifiers(a)&&
-    b&&(canonicalIndependentRegistryRoute(second.url,a.ogrn)||
-      (item.provider==="fns"&&isVbrCompanyUrl(second.url,a.ogrn)&&
-        !new URL(second.url).hash))&&
+    b&&(second.kind==="fns_extract"?
+      item.provider==="fns"&&isOfficialExtractProof(second,a.inn):
+      canonicalIndependentRegistryRoute(second.url,a.ogrn)||
+        (item.provider==="fns"&&isVbrCompanyUrl(second.url,a.ogrn)&&
+          !new URL(second.url).hash))&&
     b.inn===a.inn&&b.kpp===a.kpp&&b.ogrn===a.ogrn&&
     registeredSourceName(target.organization,a)&&registeredSourceName(target.organization,b)&&
     sameRegisteredName(a.full_name,b.full_name)&&sameRegisteredName(a.short_name,b.short_name));
@@ -246,12 +249,16 @@ export function verifyIndependentInnCandidate(selection,second,target){
     (selection.address_source_url&&
       (selection.address_source_url!==second.url||!b.address||key(a.address)!==key(b.address))))
     return review("independent_registry_disagreement");
-  return {status:"verified",reason:"two_registry_identity_verified",
+  const official=second.kind==="fns_extract";
+  if(official&&(!b.address||key(a.address)!==key(b.address)))
+    return review("fns_extract_address_conflict");
+  return {status:"verified",reason:official?"official_fns_extract_verified":"two_registry_identity_verified",
     source_basis:selection.sourceBasis,source_provider:selection.provider||"vbr",
     inn:a.inn,kpp:a.kpp,ogrn:a.ogrn,
     legal_name:a.full_name,short_name:a.short_name,legal_address:a.address,
     legal_address_source_url:selection.address_source_url||selection.url,
-    source_urls:[selection.url,second.url]};
+    source_urls:[...new Set([selection.url,second.url])],
+    ...(official?{official_extract:{...second.extract}}:{})};
 }
 function entries(checkpoint){
   if(checkpoint?.version!==1||
@@ -437,7 +444,9 @@ export async function runIndependentInnBackfill({
           "fns_query_not_set","fns_exact_checkbox_unavailable",
           "fns_exact_checkbox_not_selected","fns_submit_failed",
           "fns_captcha_required","fns_search_token_missing","fns_search_token_conflict",
-          "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved"].includes(error?.code)?
+          "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved",
+          "fns_extract_download_unavailable","fns_extract_pdftotext_missing",
+          "fns_extract_unavailable"].includes(error?.code)?
           error.code:"registry_browser_unavailable";
         await save();
         break;
@@ -450,7 +459,8 @@ export async function runIndependentInnBackfill({
         result={status:"review",reason:"inn_already_owned"};
       }else{
         const evidence=row.__evidence||{};
-        const proof={...result,method:"independent_registry_backfill",
+        const proof={...result,method:result.official_extract?
+          "fns_official_extract":"independent_registry_backfill",
           verified_at:new Date().toISOString()};
         row["ИНН"]=result.inn;
         row.__evidence={...evidence,identity_verification:proof,
@@ -458,7 +468,9 @@ export async function runIndependentInnBackfill({
             evidence.source_urls:[]),...result.source_urls])],
           notes:[...new Set([...(Array.isArray(evidence.notes)?evidence.notes:[]),
             "Подтверждённый ИНН: "+result.inn+
-            "; ОГРН "+result.ogrn+". Независимая сверка двух реестров."])]};
+            "; ОГРН "+result.ogrn+(result.official_extract?
+              ". Выписка ЕГРЮЛ от "+result.official_extract.date+" № "+result.official_extract.number+".":
+              ". Независимая сверка двух реестров.")])]};
         // Keep all other existing comment lines verbatim.
         if(typeof row.__comment==="string"&&/^ИНН:[^\r\n]*$/imu.test(row.__comment))
           row.__comment=row.__comment.replace(/^ИНН:[^\r\n]*$/imu,"ИНН: "+result.inn);

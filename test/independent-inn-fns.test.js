@@ -8,6 +8,7 @@ import {chooseIndependentInnCandidate,verifyIndependentInnCandidate,
 import {extractVbrGeneralIdentity} from "../src/sabyIndependentVbrBridge.js";
 import {extractRegistryVbrRecord,extractRegistryTbankRecord,createPublicRegistryLookup,registrySearchUrl} from "../src/independentInnRegistryBrowser.js";
 import {extractIndependentRegistryIdentity} from "../src/sabyIndependentNameBridge.js";
+import {parseOfficialFnsExtract,isOfficialExtractProof} from "../src/independentInnFnsExtract.js";
 
 const inn="4706000909",ogrn="1024701329377",kpp="470601001";
 const short='АО "ПРИМЕР"',full='АКЦИОНЕРНОЕ ОБЩЕСТВО "ПРИМЕР"';
@@ -462,4 +463,155 @@ test("navigation budget is not swallowed by confirmation fallback",async()=>{
   const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:1});
   await assert.rejects(lookup.confirm(ogrn,bankRecord),e=>e.code==="navigation_budget");
   assert.equal(lookup.pages,1);
+});
+
+
+// The first-page fixture uses the actual 2026-11-24 VPS layout.
+// The second page is a synthetic minimal continuation to exercise the
+// scoped tax fields and full-document checks, NOT another live extract.
+const extractInn="7811285487",extractOgrn="1167847075230",extractKpp="781101001";
+const extractFull='ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ "СТРОЙОРИЕНТ"';
+const extractShort='ООО "СТРОЙОРИЕНТ"';
+const extractAddress="193318, Г.САНКТ-ПЕТЕРБУРГ, ВН.ТЕР.Г. МУНИЦИПАЛЬНЫЙ ОКРУГ ПРАВОБЕРЕЖНЫЙ, УЛ. ВОРОШИЛОВА, Д. 2 ЛИТЕРА АБ, ПОМЕЩ. 7-Н";
+const today=Date.UTC(2026,10,24,10,42);
+const firstExtractPage=[
+  "                                             ВЫПИСКА",
+  "                        из Единого государственного реестра юридических лиц",
+  "",
+  "         24.11.2026                                                               №   ЮЭ9965-26-",
+  "                                                                                      254581820",
+  " дата формирования выписки",
+  "",
+  "Настоящая выписка содержит сведения о юридическом лице",
+  "           "+extractFull,
+  "                                          полное наименование юридического лица",
+  "",
+  "                               ОГРН "+extractOgrn.split("").join(" "),
+  "                                ИНН "+extractInn.split("").join(" "),
+  "включенные в Единый государственный реестр юридических лиц по состоянию на",
+  "« 24 »          ноября             2026 г.",
+  " число        месяц прописью        год",
+  "",
+  "№ п/п             Наименование показателя                   Значение показателя",
+  " 1                            2                                      3",
+  "                                        Наименование",
+  "   1      Полное наименование на русском языке   ОБЩЕСТВО С ОГРАНИЧЕННОЙ",
+  "                                                 ОТВЕТСТВЕННОСТЬЮ",
+  '                                                 "СТРОЙОРИЕНТ"',
+  "   2      ГРН и дата внесения в ЕГРЮЛ записи,    1167847075230",
+  "          содержащей указанные сведения          02.02.2016",
+  "",
+  '   3      Сокращенное наименование на русском                    ООО "СТРОЙОРИЕНТ"',
+  "          языке",
+  "   4      ГРН и дата внесения в ЕГРЮЛ записи,                    1167847075230",
+  "          содержащей указанные сведения                          02.02.2016",
+  "",
+  "                               Место нахождения и адрес юридического лица",
+  "",
+  "   5      Адрес юридического лица                                193318,",
+  "                                                                 Г.САНКТ-ПЕТЕРБУРГ,",
+  "                                                                 ВН.ТЕР.Г. МУНИЦИПАЛЬНЫЙ ОКРУГ",
+  "                                                                 ПРАВОБЕРЕЖНЫЙ,",
+  "                                                                 УЛ. ВОРОШИЛОВА,",
+  "                                                                 Д. 2 ЛИТЕРА АБ,",
+  "                                                                 ПОМЕЩ. 7-Н",
+  "   6      ГРН и дата внесения в ЕГРЮЛ записи,                    2267802102291",
+  "          содержащей указанные сведения                          21.07.2026",
+  "",
+  "                                           Сведения о регистрации",
+  "   7      Способ образования                              Создание юридического лица",
+  "   8      ОГРН                                            1167847075230",
+  "   9      Дата регистрации                                02.02.2016",
+  "",
+  "",
+  "Выписка из ЕГРЮЛ",
+  "24.11.2026 13:42                                  ОГРН 1167847075230                      Страница 1 из 2"
+].join("\n");
+const lastExtractPage=[
+  "  10    ГРН и дата внесения в ЕГРЮЛ записи,        1167847075230",
+  "        содержащей указанные сведения             02.02.2016",
+  "",
+  "     Сведения о регистрирующем органе по месту нахождения юридического лица",
+  "  11 Наименование регистрирующего органа   Межрайонная инспекция Федеральной",
+  "                                           налоговой службы №15 по Санкт-",
+  "                                           Петербургу",
+  "  12 Адрес регистрирующего органа          ,190068, Санкт-Петербург г,,,, Канала",
+  "                                           Грибоедова наб, д 133литерБ,,",
+  "  13 ГРН и дата внесения в ЕГРЮЛ записи,        1167847075230",
+  "     содержащей указанные сведения             02.02.2016",
+  "",
+  "                         Сведения об учете в налоговом органе",
+  "  14      ИНН юридического лица                                  "+extractInn,
+  "  15      КПП юридического лица                                  "+extractKpp,
+  "  16      Дата постановки на учет в налоговом органе             02.02.2016",
+  "",
+  "          Сведения о лице, имеющем право без доверенности действовать от имени юридического лица",
+  "  17      ИНН                                                    7707083893",
+  "",
+  "Выписка из ЕГРЮЛ",
+  "24.11.2026 13:42                                  ОГРН 1167847075230                      Страница 2 из 2"
+].join("\n");
+const extractText=firstExtractPage+"\f"+lastExtractPage+"\f";
+const extractParse=text=>parseOfficialFnsExtract(text,{now:today});
+test("current FNS PDF layout has scoped registration, full/short names, address and tax identifiers",()=>{
+  const parsed=extractParse(extractText);
+  assert.equal(parsed.reason,"fns_extract_parsed");
+  assert.deepEqual(parsed.record,{inn:extractInn,ogrn:extractOgrn,kpp:extractKpp,
+    full_name:extractFull,short_name:extractShort,address:extractAddress,active:true});
+  assert.deepEqual(parsed.metadata,{date:"24.11.2026",number:"ЮЭ9965-26-254581820",page_count:2,
+    status_basis:"complete_extract_no_adverse_status"});
+});
+test("official extract must contain every page, current date and the current entity's scoped identifiers",()=>{
+  for(const bad of [
+    firstExtractPage,
+    extractText.replace("Страница 2 из 2","Страница 2 из 3"),
+    extractText.replace("ОГРН 1167847075230                      Страница 2","ОГРН 1024701329377                      Страница 2"),
+    extractText.replace("14      ИНН юридического лица                                  "+extractInn,
+      "14      ИНН юридического лица                                  7707083893"),
+    extractText.replace("15      КПП юридического лица","15      ИНН юридического лица"),
+    extractText.replace("24.11.2026                                                               №","20.11.2026                                                               №"),
+    extractText.replace("Адрес юридического лица","Адрес регистрирующего органа")
+  ])assert.equal(extractParse(bad).record,undefined);
+  const inactive=extractParse(extractText.replace("Сведения о регистрации",
+    "Сведения о состоянии юридического лица\n                                           Сведения о регистрации"));
+  assert.equal(inactive.record?.active,false);
+  assert.equal(inactive.metadata?.status_basis,"current_adverse_status");
+});
+test("ordinary complete name search never requires the broken styled exact-name checkbox",async()=>{
+  const b=browser({missingLabel:true});
+  const result=await lookupFnsViaBrowser(b.page,{query:short,navigate:b.navigate,
+    readBody:b.readBody,completeNameSearch:true});
+  assert.equal(result.query_kind,"complete_normal_name");
+  assert.equal(result.complete,true);
+  assert.deepEqual(b.actions,["fill","submit"]);
+  assert.equal(parseFnsSearchResult({rows:[{...raw,tot:"100"}]},
+    {query:short,completeNameSearch:true}).complete,false);
+  assert.equal(parseFnsSearchResult({rows:[raw,{...raw,i:"invalid",tot:"2"}]},
+    {query:short,completeNameSearch:true}).complete,false);
+});
+test("official extract proof requires source linkage, all identifiers and current status; it is not a two-registry proof",async()=>{
+  const fns=parseFnsSearchResult({rows:[{k:"ul",i:extractInn,o:extractOgrn,p:extractKpp,
+    n:extractFull,c:extractShort,tot:"1",pg:"1"}]},{query:extractShort,completeNameSearch:true});
+  const target={organization:extractShort,decision:"external_registry_search_required",candidates:[]};
+  const parsed=extractParse(extractText);
+  const official={kind:"fns_extract",url:fnsSourceUrl(extractInn),record:parsed.record,
+    extract:{...parsed.metadata,sha256:"a".repeat(64)}};
+  const hydrated=await hydrateFnsSearchAddresses(fns,target,{confirm:async()=>official});
+  const choose=(city,region)=>chooseIndependentInnCandidate({
+    row:row("test",extractShort,{"Город/район":city}),target,region,search:hydrated.search
+  });
+  assert.equal(choose("Кировск","Ленинградская область").status,"review");
+  assert.equal(choose("Санкт-Петербург","Ленинградская область").status,"review");
+  const candidate=choose("Санкт-Петербург","Санкт-Петербург");
+  assert.equal(candidate.status,"candidate");
+  const verified=verifyIndependentInnCandidate(candidate,official,target);
+  assert.equal(verified.reason,"official_fns_extract_verified");
+  assert.deepEqual(verified.source_urls,[fnsSourceUrl(extractInn)]);
+  assert.deepEqual(verified.official_extract,official.extract);
+  assert.equal(isOfficialExtractProof({...official,url:"https://fake.test/"},extractInn),false);
+  for(const bad of [
+    {...official,extract:{...official.extract,sha256:""}},
+    {...official,record:{...official.record,kpp:"781101002"}},
+    {...official,record:{...official.record,active:false}}
+  ])assert.equal(verifyIndependentInnCandidate(candidate,bad,target).status,"review");
 });

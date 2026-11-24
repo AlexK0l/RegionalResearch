@@ -23,8 +23,8 @@ async function main(){
     console.log("node scripts/independent-inn-backfill.js "+
       "--db=/absolute/checkpoints.sqlite --checkpoint=<UUID> "+
       "[--limit=1] [--target-id=<canonical_id>] "+
-      "[--provider=fns|vbr] [--run --max-pages=80] \n"+
-      "Default: offline plan only. --run: official FNS search + independent T-Bank or VBR confirmation by OGRN, no OpenAI or Saby.");
+      "[--provider=fns|vbr] [--confirmation=extract|registry] [--run --max-pages=80] \n"+
+      "Default: offline plan only. FNS --run uses official EGRUL PDFs (pdftotext required). --confirmation=registry retains the earlier independent card route. No OpenAI or Saby.");
     return;
   }
   const file=arg("db"),sourceId=arg("checkpoint");
@@ -33,6 +33,10 @@ async function main(){
   const limit=number("limit",1,10000),maxPages=number("max-pages",80,3000);
   const provider=arg("provider","fns");
   if(!["fns","vbr"].includes(provider))throw Error("REGISTRY_INN_BAD_PROVIDER");
+  const confirmationMode=arg("confirmation",provider==="fns"?"extract":"registry");
+  if(!["extract","registry"].includes(confirmationMode)||
+    (provider!=="fns"&&confirmationMode!=="registry"))
+    throw Error("REGISTRY_INN_BAD_CONFIRMATION");
   const targetId=arg("target-id");
   if(targetId&&(!/^[a-z0-9_.:-]{1,100}$/i.test(targetId)||limit!==1))
     throw Error("REGISTRY_INN_BAD_TARGET");
@@ -49,7 +53,7 @@ async function main(){
   metric("INDEPENDENT_INN_PLAN",{region:checkpoint.region,source_checkpoint:sourceId,
     dry_run:!run,total:plan.total,missing:plan.missing,pending:plan.pending,
     scheduled:plan.scheduled,previously_reviewed:plan.previously_reviewed,
-    provider,reopened_from_vbr:plan.reopened_from_vbr,
+    provider,confirmation_mode:confirmationMode,reopened_from_vbr:plan.reopened_from_vbr,
     saved_public_hints:plan.saved_public_hints,legal_name_unresolved:plan.legal_name_unresolved,
     max_page_navigations:maxPages,openai_requests:0,saby_requests:0});
   if(!run||!plan.scheduled)return;
@@ -75,11 +79,13 @@ async function main(){
           "fns_query_not_set","fns_exact_checkbox_unavailable",
           "fns_exact_checkbox_not_selected","fns_submit_failed","fns_captcha_required",
             "fns_search_token_missing","fns_search_token_conflict",
-            "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved"]);
+            "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved",
+            "fns_extract_download_unavailable","fns_extract_pdftotext_missing","fns_extract_unavailable"]);
           canary={verified:false,reason:allowed.has(error?.code)?
             error.code:"fns_canary_unavailable"};
         }
-        metric("INDEPENDENT_INN_CANARY",{...canary,page_navigations:lookup.pages});
+        metric("INDEPENDENT_INN_CANARY",{...canary,page_navigations:lookup.pages,
+          extract_downloads:lookup.extractDownloads});
         if(!canary.verified){
           canaryFailed=true;
           return null;
@@ -95,10 +101,10 @@ async function main(){
           }
         },
         onProgress:stats=>metric("INDEPENDENT_INN_PROGRESS",{
-          ...stats,page_navigations:lookup.pages
+          ...stats,page_navigations:lookup.pages,extract_downloads:lookup.extractDownloads
         })});
-      return {...out,page_navigations:lookup.pages};
-    },{maxPages,provider,onDiagnostic:value=>metric("INDEPENDENT_INN_REGISTRY_DIAG",value)});
+      return {...out,page_navigations:lookup.pages,extract_downloads:lookup.extractDownloads};
+    },{maxPages,provider,confirmationMode,onDiagnostic:value=>metric("INDEPENDENT_INN_REGISTRY_DIAG",value)});
   }catch{
     metric("INDEPENDENT_INN_ERROR",{reason:"registry_run_unavailable",
       child_checkpoint:saved?childId:null,parent_checkpoint:sourceId});
@@ -122,7 +128,8 @@ async function main(){
   }
   metric("INDEPENDENT_INN_DONE",{child_checkpoint:childId,parent_checkpoint:sourceId,
     ...stats,provider,missing_after:plan.missing-stats.added,
-    page_navigations:final.page_navigations,by_reason:counts,
+    page_navigations:final.page_navigations,extract_downloads:final.extract_downloads,
+    confirmation_mode:confirmationMode,by_reason:counts,
     openai_requests:0,saby_requests:0,original_checkpoint_unchanged:true});
   if(stats.stop_reason)process.exitCode=2;
 }

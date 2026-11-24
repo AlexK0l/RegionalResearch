@@ -18,9 +18,11 @@ rows, with or without finance data. A run requires explicit --run:
 Use your normal Playwright runtime/Chromium cache. The script opens a
 separate headless context, does not log in to Saby, and creates a new
 child checkpoint saved after each row. The default provider is `fns`.
-Before creating a child it checks previously evidenced legal entities by
-INN (up to three distinct candidates), independently confirms the registry
-card and legal address, and checks the complete registered-name search.
+The default FNS confirmation mode is `extract`; install `pdftotext`
+(`poppler-utils` on Ubuntu). Before creating a child it checks up to three
+previously evidenced legal entities by INN, downloads and parses a complete
+current official EGRUL extract, and checks a complete registered-name search.
+`--confirmation=registry` retains the previous third-party confirmation route.
 A company-specific non-active status does not establish a service outage. If this live preflight fails, no row is visited and no child
 is created. The optional `--provider=vbr` retains the old search route.
 Public pages can be unavailable or restricted; CAPTCHA or access denial
@@ -33,33 +35,46 @@ Rows reviewed without proof are not blindly repeated. Switching from VBR
 to FNS reopens only the three old discovery-failure categories once;
 identity conflicts and existing FNS review decisions are not reset. A temporary
 navigation failure or navigation budget leaves the interrupted row pending.
-The max-pages limit bounds top-level page navigations, not website
-subresources.
+The max-pages limit counts top-level page navigations and official extract
+download attempts, not website subresources. The extract count is reported
+separately.
 
 ## Evidence and policy
 
 - Use the existing missing-INN queue and strict legal-form/name policy.
 - Prefer an unopposed, unoccupied saved Saby public INN/KPP hint; otherwise
-  submit the original legal name in the normal public EGRUL search form,
-  with the exact-name checkbox. Observe only the corresponding submitted
-  request and its correlated response. No direct undocumented API calls,
+  submit the original legal name in the normal public EGRUL search form.
+  Extract mode does not require the broken styled exact-name checkbox:
+  it accepts a name-only assignment only from a positively observed
+  complete result set with exact local registered-name matching.
+  Observe only the corresponding submitted request and correlated response. No direct undocumented API calls,
   manufactured session tokens or CAPTCHA bypass. The optional legacy VBR
   route reads only observed canonical company links.
 - A complete search needs a positively bound exact query, an explicit
   result count and fully parsed distinct records without truncation.
   FNS 1.9.2 search rows may omit the address. They remain identity
-  candidates; obtain the address only from the independently matched
-  T-Bank or VBR requisites panel (same INN/KPP/OGRN and full/short names),
-  preserving the address source URL. Inspect up to eight missing-address
+  candidates; extract mode reads the current address from the official
+  PDF, after exact INN/KPP/OGRN and full/short name matching. The legacy
+  confirmation mode instead uses the independently matched requisites
+  panel, preserving address provenance. Inspect up to eight missing-address
   exact-name candidates per research row; an unread competing address
   blocks a geography-only assignment, including inactive namesakes.
   A positive, unique source address/registered identifier or a complete
   search with unique exact legal name and precise original locality must
   connect the candidate to the row. Never infer region from INN prefix.
 - Check the same INN, KPP, OGRN, full/short legal names and active status in
-  an independent T-Bank or VBR registry page. Verify checksums. FNS search
-  results are official identification data, but are not signed extracts;
-  the independent provider must confirm the current active status.
+  the complete, current official PDF downloaded by the visible FNS form.
+  Verify identifier checksums, page count and sequence, the same OGRN on
+  every page, the document date/number, separate current legal-name,
+  address, registration and tax sections, and absence of adverse current
+  status sections. Missing proof blocks auto-write. Legacy registry mode
+  still requires an independent active-status confirmation.
+- The extract proof records its generation date/number, page count, SHA-256,
+  status basis and the actual public FNS form URL. It is one official source,
+  not two independent registries. HTTPS certificate validation stays enabled.
+  The hash identifies the bytes examined; the PDF signature is not separately
+  cryptographically verified. The PDF and extracted personal data are not
+  retained in the checkpoint. The normal public form is the only download path.
 - Missing proof, ambiguous names, brands, branch labels, IP records
   (not supported by these legal-entity parsers), prior contradictions and
   already-owned identifiers remain in review. An inactive competing
@@ -75,9 +90,9 @@ Download the result from the existing checkpoint export endpoint, using
 the child UUID. Continue Saby finance only for newly eligible INNs once
 the recovered identity evidence has been checked.
 
-## Confirmation-provider failures
+## Legacy registry confirmation-provider failures
 
-For FNS discovery, confirmation first uses the canonical T-Bank OGRN
+With `--confirmation=registry`, FNS discovery first uses the canonical T-Bank OGRN
 card. The card reader waits for the committed HTTPS document and polls
 bounded company-scoped requisites, not unrelated assets. If confirmation
 is unavailable, the alternative VBR search uses the same exact OGRN and
@@ -92,3 +107,11 @@ are disabled, the interrupted row stays pending. The
 INDEPENDENT_INN_REGISTRY_DIAG records the provider, stage, HTTP status,
 allowlisted transport category, address presence and active status,
 without raw exceptions, private data, or transient session tokens.
+
+## Live validation status
+
+The 2026-11-24 VPS probe downloaded a 174465-byte current FNS PDF for
+7811285487 and Poppler successfully extracted the first pages. The known
+first-page layout is covered by a fixture with a synthetic tax-section
+continuation. Full-document parsing and normal name-query completeness
+must still pass the live preflight before processing the saved queue.
