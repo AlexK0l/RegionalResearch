@@ -129,3 +129,49 @@ separates service health from per-row uniqueness. Name search diagnostics
 report counts, total proof and page flags, not company names or IDs.
 The actual recovery rate and the cause of the incomplete search still
 need live validation.
+
+## Second live run and scoped name search
+
+At c919b2d the VPS processed 15 rows (one verified INN, 13 incomplete name
+searches, one source OGRN conflict), then stopped on three downloaded
+PDFs with unproven headers. The saved child is the continuation source.
+Readable PDF text that fails strict parsing is now a row-level proof
+failure, not a transport failure. Fixed header subreason flags and
+per-row confirmation issues are recorded without PDF text or identifiers
+in diagnostic logs. The actual header variants remain unobserved; the
+header acceptance predicate is not relaxed.
+
+The FNS 1.9.2 public form contains a region dictionary control
+(`input#region[name=region][data-dict=REGIONS][data-kind=SET]`). For an
+incomplete unanchored name search with a precise original locality, try
+that visible dictionary's exact regional label, validate the selected
+form value and submitted request, and use only a positively complete
+correlated regional result. If the widget cannot be verified, retain the
+broad result; never use an incomplete scoped search to infer uniqueness.
+The official extract must still prove the exact original locality and
+region. Actual widget behavior on the VPS still needs validation. Saved
+identifier anchors remain unfiltered; a unique saved OGRN is searched
+directly. Multiple saved OGRNs are reviewed before any browser request.
+Reopen pre-revision-2 incomplete FNS name reviews once for this changed
+strategy, not verified rows or identity conflicts. No repeated reset of
+current reviews. The live queue continues from its last saved child.
+
+### Observed capped search-result layout
+
+The full 2026-11-24 VPS journal shows every name query returned 20 rows;
+pg was absent on 19 rows and tot was absent or invalid on 19 or 20 rows.
+This is consistent with the public form's warning that only the first
+records may be shown and the operator should refine search criteria.
+Read an explicit numeric total from sparse first-row metadata without
+requiring that it be repeated on every record. A sparse result can
+prove completeness only below the observed 20-row boundary, with
+explicit page 1, consistent numeric total equal to the entire returned
+row count, compatible cnt when present, and every record parsed once.
+Missing/invalid/contradictory totals, later pages, truncated or unread
+records remain unproven. This does not presume that all 20-row
+responses are complete, or invent paging requests. The normal visible
+region filter is the refinement path. Header and row-sequence diagnostic
+codes preserve strict PDF acceptance; actual additional header variants
+still need evidence. The added sparse multi-row fixtures are synthetic,
+reflecting the observed field-presence pattern rather than captured
+numeric values of tot.

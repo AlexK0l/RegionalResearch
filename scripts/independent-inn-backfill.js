@@ -54,6 +54,7 @@ async function main(){
     dry_run:!run,total:plan.total,missing:plan.missing,pending:plan.pending,
     scheduled:plan.scheduled,previously_reviewed:plan.previously_reviewed,
     provider,confirmation_mode:confirmationMode,reopened_from_vbr:plan.reopened_from_vbr,
+    reopened_fns_name_search:plan.reopened_fns_name_search,
     saved_public_hints:plan.saved_public_hints,legal_name_unresolved:plan.legal_name_unresolved,
     max_page_navigations:maxPages,openai_requests:0,saby_requests:0});
   if(!run||!plan.scheduled)return;

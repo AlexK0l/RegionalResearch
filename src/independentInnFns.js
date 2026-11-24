@@ -66,12 +66,26 @@ export function parseFnsSearchResult(payload,{query,exactName=false,completeName
       active:explicitInactive?false:null
     }});
   }
-  const totals=new Set(raw.map(r=>asCount(r?.tot)));
+  // Live FNS 1.9.2 name searches (2026-11-24): 20 visible rows;
+  // pg and possibly tot occur on the first row, not each record. Missing
+  // metadata on subsequent rows is not a conflicting total. Explicit
+  // invalid or inconsistent metadata, however, must fail closed.
+  const totals=new Set(raw.filter(r=>r?.tot!==undefined).map(r=>asCount(r.tot)));
+  const missingTotals=raw.filter(r=>r?.tot===undefined).length;
+  const firstTotal=asCount(raw[0]?.tot),firstPageNumber=asCount(raw[0]?.pg);
   const distinctOgrns=new Set(rows.map(r=>r.record.ogrn)).size;
   const allRead=raw.length===rows.length&&raw.length<=100&&
     distinctOgrns===rows.length;
-  const countProven=raw.length>0&&totals.size===1&&totals.has(raw.length);
+  const consistentTotal=totals.size===1&&totals.has(raw.length)&&firstTotal===raw.length;
   const firstPage=raw.every(r=>r?.pg===undefined||asCount(r.pg)===1);
+  // Retain the former repeated-metadata proof. For sparse metadata,
+  // require explicit page 1 and fewer than the observed 20-row boundary.
+  // A capped first page, a nonnumeric/missing total or skipped record
+  // can never establish uniqueness by name and locality.
+  const sparseProof=missingTotals>0&&raw.length<20&&firstPageNumber===1&&
+    raw.every(r=>r?.cnt===undefined||asCount(r.cnt)===raw.length);
+  const countProven=raw.length>0&&consistentTotal&&
+    (missingTotals===0||sparseProof);
   const complete=allRead&&countProven&&firstPage;
   // Fixed, count-only diagnostics; never log names, identifiers or tokens.
   const reportedTotal=totals.size===1?[...totals][0]:null;
@@ -88,7 +102,61 @@ export function parseFnsSearchResult(payload,{query,exactName=false,completeName
     query_kind:numeric?"identifier":exactName?"exact_name":completeNameSearch?"complete_normal_name":"name",
     total_reported:countProven?raw.length:null,completeness};
 }
-function observedRequest(response,query,exactName){
+// Region control in the actual public 1.9.2 form:
+// input#region[name=region][data-dict=REGIONS][data-kind=SET].
+// Operate only the visible widget, verify the selected value with FormData,
+// and then correlate it with the submitted request. No invented region code.
+function regionKey(s){
+  return clean(s).toLowerCase().replace(/ё/g,"е").replace(/[^а-яa-z0-9]+/gu," ").trim();
+}
+export function fnsRegionLabelMatches(label,region){
+  const expected=regionKey(region);
+  if(!expected||expected.length<4||!/[а-я]/u.test(expected))return false;
+  const actual=regionKey(label);
+  return actual===expected||
+    actual.replace(/^\d{2,3}\s+/u,"")===expected||
+    actual.replace(/\s+\d{2,3}$/u,"")===expected;
+}
+async function selectFnsRegion(page,region){
+  try{
+    const input=page.locator('input#region[name="region"][data-dict="REGIONS"][data-kind="SET"]');
+    const form=page.locator("form#frmSearch");
+    if(await input.count()!==1||await form.count()!==1)return "";
+    const read=()=>form.evaluate(el=>new FormData(el).getAll("region").map(String));
+    const before=(await read()).filter(v=>v.trim());
+    if(before.length)return "";
+    if(await input.isVisible())await input.click({timeout:3000});
+    else{
+      const field=page.locator("div.form-field").filter({has:input});
+      const trigger=field.locator('input:not([type="hidden"]),button,[role="button"],[role="combobox"]').filter({visible:true});
+      if(await trigger.count()!==1)return "";
+      await trigger.click({timeout:3000});
+    }
+    // Match the actual displayed dictionary label (possibly prefixed or
+    // suffixed by its code), not a guessed value or a substring.
+    const escape=s=>s.replace(/[.*+?^$\{\}()|[\]\\]/g,"\\$&");
+    const label=clean(region).split(" ").map(escape).join("\\s+");
+    const pattern=new RegExp("^(?:\\s*\\d{2,3}\\s*[-–—.:]?\\s*)?"+label+
+      "(?:\\s*[-–—.:]?\\s*\\(?\\d{2,3}\\)?)?\\s*$","iu");
+    const option=page.getByText(pattern).filter({visible:true});
+    await option.first().waitFor({state:"visible",timeout:3000});
+    if(await option.count()!==1)return "";
+    const optionLabel=await option.innerText();
+    if(!fnsRegionLabelMatches(optionLabel,region))return "";
+    const normalizedLabel=regionKey(optionLabel);
+    const visibleCode=normalizedLabel.match(/^\d{2,3}(?=\s)/u)?.[0]||
+      normalizedLabel.match(/(?<=\s)\d{2,3}$/u)?.[0]||"";
+    await option.click({timeout:3000});
+    const values=(await read()).map(v=>v.trim()).filter(Boolean);
+    // A SET widget can require an additional confirmation. If no single
+    // exact selected field is submitted, abandon the scoped query.
+    if(values.length!==1||!(/^\d{2,3}$/.test(values[0])||
+      fnsRegionLabelMatches(values[0],region)))return "";
+    if(visibleCode&&/^\d{2,3}$/.test(values[0])&&values[0]!==visibleCode)return "";
+    return values[0];
+  }catch{return "";}
+}
+function observedRequest(response,query,exactName,regionValue=""){
   try{
     const u=new URL(response.url()),req=response.request();
     if(u.origin!==origin||u.username||u.password||u.hash)return null;
@@ -96,7 +164,9 @@ function observedRequest(response,query,exactName){
       const fields=new URLSearchParams(req.postData()||"");
       if(clean(fields.get("query"))!==query)return null;
       if(exactName&&!["on","true","1"].includes(fields.get("nameEq")))return null;
-      return {kind:"submit"};
+      const actual=fields.getAll("region").map(v=>v.trim()).filter(Boolean);
+      return {kind:"submit",regionMatches:!regionValue||
+        (actual.length===1&&actual[0]===regionValue)};
     }
     if(req.method()==="GET"){
       const m=/^\/search-result\/([a-z0-9_-]{8,512})$/i.exec(u.pathname);
@@ -105,7 +175,7 @@ function observedRequest(response,query,exactName){
   }catch{}
   return null;
 }
-export async function lookupFnsViaBrowser(page,{query,navigate,readBody,completeNameSearch=false}){
+export async function lookupFnsViaBrowser(page,{query,navigate,readBody,completeNameSearch=false,region=""}){
   query=clean(query);
   if(!query||query.length>250)throw fail("fns_invalid_query");
   const exactName=!completeNameSearch&&!/^(?:\d{10}|\d{13})$/.test(query);
@@ -163,12 +233,19 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody,complete
   }catch{
     throw fail(formStage);
   }
+  let regionValue="";
+  if(region){
+    if(!completeNameSearch||/^(?:\d{10}|\d{13})$/.test(query))
+      throw fail("fns_region_filter_unavailable");
+    regionValue=await selectFnsRegion(page,region);
+    if(!regionValue)throw fail("fns_region_filter_unavailable");
+  }
   let token="",fault="",submitSeen=false;
   const responses=new Map();
   let closed=false;
   const observer=async response=>{
     if(closed)return;
-    const match=observedRequest(response,query,exactName);
+    const match=observedRequest(response,query,exactName,regionValue);
     if(!match)return;
     try{
       if(response.status()!==200){
@@ -183,6 +260,7 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody,complete
         if(hasChallenge(payload?.captchaRequired)||hasChallenge(payload?.captcha)){
           fault="fns_captcha_required";return;
         }
+        if(!match.regionMatches){fault="fns_region_filter_unavailable";return;}
         const value=typeof payload?.t==="string"?payload.t:"";
         if(!tokenPattern.test(value)){fault="fns_search_token_missing";return;}
         if(token&&token!==value){fault="fns_search_token_conflict";return;}
@@ -208,7 +286,7 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody,complete
       if(!isFnsFormRoute(page.url()))throw fail("registry_route_untrusted");
       if(token&&responses.has(token)){
         const result=parseFnsSearchResult(responses.get(token),{query,exactName,completeNameSearch});
-        if(result)return result;
+        if(result)return regionValue?{...result,search_region:region}:result;
       }
       if(i%5===0){
         const body=await readBody(isFnsFormRoute);

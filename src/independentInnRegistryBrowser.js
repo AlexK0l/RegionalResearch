@@ -114,6 +114,12 @@ export function extractRegistryTbankRecord(raw){
   const identity=extractIndependentRegistryIdentity(raw,{includeAddress:true});
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
+// Valid PDF text that fails a strict document parser is a document-specific
+// proof failure, not an outage. Keep the transport circuit breaker for
+// unreadable/non-PDF downloads and broken controls.
+export function nextFnsExtractFailureCount(previous,downloaded,diagnostic){
+  return downloaded||diagnostic?.pdf_text_available===true?0:previous+1;
+}
 export async function createPublicRegistryLookup(page,{
   maxPages=80,delayMs=900,maxCandidates=8,provider="vbr",confirmationMode="registry",onDiagnostic=()=>{}
 }={}){
@@ -127,7 +133,8 @@ export async function createPublicRegistryLookup(page,{
     Math.min(10000,Number(delayMs)||900));
   let pages=0,uncertain=0,extractDownloads=0,extractFailures=0,lastFnsSearch=null;
   const useExtract=provider==="fns"&&confirmationMode==="extract";
-  const unavailable=new Set(),failures=new Map();
+  const unavailable=new Set(),failures=new Map(),confirmationIssues=new Map();
+  const unavailableRegionFilters=new Set();
   const diag=(source,stage,reason,extra={})=>
     onDiagnostic({provider:source,stage,reason,page_navigations:pages,...extra});
   async function navigate(url,check,{waitUntil="domcontentloaded",source=provider,stage="navigation"}={}){
@@ -284,16 +291,40 @@ export async function createPublicRegistryLookup(page,{
   return {
     get pages(){return pages;},
     get extractDownloads(){return extractDownloads;},
-    async search(target,hint){
-      const query=clean(hint?.inn||target.organization);
+    confirmationIssue(ogrn){return confirmationIssues.get(ogrn)||"";},
+    async search(target,hint,{region="",ogrn=""}={}){
+      const query=clean(hint?.inn||(provider==="fns"?ogrn:"")||target.organization);
       if(provider==="fns"){
         lastFnsSearch=null;
-        const observed=await lookupFnsViaBrowser(page,{query,navigate,readBody,
+        let observed=await lookupFnsViaBrowser(page,{query,navigate,readBody,
           completeNameSearch:useExtract});
-        lastFnsSearch=observed;
-        if(observed.query_kind!=="identifier")
+        if(observed.query_kind!=="identifier"){
           diag("fns","name_search",observed.complete&&observed.allCardsRead?
             "fns_name_complete":"fns_name_incomplete",observed.completeness);
+          // Restrict only an unanchored, incomplete name query to its
+          // required legal region. Preserve the broad result if the UI
+          // cannot prove the filter. Actual access failures still stop.
+          if(useExtract&&region&&!unavailableRegionFilters.has(region)&&
+            (!observed.complete||!observed.allCardsRead)){
+            try{
+              const scoped=await lookupFnsViaBrowser(page,{query,navigate,readBody,
+                completeNameSearch:true,region});
+              diag("fns","regional_name_search",scoped.complete&&scoped.allCardsRead?
+                "fns_name_complete":"fns_name_incomplete",scoped.completeness);
+              // A partial scoped search adds no proof of uniqueness.
+              if(scoped.complete&&scoped.allCardsRead)observed=scoped;
+            }catch(error){
+              if(error?.code!=="fns_region_filter_unavailable")throw error;
+              unavailableRegionFilters.add(region);
+              diag("fns","regional_name_search","fns_region_filter_unavailable",{disabled_for_run:true});
+            }
+            // Browser now holds the scoped page (or an unsubmitted form).
+            // Never reuse the old broad page to click a download button.
+            lastFnsSearch=null;
+            return observed;
+          }
+        }
+        lastFnsSearch=observed;
         return observed;
       }
       const check=value=>exactRegistrySearchRoute(value,query);
@@ -335,6 +366,7 @@ export async function createPublicRegistryLookup(page,{
     async confirm(ogrn,expected){
       if(useExtract){
         if(!expected||expected.ogrn!==ogrn||!/^\d{13}$/.test(ogrn))return null;
+        confirmationIssues.delete(ogrn);
         // Reuse the actual current single-result page only if all three
         // identifiers and both names match. Otherwise perform a normal
         // visible-form query by the official OGRN, not a fabricated URL.
@@ -349,18 +381,21 @@ export async function createPublicRegistryLookup(page,{
         lastFnsSearch=null;
         if(!uniqueMatch(observed)){
           diag("fns","extract_lookup","fns_extract_identity_unproven");
+          confirmationIssues.set(ogrn,"fns_extract_identity_unproven");
           return null;
         }
         // Count the download in the existing hard navigation/request budget.
         if(pages>=maxPages)throw fail("navigation_budget");
         await page.waitForTimeout(delay);
         pages++;extractDownloads++;
+        let diagnostic;
         const downloaded=await downloadOfficialFnsExtract(page,expected,{
-          onDiagnostic:value=>{const {reason,...extra}=value;
+          onDiagnostic:value=>{diagnostic=value;const {reason,...extra}=value;
             diag("fns","extract",reason,extra);}
         });
-        if(downloaded)extractFailures=0;
-        else if(++extractFailures>=3)throw fail("fns_extract_unavailable");
+        if(!downloaded&&diagnostic?.reason)confirmationIssues.set(ogrn,diagnostic.reason);
+        extractFailures=nextFnsExtractFailureCount(extractFailures,downloaded,diagnostic);
+        if(extractFailures>=3)throw fail("fns_extract_unavailable");
         return downloaded;
       }
       const url=independentRegistryRoute(ogrn);

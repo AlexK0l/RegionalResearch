@@ -7,7 +7,7 @@ import {sabyInn,sabyNameTokens} from "./sabyEnrichment.js";
 import {sameRegisteredName,canonicalIndependentRegistryRoute}
   from "./sabyIndependentNameBridge.js";
 import {isVbrCompanyUrl} from "./sabyIndependentVbrBridge.js";
-import {isFnsSourceUrl} from "./independentInnFns.js";
+import {isFnsSourceUrl,fnsRegionLabelMatches} from "./independentInnFns.js";
 import {isOfficialExtractProof} from "./independentInnFnsExtract.js";
 import {identityOgrns,normalizedOgrn} from "./legalIdentity.js";
 
@@ -170,11 +170,13 @@ export async function hydrateFnsSearchAddresses(search,target,lookup){
 }
 // An unanchored incomplete FNS result cannot establish a unique legal
 // name/locality, regardless of how many visible extracts we download.
+function hasSourceAnchor(row,target){
+  return Boolean(usableHint(target)||identityOgrns(row).length||
+    clean(row?.["Юридический адрес"]||row?.__evidence?.identity_verification?.legal_address));
+}
 function incompleteUnanchoredFnsSearch(search,row,target){
   return search?.state==="observed"&&search.provider==="fns"&&
-    (search.complete!==true||search.allCardsRead!==true)&&
-    !usableHint(target)&&!identityOgrns(row).length&&
-    !clean(row?.["Юридический адрес"]||row?.__evidence?.identity_verification?.legal_address);
+    (search.complete!==true||search.allCardsRead!==true)&&!hasSourceAnchor(row,target);
 }
 export function chooseIndependentInnCandidate({row,target,search,owners=new Set(),region=""}){
   const review=(reason,candidates=[])=>({status:"review",reason,candidates});
@@ -184,6 +186,8 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
     return review("source_identity_conflict");
   if(clean(row["ИНН"]))return review("nonempty_invalid_inn");
   if(search?.state!=="observed")return review("registry_search_unconfirmed");
+  if(search.search_region&&(!fnsRegionLabelMatches(search.search_region,region)||
+    hasSourceAnchor(row,target)))return review("registry_region_scope_unproven");
   const observed=Array.isArray(search.records)?search.records:[];
   // An inactive or unverified exact-name entity is still a conflicting
   // name candidate; do not use active status alone to resolve its owner.
@@ -290,6 +294,7 @@ function entries(checkpoint){
 }
 const REOPEN_ON_FNS=new Set(["registry_search_unconfirmed",
   "source_link_not_proven","registry_no_exact_legal_name"]);
+const FNS_NAME_SEARCH_REVISION=2;
 export function planIndependentInnBackfill(checkpoint,{limit=10000,targetId="",provider="vbr"}={}){
   if(!["vbr","fns"].includes(provider)||!Number.isSafeInteger(limit)||limit<1||limit>10000)
     throw Error("REGISTRY_INN_BAD_LIMIT");
@@ -297,16 +302,22 @@ export function planIndependentInnBackfill(checkpoint,{limit=10000,targetId="",p
   const byId=new Map(all.map(e=>[clean(e.row.__canonical_id),e.row]));
   const previous=checkpoint.independent_inn_backfill_outcomes||{};
   const queue=buildMissingInnRecoveryQueue(checkpoint).rows;
-  // A changed independent source justifies one new attempt for old VBR
-  // discovery failures. No reset of conflicts, already-owned INNs or
-  // FNS outcomes. The original parent and its reviews remain immutable.
-  const reopen=t=>{
+  // Only reopen the affected old discovery failures once after a changed
+  // strategy. Preserve proven identities, conflicts and current reviews.
+  const reopenVbr=t=>{
     const old=previous[t.original_canonical_id];
     return provider==="fns"&&old?.status==="review"&&
       (!old.provider||old.provider==="vbr")&&REOPEN_ON_FNS.has(old.reason);
   };
-  const reopened=queue.filter(reopen).length;
-  const pending=queue.filter(t=>!Object.hasOwn(previous,t.original_canonical_id)||reopen(t));
+  const reopenFns=t=>{
+    const old=previous[t.original_canonical_id];
+    return provider==="fns"&&old?.status==="review"&&old.provider==="fns"&&
+      old.reason==="registry_name_search_incomplete"&&
+      (old.name_search_revision||0)<FNS_NAME_SEARCH_REVISION;
+  };
+  const reopened=queue.filter(reopenVbr).length;
+  const reopenedFns=queue.filter(reopenFns).length;
+  const pending=queue.filter(t=>!Object.hasOwn(previous,t.original_canonical_id)||reopenVbr(t)||reopenFns(t));
   // Prior credible identifiers, then actual legal names, then brands.
   const tier=t=>usableHint(t)?0:unsafeName(t.organization)?2:1;
   pending.sort((a,b)=>tier(a)-tier(b));
@@ -315,7 +326,7 @@ export function planIndependentInnBackfill(checkpoint,{limit=10000,targetId="",p
   if(targetId&&selected.length!==1)throw Error("REGISTRY_INN_TARGET_NOT_PENDING");
   return {total:all.length,missing:queue.length,pending:pending.length,
     scheduled:selected.length,previously_reviewed:queue.length-pending.length,
-    reopened_from_vbr:reopened,provider,
+    reopened_from_vbr:reopened,reopened_fns_name_search:reopenedFns,provider,
     saved_public_hints:pending.filter(usableHint).length,
     legal_name_unresolved:pending.filter(t=>unsafeName(t.organization)).length,
     selected,byId};
@@ -443,21 +454,35 @@ export async function runIndependentInnBackfill({
       row.__evidence?.legal_identity_conflicts?.length)
       result={status:"review",reason:"source_identity_conflict"};
     else if(clean(row["ИНН"]))result={status:"review",reason:"nonempty_invalid_inn"};
+    else if(provider==="fns"&&identityOgrns(row).length>1)
+      result={status:"review",reason:"source_ogrn_conflict"};
     else{
       try{
-        const rawSearch=await lookup.search(target,usableHint(target));
+        const ogrns=identityOgrns(row);
+        const rawSearch=await lookup.search(target,usableHint(target),provider==="fns"?
+          {ogrn:ogrns.length===1?ogrns[0]:"",
+            region:!hasSourceAnchor(row,target)&&preciseLocalityValue(row["Город/район"])?
+              parent.region:""}:{});
+        const confirmationIds=new Set();
         const {search,confirmations}=provider==="fns"&&
           !incompleteUnanchoredFnsSearch(rawSearch,row,target)?
           await hydrateFnsSearchAddresses(rawSearch,target,lookup):
           {search:rawSearch,confirmations:new Map()};
         const selection=chooseIndependentInnCandidate({row,target,search,owners,
           region:parent.region});
+        for(const ogrn of confirmations.keys())confirmationIds.add(ogrn);
         if(selection.status==="candidate"){
           const ogrn=selection.record.ogrn;
+          confirmationIds.add(ogrn);
           const second=confirmations.has(ogrn)?confirmations.get(ogrn):
             await lookup.confirm(ogrn,selection.record);
           result=verifyIndependentInnCandidate(selection,second,target);
         }else result=selection;
+        if(result.status!=="verified"&&typeof lookup.confirmationIssue==="function"){
+          const issues=[...new Set([...confirmationIds].map(id=>lookup.confirmationIssue(id))
+            .filter(code=>typeof code==="string"&&/^fns_extract_[a-z_]{1,60}$/.test(code)))];
+          if(issues.length)result={...result,confirmation_issues:issues};
+        }
       }catch(error){
         stats.stop_reason=["navigation_budget","registry_http_unavailable",
           "registry_route_untrusted","registry_browser_unavailable","registry_confirmation_unavailable",
@@ -501,7 +526,8 @@ export async function runIndependentInnBackfill({
       }
     }
     if(result.status!=="verified")stats.review++;
-    outcomes[id]={...result,provider};
+    outcomes[id]={...result,provider,
+      ...(provider==="fns"?{name_search_revision:FNS_NAME_SEARCH_REVISION}:{})};
     stats.processed++;
     await save();
     await onProgress({...stats});
