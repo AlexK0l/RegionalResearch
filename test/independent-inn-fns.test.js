@@ -147,7 +147,8 @@ test("official form observer accepts only matching submitted query and correlate
   const found=await lookupFnsViaBrowser(b.page,{query:short,navigate:b.navigate,readBody:b.readBody});
   assert.equal(found.records[0].record.address,address);
   assert.equal(found.complete,true);
-  assert.deepEqual(b.visits,["https://egrul.nalog.ru/"]);
+  // Do not start at the root, which can downgrade HTTPS to HTTP.
+  assert.deepEqual(b.visits,["https://egrul.nalog.ru/index.html"]);
   assert.equal(b.listeners.size,0);
   for(const [options,code] of [
     [{challenge:true},"fns_captcha_required"],
@@ -160,6 +161,7 @@ test("official form observer accepts only matching submitted query and correlate
     assert.equal(x.listeners.size,0);
   }
   assert.equal(isFnsFormRoute("https://egrul.nalog.ru/index.html"),true);
+  assert.equal(isFnsFormRoute("http://egrul.nalog.ru/index.html"),false);
   assert.equal(isFnsFormRoute("https://egrul.nalog.ru.evil.test/index.html"),false);
 });
 test("VBR spaced duplicate identifiers and address remain exact, different copies never match",()=>{
