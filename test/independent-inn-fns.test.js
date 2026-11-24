@@ -550,7 +550,7 @@ const lastExtractPage=[
   "",
   "Выписка из ЕГРЮЛ",
   "24.11.2026 13:42                                  ОГРН 1167847075230                      Страница 2 из 2"
-].join("\n").replace(/^  (11|12|13) /gm,"  $1  ");
+].join("\n");
 const extractText=firstExtractPage+"\f"+lastExtractPage+"\f";
 const extractParse=text=>parseOfficialFnsExtract(text,{now:today});
 test("current FNS PDF layout has scoped registration, full/short names, address and tax identifiers",()=>{
