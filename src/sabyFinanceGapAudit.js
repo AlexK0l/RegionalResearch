@@ -64,10 +64,12 @@ function structuredSabyUrls(row,inn){
       if(u.protocol!=="https:"||u.port)continue;
       if(u.hostname==="profile.saby.ru"&&
          u.pathname==="/page/contractor-info"&&
+         u.searchParams.size===1&&!u.hash&&
          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(
            u.searchParams.get("id")||""))
         privateCard=true;
       if(u.hostname==="saby.ru"&&
+         !u.search&&!u.hash&&
          /^\/profile\/\d{10}-\d{9}$/.test(u.pathname)){
         const m=/^\/profile\/(\d{10})-(\d{9})$/.exec(u.pathname);
         if(m?.[1]===inn)publicProfile=true;
