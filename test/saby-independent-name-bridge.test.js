@@ -176,6 +176,22 @@ test("registered-short source still rejects wrong legal form, prefix and all wro
   }
 });
 
+test("third-party full/short legal-form conflict fails before any name alias",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  for(const badShort of [
+    'МУП "ЛЕНОБЛВОДОКАНАЛ"',
+    'ФГУП "ЛЕНОБЛВОДОКАНАЛ"',
+    'ООО "ЛЕНОБЛВОДОКАНАЛ"'
+  ]){
+    const out=compareIndependentRegistryAlias({
+      ...expected,record:{...record,short_name:badShort}
+    });
+    assert.equal(out.status,"review");
+    assert.equal(out.reason,"independent_registry_legal_form_conflict");
+    assert.equal(Object.hasOwn(out,"official_full_name"),false);
+  }
+});
+
 test("Saby registered requisites and H1 are each checked independently",()=>{
   const record=extractIndependentRegistryIdentity(pageText);
   for(const [requisites,title,wantedReq,wantedTitle] of [
