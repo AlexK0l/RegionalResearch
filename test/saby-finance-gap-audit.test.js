@@ -117,7 +117,10 @@ test("aggregate alternative structured URLs as untrusted hints without echoing t
       "id=7f794800-63b5-11e0-adec-00c30e012283",
     "https://user:password@profile.saby.ru/page/contractor-info?"+
       "id=7f794800-63b5-11e0-adec-00c30e012283",
-    "https://profile.saby.ru/page/contractor-info?id=bad"
+    "https://profile.saby.ru/page/contractor-info?id=bad",
+    "https://profile.saby.ru/page/contractor-info?"+
+      "id=7f794800-63b5-11e0-adec-00c30e012283&next=1",
+    "https://saby.ru/profile/7812019999-770701001?source=other"
   ]};
   const report=auditSabyFinanceGaps(cp);
   assert.equal(report.pending.count,2);
