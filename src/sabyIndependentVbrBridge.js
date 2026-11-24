@@ -36,11 +36,16 @@ export function chooseVbrCompanyUrl(urls,ogrn){
 }
 // VBR can display 2 copies of a value in one visible field: text nodes
 // represent desktop/mobile markup. Accept only IDENTICAL halves.
-function unwrapDuplicate(value){
+export function unwrapVbrDuplicate(value){
   const str=clean(value);
   const len=str.length/2;
   if(Number.isInteger(len)&&len>0&&str.slice(0,len)===str.slice(len))
     return str.slice(0,len);
+  // Desktop/mobile copies can also have one separating whitespace.
+  const half=(str.length-1)/2;
+  if(Number.isInteger(half)&&half>0&&str[half]===" "&&
+    str.slice(0,half)===str.slice(half+1))
+    return str.slice(0,half);
   return str;
 }
 const fields=[
@@ -66,7 +71,7 @@ export function extractVbrGeneralIdentity(text){
         const next=lines[j+1]||"";
         if(j+1>=end||fields.some(([,other])=>other===next)||
           endSection.test(next))continue;
-        const value=unwrapDuplicate(next);
+        const value=unwrapVbrDuplicate(next);
         if(!value)continue;
         if(!found.has(key))found.set(key,new Set());
         found.get(key).add(value);
