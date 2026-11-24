@@ -77,7 +77,8 @@ const labelValue=(line,label)=>{
 };
 // Read strictly within ONE bounded "Реквизиты" panel, never stitch data
 // from the header, related companies or other parts of the page.
-export function extractIndependentRegistryIdentity(raw){
+export function extractIndependentRegistryIdentity(raw,{includeAddress=false}={}){
+  const fieldLabels=includeAddress?[...labels,["address","Юридический адрес"]]:labels;
   const lines=String(raw||"").slice(0,120000)
     .split(/[\r\n]+/u).map(compact).filter(Boolean);
   const result=[];
@@ -89,13 +90,13 @@ export function extractIndependentRegistryIdentity(raw){
     }
     const seen={};
     for(let j=i+1;j<end;j++){
-      for(const [key,label] of labels){
+      for(const [key,label] of fieldLabels){
         const matched=labelValue(lines[j],label);
         if(!matched)continue;
         const value=matched.inline?matched.value:lines[j+1]||"";
         if(j+1>=end&&!matched.inline)continue;
         if(!matched.inline&&(boundaries.test(value)||
-          labels.some(([,other])=>labelValue(value,other))))continue;
+          fieldLabels.some(([,other])=>labelValue(value,other))))continue;
         if(!seen[key])seen[key]=new Set();
         if(value)seen[key].add(value);
       }
@@ -109,6 +110,16 @@ export function extractIndependentRegistryIdentity(raw){
     if(!/^\d{10}$/.test(record.inn)||!/^\d{9}$/.test(record.kpp)||
       !/^\d{13}$/.test(record.ogrn)||
       !record.full_name||!record.short_name)continue;
+    // Optional legal address must be found in the SAME requisites panel.
+    // Different addresses, historical changes and detached address-only
+    // blocks cannot be used to link a candidate to the research row.
+    if(includeAddress&&seen.address?.size===1){
+      const address=[...seen.address][0];
+      if(address.length>=12&&address.length<=700&&/\d/.test(address)&&
+        /[а-яё]/iu.test(address)&&!/[<>]/u.test(address)&&
+        !/^(?:адрес не|не указан|не подтвержд|сведения отсутствуют|недостовер)/iu.test(address))
+        record.address=address;
+    }
     result.push(record);
   }
   // Even two different complete blocks are ambiguous. Do not guess.
