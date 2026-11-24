@@ -5,6 +5,31 @@ import {planSabyFinanceBackfill,FINANCE_REVIEW_MAX_PASSES}
   from "./sabyFinanceBackfill.js";
 import {sabyInn} from "./sabyEnrichment.js";
 
+// Stored checkpoint fields can originate from external UI. Never echo an
+// arbitrary status, reason or browser exception into the operator report.
+const knownStatuses=new Set([
+  "updated","unchanged","missing","review","deferred","not_attempted"
+]);
+const knownReasons=new Set([
+  "unspecified","search_zero_unconfirmed","search_loading_stalled",
+  "saby_no_results","financial_not_verified",
+  "card_legal_name_unverified","card_identity_unverified",
+  "search_ambiguous","card_changed","collector_unavailable",
+  "search_no_unique_result","card_render_timeout","browser_action_timeout",
+  "search_scan_error","search_service_unavailable","search_input_failed",
+  "search_confirmed_empty","identity_or_source",
+  "stored_saby_inn_mismatch","stored_saby_card_mismatch",
+  "legacy_review_unclassified"
+]);
+const knownBrowserErrors=new Set([
+  "saby_search_unavailable","saby_search_canary_unverified",
+  "saby_search_canary_unavailable","saby_review_canary_unverified",
+  "saby_consecutive_unverified_cards","saby_consecutive_loading_stalls",
+  "saby_browser_unavailable"
+]);
+const safeCode=(value,allowlist,fallback)=>
+  allowlist.has(String(value||""))?String(value):fallback;
+
 function savedCardHint(row,inn){
   const e=row?.__evidence?.saby;
   if(sabyInn(e?.inn)!==inn)return {card:false,kpp:false};
@@ -24,8 +49,9 @@ function grouped(entries,outcomes,counts){
   let cardHints=0,kppHints=0;
   for(const e of entries){
     const o=outcomes[e.inn]||{};
-    const key=String(o.status||"not_attempted").slice(0,50)+":"+
-      String(o.reason||"unspecified").slice(0,80);
+    const key=safeCode(o.status||"not_attempted",
+      knownStatuses,"unknown")+":"+
+      safeCode(o.reason||"unspecified",knownReasons,"unclassified");
     groups.set(key,(groups.get(key)||0)+1);
     const hint=savedCardHint(e.row,e.inn);
     if(hint.card)cardHints++;
@@ -90,7 +116,8 @@ export function auditSabyFinanceGaps(checkpoint,{checkpointId=""}={}){
       search_unconfirmed:Number(old.unconfirmedSearches||0),
       canary_checks:Number(old.canaryChecks||0),
       canary_passed:Number(old.canaryPassed||0),
-      browser_error:String(old.browserError||"")
+      browser_error:old.browserError?
+        safeCode(old.browserError,knownBrowserErrors,"unclassified"):""
     }
   };
 }
