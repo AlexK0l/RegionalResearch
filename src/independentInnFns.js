@@ -11,7 +11,9 @@ const digit=(v,n)=>typeof v==="string"&&v.length===n&&/^\d+$/.test(v);
 const fail=code=>Object.assign(Error(code),{code});
 const asCount=v=>/^\d{1,7}$/.test(String(v??""))?Number(v):null;
 const hasChallenge=v=>v===true||v===1||v==="true"||v==="1";
-export const fnsSourceUrl=inn=>origin+"/index.html?inn="+inn;
+// The verified durable source is the form itself. The company-specific
+// identity is stored in the proof, not an invented ?inn= deep link.
+export const fnsSourceUrl=()=>origin+"/index.html";
 export const isFnsSourceUrl=(url,inn)=>digit(inn,10)&&url===fnsSourceUrl(inn);
 export function isFnsFormRoute(raw){
   try{
@@ -33,7 +35,7 @@ function shortName(raw){
     return value;
   return value.replace(/\s+(ООО|АО|ПАО|ОАО|ЗАО|ГУП|МУП|ФГУП)$/iu,", $1");
 }
-export function parseFnsSearchResult(payload,{query,exactName=false}={}){
+export function parseFnsSearchResult(payload,{query,exactName=false,completeNameSearch=false}={}){
   if(hasChallenge(payload?.captchaRequired)||hasChallenge(payload?.captcha))
     throw fail("fns_captcha_required");
   if(!Array.isArray(payload?.rows))return null;
@@ -72,8 +74,9 @@ export function parseFnsSearchResult(payload,{query,exactName=false}={}){
     raw.every(r=>r.pg===undefined||asCount(r.pg)===1);
   const numeric=/^(?:\d{10}|\d{13})$/.test(query);
   return {state:"observed",provider:"fns",
-    complete:complete&&(numeric||exactName===true),
-    allCardsRead:allRead,records:rows,query_kind:numeric?"identifier":"exact_name",
+    complete:complete&&(numeric||exactName===true||completeNameSearch===true),
+    allCardsRead:allRead,records:rows,
+    query_kind:numeric?"identifier":exactName?"exact_name":completeNameSearch?"complete_normal_name":"name",
     total_reported:countProven?raw.length:null};
 }
 function observedRequest(response,query,exactName){
@@ -93,10 +96,10 @@ function observedRequest(response,query,exactName){
   }catch{}
   return null;
 }
-export async function lookupFnsViaBrowser(page,{query,navigate,readBody}){
+export async function lookupFnsViaBrowser(page,{query,navigate,readBody,completeNameSearch=false}){
   query=clean(query);
   if(!query||query.length>250)throw fail("fns_invalid_query");
-  const exactName=!/^(?:\d{10}|\d{13})$/.test(query);
+  const exactName=!completeNameSearch&&!/^(?:\d{10}|\d{13})$/.test(query);
   // The root HTTPS URL can return a 307 downgrade to HTTP. The VPS
   // cannot reach that HTTP endpoint, while the direct HTTPS form returns
   // 200. Start on the canonical form; never follow a downgrade on purpose.
@@ -195,7 +198,7 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody}){
       if(fault)throw fail(fault);
       if(!isFnsFormRoute(page.url()))throw fail("registry_route_untrusted");
       if(token&&responses.has(token)){
-        const result=parseFnsSearchResult(responses.get(token),{query,exactName});
+        const result=parseFnsSearchResult(responses.get(token),{query,exactName,completeNameSearch});
         if(result)return result;
       }
       if(i%5===0){
