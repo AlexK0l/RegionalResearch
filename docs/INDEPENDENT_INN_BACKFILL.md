@@ -17,13 +17,20 @@ rows, with or without finance data. A run requires explicit --run:
 
 Use your normal Playwright runtime/Chromium cache. The script opens a
 separate headless context, does not log in to Saby, and creates a new
-child checkpoint saved after each row. Public pages can be unavailable
-or restricted; the tool does not bypass access controls.
+child checkpoint saved after each row. The default provider is `fns`.
+Before creating a child it checks a previously evidenced legal entity by
+INN, independently confirms the registry card, and checks the registered
+name search. If this live preflight fails, no row is visited and no child
+is created. The optional `--provider=vbr` retains the old search route.
+Public pages can be unavailable or restricted; CAPTCHA or access denial
+stops the run. The tool does not bypass access controls.
 
 For a bounded pilot use --limit=10 --max-pages=100. To continue, take the
 child_checkpoint from INDEPENDENT_INN_CHILD or INDEPENDENT_INN_DONE.
 The INDEPENDENT_INN_PLAN on that child shows remaining unprocessed IDs.
-Rows reviewed without proof are not blindly repeated. A temporary
+Rows reviewed without proof are not blindly repeated. Switching from VBR
+to FNS reopens only the three old discovery-failure categories once;
+identity conflicts and existing FNS review decisions are not reset. A temporary
 navigation failure or navigation budget leaves the interrupted row pending.
 The max-pages limit bounds top-level page navigations, not website
 subresources.
@@ -32,17 +39,20 @@ subresources.
 
 - Use the existing missing-INN queue and strict legal-form/name policy.
 - Prefer an unopposed, unoccupied saved Saby public INN/KPP hint; otherwise
-  search VBR's public search page by original legal name. Do not fabricate
-  profile slugs. Read the observed VBR company's labelled registration block,
-  legal address and active status.
-- A complete search needs an explicit result count, matching query input,
-  fully inspected distinct company links, and no visible pagination.
+  submit the original legal name in the normal public EGRUL search form,
+  with the exact-name checkbox. Observe only the corresponding submitted
+  request and its correlated response. No direct undocumented API calls,
+  manufactured session tokens or CAPTCHA bypass. The optional legacy VBR
+  route reads only observed canonical company links.
+- A complete search needs a positively bound exact query, an explicit
+  result count and fully parsed distinct records without truncation.
   A positive, unique source address/registered identifier or a complete
   search with unique exact legal name and precise original locality must
   connect the candidate to the row. Never infer region from INN prefix.
 - Check the same INN, KPP, OGRN, full/short legal names and active status in
-  the independent T-Bank registry page. Verify checksums. Both sites are
-  aggregators, not official FNS extracts.
+  the independent T-Bank registry page. Verify checksums. FNS search
+  results are official identification data, but are not signed extracts;
+  T-Bank must independently confirm the current active status.
 - Missing proof, ambiguous names, brands, branch labels, IP records
   (not supported by these legal-entity parsers), prior contradictions and
   already-owned identifiers remain in review. An inactive competing
