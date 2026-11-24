@@ -1,0 +1,289 @@
+// Independent legal-identity recovery, never a finance/contact collector.
+// Strictly preserve source rows and existing INNs. No region-specific rules.
+import {auditSourceRows,auditLegalForm} from "./sabyIdentityAudit.js";
+import {buildMissingInnRecoveryQueue,verifiedInnChecksum}
+  from "./sabyMissingInnRecovery.js";
+import {sabyInn,sabyNameTokens} from "./sabyEnrichment.js";
+import {sameRegisteredName,canonicalIndependentRegistryRoute}
+  from "./sabyIndependentNameBridge.js";
+import {isVbrCompanyUrl} from "./sabyIndependentVbrBridge.js";
+import {identityOgrns,normalizedOgrn} from "./legalIdentity.js";
+
+const clean=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
+const key=v=>clean(v).toLowerCase().replace(/ё/g,"е")
+  .replace(/[^a-zа-я0-9]+/gu," ").trim();
+const sourceForm=name=>{
+  const value=clean(name);
+  for(const [form,pattern] of [
+    ["ФГУП",/^(?:ФГУП|ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?=$|[\s«"])/iu],
+    ["ГУП",/^(?:ГУП|ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?=$|[\s«"])/iu],
+    ["МУП",/^(?:МУП|МУНИЦИПАЛЬНОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?=$|[\s«"])/iu]
+  ])if(pattern.test(value)||new RegExp(",\\s*"+form+"$","iu").test(value))return form;
+  return auditLegalForm(value);
+};
+export function registeredSourceName(name,record){
+  const form=sourceForm(name);
+  return Boolean(form&&form!=="ИП"&&
+    sourceForm(record?.full_name)===form&&sourceForm(record?.short_name)===form&&
+    (sameRegisteredName(name,record.full_name)||
+     sameRegisteredName(name,record.short_name)));
+}
+const unsafeName=name=>!sourceForm(name)||sourceForm(name)==="ИП"||
+  !sabyNameTokens(name).length||/[\/;]|(?:^|\s)(?:филиал|представительство|бренд|группа компаний)(?:\s|$)/iu.test(name);
+const occupiedRisk=new Set([
+  "candidate_legal_form_conflict","candidate_inn_used_by_other_company",
+  "possible_duplicate_or_related_company","conflicting_candidate_inns"
+]);
+const validPublicHint=(url,inn,kpp)=>{
+  try{
+    const u=new URL(String(url||""));
+    return u.protocol==="https:"&&u.hostname==="saby.ru"&&
+      !u.port&&!u.username&&!u.password&&!u.search&&!u.hash&&
+      u.pathname==="/profile/"+inn+"-"+kpp;
+  }catch{return false;}
+};
+function usableHint(target){
+  const claims=target.candidates||[];
+  if(claims.length!==1)return null;
+  const c=claims[0];
+  if(!c.checksum_valid||c.rejected_claim||c.ownership_risk!=="not_occupied")
+    return null;
+  const urls=(c.sources||[]).filter(x=>x.kind==="saby_public_profile_link")
+    .map(x=>x.source_url);
+  const matching=[...new Set(urls.flatMap(url=>{
+    const m=/\/profile\/\d{10}-(\d{9})$/.exec(String(url||""));
+    return m&&validPublicHint(url,c.inn,m[1])?[m[1]]:[];
+  }))];
+  return matching.length===1?{inn:c.inn,kpp:matching[0]}:null;
+}
+const locality=v=>key(String(v||"").replace(/^\s*(?:г(?:ород)?\.?|пгт\.?|пос(?:елок|ёлок)?\.?|село|деревня|д\.)\s+/iu,""));
+function preciseLocalityValue(sourceCity){
+  const value=clean(sourceCity);
+  if(!value||value.length>120||/[\/;(),]/u.test(value)||
+     /область|район|р-н|регион|округ|республика|край|не указан|не определ|уточня/iu.test(value))
+    return "";
+  const expected=locality(value);
+  return expected.length>=3&&/[а-яa-z]/iu.test(expected)?expected:"";
+}
+export function preciseLocalityMatch(sourceCity,registryAddress){
+  const expected=preciseLocalityValue(sourceCity);
+  if(!expected)return false;
+  return String(registryAddress||"").split(",").some(part=>{
+    if(/^\s*(?:ул(?:ица)?\.?|проспект|пр-кт|пер(?:еулок)?\.?|шоссе|д(?:ом)?\.?\s*\d|корпус|помещение|офис|кв(?:артира)?\.?)\s*/iu.test(part))return false;
+    return locality(part.replace(/^\s*\d{6}\s+/u,""))===expected;
+  });
+}
+function addressMatches(row,address){
+  const stored=clean(row?.["Юридический адрес"]||
+    row?.__evidence?.identity_verification?.legal_address);
+  return stored.length>=20&&/\d/.test(stored)&&
+    /улица|ул\.|проспект|пр-кт|шоссе|переулок|пер\./iu.test(stored)&&
+    key(stored)===key(address);
+}
+function hasExactSourceAddressConflict(row,address){
+  const explicit=clean(row?.["Юридический адрес"]||
+    row?.__evidence?.identity_verification?.legal_address);
+  return Boolean(explicit&&!addressMatches(row,address));
+}
+function validRecord(record){
+  return Boolean(record&&/^\d{10}$/.test(record.inn)&&
+    verifiedInnChecksum(record.inn)&&/^\d{13}$/.test(record.ogrn)&&
+    normalizedOgrn(record.ogrn)===record.ogrn&&
+    /^\d{9}$/.test(record.kpp)&&record.address&&record.active===true);
+}
+export function chooseIndependentInnCandidate({row,target,search,owners=new Set()}){
+  const review=(reason,candidates=[])=>({status:"review",reason,candidates});
+  if(unsafeName(target.organization))return review("source_legal_name_unresolved");
+  if(occupiedRisk.has(target.decision)||target.candidates?.some(c=>c.rejected_claim)||
+    row?.__evidence?.legal_identity_conflicts?.length)
+    return review("source_identity_conflict");
+  if(clean(row["ИНН"]))return review("nonempty_invalid_inn");
+  if(search?.state!=="observed")return review("registry_search_unconfirmed");
+  const observed=Array.isArray(search.records)?search.records:[];
+  // An inactive or unverified exact-name entity is still a conflicting
+  // name candidate; do not use active status alone to resolve its owner.
+  const allExact=observed.filter(item=>item.record&&
+    registeredSourceName(target.organization,item.record)&&
+    isVbrCompanyUrl(item.url,item.record.ogrn));
+  const exact=allExact.filter(item=>validRecord(item.record));
+  const unique=[...new Map(exact.map(item=>[item.record.ogrn,item])).values()];
+  const candidates=unique.map(({record,url})=>({inn:record.inn,kpp:record.kpp,
+    ogrn:record.ogrn,source_url:url}));
+  const hint=usableHint(target);
+  const storedOgrns=identityOgrns(row);
+  if(storedOgrns.length>1)return review("source_ogrn_conflict",candidates);
+  const anchored=unique.filter(({record})=>
+    !hasExactSourceAddressConflict(row,record.address)&&
+    (storedOgrns.length===0||storedOgrns[0]===record.ogrn)&&
+    (!hint||(hint.inn===record.inn&&hint.kpp===record.kpp))&&
+    (addressMatches(row,record.address)||
+      (hint&&hint.inn===record.inn&&hint.kpp===record.kpp&&
+        (!preciseLocalityValue(row["Город/район"])||
+          preciseLocalityMatch(row["Город/район"],record.address)))||
+      (storedOgrns.length===1&&storedOgrns[0]===record.ogrn&&
+        preciseLocalityMatch(row["Город/район"],record.address))));
+  let match,sourceBasis;
+  if(anchored.length===1){
+    match=anchored[0];
+    sourceBasis=addressMatches(row,match.record.address)?"same_legal_address":
+      hint?"same_saved_public_inn_kpp":"same_saved_ogrn_and_locality";
+  }else if(anchored.length>1){
+    return review("registry_identity_ambiguous",candidates);
+  }else{
+    if(hint||storedOgrns.length||unique.some(({record})=>
+      hasExactSourceAddressConflict(row,record.address)))
+      return review("source_requisites_conflict",candidates);
+    // A single visible result is not proof of completeness. Only a
+    // positively observed complete list, fully inspected, may disambiguate
+    // an exact legal name using a specific original locality.
+    const local=unique.filter(({record})=>
+      preciseLocalityMatch(row["Город/район"],record.address));
+    const localConflicts=allExact.filter(({record})=>
+      preciseLocalityMatch(row["Город/район"],record.address));
+    if(!search.complete||!search.allCardsRead||local.length!==1||
+      new Set(localConflicts.map(item=>item.record.ogrn)).size!==1)
+      return review(local.length>1||unique.length>1||localConflicts.length>1?
+        "registry_identity_ambiguous":unique.length?
+        "source_link_not_proven":"registry_no_exact_legal_name",candidates);
+    match=local[0];
+    sourceBasis="complete_name_search_exact_locality";
+  }
+  if(owners.has(match.record.inn))return review("inn_already_owned",candidates);
+  return {status:"candidate",sourceBasis,record:match.record,url:match.url,candidates};
+}
+export function verifyIndependentInnCandidate(selection,second,target){
+  const review=reason=>({status:"review",reason,candidates:selection?.candidates||[]});
+  if(selection?.status!=="candidate")return selection;
+  const a=selection.record,b=second?.record;
+  if(!b||!canonicalIndependentRegistryRoute(second.url,a.ogrn)||
+    b.active!==true||b.inn!==a.inn||b.kpp!==a.kpp||b.ogrn!==a.ogrn||
+    !registeredSourceName(target.organization,b)||
+    !sameRegisteredName(a.full_name,b.full_name)||
+    !sameRegisteredName(a.short_name,b.short_name))
+    return review("independent_registry_disagreement");
+  return {status:"verified",reason:"two_registry_identity_verified",
+    source_basis:selection.sourceBasis,inn:a.inn,kpp:a.kpp,ogrn:a.ogrn,
+    legal_name:a.full_name,short_name:a.short_name,legal_address:a.address,
+    source_urls:[selection.url,second.url]};
+}
+function entries(checkpoint){
+  if(checkpoint?.version!==1||
+     !["full","saby"].includes(checkpoint.source_mode)||
+     !["saby","completed"].includes(checkpoint.phase)||
+     (checkpoint.source_mode==="full"&&checkpoint.phase!=="completed")||
+     !Array.isArray(checkpoint.final_result?.statistics))
+    throw Error("REGISTRY_INN_CHECKPOINT_NOT_READY");
+  const all=auditSourceRows(checkpoint);
+  const ids=new Set();
+  for(const e of all){
+    const id=clean(e.row?.__canonical_id);
+    if(!/^[a-z0-9_.:-]{1,100}$/i.test(id)||ids.has(id)||
+      ["__proto__","constructor","prototype"].includes(id))
+      throw Error("REGISTRY_INN_CANONICAL_ID_MISSING_OR_DUPLICATE");
+    ids.add(id);
+  }
+  return all;
+}
+export function planIndependentInnBackfill(checkpoint,{limit=10000,targetId=""}={}){
+  if(!Number.isSafeInteger(limit)||limit<1||limit>10000)
+    throw Error("REGISTRY_INN_BAD_LIMIT");
+  const all=entries(checkpoint);
+  const byId=new Map(all.map(e=>[clean(e.row.__canonical_id),e.row]));
+  const previous=checkpoint.independent_inn_backfill_outcomes||{};
+  const queue=buildMissingInnRecoveryQueue(checkpoint).rows;
+  const pending=queue.filter(t=>!Object.hasOwn(previous,t.original_canonical_id));
+  // Prior credible identifiers, then actual legal names, then brands.
+  const tier=t=>usableHint(t)?0:unsafeName(t.organization)?2:1;
+  pending.sort((a,b)=>tier(a)-tier(b));
+  const selected=(targetId?pending.filter(t=>t.original_canonical_id===targetId):
+    pending).slice(0,limit);
+  if(targetId&&selected.length!==1)throw Error("REGISTRY_INN_TARGET_NOT_PENDING");
+  return {total:all.length,missing:queue.length,pending:pending.length,
+    scheduled:selected.length,previously_reviewed:queue.length-pending.length,
+    saved_public_hints:pending.filter(usableHint).length,
+    legal_name_unresolved:pending.filter(t=>unsafeName(t.organization)).length,
+    selected,byId};
+}
+export async function runIndependentInnBackfill({
+  checkpoint,sourceId,childId,limit=1,targetId="",lookup,onCheckpoint,
+  onProgress=()=>{}
+}){
+  if(typeof lookup?.search!=="function"||typeof lookup?.confirm!=="function"||
+    typeof onCheckpoint!=="function"||
+    !sourceId||!childId||sourceId===childId)
+    throw Error("REGISTRY_INN_INVALID_RUN");
+  const parent=structuredClone(checkpoint);
+  const plan=planIndependentInnBackfill(parent,{limit,targetId});
+  const all=entries(parent);
+  const owners=new Set(all.map(e=>sabyInn(e.row["ИНН"])).filter(Boolean));
+  const outcomes={...(parent.independent_inn_backfill_outcomes||{})};
+  const stats={scheduled:plan.scheduled,processed:0,added:0,review:0,
+    pending:plan.pending,stop_reason:""};
+  const now=new Date().toISOString();
+  const snapshot={...parent,created_at:now,updated_at:now,
+    independent_inn_backfill_source_job_id:sourceId,
+    independent_inn_backfill_root_job_id:parent.independent_inn_backfill_root_job_id||sourceId,
+    independent_inn_backfill_outcomes:outcomes,independent_inn_backfill_stats:stats};
+  const save=async()=>{
+    snapshot.updated_at=new Date().toISOString();
+    stats.pending=plan.pending-stats.processed;
+    await onCheckpoint(structuredClone(snapshot));
+  };
+  await save();
+  for(const target of plan.selected){
+    const id=target.original_canonical_id,row=plan.byId.get(id);
+    let result;
+    if(unsafeName(target.organization))result={status:"review",reason:"source_legal_name_unresolved"};
+    else if(occupiedRisk.has(target.decision)||
+      target.candidates?.some(c=>c.rejected_claim)||
+      row.__evidence?.legal_identity_conflicts?.length)
+      result={status:"review",reason:"source_identity_conflict"};
+    else if(clean(row["ИНН"]))result={status:"review",reason:"nonempty_invalid_inn"};
+    else{
+      try{
+        const search=await lookup.search(target,usableHint(target));
+        const selection=chooseIndependentInnCandidate({row,target,search,owners});
+        if(selection.status==="candidate"){
+          const second=await lookup.confirm(selection.record.ogrn);
+          result=verifyIndependentInnCandidate(selection,second,target);
+        }else result=selection;
+      }catch(error){
+        stats.stop_reason=["navigation_budget","registry_http_unavailable",
+          "registry_route_untrusted","registry_browser_unavailable",
+          "registry_search_unresponsive"].includes(error?.code)?
+          error.code:"registry_browser_unavailable";
+        await save();
+        break;
+      }
+    }
+    if(result.status==="verified"){
+      // The second check happens immediately before the only CRM write.
+      // Never overwrite an existing value or introduce a duplicate INN.
+      if(clean(row["ИНН"])||owners.has(result.inn)){
+        result={status:"review",reason:"inn_already_owned"};
+      }else{
+        const evidence=row.__evidence||{};
+        const proof={...result,method:"independent_registry_backfill",
+          verified_at:new Date().toISOString()};
+        row["ИНН"]=result.inn;
+        row.__evidence={...evidence,identity_verification:proof,
+          source_urls:[...new Set([...(Array.isArray(evidence.source_urls)?
+            evidence.source_urls:[]),...result.source_urls])],
+          notes:[...new Set([...(Array.isArray(evidence.notes)?evidence.notes:[]),
+            "Подтверждённый ИНН: "+result.inn+
+            "; ОГРН "+result.ogrn+". Независимая сверка двух реестров."])]};
+        // Keep all other existing comment lines verbatim.
+        if(typeof row.__comment==="string"&&/^ИНН:[^\r\n]*$/imu.test(row.__comment))
+          row.__comment=row.__comment.replace(/^ИНН:[^\r\n]*$/imu,"ИНН: "+result.inn);
+        owners.add(result.inn);
+        stats.added++;
+      }
+    }
+    if(result.status!=="verified")stats.review++;
+    outcomes[id]=result;
+    stats.processed++;
+    await save();
+    await onProgress({...stats});
+  }
+  return {snapshot,stats:{...stats},childId};
+}
