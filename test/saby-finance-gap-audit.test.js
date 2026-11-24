@@ -82,7 +82,8 @@ test("arbitrary checkpoint reasons and browser errors are never printed",()=>{
   };
   cp.saby_finance_backfill_stats.browserError="PRIVATE_BROWSER_URL";
   const result=auditSabyFinanceGaps(cp);
-  assert.equal(result.pending.by_reason[0].reason,"unknown:unclassified");
+  assert.ok(result.pending.by_reason.some(x=>
+    x.reason==="unknown:unclassified"&&x.count===1));
   assert.equal(result.latest_pass.browser_error,"unclassified");
   assert.doesNotMatch(JSON.stringify(result),
     /PRIVATE_STATUS_TOKEN|SECRET_COMPANY_INN_URL|PRIVATE_BROWSER_URL/);
