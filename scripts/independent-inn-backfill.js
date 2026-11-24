@@ -70,7 +70,10 @@ async function main(){
         }catch(error){
           const allowed=new Set(["navigation_budget","registry_http_unavailable",
             "registry_route_untrusted","registry_browser_unavailable",
-            "fns_invalid_query","fns_form_unavailable","fns_captcha_required",
+            "fns_invalid_query","fns_form_unavailable",
+          "fns_query_input_unavailable","fns_submit_button_unavailable",
+          "fns_query_not_set","fns_exact_checkbox_unavailable",
+          "fns_exact_checkbox_not_selected","fns_submit_failed","fns_captcha_required",
             "fns_search_token_missing","fns_search_token_conflict",
             "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved"]);
           canary={verified:false,reason:allowed.has(error?.code)?
