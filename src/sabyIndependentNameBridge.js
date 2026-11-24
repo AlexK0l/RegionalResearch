@@ -127,6 +127,14 @@ export function compareIndependentRegistryAlias({
   if(!record)return reject("independent_requisites_unavailable");
   if(record.inn!==inn||record.kpp!==kpp||record.ogrn!==ogrn)
     return reject("independent_registry_identifier_mismatch");
+  // A corrupted third-party record must not bind LLC and JSC, or GUP and
+  // MUP, as aliases of one legal person even when its numbers coincide.
+  const legalForm=value=>unitaryName(value).form||auditLegalForm(value);
+  const registeredFullForm=legalForm(record.full_name);
+  const registeredShortForm=legalForm(record.short_name);
+  if(registeredFullForm&&registeredShortForm&&
+     registeredFullForm!==registeredShortForm)
+    return reject("independent_registry_legal_form_conflict");
   // Each text on the research side and both Saby panels must match an
   // EXACT registered alias (full or short) from the SAME third-party record.
   // The source is often the actual abbreviated company name, not the legal
