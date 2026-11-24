@@ -119,6 +119,63 @@ test("Saby requisites may show FULL registered name while H1 shows SHORT",()=>{
   assert.equal(another.title_role,"short");
 });
 
+test("source can be exact REGISTERED short name from same full/short record",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  const cases=[
+    [short,full,sabyShort,"short","full","short"],
+    [sabyShort,short,full,"short","short","full"],
+    [full,short,sabyShort,"full","short","short"]
+  ];
+  for(const [sourceName,requisites,title,sourceRole,reqRole,titleRole] of cases){
+    const actual=compareIndependentRegistryAlias({
+      ...expected,sourceName,sabyShortName:requisites,
+      sabyPublicTitle:title,record
+    });
+    assert.equal(actual.status,"verified");
+    assert.equal(actual.source_role,sourceRole);
+    assert.equal(actual.requisites_role,reqRole);
+    assert.equal(actual.title_role,titleRole);
+    assert.equal(actual.official_full_name,full);
+    assert.equal(actual.inn,inn);
+    assert.equal(actual.kpp,kpp);
+    assert.equal(actual.ogrn,ogrn);
+  }
+});
+
+test("registered-short source still rejects wrong legal form, prefix and all wrong identifiers",()=>{
+  const record=extractIndependentRegistryIdentity(pageText);
+  for(const sourceName of [
+    "МУП «Леноблводоканал»",
+    "ФГУП «Леноблводоканал»",
+    'ГУП «Леноблводоканал Север»',
+    'ГУП «Леноблводоканал-Сервис»',
+    'ГУП «Леноблводоканал филиал»',
+    'ГУП «Водоканал»',
+    "Совсем другая компания"
+  ]){
+    const actual=compareIndependentRegistryAlias({
+      ...expected,sourceName,
+      sabyShortName:short,sabyPublicTitle:short,record
+    });
+    assert.equal(actual.status,"review");
+    assert.equal(actual.reason,"independent_registered_name_mismatch");
+    assert.equal(actual.source_role,"none");
+    assert.equal(Object.hasOwn(actual,"official_full_name"),false);
+  }
+  for(const [field,bad] of [
+    ["inn","7707083893"],["kpp","470401002"],
+    ["ogrn","1167847156301"]
+  ]){
+    const actual=compareIndependentRegistryAlias({
+      ...expected,sourceName:short,
+      sabyShortName:short,sabyPublicTitle:short,
+      record:{...record,[field]:bad}
+    });
+    assert.equal(actual.status,"review");
+    assert.equal(actual.reason,"independent_registry_identifier_mismatch");
+  }
+});
+
 test("Saby registered requisites and H1 are each checked independently",()=>{
   const record=extractIndependentRegistryIdentity(pageText);
   for(const [requisites,title,wantedReq,wantedTitle] of [
