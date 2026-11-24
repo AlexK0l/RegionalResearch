@@ -291,6 +291,9 @@ export async function createPublicRegistryLookup(page,{
         const observed=await lookupFnsViaBrowser(page,{query,navigate,readBody,
           completeNameSearch:useExtract});
         lastFnsSearch=observed;
+        if(observed.query_kind!=="identifier")
+          diag("fns","name_search",observed.complete&&observed.allCardsRead?
+            "fns_name_complete":"fns_name_incomplete",observed.completeness);
         return observed;
       }
       const check=value=>exactRegistrySearchRoute(value,query);

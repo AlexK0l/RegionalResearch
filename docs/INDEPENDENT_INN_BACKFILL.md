@@ -21,8 +21,15 @@ child checkpoint saved after each row. The default provider is `fns`.
 The default FNS confirmation mode is `extract`; install `pdftotext`
 (`poppler-utils` on Ubuntu). Before creating a child it checks up to three
 previously evidenced legal entities by INN, downloads and parses a complete
-current official EGRUL extract, and checks a complete registered-name search.
-`--confirmation=registry` retains the previous third-party confirmation route.
+current official EGRUL extract, and checks that a registered-name query
+returns the same known identity. In extract mode a positive but incomplete
+name result passes service-health preflight with
+`verified_name_search_incomplete` and `name_search_complete:false`. This
+does not authorize a missing-INN assignment. Each unanchored company
+still requires a complete search, otherwise it is marked
+`registry_name_search_incomplete` without unnecessary PDF downloads.
+`--confirmation=registry` retains the previous third-party confirmation route
+and strict complete-name preflight.
 A company-specific non-active status does not establish a service outage. If this live preflight fails, no row is visited and no child
 is created. The optional `--provider=vbr` retains the old search route.
 Public pages can be unavailable or restricted; CAPTCHA or access denial
@@ -113,5 +120,12 @@ without raw exceptions, private data, or transient session tokens.
 The 2026-11-24 VPS probe downloaded a 174465-byte current FNS PDF for
 7811285487 and Poppler successfully extracted the first pages. The known
 first-page layout is covered by a fixture with a synthetic tax-section
-continuation. Full-document parsing and normal name-query completeness
-must still pass the live preflight before processing the saved queue.
+continuation. Full-document parsing and normal name-query identity must pass the live
+preflight before processing the saved queue. On 2026-11-24 the first live
+run downloaded three PDFs and matched complete 29- and 17-page extracts;
+one other PDF failed row-number validation. The known companies appeared
+in name search but completeness was unproven. The updated preflight
+separates service health from per-row uniqueness. Name search diagnostics
+report counts, total proof and page flags, not company names or IDs.
+The actual recovery rate and the cause of the incomplete search still
+need live validation.

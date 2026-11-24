@@ -615,3 +615,68 @@ test("official extract proof requires source linkage, all identifiers and curren
     {...official,record:{...official.record,active:false}}
   ])assert.equal(verifyIndependentInnCandidate(candidate,bad,target).status,"review");
 });
+
+// Regression for the 2026-11-24 VPS outcome: positive official extract,
+// positive matching name hit, but incomplete broad name search.
+test("official extract canary reports incomplete name search without blocking unrelated queue rows",async()=>{
+  const checkpoint=cp([row("known",short,{"ИНН":inn,__evidence:{
+    identity_verification:{inn,source_urls:[source]}}})]);
+  const before=JSON.stringify(checkpoint);
+  const pdf={kind:"fns_extract",url:fnsSourceUrl(inn),record:bankRecord,
+    extract:{date:"24.11.2026",number:"ЮЭ9965-26-254581820",page_count:29,
+      status_basis:"complete_extract_no_adverse_status",sha256:"a".repeat(64)}};
+  const partial=parseFnsSearchResult({rows:[{...raw,tot:"27"}]},
+    {query:full,completeNameSearch:true});
+  const lookup={search:async(t,hint)=>hint?official():partial,confirm:async()=>pdf};
+  assert.equal(partial.complete,false);
+  assert.deepEqual(partial.completeness,{raw_rows:1,parsed_rows:1,
+    distinct_ogrns:1,reported_total:27,total_proven:false,first_page_only:true,
+    missing_or_invalid_total_rows:0,missing_page_rows:0,all_cards_read:true});
+  assert.deepEqual(await checkFnsRegistryCanary(checkpoint,lookup),
+    {verified:true,reason:"verified_name_search_incomplete",name_search_complete:false});
+  assert.deepEqual(await checkFnsRegistryCanary(checkpoint,{...lookup,
+    search:async(t,hint)=>hint?official():{...partial,records:[]}}),
+    {verified:false,reason:"fns_canary_name_unverified"});
+  assert.deepEqual(await checkFnsRegistryCanary(checkpoint,{...lookup,
+    confirm:async()=>({...pdf,extract:{...pdf.extract,sha256:""}})}),
+    {verified:false,reason:"fns_canary_confirmation_unverified"});
+  assert.equal(JSON.stringify(checkpoint),before);
+});
+test("incomplete unanchored FNS search is reviewed without extracting PDFs, then next complete row can recover",async()=>{
+  const other={...raw,i:"7810165652",o:"1024701479571",p:"472701001",
+    n:'АКЦИОНЕРНОЕ ОБЩЕСТВО "ВТОРОЙ ПРИМЕР"',c:'АО "ВТОРОЙ ПРИМЕР"'};
+  const checkpoint=cp([row("a"),row("b",other.c)]);
+  const before=JSON.stringify(checkpoint),calls=[];
+  const partial=parseFnsSearchResult({rows:[{...raw,a:null,tot:"12"}]},
+    {query:short,completeNameSearch:true});
+  const complete=parseFnsSearchResult({rows:[other]},
+    {query:other.c,completeNameSearch:true});
+  const proof={kind:"fns_extract",url:fnsSourceUrl(other.i),
+    record:{...complete.records[0].record,active:true},
+    extract:{date:"24.11.2026",number:"ЮЭ9965-26-254581820",page_count:17,
+      status_basis:"complete_extract_no_adverse_status",sha256:"b".repeat(64)}};
+  const output=await runIndependentInnBackfill({checkpoint,sourceId:"p",
+    childId:"c",provider:"fns",limit:2,lookup:{
+      search:async t=>t.original_canonical_id==="a"?partial:complete,
+      confirm:async id=>{calls.push(id);return proof;}
+    },onCheckpoint:async()=>{}});
+  assert.equal(output.stats.processed,2);
+  assert.equal(output.stats.added,1);
+  assert.equal(output.stats.review,1);
+  assert.deepEqual(calls,[other.o]);
+  assert.equal(output.snapshot.independent_inn_backfill_outcomes.a.reason,
+    "registry_name_search_incomplete");
+  assert.equal(output.snapshot.final_result.direct_buyers[0]["ИНН"],"");
+  assert.equal(output.snapshot.final_result.direct_buyers[1]["ИНН"],other.i);
+  assert.equal(JSON.stringify(checkpoint),before);
+  // Missing totals or unreadable records stay incomplete; do not
+  // interpret a returned positive result as proof of unique identity.
+  const unreadable=parseFnsSearchResult({rows:[{...raw,tot:"2"},null]},
+    {query:short,completeNameSearch:true});
+  assert.equal(unreadable.complete,false);
+  assert.equal(unreadable.completeness.missing_or_invalid_total_rows,1);
+  assert.equal(unreadable.completeness.parsed_rows,1);
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,
+    region:"Ленинградская область",search:unreadable}).reason,
+    "registry_name_search_incomplete");
+});
