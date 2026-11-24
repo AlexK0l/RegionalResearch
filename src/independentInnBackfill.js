@@ -57,13 +57,17 @@ function usableHint(target){
   return matching.length===1?{inn:c.inn,kpp:matching[0]}:null;
 }
 const locality=v=>key(String(v||"").replace(/^\s*(?:г(?:ород)?\.?|пгт\.?|пос(?:елок|ёлок)?\.?|село|деревня|д\.)\s+/iu,""));
-export function preciseLocalityMatch(sourceCity,registryAddress){
+function preciseLocalityValue(sourceCity){
   const value=clean(sourceCity);
   if(!value||value.length>120||/[\/;(),]/u.test(value)||
      /область|район|р-н|регион|округ|республика|край|не указан|не определ|уточня/iu.test(value))
-    return false;
+    return "";
   const expected=locality(value);
-  if(expected.length<3||!/[а-яa-z]/iu.test(expected))return false;
+  return expected.length>=3&&/[а-яa-z]/iu.test(expected)?expected:"";
+}
+export function preciseLocalityMatch(sourceCity,registryAddress){
+  const expected=preciseLocalityValue(sourceCity);
+  if(!expected)return false;
   return String(registryAddress||"").split(",").some(part=>{
     if(/^\s*(?:ул(?:ица)?\.?|проспект|пр-кт|пер(?:еулок)?\.?|шоссе|д(?:ом)?\.?\s*\d|корпус|помещение|офис|кв(?:артира)?\.?)\s*/iu.test(part))return false;
     return locality(part.replace(/^\s*\d{6}\s+/u,""))===expected;
@@ -113,7 +117,9 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
     (storedOgrns.length===0||storedOgrns[0]===record.ogrn)&&
     (!hint||(hint.inn===record.inn&&hint.kpp===record.kpp))&&
     (addressMatches(row,record.address)||
-      (hint&&hint.inn===record.inn&&hint.kpp===record.kpp)||
+      (hint&&hint.inn===record.inn&&hint.kpp===record.kpp&&
+        (!preciseLocalityValue(row["Город/район"])||
+          preciseLocalityMatch(row["Город/район"],record.address)))||
       (storedOgrns.length===1&&storedOgrns[0]===record.ogrn&&
         preciseLocalityMatch(row["Город/район"],record.address))));
   let match,sourceBasis;
@@ -171,7 +177,9 @@ function entries(checkpoint){
   const ids=new Set();
   for(const e of all){
     const id=clean(e.row?.__canonical_id);
-    if(!id||ids.has(id))throw Error("REGISTRY_INN_CANONICAL_ID_MISSING_OR_DUPLICATE");
+    if(!/^[a-z0-9_.:-]{1,100}$/i.test(id)||ids.has(id)||
+      ["__proto__","constructor","prototype"].includes(id))
+      throw Error("REGISTRY_INN_CANONICAL_ID_MISSING_OR_DUPLICATE");
     ids.add(id);
   }
   return all;
