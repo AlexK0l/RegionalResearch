@@ -160,6 +160,37 @@ test("only independently registered full/short aliases can reconcile private tit
   assert.equal(unrelated.reason,"private_public_name_disconnected");
 });
 
+test("registered-short source is preserved after verified public/private identity",()=>{
+  const i="4703144282",k="470401001";
+  const expectedName='ГУП "ЛЕНОБЛВОДОКАНАЛ"';
+  const full='ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ВОДОКАНАЛ ЛЕНИНГРАДСКОЙ ОБЛАСТИ"';
+  const privateTitle='ГУП "ЛЕНОБЛВОДОКАНАЛ"';
+  const publicTitle="Леноблводоканал, ГУП";
+  const detail=[
+    "О компании",privateTitle,"Контакты","Реквизиты",
+    "ИНН",i,"КПП",k,"Контакты"
+  ].join("\n");
+  const out=acceptSabyPublicIdentityFallback({
+    expectedInn:i,expectedName,
+    privateRoute:"https://profile.saby.ru/page/contractor-info?id=OPAQUE",
+    cardAssessment:assessment,
+    privateText:detail,privateHeadings:[privateTitle],
+    selectedSearchTitle:privateTitle,
+    publicResult:{
+      status:"verified",official_inn:i,official_kpp:k,
+      official_name:full,public_short_name:publicTitle,
+      match_type:"independent_registry_full_short_bridge"
+    }
+  });
+  assert.equal(out.ok,true);
+  assert.equal(out.identity.verified,true);
+  assert.equal(out.identity.inn,i);
+  assert.equal(out.identity.kpp,k);
+  assert.equal(out.identity.name,expectedName,
+    "the finance writer verifies the researched source alias again");
+  assert.equal(out.identity.registered_name,full);
+});
+
 test("reject mismatched detail, nonverified public profile and unconnected private header",()=>{
   const params={
     expectedInn:inn,expectedName:name,privateRoute,
