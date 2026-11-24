@@ -302,39 +302,46 @@ test("registered name roles are allowlisted in safe public and post-route logs",
       independent_bridge_attempted:true,independent_bridge_verified:false,
       independent_bridge_provider:"vbr",
       independent_bridge_reason:"independent_short_name_mismatch",
+      independent_source_name_role:"short",
       independent_requisites_name_role:"full",
       independent_title_name_role:"short",
       private_name:"SECRET_COMPANY",
       registry_url:"SECRET_PROFILE"
     }
   });
+  assert.equal(proof.independent_source_name_role,"short");
   assert.equal(proof.independent_requisites_name_role,"full");
   assert.equal(proof.independent_title_name_role,"short");
   assert.equal(proof.independent_bridge_provider,"vbr");
   const safe=safeSabyPostRouteDiagnostic({
     reason:"public_identity_unverified",ok:false,...proof
   });
+  assert.equal(safe.independent_source_name_role,"short");
   assert.equal(safe.independent_requisites_name_role,"full");
   assert.equal(safe.independent_title_name_role,"short");
   assert.doesNotMatch(JSON.stringify(safe),/SECRET_COMPANY|SECRET_PROFILE/);
   const success=safeSabyPostRouteDiagnostic({
     reason:"post_route_registered_identity_verified",ok:true,
     independent_bridge_verified:true,independent_bridge_provider:"vbr",
+    independent_source_name_role:"short",
     independent_requisites_name_role:"full",
     independent_title_name_role:"short"
   });
   assert.equal(success.independent_bridge_verified,true);
+  assert.equal(success.independent_source_name_role,"short");
   assert.equal(success.independent_requisites_name_role,"full");
   assert.equal(success.independent_title_name_role,"short");
   const malicious=safeSabyPublicProofReason({
     reason:"name_not_matched_to_registered_entity",
     diagnostic:{
       independent_bridge_provider:"SECRET_PROFILE",
+      independent_source_name_role:"SECRET_COMPANY",
       independent_requisites_name_role:"SECRET_COMPANY",
       independent_title_name_role:"SECRET_PROFILE"
     }
   });
   assert.equal(malicious.independent_bridge_provider,"unknown");
+  assert.equal(malicious.independent_source_name_role,"unknown");
   assert.equal(malicious.independent_requisites_name_role,"unknown");
   assert.equal(malicious.independent_title_name_role,"unknown");
 });
