@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {parseFnsSearchResult,fnsSourceUrl,isFnsFormRoute,lookupFnsViaBrowser}
+import {parseFnsSearchResult,fnsSourceUrl,isFnsFormRoute,lookupFnsViaBrowser,fnsRegionLabelMatches}
   from "../src/independentInnFns.js";
 import {chooseIndependentInnCandidate,verifyIndependentInnCandidate,
   planIndependentInnBackfill,runIndependentInnBackfill,checkFnsRegistryCanary,
   preciseLocalityMatch,hydrateFnsSearchAddresses} from "../src/independentInnBackfill.js";
 import {extractVbrGeneralIdentity} from "../src/sabyIndependentVbrBridge.js";
-import {extractRegistryVbrRecord,extractRegistryTbankRecord,createPublicRegistryLookup,registrySearchUrl} from "../src/independentInnRegistryBrowser.js";
+import {extractRegistryVbrRecord,extractRegistryTbankRecord,createPublicRegistryLookup,registrySearchUrl,nextFnsExtractFailureCount} from "../src/independentInnRegistryBrowser.js";
 import {extractIndependentRegistryIdentity} from "../src/sabyIndependentNameBridge.js";
 import {parseOfficialFnsExtract,isOfficialExtractProof} from "../src/independentInnFnsExtract.js";
 
@@ -114,10 +114,11 @@ test("FNS live preflight exercises exact INN, independent card and exact registe
 });
 function browser({challenge=false,wrongQuery=false,staleOnly=false,
   hiddenCheckbox=true,missingButton=false,missingLabel=false,
-  ineffectiveLabel=false,missingAssociatedLabel=false}={}){
+  ineffectiveLabel=false,missingAssociatedLabel=false,
+  regionWidget=false,wrongRegion=false}={}){
   const token="0123456789ABCDEF",old="0000000000000000";
   const listeners=new Set(),visits=[],actions=[];
-  let value="",checked=false;
+  let value="",checked=false,regionValue="";
   const input={count:async()=>1,isEnabled:async()=>true,waitFor:async()=>{},
     fill:async v=>{value=v;actions.push("fill");},inputValue:async()=>value};
   const checkbox={count:async()=>1,isEnabled:async()=>true,
@@ -139,7 +140,8 @@ function browser({challenge=false,wrongQuery=false,staleOnly=false,
   const submit={count:async()=>missingButton?0:1,isEnabled:async()=>!missingButton,
     waitFor:async()=>{if(missingButton)throw Error("button missing");},click:async()=>{
     actions.push("submit");
-    const post=new URLSearchParams({query:wrongQuery?"ДРУГОЙ":value,nameEq:checked?"on":""}).toString();
+    const post=new URLSearchParams({query:wrongQuery?"ДРУГОЙ":value,nameEq:checked?"on":"",
+      region:wrongRegion?"99":regionValue}).toString();
     if(challenge){
       await emit(response(host+"/","POST",{captchaRequired:true},post));return;
     }
@@ -148,6 +150,13 @@ function browser({challenge=false,wrongQuery=false,staleOnly=false,
     if(!staleOnly)await emit(response(host+"/search-result/"+token+"?r=1","GET",{rows:[raw]}));
     await emit(response(host+"/","POST",{t:token},post));
   }};
+  const regionInput={count:async()=>regionWidget?1:0,isVisible:async()=>true,
+    click:async()=>actions.push("region_open")};
+  const regionForm={count:async()=>1,evaluate:async()=>[regionValue]};
+  const regionOption={filter:()=>regionOption,first:()=>regionOption,
+    waitFor:async()=>{},count:async()=>1,innerText:async()=>"47 - Ленинградская область",
+    click:async()=>{regionValue="47";actions.push("region_select");}};
+  const regionField={filter:()=>regionField,locator:()=>regionInput};
   const page={
     url:()=>host+"/index.html",
     locator:selector=>{
@@ -155,9 +164,13 @@ function browser({challenge=false,wrongQuery=false,staleOnly=false,
       if(selector==='button#btnSearch[type="submit"]')return submit;
       if(selector==='input#nameEq[name="nameEq"][type="checkbox"]')return checkbox;
       if(selector==='label[for="nameEq"], label:has(input#nameEq)')return label;
+      if(selector==='input#region[name="region"][data-dict="REGIONS"][data-kind="SET"]')return regionInput;
+      if(selector==="form#frmSearch")return regionForm;
+      if(selector==="div.form-field")return regionField;
       throw Error("unexpected selector: "+selector);
     },
     getByText:(text,opts)=>{
+      if(text instanceof RegExp){assert.ok(text.test("47 - Ленинградская область"));return regionOption;}
       assert.equal(text,"Искать по точному соответствию наименования юридического лица или фамилии, имени и отчеству");
       assert.equal(opts.exact,true);return labelText;
     },
@@ -679,4 +692,83 @@ test("incomplete unanchored FNS search is reviewed without extracting PDFs, then
   assert.equal(chooseIndependentInnCandidate({row:row(),target,
     region:"Ленинградская область",search:unreadable}).reason,
     "registry_name_search_incomplete");
+});
+
+// A successful download plus an unrecognized document layout is not a
+// network outage; only a failure to receive usable PDF text counts.
+test("PDF-specific proof failures do not trip the transport circuit breaker",()=>{
+  let failures=2;
+  for(let i=0;i<4;i++){
+    failures=nextFnsExtractFailureCount(failures,null,{
+      reason:"fns_extract_header_unproven",pdf_text_available:true});
+    assert.equal(failures,0);
+  }
+  assert.equal(nextFnsExtractFailureCount(2,null,{reason:"fns_extract_not_pdf"}),3);
+  assert.equal(nextFnsExtractFailureCount(2,{},null),0);
+  const header=extractParse(extractText.replace("дата формирования выписки","дата формирования выписки")
+    .replace("полное наименование юридического лица","Наименование"));
+  assert.equal(header.reason,"fns_extract_header_unproven");
+  assert.equal(header.diagnostic.header_issue,"header_legal_name");
+  assert.equal(header.diagnostic.observed_pages,2);
+});
+test("public region filter binds the visible dictionary selection to the actual submitted region",async()=>{
+  const region="Ленинградская область";
+  assert.equal(fnsRegionLabelMatches("47 - Ленинградская область",region),true);
+  assert.equal(fnsRegionLabelMatches("Ленинградская область (47)",region),true);
+  assert.equal(fnsRegionLabelMatches("Ленинградская область другая",region),false);
+  const b=browser({regionWidget:true});
+  const out=await lookupFnsViaBrowser(b.page,{query:short,navigate:b.navigate,readBody:b.readBody,
+    completeNameSearch:true,region});
+  assert.equal(out.search_region,region);
+  assert.equal(out.complete,true);
+  assert.deepEqual(b.actions,["fill","region_open","region_select","submit"]);
+  const wrong=browser({regionWidget:true,wrongRegion:true});
+  await assert.rejects(lookupFnsViaBrowser(wrong.page,{query:short,navigate:wrong.navigate,
+    readBody:wrong.readBody,completeNameSearch:true,region}),e=>e.code==="fns_region_filter_unavailable");
+  assert.equal(wrong.listeners.size,0);
+  const absent=browser();
+  await assert.rejects(lookupFnsViaBrowser(absent.page,{query:short,navigate:absent.navigate,
+    readBody:absent.readBody,completeNameSearch:true,region}),e=>e.code==="fns_region_filter_unavailable");
+  assert.ok(!absent.actions.includes("submit"));
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,region:"Мурманская область",
+    search:out}).reason,"registry_region_scope_unproven");
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,region,
+    search:out}).status,"candidate");
+});
+test("reopen only pre-regional-strategy FNS incomplete name reviews; preserve conflicts and completed attempts",async()=>{
+  const checkpoint=cp([row("a"),row("b"),row("c"),row("d")]);
+  checkpoint.independent_inn_backfill_outcomes={
+    a:{status:"review",reason:"registry_name_search_incomplete",provider:"fns"},
+    b:{status:"review",reason:"source_ogrn_conflict",provider:"fns"},
+    c:{status:"review",reason:"registry_name_search_incomplete",provider:"fns",name_search_revision:2}
+  };
+  const plan=planIndependentInnBackfill(checkpoint,{provider:"fns"});
+  assert.equal(plan.pending,2);
+  assert.equal(plan.reopened_fns_name_search,1);
+  const result=await runIndependentInnBackfill({checkpoint,sourceId:"p",childId:"c",
+    limit:4,provider:"fns",lookup:{search:async()=>({...official(),complete:false}),
+      confirm:async()=>{throw Error("must not download");}},onCheckpoint:async()=>{}});
+  assert.equal(result.stats.processed,2);
+  assert.equal(result.stats.added,0);
+  assert.equal(planIndependentInnBackfill(result.snapshot,{provider:"fns"}).pending,0);
+  assert.equal(result.snapshot.independent_inn_backfill_outcomes.b.reason,"source_ogrn_conflict");
+});
+test("unparsed extract is recorded as row-specific proof failure; next company remains processable",async()=>{
+  const other={...raw,i:"7810165652",o:"1024701479571",p:"472701001",
+    n:'АКЦИОНЕРНОЕ ОБЩЕСТВО "ВТОРОЙ ПРИМЕР"',c:'АО "ВТОРОЙ ПРИМЕР"'};
+  const checkpoint=cp([row("a"),row("b",other.c)]);
+  const out=await runIndependentInnBackfill({checkpoint,sourceId:"p",childId:"c",
+    provider:"fns",limit:2,lookup:{
+      search:async t=>parseFnsSearchResult({rows:[t.original_canonical_id==="a"?{...raw,a:null}:other]},
+        {query:t.organization,completeNameSearch:true}),
+      confirm:async id=>id===ogrn?null:{url:"https://www.tbank.ru/business/contractor/legal/"+other.o+"/",
+        record:{inn:other.i,ogrn:other.o,kpp:other.p,full_name:other.n,short_name:other.c,
+          address,active:true}},
+      confirmationIssue:id=>id===ogrn?"fns_extract_header_unproven":""
+    },onCheckpoint:async()=>{}});
+  assert.equal(out.stats.processed,2);
+  assert.equal(out.stats.added,1);
+  assert.deepEqual(out.snapshot.independent_inn_backfill_outcomes.a.confirmation_issues,
+    ["fns_extract_header_unproven"]);
+  assert.equal(out.snapshot.final_result.direct_buyers[0]["ИНН"],"");
 });

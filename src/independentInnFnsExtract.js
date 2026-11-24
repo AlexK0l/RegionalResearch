@@ -37,23 +37,24 @@ function freshDate(s,now){
 }
 function extractHeader(text,now){
   const end=text.search(/^\s*№\s*п\/п\s+Наименование показателя\s+Значение показателя\s*$/mu);
-  if(end<0)return null;
+  if(end<0)return {issue:"table_header"};
   const head=text.slice(0,end);
   if(!/^\s*ВЫПИСКА\s*$/mu.test(head)||
     !/^\s*из Единого государственного реестра юридических лиц\s*$/mu.test(head)||
-    !/Настоящая выписка содержит сведения о юридическом лице/iu.test(head))return null;
+    !/Настоящая выписка содержит сведения о юридическом лице/iu.test(head))return {issue:"document_title"};
   const dateNumber=/^[ \t]*(\d{2}\.\d{2}\.\d{4})[ \t]+№[ \t]+([А-ЯA-Z0-9-]+)[ \t]*(?:\n[ \t]+(\d{3,20})[ \t]*$)?/imu.exec(head);
-  if(!dateNumber||!freshDate(dateNumber[1],now))return null;
+  if(!dateNumber)return {issue:"date_number_layout"};
+  if(!freshDate(dateNumber[1],now))return {issue:"document_date"};
   const number=dateNumber[2]+(dateNumber[3]||"");
-  if(!/^[А-ЯA-Z0-9-]{5,60}$/u.test(number)||number.endsWith("-"))return null;
+  if(!/^[А-ЯA-Z0-9-]{5,60}$/u.test(number)||number.endsWith("-"))return {issue:"document_number"};
   const id=(label,size)=>{
     const pattern=new RegExp("^[ \\t]*"+label+"[ \\t]+((?:\\d[ \\t]*){"+size+"})$","mu");
     return pattern.exec(head)?.[1]?.replace(/\s/gu,"")||"";
   };
   const inn=id("ИНН",10),ogrn=id("ОГРН",13);
-  if(!verifiedInnChecksum(inn)||normalizedOgrn(ogrn)!==ogrn||ogrn.length!==13)return null;
+  if(!verifiedInnChecksum(inn)||normalizedOgrn(ogrn)!==ogrn||ogrn.length!==13)return {issue:"header_identifiers"};
   const title=/Настоящая выписка содержит сведения о юридическом лице\s+([\s\S]+?)\s+полное наименование юридического лица\s*\n/iu.exec(head)?.[1];
-  if(!title||clean(title).length>500)return null;
+  if(!title||clean(title).length>500)return {issue:"header_legal_name"};
   return {inn,ogrn,date:dateNumber[1],number,full_name:clean(title),bodyOffset:end};
 }
 
@@ -132,7 +133,8 @@ export function parseOfficialFnsExtract(text,{now=Date.now()}={}){
   const pages=readPages(text);
   if(!pages)return {reason:"fns_extract_pages_unproven"};
   const head=extractHeader(pages.bodies[0],now);
-  if(!head||head.ogrn!==pages.ogrn)return {reason:"fns_extract_header_unproven"};
+  if(head.issue||head.ogrn!==pages.ogrn)return {reason:"fns_extract_header_unproven",
+    diagnostic:{header_issue:head.issue||"footer_identifier_mismatch",observed_pages:pages.page_count}};
   const table=pages.bodies[0].slice(head.bodyOffset)+"\n"+pages.bodies.slice(1).join("\n");
   const parsed=parseRows(table);
   const take=(section,pattern)=>{
@@ -222,9 +224,10 @@ export async function downloadOfficialFnsExtract(page,expected,{now=Date.now(),o
       encoding:"utf8",timeout:60000,maxBuffer:MAX_TEXT,windowsHide:true
     });
     if(out.error?.code==="ENOENT")throw fail("fns_extract_pdftotext_missing");
-    if(out.status!==0||out.error){diagnostic("fns_extract_text_unavailable");return null;}
+    if(out.status!==0||out.error||!out.stdout?.trim()){diagnostic("fns_extract_text_unavailable");return null;}
     const parsed=parseOfficialFnsExtract(out.stdout,{now});
     diagnostic(parsed.reason,{bytes,page_count:parsed.metadata?.page_count||0,
+      pdf_text_available:true,...parsed.diagnostic,
       identity_match:parsed.record?.inn===expected.inn&&parsed.record?.ogrn===expected.ogrn&&
         parsed.record?.kpp===expected.kpp});
     if(!parsed.record)return null;

@@ -129,3 +129,29 @@ separates service health from per-row uniqueness. Name search diagnostics
 report counts, total proof and page flags, not company names or IDs.
 The actual recovery rate and the cause of the incomplete search still
 need live validation.
+
+## Second live run and scoped name search
+
+At c919b2d the VPS processed 15 rows (one verified INN, 13 incomplete name
+searches, one source OGRN conflict), then stopped on three downloaded
+PDFs with unproven headers. The saved child is the continuation source.
+Readable PDF text that fails strict parsing is now a row-level proof
+failure, not a transport failure. Fixed header subreason flags and
+per-row confirmation issues are recorded without PDF text or identifiers
+in diagnostic logs. The actual header variants remain unobserved; the
+header acceptance predicate is not relaxed.
+
+The FNS 1.9.2 public form contains a region dictionary control
+(`input#region[name=region][data-dict=REGIONS][data-kind=SET]`). For an
+incomplete unanchored name search with a precise original locality, try
+that visible dictionary's exact regional label, validate the selected
+form value and submitted request, and use only a positively complete
+correlated regional result. If the widget cannot be verified, retain the
+broad result; never use an incomplete scoped search to infer uniqueness.
+The official extract must still prove the exact original locality and
+region. Actual widget behavior on the VPS still needs validation. Saved
+identifier anchors remain unfiltered; a unique saved OGRN is searched
+directly. Multiple saved OGRNs are reviewed before any browser request.
+Reopen pre-revision-2 incomplete FNS name reviews once for this changed
+strategy, not verified rows or identity conflicts. No repeated reset of
+current reviews. The live queue continues from its last saved child.
