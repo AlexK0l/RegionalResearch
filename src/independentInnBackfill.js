@@ -122,7 +122,9 @@ function validRecord(record,provider){
 function matchingIndependentRecord(item,second,target){
   const a=item?.record,b=second?.record;
   return Boolean(trustedRegistryItem(item)&&validRegistryIdentifiers(a)&&
-    b&&canonicalIndependentRegistryRoute(second.url,a.ogrn)&&
+    b&&(canonicalIndependentRegistryRoute(second.url,a.ogrn)||
+      (item.provider==="fns"&&isVbrCompanyUrl(second.url,a.ogrn)&&
+        !new URL(second.url).hash))&&
     b.inn===a.inn&&b.kpp===a.kpp&&b.ogrn===a.ogrn&&
     registeredSourceName(target.organization,a)&&registeredSourceName(target.organization,b)&&
     sameRegisteredName(a.full_name,b.full_name)&&sameRegisteredName(a.short_name,b.short_name));
@@ -156,7 +158,7 @@ export async function hydrateFnsSearchAddresses(search,target,lookup){
     const ogrn=item.record.ogrn;
     if(!confirmations.has(ogrn)&&reads<8){
       reads++;
-      confirmations.set(ogrn,await lookup.confirm(ogrn));
+      confirmations.set(ogrn,await lookup.confirm(ogrn,item.record));
     }
     const second=confirmations.get(ogrn);
     records.push(withVerifiedIndependentAddress(item,second,target));
@@ -345,7 +347,7 @@ export async function checkFnsRegistryCanary(checkpoint,lookup){
     // A stopped/non-active entity is not a service outage. Try another
     // known legal entity, within a hard bound of three distinct INNs.
     if(a.active===false){lastReason="fns_canary_entity_inactive";continue;}
-    const confirmation=await lookup.confirm(a.ogrn);
+    const confirmation=await lookup.confirm(a.ogrn,a);
     const canonicalTarget={organization:a.full_name};
     if(!matchingIndependentRecord(item,confirmation,canonicalTarget)){
       lastReason="fns_canary_confirmation_unverified";continue;
@@ -423,12 +425,13 @@ export async function runIndependentInnBackfill({
           region:parent.region});
         if(selection.status==="candidate"){
           const ogrn=selection.record.ogrn;
-          const second=confirmations.has(ogrn)?confirmations.get(ogrn):await lookup.confirm(ogrn);
+          const second=confirmations.has(ogrn)?confirmations.get(ogrn):
+            await lookup.confirm(ogrn,selection.record);
           result=verifyIndependentInnCandidate(selection,second,target);
         }else result=selection;
       }catch(error){
         stats.stop_reason=["navigation_budget","registry_http_unavailable",
-          "registry_route_untrusted","registry_browser_unavailable",
+          "registry_route_untrusted","registry_browser_unavailable","registry_confirmation_unavailable",
           "registry_search_unresponsive","fns_invalid_query","fns_form_unavailable",
           "fns_query_input_unavailable","fns_submit_button_unavailable",
           "fns_query_not_set","fns_exact_checkbox_unavailable",
