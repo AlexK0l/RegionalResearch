@@ -96,7 +96,7 @@ export function extractRegistryVbrRecord(raw){
   return {...blocks[0],active:activeAtTop(raw,blocks[0])};
 }
 export function extractRegistryTbankRecord(raw){
-  const identity=extractIndependentRegistryIdentity(raw);
+  const identity=extractIndependentRegistryIdentity(raw,{includeAddress:true});
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
