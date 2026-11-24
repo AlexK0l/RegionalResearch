@@ -44,8 +44,11 @@ test("FNS records preserve all identifiers and unknown activity; only proven com
   assert.throws(()=>parseFnsSearchResult({captchaRequired:true},{query:inn}),e=>e.code==="fns_captcha_required");
 });
 test("FNS candidate needs exact identifiers and independent explicit active status, not a generic source URL",()=>{
+  const observed=parseFnsSearchResult({rows:[raw]},{query:short,exactName:true});
   const selection=chooseIndependentInnCandidate({row:row(),target,
-    search:parseFnsSearchResult({rows:[raw]},{query:short,exactName:true})});
+    region:"Ленинградская область",search:observed});
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,
+    region:"Мурманская область",search:observed}).status,"review");
   assert.equal(selection.status,"candidate");
   assert.equal(selection.provider,"fns");
   const verified=verifyIndependentInnCandidate(selection,{record:bankRecord,url:source},target);
@@ -103,6 +106,9 @@ test("FNS live preflight exercises exact INN, independent card and exact registe
   assert.deepEqual(await checkFnsRegistryCanary(checkpoint,{...lookup,
     confirm:async()=>null
   }),{verified:false,reason:"fns_canary_confirmation_unverified"});
+  assert.deepEqual(await checkFnsRegistryCanary(checkpoint,{...lookup,
+    search:async(t,hint)=>hint?official():{...official(),complete:false}
+  }),{verified:false,reason:"fns_canary_name_incomplete"});
 });
 function browser({challenge=false,wrongQuery=false,staleOnly=false}={}){
   const token="0123456789ABCDEF",old="0000000000000000";
