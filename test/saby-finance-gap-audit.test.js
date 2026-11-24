@@ -105,6 +105,59 @@ test("card hint requires same INN and exact approved private profile URL",()=>{
   }
 });
 
+test("aggregate alternative structured URLs as untrusted hints without echoing them",()=>{
+  const cp=sample(),rows=cp.final_result.direct_buyers;
+  rows[0].__evidence.source_urls=[GOOD_URL];
+  rows[1].__evidence={
+    source_urls:["https://saby.ru/profile/7707083893-770701001"]
+  };
+  rows[2].__evidence={source_urls:[
+    "https://saby.ru/profile/7707083893-770701001",
+    "https://profile.saby.ru.evil.test/page/contractor-info?"+
+      "id=7f794800-63b5-11e0-adec-00c30e012283",
+    "https://user:password@profile.saby.ru/page/contractor-info?"+
+      "id=7f794800-63b5-11e0-adec-00c30e012283",
+    "https://profile.saby.ru/page/contractor-info?id=bad",
+    "https://profile.saby.ru/page/contractor-info?"+
+      "id=7f794800-63b5-11e0-adec-00c30e012283&next=1",
+    "https://saby.ru/profile/7812019999-770701001?source=other"
+  ]};
+  const report=auditSabyFinanceGaps(cp);
+  assert.equal(report.pending.count,2);
+  assert.equal(report.pending.source_urls_present,2);
+  assert.equal(report.pending.source_urls_saby_private_hints,1);
+  assert.equal(report.pending.source_urls_saby_public_matching_inn_hints,1);
+  assert.equal(report.exhausted.source_urls_present,1);
+  assert.equal(report.exhausted.source_urls_saby_private_hints,0);
+  assert.equal(report.exhausted.source_urls_saby_public_matching_inn_hints,0);
+  assert.deepEqual(report.pending.source_legal_forms,
+    [{form:"ООО",count:2}]);
+  const json=JSON.stringify(report);
+  assert.doesNotMatch(json,
+    /4703144282|7707083893|profile\.saby\.ru|saby\.ru\/profile|password/);
+});
+
+test("offline audit splits invalid source companies by missing INN or name",()=>{
+  const cp=sample();
+  const rows=cp.final_result.direct_buyers;
+  rows.push(
+    company("not-an-inn"),
+    {...company("4718000935"),"Организация":""},
+    {...company("bad"),"Организация":""},
+    company("invalid-completed",{revenue:123,staff:15})
+  );
+  const source=JSON.stringify(cp),result=auditSabyFinanceGaps(cp);
+  assert.equal(result.commercial_rows,9);
+  assert.equal(result.finance_gaps.excluded_invalid,3);
+  assert.deepEqual(result.finance_gaps.excluded_invalid_by_reason,{
+    invalid_inn_only:1,
+    invalid_name_only:1,
+    invalid_inn_and_name:1
+  });
+  assert.equal(result.finance_gaps.already_complete,2);
+  assert.equal(JSON.stringify(cp),source);
+});
+
 test("SQLite audit CLI reads existing database in read-only mode and never writes",()=>{
   const folder=fs.mkdtempSync(path.join(os.tmpdir(),"rr-finance-gap-audit-"));
   const file=path.join(folder,"audit.sqlite");

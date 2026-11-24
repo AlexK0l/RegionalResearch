@@ -1,9 +1,12 @@
 // Aggregate ONLY: no company names, INNs, KPPs or URLs in output.
 // Never fetch Saby or re-open a legal card. A saved card URL is a hint,
 // not proof of the currently registered company.
-import {planSabyFinanceBackfill,FINANCE_REVIEW_MAX_PASSES}
-  from "./sabyFinanceBackfill.js";
-import {sabyInn} from "./sabyEnrichment.js";
+import {
+  planSabyFinanceBackfill,FINANCE_REVIEW_MAX_PASSES,
+  FINANCE_REVENUE_FIELD,FINANCE_EMPLOYEES_FIELD,isSavedFinanceNumber
+} from "./sabyFinanceBackfill.js";
+import {sabyInn,sabyNameTokens} from "./sabyEnrichment.js";
+import {auditLegalForm} from "./sabyIdentityAudit.js";
 
 // Stored checkpoint fields can originate from external UI. Never echo an
 // arbitrary status, reason or browser exception into the operator report.
@@ -44,9 +47,64 @@ function savedCardHint(row,inn){
     return {card,kpp:card&&/^\d{9}$/.test(String(e?.kpp||""))};
   }catch{return {card:false,kpp:false};}
 }
+// Alternative URLs are non-authoritative. They may have been collected
+// before any current identity check; report counts only, never use them to
+// authorize finance or to open a Saby card in an offline audit.
+function structuredSabyUrls(row,inn){
+  const raw=Array.isArray(row?.__evidence?.source_urls)?
+    row.__evidence.source_urls.slice(0,80):[];
+  let hasAnySource=false,privateCard=false,publicProfile=false;
+  for(const candidate of raw){
+    if(typeof candidate!=="string"||candidate.length>700)continue;
+    try{
+      const u=new URL(candidate);
+      if(!["http:","https:"].includes(u.protocol)||
+         !u.hostname||u.username||u.password)continue;
+      hasAnySource=true;
+      if(u.protocol!=="https:"||u.port)continue;
+      if(u.hostname==="profile.saby.ru"&&
+         u.pathname==="/page/contractor-info"&&
+         u.searchParams.size===1&&!u.hash&&
+         /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(
+           u.searchParams.get("id")||""))
+        privateCard=true;
+      if(u.hostname==="saby.ru"&&
+         !u.search&&!u.hash&&
+         /^\/profile\/\d{10}-\d{9}$/.test(u.pathname)){
+        const m=/^\/profile\/(\d{10})-(\d{9})$/.exec(u.pathname);
+        if(m?.[1]===inn)publicProfile=true;
+      }
+    }catch{ /* Unknown provenance remains a non-Saby source. */ }
+  }
+  return {hasAnySource,privateCard,publicProfile};
+}
+function sourceLegalForm(row){
+  const value=String(row?.["Организация"]||"").trim().slice(0,260);
+  const unitary=/^(?:ФГУП|ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?:\s|$)|,\s*ФГУП\s*$/iu.test(value)?"ФГУП":
+    /^(?:ГУП|ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?:\s|$)|,\s*ГУП\s*$/iu.test(value)?"ГУП":
+    /^(?:МУП|МУНИЦИПАЛЬНОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ)(?:\s|$)|,\s*МУП\s*$/iu.test(value)?"МУП":"";
+  return unitary||auditLegalForm(value)||"не определена";
+}
+function invalidSourceBreakdown(result){
+  const breakdown={invalid_inn_only:0,invalid_name_only:0,
+    invalid_inn_and_name:0};
+  for(const section of ["direct_buyers","intermediaries","leasing"]){
+    for(const row of result?.[section]||[]){
+      if(isSavedFinanceNumber(row?.[FINANCE_REVENUE_FIELD])&&
+         isSavedFinanceNumber(row?.[FINANCE_EMPLOYEES_FIELD]))continue;
+      const inn=Boolean(sabyInn(row?.["ИНН"]));
+      const name=sabyNameTokens(row?.["Организация"]).length>0;
+      if(!inn&&!name)breakdown.invalid_inn_and_name++;
+      else if(!inn)breakdown.invalid_inn_only++;
+      else if(!name)breakdown.invalid_name_only++;
+    }
+  }
+  return breakdown;
+}
 function grouped(entries,outcomes,counts){
-  const groups=new Map();
-  let cardHints=0,kppHints=0;
+  const groups=new Map(),forms=new Map();
+  let cardHints=0,kppHints=0,anySources=0,
+    otherPrivate=0,otherPublic=0;
   for(const e of entries){
     const o=outcomes[e.inn]||{};
     const key=safeCode(o.status||"not_attempted",
@@ -56,12 +114,23 @@ function grouped(entries,outcomes,counts){
     const hint=savedCardHint(e.row,e.inn);
     if(hint.card)cardHints++;
     if(hint.kpp)kppHints++;
+    const alternate=structuredSabyUrls(e.row,e.inn);
+    if(alternate.hasAnySource)anySources++;
+    if(alternate.privateCard)otherPrivate++;
+    if(alternate.publicProfile)otherPublic++;
+    const form=sourceLegalForm(e.row);
+    forms.set(form,(forms.get(form)||0)+1);
   }
   return {
     count:entries.length,
     prior_review_attempts:entries.filter(e=>counts(e.inn)>0).length,
     saved_saby_card_hints:cardHints,
     saved_saby_card_with_kpp_hints:kppHints,
+    source_urls_present:anySources,
+    source_urls_saby_private_hints:otherPrivate,
+    source_urls_saby_public_matching_inn_hints:otherPublic,
+    source_legal_forms:[...forms].map(([form,count])=>({form,count}))
+      .sort((a,b)=>b.count-a.count||a.form.localeCompare(b.form)),
     by_reason:[...groups].map(([reason,count])=>({reason,count}))
       .sort((a,b)=>b.count-a.count||a.reason.localeCompare(b.reason))
   };
@@ -102,6 +171,7 @@ export function auditSabyFinanceGaps(checkpoint,{checkpointId=""}={}){
       employees_missing:plan.missingEmployees,
       eligible_unique_inn:plan.eligible.length,
       excluded_invalid:plan.invalid,
+      excluded_invalid_by_reason:invalidSourceBreakdown(checkpoint.final_result),
       excluded_duplicate_inn:plan.duplicate,
       already_complete:plan.alreadyComplete
     },
