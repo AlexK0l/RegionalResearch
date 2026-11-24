@@ -93,16 +93,17 @@ function parseRows(text){
     if(!trimmed)continue;
     const known=sectionNames.get(trimmed.toLowerCase().replace(/ё/g,"е"));
     if(known||adverseHeading.test(trimmed)||
-      (/^[ \t]{12,}\S/u.test(line)&&
+      (/^[ \t]+\S/u.test(line)&&
         /^(?:Сведения (?:о|об)|Место нахождения|Сведения из)/iu.test(trimmed)&&
-        (!current||line.search(/\S/u)<current.column-3))){
+        (!current||line.search(/\S/u)<Math.max(30,current.column-3)||
+          /^Сведения о (?:лице, имеющем право|регистрации в качестве|записях, внесенных)/iu.test(trimmed)))){
       flush();
       if(adverseHeading.test(trimmed))adverse=true;
       section=known||"other";
       sections.push(section);
       continue;
     }
-    const start=/^[ \t]{0,16}(\d{1,6})[ \t]{2,}(\S.*)$/u.exec(line);
+    const start=/^[ \t]{0,16}(\d{1,6})[ \t]+(\S.*)$/u.exec(line);
     if(start&&!/^\d+\s+\d+$/.test(clean(start[2]))&&!/^\d+$/.test(clean(start[2]))){
       flush();
       const rest=start[2],gap=/[ \t]{2,}/u.exec(rest);
