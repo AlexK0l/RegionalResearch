@@ -58,7 +58,7 @@ function usableHint(target){
   return matching.length===1?{inn:c.inn,kpp:matching[0]}:null;
 }
 const locality=v=>key(String(v||"").replace(
-  /^\s*(?:(?:г|пгт|пос|д|с)\.\s*|(?:г(?:ород)?|пгт|пос(?:елок|ёлок)?|село|деревня)\s+)/iu,""));
+  /^\s*(?:(?:г|п|пгт|пос|д|с)\.\s*|(?:г(?:ород)?|п|пгт|пос(?:елок|ёлок)?|село|деревня)\s+)/iu,""));
 function preciseLocalityValue(sourceCity){
   const value=clean(sourceCity);
   if(!value||value.length>120||/[\/;(),]/u.test(value)||
@@ -81,7 +81,9 @@ export function preciseLocalityMatch(sourceCity,registryAddress){
 // and exact legal addresses do not need this weaker geographical proof.
 function preciseRegionMatch(region,address){
   const normalize=value=>locality(String(value||"")
-    .replace(/^\s*\d{6}\s*/u,"")).split(/\s+/u).filter(Boolean).sort().join(" ");
+    .replace(/^\s*\d{6}\s*/u,"")).split(/\s+/u).filter(Boolean)
+    .map(word=>({обл:"область",респ:"республика",авт:"автономный",окр:"округ"}[word]||word))
+    .sort().join(" ");
   const expected=normalize(region);
   return !!expected&&String(address||"").split(",").some(part=>
     normalize(part)===expected);
@@ -105,12 +107,61 @@ function trustedRegistryItem(item){
     (!item.provider||item.provider==="vbr")&&
       isVbrCompanyUrl(item.url,item.record.ogrn);
 }
-function validRecord(record,provider){
+// Identity fields are valid even when the FNS search result has no
+// postal address. Address and active status are checked separately.
+function validRegistryIdentifiers(record){
   return Boolean(record&&/^\d{10}$/.test(record.inn)&&
     verifiedInnChecksum(record.inn)&&/^\d{13}$/.test(record.ogrn)&&
-    normalizedOgrn(record.ogrn)===record.ogrn&&
-    /^\d{9}$/.test(record.kpp)&&record.address&&
+    normalizedOgrn(record.ogrn)===record.ogrn&&/^\d{9}$/.test(record.kpp)&&
+    record.full_name&&record.short_name);
+}
+function validRecord(record,provider){
+  return Boolean(validRegistryIdentifiers(record)&&record.address&&
     (record.active===true||(provider==="fns"&&record.active===null)));
+}
+function matchingIndependentRecord(item,second,target){
+  const a=item?.record,b=second?.record;
+  return Boolean(trustedRegistryItem(item)&&validRegistryIdentifiers(a)&&
+    b&&canonicalIndependentRegistryRoute(second.url,a.ogrn)&&
+    b.inn===a.inn&&b.kpp===a.kpp&&b.ogrn===a.ogrn&&
+    registeredSourceName(target.organization,a)&&registeredSourceName(target.organization,b)&&
+    sameRegisteredName(a.full_name,b.full_name)&&sameRegisteredName(a.short_name,b.short_name));
+}
+function withVerifiedIndependentAddress(item,second,target){
+  if(item.provider!=="fns"||item.record.address||
+    !matchingIndependentRecord(item,second,target)||!second.record.address)
+    return item;
+  return {...item,record:{...item.record,address:second.record.address},
+    address_source_url:second.url};
+}
+// Resolve addresses of all exact-name FNS candidates (including inactive
+// competitors) before using geography to choose one. A missing address is
+// NOT evidence that a competitor is in another region. Use the same
+// independently verified record for the final confirmation, avoiding
+// duplicate navigation. The cap is per source row; broader searches
+// remain incomplete/ambiguous, never silently narrowed to a single card.
+export async function hydrateFnsSearchAddresses(search,target,lookup){
+  const confirmations=new Map();
+  if(search?.state!=="observed"||!Array.isArray(search.records))
+    return {search,confirmations};
+  const records=[];
+  let reads=0;
+  for(const item of search.records){
+    if(item.provider!=="fns"||!trustedRegistryItem(item)||
+      !validRegistryIdentifiers(item.record)||
+      !registeredSourceName(target.organization,item.record)||
+      item.record.address){
+      records.push(item);continue;
+    }
+    const ogrn=item.record.ogrn;
+    if(!confirmations.has(ogrn)&&reads<8){
+      reads++;
+      confirmations.set(ogrn,await lookup.confirm(ogrn));
+    }
+    const second=confirmations.get(ogrn);
+    records.push(withVerifiedIndependentAddress(item,second,target));
+  }
+  return {search:{...search,records},confirmations};
 }
 export function chooseIndependentInnCandidate({row,target,search,owners=new Set(),region=""}){
   const review=(reason,candidates=[])=>({status:"review",reason,candidates});
@@ -127,11 +178,21 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
     registeredSourceName(target.organization,item.record));
   const exact=allExact.filter(item=>validRecord(item.record,item.provider));
   const unique=[...new Map(exact.map(item=>[item.record.ogrn,item])).values()];
-  const candidates=unique.map(({record,url})=>({inn:record.inn,kpp:record.kpp,
-    ogrn:record.ogrn,source_url:url}));
+  const candidates=[...new Map(allExact.filter(item=>
+    validRegistryIdentifiers(item.record)).map(item=>[item.record.ogrn,item])).values()]
+    .map(({record,url})=>({inn:record.inn,kpp:record.kpp,
+      ogrn:record.ogrn,source_url:url}));
   const hint=usableHint(target);
   const storedOgrns=identityOgrns(row);
   if(storedOgrns.length>1)return review("source_ogrn_conflict",candidates);
+  // For address/name-only identity, an unread competing address prevents
+  // a unique geographical choice even if another candidate is local.
+  // A saved exact identifier may narrow the set, but its own required
+  // address and locality checks still must pass.
+  const unresolvedAddress=allExact.some(item=>item.provider==="fns"&&
+    !item.record.address&&(!hint||(item.record.inn===hint.inn&&item.record.kpp===hint.kpp))&&
+    (!storedOgrns.length||item.record.ogrn===storedOgrns[0]));
+  if(unresolvedAddress)return review("registry_address_unavailable",candidates);
   const anchored=unique.filter(({record})=>
     !hasExactSourceAddressConflict(row,record.address)&&
     (storedOgrns.length===0||storedOgrns[0]===record.ogrn)&&
@@ -171,23 +232,23 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
   }
   if(owners.has(match.record.inn))return review("inn_already_owned",candidates);
   return {status:"candidate",sourceBasis,provider:match.provider||"vbr",
-    record:match.record,url:match.url,candidates};
+    record:match.record,url:match.url,
+    ...(match.address_source_url?{address_source_url:match.address_source_url}:{}),candidates};
 }
 export function verifyIndependentInnCandidate(selection,second,target){
   const review=reason=>({status:"review",reason,candidates:selection?.candidates||[]});
   if(selection?.status!=="candidate")return selection;
   const a=selection.record,b=second?.record;
-  if(!trustedRegistryItem(selection)||!validRecord(a,selection.provider)||
-    !b||!canonicalIndependentRegistryRoute(second.url,a.ogrn)||
-    b.active!==true||b.inn!==a.inn||b.kpp!==a.kpp||b.ogrn!==a.ogrn||
-    !registeredSourceName(target.organization,b)||
-    !sameRegisteredName(a.full_name,b.full_name)||
-    !sameRegisteredName(a.short_name,b.short_name))
+  if(!validRecord(a,selection.provider)||
+    !matchingIndependentRecord(selection,second,target)||b.active!==true||
+    (selection.address_source_url&&
+      (selection.address_source_url!==second.url||!b.address||key(a.address)!==key(b.address))))
     return review("independent_registry_disagreement");
   return {status:"verified",reason:"two_registry_identity_verified",
     source_basis:selection.sourceBasis,source_provider:selection.provider||"vbr",
     inn:a.inn,kpp:a.kpp,ogrn:a.ogrn,
     legal_name:a.full_name,short_name:a.short_name,legal_address:a.address,
+    legal_address_source_url:selection.address_source_url||selection.url,
     source_urls:[selection.url,second.url]};
 }
 function entries(checkpoint){
@@ -252,32 +313,69 @@ export async function checkFnsRegistryCanary(checkpoint,lookup){
       ((finance?.inn===inn&&/^https:\/\/profile\.saby\.ru\//.test(finance.source_url||"")&&
         Number.isFinite(Date.parse(finance.verified_at)))||
        (identity?.inn===inn&&Array.isArray(identity.source_urls)&&identity.source_urls.length>0));
-  }).sort((a,b)=>sabyNameTokens(b["Организация"]).join(" ").length-
-    sabyNameTokens(a["Организация"]).join(" ").length);
-  const row=candidates[0];
-  if(!row)return {verified:false,reason:"fns_canary_missing"};
-  const inn=sabyInn(row["ИНН"]);
-  const first=await lookup.search({organization:row["Организация"]},{inn});
-  const matches=(first?.records||[]).filter(item=>
-    item.provider==="fns"&&trustedRegistryItem(item)&&
-    validRecord(item.record,"fns")&&item.record.inn===inn);
-  if(first?.state!=="observed"||matches.length!==1)
-    return {verified:false,reason:"fns_canary_inn_unverified"};
-  const item=matches[0],a=item.record;
-  const confirm=await lookup.confirm(a.ogrn);
-  const proof=verifyIndependentInnCandidate({...item,status:"candidate",
-    sourceBasis:"canary"},confirm,{organization:a.full_name});
-  if(proof.status!=="verified")
-    return {verified:false,reason:"fns_canary_confirmation_unverified"};
-  const byName=await lookup.search({organization:a.full_name},null);
-  if(byName?.state!=="observed"||!(byName.records||[]).some(value=>
-    value.provider==="fns"&&trustedRegistryItem(value)&&
-    value.record.inn===inn&&value.record.ogrn===a.ogrn&&value.record.kpp===a.kpp&&
-    registeredSourceName(a.full_name,value.record)))
-    return {verified:false,reason:"fns_canary_name_unverified"};
-  if(byName.complete!==true||byName.allCardsRead!==true)
-    return {verified:false,reason:"fns_canary_name_incomplete"};
-  return {verified:true,reason:"verified"};
+  }).sort((a,b)=>{
+    // Prefer ordinary commercial legal entities with previously verified
+    // finance evidence. Do not pick the longest title (which can select
+    // a municipal company in bankruptcy) as the only service canary.
+    const rank=row=>{
+      const form=sourceForm(row["Организация"]);
+      const commercial=["ООО","АО","ПАО","ОАО","ЗАО"].includes(form);
+      return Number(commercial)*2+Number(Boolean(row.__evidence?.saby_finance_backfill));
+    };
+    return rank(b)-rank(a)||clean(a["Организация"]).length-clean(b["Организация"]).length;
+  });
+  if(!candidates.length)return {verified:false,reason:"fns_canary_missing"};
+  let lastReason="fns_canary_inn_unverified";
+  const tried=new Set();
+  for(const row of candidates){
+    const inn=sabyInn(row["ИНН"]);
+    if(tried.has(inn))continue;
+    if(tried.size>=3)break;
+    tried.add(inn);
+    const sourceTarget={organization:row["Организация"]};
+    const first=await lookup.search(sourceTarget,{inn});
+    const matches=(first?.records||[]).filter(item=>
+      item.provider==="fns"&&trustedRegistryItem(item)&&
+      validRegistryIdentifiers(item.record)&&item.record.inn===inn&&
+      registeredSourceName(sourceTarget.organization,item.record));
+    if(first?.state!=="observed"||matches.length!==1){
+      lastReason="fns_canary_inn_unverified";continue;
+    }
+    const item=matches[0],a=item.record;
+    // A stopped/non-active entity is not a service outage. Try another
+    // known legal entity, within a hard bound of three distinct INNs.
+    if(a.active===false){lastReason="fns_canary_entity_inactive";continue;}
+    const confirmation=await lookup.confirm(a.ogrn);
+    const canonicalTarget={organization:a.full_name};
+    if(!matchingIndependentRecord(item,confirmation,canonicalTarget)){
+      lastReason="fns_canary_confirmation_unverified";continue;
+    }
+    if(confirmation.record.active!==true){
+      lastReason="fns_canary_entity_inactive";continue;
+    }
+    const resolved=withVerifiedIndependentAddress(item,confirmation,canonicalTarget);
+    if(!resolved.record.address){
+      lastReason="fns_canary_address_unavailable";continue;
+    }
+    const proof=verifyIndependentInnCandidate({...resolved,status:"candidate",
+      sourceBasis:"canary"},confirmation,canonicalTarget);
+    if(proof.status!=="verified"){
+      lastReason="fns_canary_confirmation_unverified";continue;
+    }
+    const byName=await lookup.search(canonicalTarget,null);
+    if(byName?.state!=="observed"||!(byName.records||[]).some(value=>
+      value.provider==="fns"&&trustedRegistryItem(value)&&
+      validRegistryIdentifiers(value.record)&&
+      value.record.inn===inn&&value.record.ogrn===a.ogrn&&value.record.kpp===a.kpp&&
+      registeredSourceName(a.full_name,value.record))){
+      lastReason="fns_canary_name_unverified";continue;
+    }
+    if(byName.complete!==true||byName.allCardsRead!==true){
+      lastReason="fns_canary_name_incomplete";continue;
+    }
+    return {verified:true,reason:"verified"};
+  }
+  return {verified:false,reason:lastReason};
 }
 
 export async function runIndependentInnBackfill({
@@ -317,11 +415,15 @@ export async function runIndependentInnBackfill({
     else if(clean(row["ИНН"]))result={status:"review",reason:"nonempty_invalid_inn"};
     else{
       try{
-        const search=await lookup.search(target,usableHint(target));
+        const rawSearch=await lookup.search(target,usableHint(target));
+        const {search,confirmations}=provider==="fns"?
+          await hydrateFnsSearchAddresses(rawSearch,target,lookup):
+          {search:rawSearch,confirmations:new Map()};
         const selection=chooseIndependentInnCandidate({row,target,search,owners,
           region:parent.region});
         if(selection.status==="candidate"){
-          const second=await lookup.confirm(selection.record.ogrn);
+          const ogrn=selection.record.ogrn;
+          const second=confirmations.has(ogrn)?confirmations.get(ogrn):await lookup.confirm(ogrn);
           result=verifyIndependentInnCandidate(selection,second,target);
         }else result=selection;
       }catch(error){
