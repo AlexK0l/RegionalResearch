@@ -111,11 +111,13 @@ async function selectFnsRegion(page,region){
     const read=()=>form.evaluate(el=>new FormData(el).getAll("region").map(String));
     const before=(await read()).filter(v=>v.trim());
     if(before.length)return "";
-    const field=page.locator("div.form-field").filter({has:input});
-    const trigger=field.locator('input:not([type="hidden"]),button,[role="button"],[role="combobox"]').filter({visible:true});
     if(await input.isVisible())await input.click({timeout:3000});
-    else if(await trigger.count()===1)await trigger.click({timeout:3000});
-    else return "";
+    else{
+      const field=page.locator("div.form-field").filter({has:input});
+      const trigger=field.locator('input:not([type="hidden"]),button,[role="button"],[role="combobox"]').filter({visible:true});
+      if(await trigger.count()!==1)return "";
+      await trigger.click({timeout:3000});
+    }
     // Match the actual displayed dictionary label (possibly prefixed or
     // suffixed by its code), not a guessed value or a substring.
     const escape=s=>s.replace(/[.*+?^$\{\}()|[\]\\]/g,"\\$&");
@@ -124,13 +126,19 @@ async function selectFnsRegion(page,region){
       "(?:\\s*[-–—.:]?\\s*\\(?\\d{2,3}\\)?)?\\s*$","iu");
     const option=page.getByText(pattern).filter({visible:true});
     await option.first().waitFor({state:"visible",timeout:3000});
-    if(await option.count()!==1||!fnsRegionLabelMatches(await option.innerText(),region))return "";
+    if(await option.count()!==1)return "";
+    const optionLabel=await option.innerText();
+    if(!fnsRegionLabelMatches(optionLabel,region))return "";
+    const normalizedLabel=regionKey(optionLabel);
+    const visibleCode=normalizedLabel.match(/^\d{2,3}(?=\s)/u)?.[0]||
+      normalizedLabel.match(/(?<=\s)\d{2,3}$/u)?.[0]||"";
     await option.click({timeout:3000});
     const values=(await read()).map(v=>v.trim()).filter(Boolean);
     // A SET widget can require an additional confirmation. If no single
     // exact selected field is submitted, abandon the scoped query.
     if(values.length!==1||!(/^\d{2,3}$/.test(values[0])||
       fnsRegionLabelMatches(values[0],region)))return "";
+    if(visibleCode&&/^\d{2,3}$/.test(values[0])&&values[0]!==visibleCode)return "";
     return values[0];
   }catch{return "";}
 }

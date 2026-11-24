@@ -134,6 +134,7 @@ export async function createPublicRegistryLookup(page,{
   let pages=0,uncertain=0,extractDownloads=0,extractFailures=0,lastFnsSearch=null;
   const useExtract=provider==="fns"&&confirmationMode==="extract";
   const unavailable=new Set(),failures=new Map(),confirmationIssues=new Map();
+  const unavailableRegionFilters=new Set();
   const diag=(source,stage,reason,extra={})=>
     onDiagnostic({provider:source,stage,reason,page_navigations:pages,...extra});
   async function navigate(url,check,{waitUntil="domcontentloaded",source=provider,stage="navigation"}={}){
@@ -303,7 +304,8 @@ export async function createPublicRegistryLookup(page,{
           // Restrict only an unanchored, incomplete name query to its
           // required legal region. Preserve the broad result if the UI
           // cannot prove the filter. Actual access failures still stop.
-          if(useExtract&&region&&(!observed.complete||!observed.allCardsRead)){
+          if(useExtract&&region&&!unavailableRegionFilters.has(region)&&
+            (!observed.complete||!observed.allCardsRead)){
             try{
               const scoped=await lookupFnsViaBrowser(page,{query,navigate,readBody,
                 completeNameSearch:true,region});
@@ -313,7 +315,8 @@ export async function createPublicRegistryLookup(page,{
               if(scoped.complete&&scoped.allCardsRead)observed=scoped;
             }catch(error){
               if(error?.code!=="fns_region_filter_unavailable")throw error;
-              diag("fns","regional_name_search","fns_region_filter_unavailable");
+              unavailableRegionFilters.add(region);
+              diag("fns","regional_name_search","fns_region_filter_unavailable",{disabled_for_run:true});
             }
             // Browser now holds the scoped page (or an unsubmitted form).
             // Never reuse the old broad page to click a download button.

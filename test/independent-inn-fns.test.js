@@ -115,7 +115,7 @@ test("FNS live preflight exercises exact INN, independent card and exact registe
 function browser({challenge=false,wrongQuery=false,staleOnly=false,
   hiddenCheckbox=true,missingButton=false,missingLabel=false,
   ineffectiveLabel=false,missingAssociatedLabel=false,
-  regionWidget=false,wrongRegion=false}={}){
+  regionWidget=false,wrongRegion=false,wrongSelectedRegion=false}={}){
   const token="0123456789ABCDEF",old="0000000000000000";
   const listeners=new Set(),visits=[],actions=[];
   let value="",checked=false,regionValue="";
@@ -155,7 +155,7 @@ function browser({challenge=false,wrongQuery=false,staleOnly=false,
   const regionForm={count:async()=>1,evaluate:async()=>[regionValue]};
   const regionOption={filter:()=>regionOption,first:()=>regionOption,
     waitFor:async()=>{},count:async()=>1,innerText:async()=>"47 - Ленинградская область",
-    click:async()=>{regionValue="47";actions.push("region_select");}};
+    click:async()=>{regionValue=wrongSelectedRegion?"99":"47";actions.push("region_select");}};
   const regionField={filter:()=>regionField,locator:()=>regionInput};
   const page={
     url:()=>host+"/index.html",
@@ -705,8 +705,7 @@ test("PDF-specific proof failures do not trip the transport circuit breaker",()=
   }
   assert.equal(nextFnsExtractFailureCount(2,null,{reason:"fns_extract_not_pdf"}),3);
   assert.equal(nextFnsExtractFailureCount(2,{},null),0);
-  const header=extractParse(extractText.replace("дата формирования выписки","дата формирования выписки")
-    .replace("полное наименование юридического лица","Наименование"));
+  const header=extractParse(extractText.replace("полное наименование юридического лица","Наименование"));
   assert.equal(header.reason,"fns_extract_header_unproven");
   assert.equal(header.diagnostic.header_issue,"header_legal_name");
   assert.equal(header.diagnostic.observed_pages,2);
@@ -726,6 +725,10 @@ test("public region filter binds the visible dictionary selection to the actual 
   await assert.rejects(lookupFnsViaBrowser(wrong.page,{query:short,navigate:wrong.navigate,
     readBody:wrong.readBody,completeNameSearch:true,region}),e=>e.code==="fns_region_filter_unavailable");
   assert.equal(wrong.listeners.size,0);
+  const wrongSelection=browser({regionWidget:true,wrongSelectedRegion:true});
+  await assert.rejects(lookupFnsViaBrowser(wrongSelection.page,{query:short,navigate:wrongSelection.navigate,
+    readBody:wrongSelection.readBody,completeNameSearch:true,region}),e=>e.code==="fns_region_filter_unavailable");
+  assert.ok(!wrongSelection.actions.includes("submit"));
   const absent=browser();
   await assert.rejects(lookupFnsViaBrowser(absent.page,{query:short,navigate:absent.navigate,
     readBody:absent.readBody,completeNameSearch:true,region}),e=>e.code==="fns_region_filter_unavailable");
