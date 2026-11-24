@@ -22,6 +22,30 @@ duplicate entities, and marks every value as an unverified CANDIDATE. It
 does not silently complete the missing INNs. To recover unresolved cases,
 an external EGRUL/EGRIP verification stage is needed.
 
+## 1b. Build the missing-INN queue from a saved VPS SQLite checkpoint
+
+The same existing candidate extractor can read the latest Saby/finance
+checkpoint **directly** without first exporting a full JSON. Use a NEW
+output prefix; outputs are separate review artifacts and the SAT workbook
+and the source SQLite are not changed.
+
+    cd /opt/regionalresearch
+    sudo -u regionalresearch env \
+      SAT_PYTHON_BIN=/opt/regionalresearch/.venv/bin/python \
+      node scripts/saby-missing-inn-queue.js \
+      --db=/opt/regionalresearch/data/checkpoints.sqlite \
+      --checkpoint=20ab4c8a-d5f2-404e-aa3a-1b5209c5d084 \
+      --out-prefix=/opt/regionalresearch/exports/lenobl-missing-inn-20261124
+
+The summary prints `missing_inn`, `with_valid_candidate`, and
+`by_decision`; the separately permission-protected JSON, XLSX and ZIP
+retain the company-specific review queue. A valid candidate checksum is
+**NOT** legal entity confirmation. The queue never fills any INN; a
+separate independent registry check is mandatory before any amendment.
+The count may exceed 138 because the finance gap audit excludes rows with
+both financial numbers already filled, whereas this queue covers ALL
+commercial source rows lacking a format-valid INN.
+
 ## 2. Diagnose the actual Saby name and requisite label layout
 
 The previous 473-row audit produced eight interesting card samples with
