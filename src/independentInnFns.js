@@ -100,24 +100,53 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody}){
   const ok=await navigate(origin+"/index.html",isFnsFormRoute);
   if(!ok)throw fail("registry_http_unavailable");
   await readBody(isFnsFormRoute);
-  const input=page.getByPlaceholder(/Укажите ИНН или ОГРН/i);
-  const submit=page.getByRole("button",{name:"Найти",exact:true});
+  // Verified on the actual VPS FNS 1.9.2 UI: the button is displayed
+  // as "НАЙТИ" and the native exact-name input is visually hidden.
+  // Use the observed stable identifiers, not case-sensitive visible text.
+  const input=page.locator('input#query[name="query"][type="text"]');
+  const submit=page.locator('button#btnSearch[type="submit"]');
+  let formStage="fns_query_input_unavailable";
   try{
     await input.waitFor({state:"visible",timeout:10000});
-    if(await input.count()!==1||await submit.count()!==1)
-      throw fail("fns_form_unavailable");
-    if(exactName){
-      let checkbox=page.getByRole("checkbox",{name:/Искать по точному соответствию/i});
-      if(await checkbox.count()!==1)
-        checkbox=page.locator('input[type="checkbox"][name="nameEq"]');
-      if(await checkbox.count()!==1)throw fail("fns_form_unavailable");
-      await checkbox.check({timeout:5000});
-      if(!await checkbox.isChecked())throw fail("fns_form_unavailable");
-    }
+    if(await input.count()!==1||!await input.isEnabled())
+      throw fail(formStage);
+    formStage="fns_submit_button_unavailable";
+    await submit.waitFor({state:"visible",timeout:10000});
+    if(await submit.count()!==1||!await submit.isEnabled())
+      throw fail(formStage);
+    formStage="fns_query_not_set";
     await input.fill(query);
-    if(clean(await input.inputValue())!==query)throw fail("fns_form_unavailable");
-  }catch(error){
-    throw fail(error?.code==="fns_form_unavailable"?error.code:"fns_form_unavailable");
+    if(clean(await input.inputValue())!==query)throw fail(formStage);
+    if(exactName){
+      formStage="fns_exact_checkbox_unavailable";
+      const checkbox=page.locator('input#nameEq[name="nameEq"][type="checkbox"]');
+      if(await checkbox.count()!==1||!await checkbox.isEnabled())
+        throw fail(formStage);
+      formStage="fns_exact_checkbox_not_selected";
+      if(!await checkbox.isChecked()){
+        if(await checkbox.isVisible()){
+          await checkbox.check({timeout:5000});
+        }else{
+          // Use an ordinary user-facing label click for a CSS-styled
+          // hidden native input. Never set checked through DOM mutation,
+          // force-click the hidden input, or fabricate form parameters.
+          const label=page.locator('label[for="nameEq"], label:has(input#nameEq)').filter({visible:true});
+          if(await label.count()===1){
+            await label.click({timeout:5000});
+          }else{
+            const text=page.getByText("Искать по точному соответствию наименования юридического лица или фамилии, имени и отчеству",{exact:true});
+            if(await text.count()!==1||!await text.isVisible())
+              throw fail(formStage);
+            await text.click({timeout:5000});
+          }
+        }
+      }
+      if(!await checkbox.isChecked())throw fail(formStage);
+    }
+    formStage="fns_query_not_set";
+    if(clean(await input.inputValue())!==query)throw fail(formStage);
+  }catch{
+    throw fail(formStage);
   }
   let token="",fault="",submitSeen=false;
   const responses=new Map();
@@ -157,7 +186,8 @@ export async function lookupFnsViaBrowser(page,{query,navigate,readBody}){
   };
   page.on("response",observer);
   try{
-    await submit.click({timeout:10000});
+    try{await submit.click({timeout:10000});}
+    catch{throw fail("fns_submit_failed");}
     for(let i=0;i<40;i++){
       if(fault)throw fail(fault);
       if(!isFnsFormRoute(page.url()))throw fail("registry_route_untrusted");
