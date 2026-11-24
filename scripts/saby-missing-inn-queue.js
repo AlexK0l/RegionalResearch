@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
+import {DatabaseSync} from "node:sqlite";
 import {buildMissingInnRecoveryQueue} from "../src/sabyMissingInnRecovery.js";
 
 const option=(args,key)=>{
@@ -16,13 +17,46 @@ async function main() {
   const args=process.argv.slice(2);
   if(args.includes("--help")){
     console.log("Offline INN candidate queue: --result=SAT_region.json " +
-      "--out-prefix=exports/missing-inn-region");
+      "--out-prefix=exports/missing-inn-region OR "+
+      "--db=/path/to/checkpoints.sqlite --checkpoint=<UUID> " +
+      "--out-prefix=exports/missing-inn-checkpoint");
     return;
   }
-  const filename=option(args,"result"),prefix=option(args,"out-prefix");
-  if(!filename||!prefix)throw Error("Необходимо задать --result и --out-prefix");
-  const input=await fs.readFile(path.resolve(filename));
-  const report=buildMissingInnRecoveryQueue(JSON.parse(input.toString("utf8")));
+  const filename=option(args,"result");
+  const dbFile=option(args,"db"),checkpointId=option(args,"checkpoint");
+  const prefix=option(args,"out-prefix");
+  const checkpointMode=Boolean(dbFile||checkpointId);
+  if(!prefix || (checkpointMode ?
+    (!dbFile||!checkpointId||Boolean(filename)):
+    !filename))
+    throw Error("Необходимо задать --out-prefix и ровно один источник: "+
+      "--result либо --db плюс --checkpoint");
+  let input;
+  if(checkpointMode){
+    // Open the LIVE SQLite checkpoint using read-only mode (including WAL).
+    // Existing checkpoint and finished reports must remain byte-identical.
+    if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(checkpointId))
+      throw Error("Неверный формат checkpoint UUID");
+    const source=path.resolve(dbFile);
+    const info=await fs.stat(source);
+    if(!info.isFile())throw Error("Checkpoint SQLite is not a file");
+    const db=new DatabaseSync(source,{readOnly:true});
+    try{
+      db.exec("PRAGMA query_only=ON");
+      const row=db.prepare(
+        "SELECT payload FROM research_checkpoints WHERE id=?"
+      ).get(checkpointId);
+      if(!row?.payload)throw Error("Checkpoint not found");
+      input=Buffer.from(row.payload,"utf8");
+    }finally{db.close();}
+  }else{
+    input=await fs.readFile(path.resolve(filename));
+  }
+  const raw=JSON.parse(input.toString("utf8"));
+  if(checkpointMode&&!raw?.final_result)
+    throw Error("Checkpoint missing completed result");
+  const report=buildMissingInnRecoveryQueue(raw);
+  if(checkpointMode)report.source_checkpoint=checkpointId;
   const base=path.resolve(prefix),jsonPath=base+".json";
   const xlsxPath=base+".xlsx",zipPath=base+".zip";
   await fs.mkdir(path.dirname(base),{recursive:true,mode:0o700});
@@ -40,6 +74,7 @@ async function main() {
     console.warn("Saby missing-INN: JSON готов; XLSX/ZIP не созданы. "+
       "Проверьте openpyxl и SAT_PYTHON_BIN.");
   console.log(JSON.stringify({
+    ...(checkpointMode?{source_checkpoint:checkpointId}:{}),
     ...report.summary,
     files:{json:jsonPath,xlsx:exported?xlsxPath:null,
       zip:exported?zipPath:null},
