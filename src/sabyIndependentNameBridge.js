@@ -127,21 +127,26 @@ export function compareIndependentRegistryAlias({
   if(!record)return reject("independent_requisites_unavailable");
   if(record.inn!==inn||record.kpp!==kpp||record.ogrn!==ogrn)
     return reject("independent_registry_identifier_mismatch");
-  if(!sameRegisteredName(sourceName,record.full_name))
-    return reject("independent_registered_name_mismatch");
-  // Saby's "Название" in registered requisites is not guaranteed to be
-  // the SHORT registered name. Its legal panel may display the full name,
-  // while the H1 on the SAME canonical profile displays the short name.
-  // Both must independently equal exactly one of the two registered names.
-  // Exact INN/KPP/OGRN and full source-name proof were checked above.
+  // Each text on the research side and both Saby panels must match an
+  // EXACT registered alias (full or short) from the SAME third-party record.
+  // The source is often the actual abbreviated company name, not the legal
+  // full name. Accepting the registered short form is not token inference:
+  // INN, KPP and OGRN already matched exactly above.
   const registryRole=value=>{
     const full=sameRegisteredName(value,record.full_name);
     const short=sameRegisteredName(value,record.short_name);
     return full&&short?"both":full?"full":short?"short":"none";
   };
+  const sourceRole=registryRole(sourceName);
+  if(sourceRole==="none")
+    return {status:"review",reason:"independent_registered_name_mismatch",
+      source_role:"none"};
+  // Saby "Название" in requisites may be registered full OR short. Its
+  // independently observed H1 must also equal one of those aliases.
   const requisitesRole=registryRole(sabyShortName);
   const titleRole=registryRole(sabyPublicTitle);
-  const roles={requisites_role:requisitesRole,title_role:titleRole};
+  const roles={source_role:sourceRole,
+    requisites_role:requisitesRole,title_role:titleRole};
   if(requisitesRole==="none"||titleRole==="none")
     return {status:"review",reason:"independent_short_name_mismatch",...roles};
   return {status:"verified",reason:"independent_registry_alias_verified",
