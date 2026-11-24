@@ -110,19 +110,33 @@ test("FNS live preflight exercises exact INN, independent card and exact registe
     search:async(t,hint)=>hint?official():{...official(),complete:false}
   }),{verified:false,reason:"fns_canary_name_incomplete"});
 });
-function browser({challenge=false,wrongQuery=false,staleOnly=false}={}){
+function browser({challenge=false,wrongQuery=false,staleOnly=false,
+  hiddenCheckbox=true,missingButton=false,missingLabel=false,
+  ineffectiveLabel=false,missingAssociatedLabel=false}={}){
   const token="0123456789ABCDEF",old="0000000000000000";
-  const listeners=new Set(),visits=[];
+  const listeners=new Set(),visits=[],actions=[];
   let value="",checked=false;
-  const input={count:async()=>1,waitFor:async()=>{},fill:async v=>{value=v;},inputValue:async()=>value};
-  const checkbox={count:async()=>1,check:async()=>{checked=true;},isChecked:async()=>checked};
+  const input={count:async()=>1,isEnabled:async()=>true,waitFor:async()=>{},
+    fill:async v=>{value=v;actions.push("fill");},inputValue:async()=>value};
+  const checkbox={count:async()=>1,isEnabled:async()=>true,
+    isVisible:async()=>!hiddenCheckbox,
+    check:async()=>{assert.equal(hiddenCheckbox,false,"must not check hidden input");checked=true;actions.push("check");},
+    isChecked:async()=>checked};
+  const labelClick=async()=>{actions.push("label_click");if(!ineffectiveLabel)checked=true;};
+  const label={count:async()=>missingLabel||missingAssociatedLabel?0:1,
+    filter:options=>{assert.deepEqual(options,{visible:true});return label;},
+    click:labelClick};
+  const labelText={count:async()=>missingLabel?0:1,isVisible:async()=>!missingLabel,
+    click:labelClick};
   const response=(url,method,payload,post="")=>({
     url:()=>url,status:()=>200,json:async()=>payload,
     request:()=>({method:()=>method,postData:()=>post})
   });
   const emit=async response=>{for(const fn of [...listeners])await fn(response);};
   const host="https://egrul.nalog.ru";
-  const submit={count:async()=>1,click:async()=>{
+  const submit={count:async()=>missingButton?0:1,isEnabled:async()=>!missingButton,
+    waitFor:async()=>{if(missingButton)throw Error("button missing");},click:async()=>{
+    actions.push("submit");
     const post=new URLSearchParams({query:wrongQuery?"ДРУГОЙ":value,nameEq:checked?"on":""}).toString();
     if(challenge){
       await emit(response(host+"/","POST",{captchaRequired:true},post));return;
@@ -133,12 +147,22 @@ function browser({challenge=false,wrongQuery=false,staleOnly=false}={}){
     await emit(response(host+"/","POST",{t:token},post));
   }};
   const page={
-    url:()=>host+"/index.html",getByPlaceholder:()=>input,
-    getByRole:role=>role==="checkbox"?checkbox:submit,
-    locator:()=>checkbox,on:(_event,fn)=>listeners.add(fn),
+    url:()=>host+"/index.html",
+    locator:selector=>{
+      if(selector==='input#query[name="query"][type="text"]')return input;
+      if(selector==='button#btnSearch[type="submit"]')return submit;
+      if(selector==='input#nameEq[name="nameEq"][type="checkbox"]')return checkbox;
+      if(selector==='label[for="nameEq"], label:has(input#nameEq)')return label;
+      throw Error("unexpected selector: "+selector);
+    },
+    getByText:(text,opts)=>{
+      assert.equal(text,"Искать по точному соответствию наименования юридического лица или фамилии, имени и отчеству");
+      assert.equal(opts.exact,true);return labelText;
+    },
+    on:(_event,fn)=>listeners.add(fn),
     off:(_event,fn)=>listeners.delete(fn),waitForTimeout:async()=>{}
   };
-  return {page,visits,listeners,navigate:async(u,check)=>{
+  return {page,visits,listeners,actions,navigate:async(u,check)=>{
     visits.push(u);assert.equal(check(page.url()),true);return true;
   },readBody:async()=>"Результаты поиска"};
 }
@@ -147,6 +171,7 @@ test("official form observer accepts only matching submitted query and correlate
   const found=await lookupFnsViaBrowser(b.page,{query:short,navigate:b.navigate,readBody:b.readBody});
   assert.equal(found.records[0].record.address,address);
   assert.equal(found.complete,true);
+  assert.deepEqual(b.actions,["fill","label_click","submit"]);
   // Do not start at the root, which can downgrade HTTPS to HTTP.
   assert.deepEqual(b.visits,["https://egrul.nalog.ru/index.html"]);
   assert.equal(b.listeners.size,0);
@@ -163,6 +188,29 @@ test("official form observer accepts only matching submitted query and correlate
   assert.equal(isFnsFormRoute("https://egrul.nalog.ru/index.html"),true);
   assert.equal(isFnsFormRoute("http://egrul.nalog.ru/index.html"),false);
   assert.equal(isFnsFormRoute("https://egrul.nalog.ru.evil.test/index.html"),false);
+});
+test("observed FNS controls handle hidden and visible checkboxes and fail before an unproven exact-name submit",async()=>{
+  for(const [options,query,expected] of [
+    [{},inn,["fill","submit"]],
+    [{hiddenCheckbox:false},short,["fill","check","submit"]],
+    [{missingAssociatedLabel:true},short,["fill","label_click","submit"]]
+  ]){
+    const b=browser(options);
+    const result=await lookupFnsViaBrowser(b.page,{query,navigate:b.navigate,readBody:b.readBody});
+    assert.equal(result.records.length,1);
+    assert.deepEqual(b.actions,expected);
+  }
+  for(const [options,code] of [
+    [{missingButton:true},"fns_submit_button_unavailable"],
+    [{missingLabel:true},"fns_exact_checkbox_not_selected"],
+    [{ineffectiveLabel:true},"fns_exact_checkbox_not_selected"]
+  ]){
+    const b=browser(options);
+    await assert.rejects(lookupFnsViaBrowser(b.page,{query:short,
+      navigate:b.navigate,readBody:b.readBody}),e=>e.code===code);
+    assert.ok(!b.actions.includes("submit"));
+    assert.equal(b.listeners.size,0);
+  }
 });
 test("VBR spaced duplicate identifiers and address remain exact, different copies never match",()=>{
   const text=[short,"Действующая организация","Общая информация",
