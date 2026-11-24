@@ -155,3 +155,23 @@ directly. Multiple saved OGRNs are reviewed before any browser request.
 Reopen pre-revision-2 incomplete FNS name reviews once for this changed
 strategy, not verified rows or identity conflicts. No repeated reset of
 current reviews. The live queue continues from its last saved child.
+
+### Observed capped search-result layout
+
+The full 2026-11-24 VPS journal shows every name query returned 20 rows;
+pg was absent on 19 rows and tot was absent or invalid on 19 or 20 rows.
+This is consistent with the public form's warning that only the first
+records may be shown and the operator should refine search criteria.
+Read an explicit numeric total from sparse first-row metadata without
+requiring that it be repeated on every record. A sparse result can
+prove completeness only below the observed 20-row boundary, with
+explicit page 1, consistent numeric total equal to the entire returned
+row count, compatible cnt when present, and every record parsed once.
+Missing/invalid/contradictory totals, later pages, truncated or unread
+records remain unproven. This does not presume that all 20-row
+responses are complete, or invent paging requests. The normal visible
+region filter is the refinement path. Header and row-sequence diagnostic
+codes preserve strict PDF acceptance; actual additional header variants
+still need evidence. The added sparse multi-row fixtures are synthetic,
+reflecting the observed field-presence pattern rather than captured
+numeric values of tot.

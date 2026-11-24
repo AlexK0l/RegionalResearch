@@ -66,12 +66,26 @@ export function parseFnsSearchResult(payload,{query,exactName=false,completeName
       active:explicitInactive?false:null
     }});
   }
-  const totals=new Set(raw.map(r=>asCount(r?.tot)));
+  // Live FNS 1.9.2 name searches (2026-11-24): 20 visible rows;
+  // pg and possibly tot occur on the first row, not each record. Missing
+  // metadata on subsequent rows is not a conflicting total. Explicit
+  // invalid or inconsistent metadata, however, must fail closed.
+  const totals=new Set(raw.filter(r=>r?.tot!==undefined).map(r=>asCount(r.tot)));
+  const missingTotals=raw.filter(r=>r?.tot===undefined).length;
+  const firstTotal=asCount(raw[0]?.tot),firstPageNumber=asCount(raw[0]?.pg);
   const distinctOgrns=new Set(rows.map(r=>r.record.ogrn)).size;
   const allRead=raw.length===rows.length&&raw.length<=100&&
     distinctOgrns===rows.length;
-  const countProven=raw.length>0&&totals.size===1&&totals.has(raw.length);
+  const consistentTotal=totals.size===1&&totals.has(raw.length)&&firstTotal===raw.length;
   const firstPage=raw.every(r=>r?.pg===undefined||asCount(r.pg)===1);
+  // Retain the former repeated-metadata proof. For sparse metadata,
+  // require explicit page 1 and fewer than the observed 20-row boundary.
+  // A capped first page, a nonnumeric/missing total or skipped record
+  // can never establish uniqueness by name and locality.
+  const sparseProof=missingTotals>0&&raw.length<20&&firstPageNumber===1&&
+    raw.every(r=>r?.cnt===undefined||asCount(r.cnt)===raw.length);
+  const countProven=raw.length>0&&consistentTotal&&
+    (missingTotals===0||sparseProof);
   const complete=allRead&&countProven&&firstPage;
   // Fixed, count-only diagnostics; never log names, identifiers or tokens.
   const reportedTotal=totals.size===1?[...totals][0]:null;

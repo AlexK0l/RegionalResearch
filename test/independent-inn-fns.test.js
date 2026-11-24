@@ -775,3 +775,51 @@ test("unparsed extract is recorded as row-specific proof failure; next company r
     ["fns_extract_header_unproven"]);
   assert.equal(out.snapshot.final_result.direct_buyers[0]["ИНН"],"");
 });
+
+// The live name-search logs show first-row-only pagination metadata.
+// Synthetic records cover the observed sparse shape without embedding
+// any actual lead names, person details or temporary search tokens.
+test("FNS sparse first-row totals may prove only bounded fully read name results",()=>{
+  const other={...raw,i:"7810165652",o:"1024701479571",p:"472701001",
+    n:'АКЦИОНЕРНОЕ ОБЩЕСТВО "ДРУГОЙ ПРИМЕР"',c:'АО "ДРУГОЙ ПРИМЕР"'};
+  delete other.tot;delete other.pg;
+  const first={...raw,tot:"2",cnt:"2",pg:"1"};
+  const read=rows=>parseFnsSearchResult({rows},{query:short,completeNameSearch:true});
+  const complete=read([first,other]);
+  assert.equal(complete.complete,true);
+  assert.equal(complete.total_reported,2);
+  assert.equal(complete.completeness.reported_total,2);
+  assert.equal(complete.completeness.missing_or_invalid_total_rows,1);
+  assert.equal(complete.completeness.missing_page_rows,1);
+  for(const bad of [
+    [{...first,tot:"21"},other],
+    [{...first,tot:"20+"},other],
+    [{...first,tot:undefined},other],
+    [{...first,pg:undefined},other],
+    [{...first,pg:"2"},other],
+    [{...first,cnt:"20"},other],
+    [first,{...other,tot:"3"}],
+    [first,{...other,tot:""}],
+    [first,{...other,pg:"2"}],
+    [first,{...other,i:"invalid"}],
+    [first,{...other,o:first.o}],
+    [other,{...first,tot:"2"}],
+    Array.from({length:20},(_,i)=>i===0?{...first,tot:"20",cnt:"20"}:{...other})
+  ])assert.equal(read(bad).complete,false);
+  // A full 20-row response is not proven complete merely because the
+  // first row declares 20; the real UI explicitly warns about truncation.
+  assert.equal(read(Array.from({length:20},(_,i)=>i===0?
+    {...first,tot:"20",cnt:"20"}:{...other})).completeness.total_proven,false);
+  assert.equal(read([{...first,tot:"27"},other]).completeness.reported_total,27);
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,
+    region:"Ленинградская область",search:complete}).status,"candidate");
+});
+test("row sequence parser diagnostic is numeric and never relaxes the official proof",()=>{
+  const changed=extractText.replace("   2      ГРН","   3      ГРН");
+  const parsed=extractParse(changed);
+  assert.equal(parsed.reason,"fns_extract_rows_unproven");
+  assert.equal(parsed.diagnostic.row_issue,"nonsequential_rows");
+  assert.equal(parsed.diagnostic.expected_row,2);
+  assert.equal(parsed.diagnostic.observed_row,3);
+  assert.equal(parsed.record,undefined);
+});

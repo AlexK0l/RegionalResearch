@@ -150,8 +150,13 @@ export function parseOfficialFnsExtract(text,{now=Date.now()}={}){
     return {reason:"fns_extract_sections_unproven"};
   const lastTax=parsed.rows.findLastIndex(row=>row.section==="tax");
   const firstRows=parsed.rows.slice(0,lastTax+1);
-  if(lastTax<0||firstRows.some((r,i)=>r.number!==i+1))
-    return {reason:"fns_extract_rows_unproven"};
+  const firstMismatch=firstRows.findIndex((r,i)=>r.number!==i+1);
+  if(lastTax<0||firstMismatch>=0)
+    return {reason:"fns_extract_rows_unproven",diagnostic:{
+      observed_pages:pages.page_count,identity_rows:firstRows.length,
+      row_issue:lastTax<0?"tax_rows_missing":"nonsequential_rows",
+      ...(firstMismatch>=0?{expected_row:firstMismatch+1,
+        observed_row:firstRows[firstMismatch].number}:{})}};
   const full=take("names",/^Полное наименование(?: юридического лица)? на русском языке$/iu);
   const short=take("names",/^Сокращ[её]нное наименование(?: юридического лица)? на русском языке$/iu);
   const address=take("address",/^Адрес юридического лица$/iu);
