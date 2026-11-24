@@ -2,8 +2,9 @@
 // private endpoint, Saby request, or paid API. A single fresh Chromium
 // context is separate from the authenticated Stage12 Saby profile.
 import {chromium} from "playwright";
-import {extractVbrGeneralIdentity,isVbrCompanyUrl}
+import {extractVbrGeneralIdentity,isVbrCompanyUrl,unwrapVbrDuplicate}
   from "./sabyIndependentVbrBridge.js";
+import {lookupFnsViaBrowser} from "./independentInnFns.js";
 import {extractIndependentRegistryIdentity,independentRegistryRoute,
   canonicalIndependentRegistryRoute,sameRegisteredName}
   from "./sabyIndependentNameBridge.js";
@@ -82,7 +83,7 @@ export function extractRegistryVbrRecord(raw){
         end=j;break;
       }
       if(list[j]!=="Юридический адрес"||j+1>=end)continue;
-      const address=clean(list[j+1]);
+      const address=unwrapVbrDuplicate(list[j+1]);
       if(address&&address.length>=12&&address.length<=500&&/\d/.test(address))
         values.add(address);
     }
@@ -99,12 +100,14 @@ export function extractRegistryTbankRecord(raw){
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
-  maxPages=80,delayMs=900,maxCandidates=8
+  maxPages=80,delayMs=900,maxCandidates=8,provider="vbr"
 }={}){
-  if(!Number.isSafeInteger(maxPages)||maxPages<1||maxPages>3000||
+  if(!["vbr","fns"].includes(provider)||
+     !Number.isSafeInteger(maxPages)||maxPages<1||maxPages>3000||
      !Number.isSafeInteger(maxCandidates)||maxCandidates<1||maxCandidates>12)
     throw Error("REGISTRY_LOOKUP_BAD_BUDGET");
-  const delay=Math.max(500,Math.min(10000,Number(delayMs)||900));
+  const delay=Math.max(provider==="fns"?2000:500,
+    Math.min(10000,Number(delayMs)||900));
   let pages=0,uncertain=0;
   async function navigate(url,check){
     if(pages>=maxPages)throw fail("navigation_budget");
@@ -166,6 +169,8 @@ export async function createPublicRegistryLookup(page,{
     get pages(){return pages;},
     async search(target,hint){
       const query=clean(hint?.inn||target.organization);
+      if(provider==="fns")
+        return lookupFnsViaBrowser(page,{query,navigate,readBody});
       const check=value=>exactRegistrySearchRoute(value,query);
       if(!await navigate(registrySearchUrl(query),check))
         throw fail("registry_http_unavailable");
@@ -224,9 +229,11 @@ export async function withPublicRegistryLookup(task,options={}){
     const page=await context.newPage();
     // Do not load unnecessary large assets. Normal website scripts and
     // navigation are left intact; no auth state or privileged access.
-    await page.route("**/*",route=>
-      ["image","font","media"].includes(route.request().resourceType())?
-        route.abort():route.continue());
+    // The official FNS UI is left fully intact, including any challenge.
+    if(options.provider!=="fns")
+      await page.route("**/*",route=>
+        ["image","font","media"].includes(route.request().resourceType())?
+          route.abort():route.continue());
     return await task(await createPublicRegistryLookup(page,options));
   }finally{
     if(context)await context.close().catch(()=>{});
