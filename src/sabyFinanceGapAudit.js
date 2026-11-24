@@ -56,11 +56,12 @@ function structuredSabyUrls(row,inn){
   let hasAnySource=false,privateCard=false,publicProfile=false;
   for(const candidate of raw){
     if(typeof candidate!=="string"||candidate.length>700)continue;
-    hasAnySource=true;
     try{
       const u=new URL(candidate);
-      if(u.protocol!=="https:"||u.port||u.username||u.password)
-        continue;
+      if(!["http:","https:"].includes(u.protocol)||
+         !u.hostname||u.username||u.password)continue;
+      hasAnySource=true;
+      if(u.protocol!=="https:"||u.port)continue;
       if(u.hostname==="profile.saby.ru"&&
          u.pathname==="/page/contractor-info"&&
          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(
