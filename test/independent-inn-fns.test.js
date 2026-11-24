@@ -6,7 +6,7 @@ import {chooseIndependentInnCandidate,verifyIndependentInnCandidate,
   planIndependentInnBackfill,runIndependentInnBackfill,checkFnsRegistryCanary,
   preciseLocalityMatch,hydrateFnsSearchAddresses} from "../src/independentInnBackfill.js";
 import {extractVbrGeneralIdentity} from "../src/sabyIndependentVbrBridge.js";
-import {extractRegistryVbrRecord,extractRegistryTbankRecord} from "../src/independentInnRegistryBrowser.js";
+import {extractRegistryVbrRecord,extractRegistryTbankRecord,createPublicRegistryLookup,registrySearchUrl} from "../src/independentInnRegistryBrowser.js";
 import {extractIndependentRegistryIdentity} from "../src/sabyIndependentNameBridge.js";
 
 const inn="4706000909",ogrn="1024701329377",kpp="470601001";
@@ -358,4 +358,108 @@ test("run reuses address confirmation without a second request and preserves ori
   assert.equal(output.snapshot.final_result.direct_buyers[0]["ИНН"],inn);
   assert.equal(output.snapshot.final_result.direct_buyers[0].__evidence.identity_verification.legal_address_source_url,source);
   assert.equal(JSON.stringify(checkpoint),before);
+});
+
+
+// Actual adapter contract: first try the independent T-Bank card, then
+// resolve a single observed VBR card by the exact official OGRN.
+const vbrCardUrl="https://kontragent.vbr.ru/company/ao-primer-"+ogrn+"/";
+const vbrCardText=[short,"Действующая организация. Проверено: 20.11.2026",
+  "Общая информация","Полное наименование",full,"Краткое наименование",short,
+  "ОГРН",ogrn,"ИНН",inn,"КПП",kpp,"Юридический адрес",address,
+  "Сведения об организации"].join("\n");
+const bankCardText=[short,"Действующая организация","Реквизиты",
+  "Полное название",full,"Краткое название",short,"ИНН",inn,
+  "КПП",kpp,"ОГРН",ogrn,"Юридический адрес",address,"Регистрация ФНС"].join("\n");
+function confirmationPage({bankError="",bankStatus=200,vbrStatus=200,
+  bankBody=bankCardText,vbrBody=vbrCardText,links=[vbrCardUrl]}={}){
+  const visits=[],diagnostics=[],waits=[];
+  const page={current:"",
+    async goto(url,options){
+      visits.push({url,waitUntil:options.waitUntil});
+      if(url===source&&bankError){
+        const error=Error(bankError);
+        if(bankError==="timeout")error.name="TimeoutError";
+        throw error;
+      }
+      this.current=url;
+      return {status:()=>url===source?bankStatus:
+        url===registrySearchUrl(ogrn)?vbrStatus:200};
+    },
+    url(){return this.current;},
+    isClosed:()=>false,
+    waitForTimeout:async ms=>{waits.push(ms);},
+    async evaluate(){
+      if(this.current===source)return bankBody;
+      if(this.current===registrySearchUrl(ogrn))return {
+        text:"Найдено 1 организация",links:links.map(url=>({url,title:short})),
+        inputs:[ogrn],hasMore:false,truncated:false};
+      if(this.current===vbrCardUrl)return vbrBody;
+      throw Error("unexpected route");
+    }
+  };
+  return {page,visits,diagnostics,waits,onDiagnostic:d=>diagnostics.push(d)};
+}
+test("T-Bank connection failure falls back to observed VBR OGRN and permits addressless FNS recovery",async()=>{
+  const f=confirmationPage({bankError:"net::ERR_CONNECTION_RESET"});
+  const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:3,onDiagnostic:f.onDiagnostic});
+  const data=parseFnsSearchResult({rows:[{...raw,a:null}]},{query:short,exactName:true});
+  const hydrated=await hydrateFnsSearchAddresses(data,target,lookup);
+  const selection=chooseIndependentInnCandidate({row:row(),target,region:"Ленинградская область",search:hydrated.search});
+  assert.equal(selection.status,"candidate");
+  assert.equal(selection.address_source_url,vbrCardUrl);
+  const proof=verifyIndependentInnCandidate(selection,hydrated.confirmations.get(ogrn),target);
+  assert.equal(proof.status,"verified");
+  assert.deepEqual(proof.source_urls,[fnsSourceUrl(inn),vbrCardUrl]);
+  assert.deepEqual(f.visits.map(v=>v.url),[source,registrySearchUrl(ogrn),vbrCardUrl]);
+  assert.ok(f.visits.every(v=>v.waitUntil==="commit"));
+  assert.ok(f.diagnostics.some(d=>d.provider==="tbank"&&d.stage==="card_navigation"&&d.transport==="connection"));
+  assert.equal(lookup.pages,3);
+});
+test("ordinary complete T-Bank card needs no fallback; explicit contradiction is not overridden",async()=>{
+  for(const [body,expectedStatus] of [
+    [bankCardText,"verified"],
+    [bankCardText.replace(kpp,"470601002"),"review"],
+    [bankCardText.replace("Действующая организация","Организация в процессе ликвидации"),"review"]
+  ]){
+    const f=confirmationPage({bankBody:body});
+    const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:4,onDiagnostic:f.onDiagnostic});
+    const confirmation=await lookup.confirm(ogrn,bankRecord);
+    const data=official();
+    const selection=chooseIndependentInnCandidate({row:row(),target,region:"Ленинградская область",search:data});
+    assert.equal(verifyIndependentInnCandidate(selection,confirmation,target).status,expectedStatus);
+    assert.deepEqual(f.visits.map(v=>v.url),[source]);
+  }
+});
+test("VBR exact OGRN proof is accepted only for an FNS primary record; incorrect cards and ambiguity fail closed",async()=>{
+  const data=official();
+  const selection=chooseIndependentInnCandidate({row:row(),target,region:"Ленинградская область",search:data});
+  const confirmation={url:vbrCardUrl,record:bankRecord};
+  assert.equal(verifyIndependentInnCandidate(selection,confirmation,target).status,"verified");
+  assert.equal(verifyIndependentInnCandidate({...selection,provider:"vbr",url:vbrCardUrl},confirmation,target).status,"review");
+  assert.equal(verifyIndependentInnCandidate(selection,{...confirmation,record:{...bankRecord,inn:"7707083893"}},target).status,"review");
+  const f=confirmationPage({bankError:"timeout",links:[vbrCardUrl,"https://kontragent.vbr.ru/company/drugaya-"+ogrn+"/"]});
+  const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:5,onDiagnostic:f.onDiagnostic});
+  assert.equal(await lookup.confirm(ogrn,bankRecord),null);
+  assert.deepEqual(f.visits.map(v=>v.url),[source,registrySearchUrl(ogrn)]);
+});
+test("technical failure of one provider is bounded, and denied access is not retried",async()=>{
+  const f=confirmationPage({bankError:"timeout"});
+  const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:9,onDiagnostic:f.onDiagnostic});
+  for(let i=0;i<3;i++)assert.equal((await lookup.confirm(ogrn,bankRecord)).url,vbrCardUrl);
+  assert.equal(f.visits.filter(v=>v.url===source).length,2);
+  assert.ok(f.diagnostics.some(d=>d.provider==="tbank"&&d.disabled===true));
+  const blocked=confirmationPage({bankStatus:403,vbrStatus:429});
+  const denied=await createPublicRegistryLookup(blocked.page,{provider:"fns",maxPages:5,onDiagnostic:blocked.onDiagnostic});
+  await assert.rejects(denied.confirm(ogrn,bankRecord),e=>e.code==="registry_confirmation_unavailable");
+  await assert.rejects(denied.confirm(ogrn,bankRecord),e=>e.code==="registry_confirmation_unavailable");
+  assert.equal(denied.pages,2);
+  assert.ok(blocked.diagnostics.some(d=>d.provider==="tbank"&&d.http_status===403));
+  assert.ok(blocked.diagnostics.some(d=>d.provider==="vbr"&&d.http_status===429));
+});
+test("navigation budget is not swallowed by confirmation fallback",async()=>{
+  const f=confirmationPage({bankError:"timeout"});
+  const lookup=await createPublicRegistryLookup(f.page,{provider:"fns",maxPages:1});
+  await assert.rejects(lookup.confirm(ogrn,bankRecord),e=>e.code==="navigation_budget");
+  assert.equal(lookup.pages,1);
 });

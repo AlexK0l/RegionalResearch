@@ -2,7 +2,7 @@
 // private endpoint, Saby request, or paid API. A single fresh Chromium
 // context is separate from the authenticated Stage12 Saby profile.
 import {chromium} from "playwright";
-import {extractVbrGeneralIdentity,isVbrCompanyUrl,unwrapVbrDuplicate}
+import {extractVbrGeneralIdentity,isVbrCompanyUrl,unwrapVbrDuplicate,chooseVbrCompanyUrl}
   from "./sabyIndependentVbrBridge.js";
 import {lookupFnsViaBrowser} from "./independentInnFns.js";
 import {extractIndependentRegistryIdentity,independentRegistryRoute,
@@ -12,7 +12,21 @@ import {extractIndependentRegistryIdentity,independentRegistryRoute,
 const clean=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
 const lines=v=>String(v||"").slice(0,120000).split(/[\r\n]+/u)
   .map(clean).filter(Boolean);
-function fail(code){return Object.assign(Error(code),{code});}
+function fail(code,details={}){return Object.assign(Error(code),{code,...details});}
+// Deliberately avoid raw exception messages and URLs (which can contain
+// identifiers or session tokens). Only allowlisted transport categories.
+function navigationFailure(error){
+  const message=String(error?.message||"");
+  if(error?.name==="TimeoutError")return "timeout";
+  if(/ERR_NAME_NOT_RESOLVED|ERR_DNS/i.test(message))return "dns";
+  if(/ERR_CERT_|ERR_SSL_/i.test(message))return "tls";
+  if(/ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_REFUSED/i.test(message))return "connection";
+  if(/ERR_ABORTED/i.test(message))return "aborted";
+  if(/ERR_TIMED_OUT/i.test(message))return "timeout";
+  if(/ERR_BLOCKED_BY_CLIENT|ERR_ACCESS_DENIED/i.test(message))return "blocked";
+  if(/ERR_HTTP2_|ERR_QUIC_|ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message))return "http";
+  return "other";
+}
 export function registrySearchUrl(query){
   const url=new URL("https://kontragent.vbr.ru/search/");
   url.searchParams.set("s",clean(query));
@@ -63,10 +77,10 @@ function activeAtTop(raw,identity){
   const index=head.findIndex(line=>
     sameRegisteredName(line,identity.full_name)||
     sameRegisteredName(line,identity.short_name));
-  if(index<0)return false;
+  if(index<0)return null;
   const status=head.slice(Math.max(0,index-3),index+7);
-  return status.some(l=>/^действующая организация(?:\.|$)/iu.test(l))&&
-    !status.some(l=>/^(?:ликвидирован[ао]?|организация ликвидирована|деятельность прекращена|организация в процессе ликвидации|организация в процессе банкротства)(?:[.! ]|$)/iu.test(l));
+  if(status.some(l=>/^(?:ликвидирован[ао]?|организация ликвидирована|деятельность прекращена|организация в процессе ликвидации|организация в процессе банкротства)(?:[.! ]|$)/iu.test(l)))return false;
+  return status.some(l=>/^действующая организация(?:\.|$)/iu.test(l))?true:null;
 }
 export function extractRegistryVbrRecord(raw){
   // Identity and address must originate in the same single panel. Never
@@ -100,7 +114,7 @@ export function extractRegistryTbankRecord(raw){
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
-  maxPages=80,delayMs=900,maxCandidates=8,provider="vbr"
+  maxPages=80,delayMs=900,maxCandidates=8,provider="vbr",onDiagnostic=()=>{}
 }={}){
   if(!["vbr","fns"].includes(provider)||
      !Number.isSafeInteger(maxPages)||maxPages<1||maxPages>3000||
@@ -109,17 +123,25 @@ export async function createPublicRegistryLookup(page,{
   const delay=Math.max(provider==="fns"?2000:500,
     Math.min(10000,Number(delayMs)||900));
   let pages=0,uncertain=0;
-  async function navigate(url,check){
+  const unavailable=new Set(),failures=new Map();
+  const diag=(source,stage,reason,extra={})=>
+    onDiagnostic({provider:source,stage,reason,page_navigations:pages,...extra});
+  async function navigate(url,check,{waitUntil="domcontentloaded",source=provider,stage="navigation"}={}){
     if(pages>=maxPages)throw fail("navigation_budget");
     if(pages)await page.waitForTimeout(delay);
     pages++;
     let response;
     try{
-      response=await page.goto(url,{waitUntil:"domcontentloaded",timeout:18000});
-    }catch{throw fail("registry_browser_unavailable");}
+      response=await page.goto(url,{waitUntil,timeout:18000});
+    }catch(error){
+      const transport=navigationFailure(error);
+      diag(source,stage,"registry_browser_unavailable",{transport});
+      throw fail("registry_browser_unavailable",{transport});
+    }
     const status=Number(response?.status?.()||0);
+    diag(source,stage,"http_response",{http_status:status});
     if(status===404&&check(page.url()))return false;
-    if(status!==200)throw fail("registry_http_unavailable");
+    if(status!==200)throw fail("registry_http_unavailable",{http_status:status});
     if(!check(page.url()))throw fail("registry_route_untrusted");
     return true;
   }
@@ -154,16 +176,106 @@ export async function createPublicRegistryLookup(page,{
       });
     }catch{throw fail("registry_browser_unavailable");}
   }
+  // Confirmation cards need not wait for unrelated page resources. Use
+  // commit + bounded, route-checked content polling, as the independent
+  // Stage12 name bridges already do.
+  async function readConfirmationCard(url,ogrn,source,check,extract){
+    if(!await navigate(url,check,{waitUntil:"commit",source,stage:"card_navigation"})){
+      diag(source,"card_navigation","not_found",{http_status:404});
+      return null;
+    }
+    let last=null,readSucceeded=false;
+    for(let i=0;i<7;i++){
+      try{
+        const raw=await readBody(check);
+        readSucceeded=true;
+        const record=extract(raw);
+        if(record){
+          if(record.ogrn!==ogrn){
+            // A readable contradictory card is not a transport failure.
+            // Pass it back for the ordinary strict identity rejection.
+            diag(source,"card_read","identifier_mismatch");
+            return {record,url:page.url()};
+          }
+          last={record,url:page.url()};
+          if(record.active===false||(record.active===true&&
+            (provider!=="fns"||record.address)))return last;
+        }
+      }catch(error){
+        if(error?.code!=="registry_browser_unavailable")throw error;
+      }
+      if(i<6)await page.waitForTimeout(650);
+    }
+    if(!readSucceeded)throw fail("registry_browser_unavailable",{transport:"snapshot"});
+    diag(source,"card_read",last?"record_incomplete":"record_unavailable");
+    return last;
+  }
   async function card(url,ogrn){
     const check=value=>isVbrCompanyUrl(value,ogrn)&&!new URL(value).hash;
-    if(!await navigate(url,check))return null;
-    for(let i=0;i<4;i++){
-      const raw=await readBody(check);
-      const record=extractRegistryVbrRecord(raw);
-      if(record&&record.ogrn===ogrn)return {record,url:page.url()};
-      if(i<3)await page.waitForTimeout(650);
+    return readConfirmationCard(url,ogrn,"vbr",check,extractRegistryVbrRecord);
+  }
+  async function confirmVbr(ogrn){
+    const check=value=>exactRegistrySearchRoute(value,ogrn);
+    if(!await navigate(registrySearchUrl(ogrn),check,
+      {waitUntil:"commit",source:"vbr",stage:"ogrn_search_navigation"}))return null;
+    let previous="",stable=false,seen=new Set(),readSucceeded=false;
+    for(let i=0;i<6;i++){
+      try{
+        const snap=await snapshot(check);
+        readSucceeded=true;
+        if(/(?:^|\n)(?:подтвердите,? что вы не робот|проверка безопасности|доступ запрещ[её]н|access denied|just a moment|captcha)(?:[.!:\s]|$)/imu.test(snap.text))
+          throw fail("registry_http_unavailable");
+        const urls=(snap.links||[]).map(item=>item.url)
+          .filter(url=>isVbrCompanyUrl(url,ogrn)&&!new URL(url).hash);
+        for(const url of urls)seen.add(url);
+        if(seen.size>1||snap.truncated){
+          diag("vbr","ogrn_search","ambiguous_or_truncated");
+          return null;
+        }
+        const current=JSON.stringify([...new Set(urls)].sort());
+        if(urls.length&&current===previous){stable=true;break;}
+        previous=current;
+      }catch(error){
+        if(error?.code!=="registry_browser_unavailable")throw error;
+      }
+      if(i<5)await page.waitForTimeout(650);
     }
-    return null;
+    if(!readSucceeded)throw fail("registry_browser_unavailable",{transport:"snapshot"});
+    const url=stable?chooseVbrCompanyUrl([...seen],ogrn):"";
+    if(!url){diag("vbr","ogrn_search","exact_card_unavailable");return null;}
+    return card(url,ogrn);
+  }
+  function sameIdsAndNames(a,b){
+    return !!a&&!!b&&a.inn===b.inn&&a.kpp===b.kpp&&a.ogrn===b.ogrn&&
+      sameRegisteredName(a.full_name,b.full_name)&&sameRegisteredName(a.short_name,b.short_name);
+  }
+  async function attemptConfirmation(source,task){
+    if(unavailable.has(source))return null;
+    try{
+      const found=await task();
+      failures.set(source,0);
+      diag(source,"confirmation",found?"record_read":"record_unavailable",
+        {address_present:Boolean(found?.record?.address),
+          active_status:found?.record?.active===true?"active":
+            found?.record?.active===false?"inactive":"unknown"});
+      return found;
+    }catch(error){
+      if(error?.code==="navigation_budget")throw error;
+      if(page.isClosed?.())throw fail("registry_browser_unavailable");
+      const code=["registry_browser_unavailable","registry_http_unavailable","registry_route_untrusted"].includes(error?.code)?
+        error.code:"registry_browser_unavailable";
+      const count=(failures.get(source)||0)+1;
+      failures.set(source,count);
+      // Do not retry access restrictions or untrusted routes. A
+      // separate independent public source may still supply proof.
+      if(code!=="registry_browser_unavailable"||error?.transport==="blocked"||count>=2)
+        unavailable.add(source);
+      diag(source,"confirmation",code,{
+        ...(error?.transport?{transport:error.transport}:{}),
+        ...(Number.isInteger(error?.http_status)?{http_status:error.http_status}:{}),
+        disabled:unavailable.has(source)});
+      return null;
+    }
   }
   return {
     get pages(){return pages;},
@@ -201,29 +313,36 @@ export async function createPublicRegistryLookup(page,{
       const records=[];
       for(const link of selected){
         const item=await card(link.url,link.ogrn);
-        if(item)records.push(item);
+        if(item&&item.record.ogrn===link.ogrn)records.push(item);
       }
       return {state:"observed",complete:state.complete||state.empty,
         allCardsRead:selected.length===state.links.length&&
           records.length===selected.length,records};
     },
-    async confirm(ogrn){
+    async confirm(ogrn,expected){
       const url=independentRegistryRoute(ogrn);
+      if(!url)return null;
       const check=value=>canonicalIndependentRegistryRoute(value,ogrn)&&!new URL(value).hash;
-      if(!url||!await navigate(url,check))return null;
-      let last=null;
-      for(let i=0;i<4;i++){
-        const raw=await readBody(check);
-        const record=extractRegistryTbankRecord(raw);
-        if(record&&record.ogrn===ogrn){
-          last={record,url:page.url()};
-          // Address is essential when resolving official FNS name-search
-          // rows, which often omit it. Wait for the same panel to hydrate.
-          if(provider!=="fns"||record.address)return last;
-        }
-        if(i<3)await page.waitForTimeout(650);
+      const readBank=()=>readConfirmationCard(url,ogrn,"tbank",check,extractRegistryTbankRecord);
+      if(provider!=="fns")return readBank();
+      const bank=await attemptConfirmation("tbank",readBank);
+      // Never switch sources to override a contradictory readable card,
+      // including a confirmed inactive status. Only missing proof or a
+      // technical failure allows the unrelated VBR confirmation route.
+      if(bank&&((expected&&!sameIdsAndNames(expected,bank.record))||
+        bank.record.ogrn!==ogrn||bank.record.active===false||
+        (bank.record.active===true&&bank.record.address)))return bank;
+      const vbr=await attemptConfirmation("vbr",()=>confirmVbr(ogrn));
+      if(bank&&vbr&&(!sameIdsAndNames(bank.record,vbr.record)||
+        (bank.record.address&&vbr.record.address&&
+          clean(bank.record.address).toLowerCase()!==clean(vbr.record.address).toLowerCase()))){
+        diag("vbr","confirmation","conflicting_independent_records");
+        return null;
       }
-      return last;
+      if(vbr)return vbr;
+      if(unavailable.has("tbank")&&unavailable.has("vbr"))
+        throw fail("registry_confirmation_unavailable");
+      return bank;
     }
   };
 }

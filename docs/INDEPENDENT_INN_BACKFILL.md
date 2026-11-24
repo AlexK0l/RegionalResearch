@@ -49,7 +49,7 @@ subresources.
   result count and fully parsed distinct records without truncation.
   FNS 1.9.2 search rows may omit the address. They remain identity
   candidates; obtain the address only from the independently matched
-  T-Bank requisites panel (same INN/KPP/OGRN and full/short names),
+  T-Bank or VBR requisites panel (same INN/KPP/OGRN and full/short names),
   preserving the address source URL. Inspect up to eight missing-address
   exact-name candidates per research row; an unread competing address
   blocks a geography-only assignment, including inactive namesakes.
@@ -57,9 +57,9 @@ subresources.
   search with unique exact legal name and precise original locality must
   connect the candidate to the row. Never infer region from INN prefix.
 - Check the same INN, KPP, OGRN, full/short legal names and active status in
-  the independent T-Bank registry page. Verify checksums. FNS search
+  an independent T-Bank or VBR registry page. Verify checksums. FNS search
   results are official identification data, but are not signed extracts;
-  T-Bank must independently confirm the current active status.
+  the independent provider must confirm the current active status.
 - Missing proof, ambiguous names, brands, branch labels, IP records
   (not supported by these legal-entity parsers), prior contradictions and
   already-owned identifiers remain in review. An inactive competing
@@ -74,3 +74,21 @@ subresources.
 Download the result from the existing checkpoint export endpoint, using
 the child UUID. Continue Saby finance only for newly eligible INNs once
 the recovered identity evidence has been checked.
+
+## Confirmation-provider failures
+
+For FNS discovery, confirmation first uses the canonical T-Bank OGRN
+card. The card reader waits for the committed HTTPS document and polls
+bounded company-scoped requisites, not unrelated assets. If confirmation
+is unavailable, the alternative VBR search uses the same exact OGRN and
+only a unique, observed, trusted company link. An explicit inconsistent
+or non-active T-Bank record is not overridden by another provider. VBR
+cannot serve as both discovery and independent confirmation.
+
+The navigation budget includes the fallback. A provider is disabled for
+the run after access denial, an untrusted route, or two consecutive
+technical failures. Access controls are not bypassed. If both providers
+are disabled, the interrupted row stays pending. The
+INDEPENDENT_INN_REGISTRY_DIAG records the provider, stage, HTTP status,
+allowlisted transport category, address presence and active status,
+without raw exceptions, private data, or transient session tokens.
