@@ -74,6 +74,20 @@ test("offline gap audit categorizes pending, exhausted and attempted without com
   const output=JSON.stringify(result);
   assert.doesNotMatch(output,/4703144282|7707083893|7812019999|profile\.saby\.ru|Компания 4703/);
 });
+test("arbitrary checkpoint reasons and browser errors are never printed",()=>{
+  const cp=sample();
+  cp.saby_finance_backfill_outcomes["4703144282"]={
+    status:"PRIVATE_STATUS_TOKEN",
+    reason:"SECRET_COMPANY_INN_URL"
+  };
+  cp.saby_finance_backfill_stats.browserError="PRIVATE_BROWSER_URL";
+  const result=auditSabyFinanceGaps(cp);
+  assert.equal(result.pending.by_reason[0].reason,"unknown:unclassified");
+  assert.equal(result.latest_pass.browser_error,"unclassified");
+  assert.doesNotMatch(JSON.stringify(result),
+    /PRIVATE_STATUS_TOKEN|SECRET_COMPANY_INN_URL|PRIVATE_BROWSER_URL/);
+});
+
 test("card hint requires same INN and exact approved private profile URL",()=>{
   const cp=sample();
   for(const evidence of [
