@@ -24,7 +24,7 @@ function navigationFailure(error){
   if(/ERR_ABORTED/i.test(message))return "aborted";
   if(/ERR_TIMED_OUT/i.test(message))return "timeout";
   if(/ERR_BLOCKED_BY_CLIENT|ERR_ACCESS_DENIED/i.test(message))return "blocked";
-  if(/ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message))return "http";
+  if(/ERR_HTTP2_|ERR_QUIC_|ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message))return "http";
   return "other";
 }
 export function registrySearchUrl(query){
@@ -126,15 +126,20 @@ export async function createPublicRegistryLookup(page,{
   const unavailable=new Set(),failures=new Map();
   const diag=(source,stage,reason,extra={})=>
     onDiagnostic({provider:source,stage,reason,page_navigations:pages,...extra});
-  async function navigate(url,check,{waitUntil="domcontentloaded"}={}){
+  async function navigate(url,check,{waitUntil="domcontentloaded",source=provider,stage="navigation"}={}){
     if(pages>=maxPages)throw fail("navigation_budget");
     if(pages)await page.waitForTimeout(delay);
     pages++;
     let response;
     try{
       response=await page.goto(url,{waitUntil,timeout:18000});
-    }catch(error){throw fail("registry_browser_unavailable",{transport:navigationFailure(error)});}
+    }catch(error){
+      const transport=navigationFailure(error);
+      diag(source,stage,"registry_browser_unavailable",{transport});
+      throw fail("registry_browser_unavailable",{transport});
+    }
     const status=Number(response?.status?.()||0);
+    diag(source,stage,"http_response",{http_status:status});
     if(status===404&&check(page.url()))return false;
     if(status!==200)throw fail("registry_http_unavailable",{http_status:status});
     if(!check(page.url()))throw fail("registry_route_untrusted");
@@ -175,7 +180,7 @@ export async function createPublicRegistryLookup(page,{
   // commit + bounded, route-checked content polling, as the independent
   // Stage12 name bridges already do.
   async function readConfirmationCard(url,ogrn,source,check,extract){
-    if(!await navigate(url,check,{waitUntil:"commit"})){
+    if(!await navigate(url,check,{waitUntil:"commit",source,stage:"card_navigation"})){
       diag(source,"card_navigation","not_found",{http_status:404});
       return null;
     }
@@ -211,7 +216,8 @@ export async function createPublicRegistryLookup(page,{
   }
   async function confirmVbr(ogrn){
     const check=value=>exactRegistrySearchRoute(value,ogrn);
-    if(!await navigate(registrySearchUrl(ogrn),check,{waitUntil:"commit"}))return null;
+    if(!await navigate(registrySearchUrl(ogrn),check,
+      {waitUntil:"commit",source:"vbr",stage:"ogrn_search_navigation"}))return null;
     let previous="",stable=false,seen=new Set(),readSucceeded=false;
     for(let i=0;i<6;i++){
       try{
@@ -262,7 +268,8 @@ export async function createPublicRegistryLookup(page,{
       failures.set(source,count);
       // Do not retry access restrictions or untrusted routes. A
       // separate independent public source may still supply proof.
-      if(code!=="registry_browser_unavailable"||count>=2)unavailable.add(source);
+      if(code!=="registry_browser_unavailable"||error?.transport==="blocked"||count>=2)
+        unavailable.add(source);
       diag(source,"confirmation",code,{
         ...(error?.transport?{transport:error.transport}:{}),
         ...(Number.isInteger(error?.http_status)?{http_status:error.http_status}:{}),
@@ -306,7 +313,7 @@ export async function createPublicRegistryLookup(page,{
       const records=[];
       for(const link of selected){
         const item=await card(link.url,link.ogrn);
-        if(item)records.push(item);
+        if(item&&item.record.ogrn===link.ogrn)records.push(item);
       }
       return {state:"observed",complete:state.complete||state.empty,
         allCardsRead:selected.length===state.links.length&&
