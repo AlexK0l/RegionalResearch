@@ -47,7 +47,7 @@ function extractHeader(text,now){
   const number=dateNumber[2]+(dateNumber[3]||"");
   if(!/^[А-ЯA-Z0-9-]{5,60}$/u.test(number)||number.endsWith("-"))return null;
   const id=(label,size)=>{
-    const pattern=new RegExp("^[ \\t]*"+label+"[ \\t]+((?:\\\\d[ \\t]*){"+size+"})$","mu");
+    const pattern=new RegExp("^[ \\t]*"+label+"[ \\t]+((?:\\d[ \\t]*){"+size+"})$","mu");
     return pattern.exec(head)?.[1]?.replace(/\s/gu,"")||"";
   };
   const inn=id("ИНН",10),ogrn=id("ОГРН",13);
