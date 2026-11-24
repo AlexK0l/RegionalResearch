@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
+import {DatabaseSync} from "node:sqlite";
 import {
   verifiedInnChecksum,buildMissingInnRecoveryQueue
 } from "../src/sabyMissingInnRecovery.js";
@@ -133,4 +134,80 @@ test("same short title with conflicting legal forms cannot be accepted as a dupl
   assert.equal(output.rows[0].decision,"candidate_legal_form_conflict");
   assert.equal(output.rows[0].candidates[0].ownership_risk,
     "legal_form_conflict");
+});
+
+
+test("missing-INN queue consumes one explicit checkpoint via read-only SQLite without changing it",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"saby-missing-inn-checkpoint-"));
+  const dbFile=path.join(dir,"live.sqlite");
+  const prefix=path.join(dir,"saved-research-review");
+  const id="20ab4c8a-d5f2-404e-aa3a-1b5209c5d084";
+  let db;
+  try{
+    const cp={id,source_mode:"saby",phase:"saby",
+      final_result:{
+        direct_buyers:[
+          {"Организация":"ООО «Первая компания»","ИНН":"",
+            __evidence:{notes:["ИНН: "+good]}},
+          {"Организация":"ООО «Вторая компания»","ИНН":"не установлен",
+            __evidence:{source_urls:["https://example.org/transport"]}},
+          {"Организация":"ООО «Уже подтверждена»","ИНН":other}
+        ],
+        intermediaries:[],leasing:[]
+      }
+    };
+    db=new DatabaseSync(dbFile);
+    db.exec("CREATE TABLE research_checkpoints ("+
+      "id TEXT PRIMARY KEY, payload TEXT NOT NULL)");
+    db.prepare("INSERT INTO research_checkpoints(id,payload) VALUES(?,?)")
+      .run(id,JSON.stringify(cp));
+    db.close();db=null;
+    const original=fs.readFileSync(dbFile);
+    const script=fileURLToPath(new URL(
+      "../scripts/saby-missing-inn-queue.js",import.meta.url));
+    const args=[
+      script,"--db="+dbFile,"--checkpoint="+id,
+      "--out-prefix="+prefix
+    ];
+    const env={...process.env,
+      SAT_PYTHON_BIN:process.env.SAT_PYTHON_BIN||"python"};
+    const run=(argv=args)=>spawnSync(process.execPath,argv,{
+      encoding:"utf8",timeout:30000,env
+    });
+    const first=run();
+    assert.equal(first.status,0,first.stderr+"\n"+first.stdout);
+    const summary=JSON.parse(first.stdout);
+    assert.equal(summary.source_checkpoint,id);
+    assert.equal(summary.total_source_rows,3);
+    assert.equal(summary.missing_inn,2);
+    assert.equal(summary.with_valid_candidate,1);
+    assert.equal(summary.auto_filled,0);
+    assert.equal(summary.web_requests,0);
+    assert.equal(summary.openai_requests,0);
+    assert.ok(fs.statSync(prefix+".xlsx").size>2000);
+    assert.ok(fs.statSync(prefix+".zip").size>2000);
+    const json=JSON.parse(fs.readFileSync(prefix+".json","utf8"));
+    assert.equal(json.source_checkpoint,id);
+    assert.equal(json.rows.length,2);
+    assert.equal(json.rows[0].candidates[0].inn,good);
+    assert.equal(json.rows[0].verified_inn,"");
+    assert.equal(json.rows[0].auto_filled,false);
+    assert.deepEqual(fs.readFileSync(dbFile),original);
+    assert.equal(run().status,1,"existing audit files may not be overwritten");
+    assert.deepEqual(fs.readFileSync(dbFile),original);
+    assert.equal(run([
+      script,"--db="+dbFile,"--checkpoint="+id,
+      "--result="+path.join(dir,"bad.json"),
+      "--out-prefix="+path.join(dir,"bad")
+    ]).status,1,"mixed file and checkpoint inputs are rejected");
+    assert.equal(run([
+      script,"--db="+dbFile,
+      "--checkpoint=0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a",
+      "--out-prefix="+path.join(dir,"missing")
+    ]).status,1,"missing checkpoint is rejected");
+    assert.deepEqual(fs.readFileSync(dbFile),original);
+  }finally{
+    db?.close();
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
 });
