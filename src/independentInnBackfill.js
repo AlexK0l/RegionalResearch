@@ -75,6 +75,17 @@ export function preciseLocalityMatch(sourceCity,registryAddress){
     return locality(part.replace(/^\s*\d{6}\s+/u,""))===expected;
   });
 }
+// Exact locality names can repeat across regions. In the FNS name-only
+// path the research region must also occur explicitly in the address;
+// do not infer it from the INN/KPP prefix. Anchored source identifiers
+// and exact legal addresses do not need this weaker geographical proof.
+function preciseRegionMatch(region,address){
+  const normalize=value=>locality(String(value||"")
+    .replace(/^\s*\d{6}\s*/u,"")).split(/\s+/u).filter(Boolean).sort().join(" ");
+  const expected=normalize(region);
+  return !!expected&&String(address||"").split(",").some(part=>
+    normalize(part)===expected);
+}
 function addressMatches(row,address){
   const stored=clean(row?.["Юридический адрес"]||
     row?.__evidence?.identity_verification?.legal_address);
@@ -101,7 +112,7 @@ function validRecord(record,provider){
     /^\d{9}$/.test(record.kpp)&&record.address&&
     (record.active===true||(provider==="fns"&&record.active===null)));
 }
-export function chooseIndependentInnCandidate({row,target,search,owners=new Set()}){
+export function chooseIndependentInnCandidate({row,target,search,owners=new Set(),region=""}){
   const review=(reason,candidates=[])=>({status:"review",reason,candidates});
   if(unsafeName(target.organization))return review("source_legal_name_unresolved");
   if(occupiedRisk.has(target.decision)||target.candidates?.some(c=>c.rejected_claim)||
@@ -145,10 +156,11 @@ export function chooseIndependentInnCandidate({row,target,search,owners=new Set(
     // A single visible result is not proof of completeness. Only a
     // positively observed complete list, fully inspected, may disambiguate
     // an exact legal name using a specific original locality.
-    const local=unique.filter(({record})=>
-      preciseLocalityMatch(row["Город/район"],record.address));
-    const localConflicts=allExact.filter(({record})=>
-      preciseLocalityMatch(row["Город/район"],record.address));
+    const sourceGeography=item=>
+      preciseLocalityMatch(row["Город/район"],item.record.address)&&
+      (item.provider!=="fns"||preciseRegionMatch(region,item.record.address));
+    const local=unique.filter(sourceGeography);
+    const localConflicts=allExact.filter(sourceGeography);
     if(!search.complete||!search.allCardsRead||local.length!==1||
       new Set(localConflicts.map(item=>item.record.ogrn)).size!==1)
       return review(local.length>1||unique.length>1||localConflicts.length>1?
@@ -263,6 +275,8 @@ export async function checkFnsRegistryCanary(checkpoint,lookup){
     value.record.inn===inn&&value.record.ogrn===a.ogrn&&value.record.kpp===a.kpp&&
     registeredSourceName(a.full_name,value.record)))
     return {verified:false,reason:"fns_canary_name_unverified"};
+  if(byName.complete!==true||byName.allCardsRead!==true)
+    return {verified:false,reason:"fns_canary_name_incomplete"};
   return {verified:true,reason:"verified"};
 }
 
@@ -304,7 +318,8 @@ export async function runIndependentInnBackfill({
     else{
       try{
         const search=await lookup.search(target,usableHint(target));
-        const selection=chooseIndependentInnCandidate({row,target,search,owners});
+        const selection=chooseIndependentInnCandidate({row,target,search,owners,
+          region:parent.region});
         if(selection.status==="candidate"){
           const second=await lookup.confirm(selection.record.ogrn);
           result=verifyIndependentInnCandidate(selection,second,target);
