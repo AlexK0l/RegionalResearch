@@ -383,6 +383,9 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
           diagnostic.independent_bridge_reason=String(proof?.reason||"unknown");
           // Only role labels leave the verifier; never log names or DOM.
           const roleNames=new Set(["full","short","both","none"]);
+          diagnostic.independent_source_name_role=
+            roleNames.has(proof?.source_role)?
+              proof.source_role:"unknown";
           diagnostic.independent_requisites_name_role=
             roleNames.has(proof?.requisites_role)?
               proof.requisites_role:"unknown";
