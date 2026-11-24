@@ -127,6 +127,30 @@ test("VBR browser verifies full Saby requisites name against the registry full f
   assert.equal(stats().closed,1);
 });
 
+test("VBR grants source-short alias only with matching full/short record and all IDs",async()=>{
+  const {page,stats}=browser();
+  const verified=await verifyVbrIndependentRegistryAlias(page,{
+    ...opts,sourceName:short,sabyShortName:full,
+    sabyPublicTitle:sabyShort
+  });
+  assert.equal(verified.status,"verified");
+  assert.equal(verified.provider,"vbr");
+  assert.equal(verified.source_role,"short");
+  assert.equal(verified.requisites_role,"full");
+  assert.equal(verified.title_role,"short");
+  assert.equal(verified.official_full_name,full);
+  assert.equal(stats().closed,1);
+  for(const sourceName of ["МУП «Леноблводоканал»",
+    "ГУП «Леноблводоканал Филиал»"]){
+    const sample=browser();
+    const out=await verifyVbrIndependentRegistryAlias(sample.page,{
+      ...opts,sourceName,sabyShortName:full,sabyPublicTitle:sabyShort
+    });
+    assert.equal(out.status,"review");
+    assert.equal(out.reason,"independent_registered_name_mismatch");
+  }
+});
+
 test("VBR identity conflicts never authorize an alias, even with the same search OGRN",async()=>{
   for(const change of [
     {text:pageText.replace(short+short,"ГУП ДРУГАЯ ОРГАНИЗАЦИЯ")},
