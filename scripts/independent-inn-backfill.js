@@ -5,7 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
-import {planIndependentInnBackfill,runIndependentInnBackfill}
+import {planIndependentInnBackfill,runIndependentInnBackfill,
+  checkFnsRegistryCanary}
   from "../src/independentInnBackfill.js";
 const args=process.argv.slice(2);
 const arg=(name,fallback="")=>args.find(s=>s.startsWith("--"+name+"="))
@@ -22,14 +23,16 @@ async function main(){
     console.log("node scripts/independent-inn-backfill.js "+
       "--db=/absolute/checkpoints.sqlite --checkpoint=<UUID> "+
       "[--limit=1] [--target-id=<canonical_id>] "+
-      "[--run --max-pages=80] \n"+
-      "Default: offline plan only. --run: public VBR/T-Bank pages, no OpenAI or Saby.");
+      "[--provider=fns|vbr] [--run --max-pages=80] \n"+
+      "Default: offline plan only. --run: official FNS search + independent T-Bank verification (VBR optional), no OpenAI or Saby.");
     return;
   }
   const file=arg("db"),sourceId=arg("checkpoint");
   if(!path.isAbsolute(file)||!fs.existsSync(file)||!fs.statSync(file).isFile()||
     !uuid.test(sourceId))throw Error("REGISTRY_INN_BAD_SOURCE");
   const limit=number("limit",1,10000),maxPages=number("max-pages",80,3000);
+  const provider=arg("provider","fns");
+  if(!["fns","vbr"].includes(provider))throw Error("REGISTRY_INN_BAD_PROVIDER");
   const targetId=arg("target-id");
   if(targetId&&(!/^[a-z0-9_.:-]{1,100}$/i.test(targetId)||limit!==1))
     throw Error("REGISTRY_INN_BAD_TARGET");
@@ -42,10 +45,11 @@ async function main(){
     if(!row?.payload)throw Error("REGISTRY_INN_CHECKPOINT_NOT_FOUND");
     checkpoint=JSON.parse(row.payload);
   }finally{db.close();}
-  const plan=planIndependentInnBackfill(checkpoint,{limit,targetId});
+  const plan=planIndependentInnBackfill(checkpoint,{limit,targetId,provider});
   metric("INDEPENDENT_INN_PLAN",{region:checkpoint.region,source_checkpoint:sourceId,
     dry_run:!run,total:plan.total,missing:plan.missing,pending:plan.pending,
     scheduled:plan.scheduled,previously_reviewed:plan.previously_reviewed,
+    provider,reopened_from_vbr:plan.reopened_from_vbr,
     saved_public_hints:plan.saved_public_hints,legal_name_unresolved:plan.legal_name_unresolved,
     max_page_navigations:maxPages,openai_requests:0,saby_requests:0});
   if(!run||!plan.scheduled)return;
@@ -55,12 +59,31 @@ async function main(){
     throw Error("REGISTRY_INN_CHECKPOINT_VERSION_MISMATCH");
   const {withPublicRegistryLookup}=await import("../src/independentInnRegistryBrowser.js");
   const childId=randomUUID();
-  let saved=false;
+  let saved=false,canaryFailed=false;
   let final;
   try{
     final=await withPublicRegistryLookup(async lookup=>{
+      if(provider==="fns"){
+        let canary;
+        try{
+          canary=await checkFnsRegistryCanary(checkpoint,lookup);
+        }catch(error){
+          const allowed=new Set(["navigation_budget","registry_http_unavailable",
+            "registry_route_untrusted","registry_browser_unavailable",
+            "fns_invalid_query","fns_form_unavailable","fns_captcha_required",
+            "fns_search_token_missing","fns_search_token_conflict",
+            "fns_response_unreadable","fns_result_unavailable","fns_submit_unobserved"]);
+          canary={verified:false,reason:allowed.has(error?.code)?
+            error.code:"fns_canary_unavailable"};
+        }
+        metric("INDEPENDENT_INN_CANARY",{...canary,page_navigations:lookup.pages});
+        if(!canary.verified){
+          canaryFailed=true;
+          return null;
+        }
+      }
       const out=await runIndependentInnBackfill({checkpoint,sourceId,childId,
-        limit,targetId,lookup,
+        limit,targetId,provider,lookup,
         onCheckpoint:async cp=>{
           await saveCheckpoint(childId,cp);
           if(!saved){
@@ -72,10 +95,17 @@ async function main(){
           ...stats,page_navigations:lookup.pages
         })});
       return {...out,page_navigations:lookup.pages};
-    },{maxPages});
+    },{maxPages,provider});
   }catch{
     metric("INDEPENDENT_INN_ERROR",{reason:"registry_run_unavailable",
       child_checkpoint:saved?childId:null,parent_checkpoint:sourceId});
+    process.exitCode=2;
+    return;
+  }
+  if(canaryFailed){
+    metric("INDEPENDENT_INN_ERROR",{reason:"fns_preflight_failed",
+      child_checkpoint:null,parent_checkpoint:sourceId,
+      processed:0,openai_requests:0,saby_requests:0});
     process.exitCode=2;
     return;
   }
@@ -88,7 +118,7 @@ async function main(){
     counts[code]=(counts[code]||0)+1;
   }
   metric("INDEPENDENT_INN_DONE",{child_checkpoint:childId,parent_checkpoint:sourceId,
-    ...stats,missing_after:plan.missing-stats.added,
+    ...stats,provider,missing_after:plan.missing-stats.added,
     page_navigations:final.page_navigations,by_reason:counts,
     openai_requests:0,saby_requests:0,original_checkpoint_unchanged:true});
   if(stats.stop_reason)process.exitCode=2;
