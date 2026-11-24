@@ -94,6 +94,8 @@ export function safeSabyPublicProofReason(result){
       safeBridgeReason(obs.independent_bridge_reason),
     independent_bridge_provider:
       safeBridgeProvider(obs.independent_bridge_provider),
+    independent_source_name_role:
+      safeRegisteredRole(obs.independent_source_name_role),
     independent_requisites_name_role:
       safeRegisteredRole(obs.independent_requisites_name_role),
     independent_title_name_role:
@@ -252,6 +254,8 @@ export async function verifySabyPostRouteOwnerIdentity(page,inn,name,
       diag.independent_bridge_verified=true;
       diag.independent_bridge_provider=safeBridgeProvider(
         publicResult.diagnostic.independent_bridge_provider);
+      diag.independent_source_name_role=safeRegisteredRole(
+        publicResult.diagnostic.independent_source_name_role);
       diag.independent_requisites_name_role=safeRegisteredRole(
         publicResult.diagnostic.independent_requisites_name_role);
       diag.independent_title_name_role=safeRegisteredRole(
@@ -293,6 +297,8 @@ export function safeSabyPostRouteDiagnostic(result) {
       independent_bridge_verified:true,
       independent_bridge_provider:
         safeBridgeProvider(result.independent_bridge_provider),
+      independent_source_name_role:
+        safeRegisteredRole(result.independent_source_name_role),
       independent_requisites_name_role:
         safeRegisteredRole(result.independent_requisites_name_role),
       independent_title_name_role:
@@ -313,6 +319,8 @@ export function safeSabyPostRouteDiagnostic(result) {
         safeBridgeReason(result.independent_bridge_reason),
       independent_bridge_provider:
         safeBridgeProvider(result.independent_bridge_provider),
+      independent_source_name_role:
+        safeRegisteredRole(result.independent_source_name_role),
       independent_requisites_name_role:
         safeRegisteredRole(result.independent_requisites_name_role),
       independent_title_name_role:
