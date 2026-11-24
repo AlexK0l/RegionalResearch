@@ -47,7 +47,10 @@ export function parseFnsSearchResult(payload,{query,exactName=false}={}){
       !digit(r.o,13)||normalizedOgrn(r.o)!==r.o||
       !digit(r.p,9))continue;
     const full=plain(r.n,500),short=shortName(r.c),address=plain(r.a,700);
-    if(!full||!short||!address)continue;
+    // Observed FNS 1.9.2 search response: a is absent/null even
+    // for a complete legal-entity record. The address is a later
+    // source-link proof, not a prerequisite for parsing identifiers.
+    if(!full||!short)continue;
     if(/^\d{10}$/.test(query)&&r.i!==query)continue;
     if(/^\d{13}$/.test(query)&&r.o!==query)continue;
     // The search row is an official identification record, NOT a signed

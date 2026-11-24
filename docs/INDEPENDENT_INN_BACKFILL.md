@@ -18,9 +18,10 @@ rows, with or without finance data. A run requires explicit --run:
 Use your normal Playwright runtime/Chromium cache. The script opens a
 separate headless context, does not log in to Saby, and creates a new
 child checkpoint saved after each row. The default provider is `fns`.
-Before creating a child it checks a previously evidenced legal entity by
-INN, independently confirms the registry card, and checks the registered
-name search. If this live preflight fails, no row is visited and no child
+Before creating a child it checks previously evidenced legal entities by
+INN (up to three distinct candidates), independently confirms the registry
+card and legal address, and checks the complete registered-name search.
+A company-specific non-active status does not establish a service outage. If this live preflight fails, no row is visited and no child
 is created. The optional `--provider=vbr` retains the old search route.
 Public pages can be unavailable or restricted; CAPTCHA or access denial
 stops the run. The tool does not bypass access controls.
@@ -46,6 +47,12 @@ subresources.
   route reads only observed canonical company links.
 - A complete search needs a positively bound exact query, an explicit
   result count and fully parsed distinct records without truncation.
+  FNS 1.9.2 search rows may omit the address. They remain identity
+  candidates; obtain the address only from the independently matched
+  T-Bank requisites panel (same INN/KPP/OGRN and full/short names),
+  preserving the address source URL. Inspect up to eight missing-address
+  exact-name candidates per research row; an unread competing address
+  blocks a geography-only assignment, including inactive namesakes.
   A positive, unique source address/registered identifier or a complete
   search with unique exact legal name and precise original locality must
   connect the candidate to the row. Never infer region from INN prefix.

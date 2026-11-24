@@ -4,9 +4,10 @@ import {parseFnsSearchResult,fnsSourceUrl,isFnsFormRoute,lookupFnsViaBrowser}
   from "../src/independentInnFns.js";
 import {chooseIndependentInnCandidate,verifyIndependentInnCandidate,
   planIndependentInnBackfill,runIndependentInnBackfill,checkFnsRegistryCanary,
-  preciseLocalityMatch} from "../src/independentInnBackfill.js";
+  preciseLocalityMatch,hydrateFnsSearchAddresses} from "../src/independentInnBackfill.js";
 import {extractVbrGeneralIdentity} from "../src/sabyIndependentVbrBridge.js";
-import {extractRegistryVbrRecord} from "../src/independentInnRegistryBrowser.js";
+import {extractRegistryVbrRecord,extractRegistryTbankRecord} from "../src/independentInnRegistryBrowser.js";
+import {extractIndependentRegistryIdentity} from "../src/sabyIndependentNameBridge.js";
 
 const inn="4706000909",ogrn="1024701329377",kpp="470601001";
 const short='АО "ПРИМЕР"',full='АКЦИОНЕРНОЕ ОБЩЕСТВО "ПРИМЕР"';
@@ -221,4 +222,140 @@ test("VBR spaced duplicate identifiers and address remain exact, different copie
     inn,kpp,ogrn,full_name:full,short_name:short});
   assert.equal(extractRegistryVbrRecord(text).address,address);
   assert.equal(extractVbrGeneralIdentity(text.replace(inn+" "+inn,inn+" 7707083893")),null);
+});
+
+// Real search-result fixture captured on the VPS (FNS UI 1.9.2).
+// The identity is present, but the list response has no legal address.
+const observedVpsRow={
+  k:"ul",i:"4712028540",o:"1184704015363",p:"471201001",
+  n:'МУНИЦИПАЛЬНОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ "ТЕПЛОСЕТЬ ПЛОДОВОЕ" МУНИЦИПАЛЬНОГО ОБРАЗОВАНИЯ ПЛОДОВСКОЕ СЕЛЬСКОЕ ПОСЕЛЕНИЕ МУНИЦИПАЛЬНОГО ОБРАЗОВАНИЯ ПРИОЗЕРСКИЙ МУНИЦИПАЛЬНЫЙ РАЙОН ЛЕНИНГРАДСКОЙ ОБЛАСТИ',
+  c:'МУП "ТЕПЛОСЕТЬ ПЛОДОВОЕ"',a:null,e:null,status:null,cnt:"1",pg:"1",tot:"1"
+};
+test("actual VPS FNS row without address retains verified identifiers and completeness, not geography",()=>{
+  for(const r of [observedVpsRow,{...observedVpsRow,a:undefined}]){
+    const result=parseFnsSearchResult({rows:[r]},{query:r.i});
+    assert.equal(result.complete,true);
+    assert.equal(result.allCardsRead,true);
+    assert.equal(result.records.length,1);
+    assert.deepEqual(result.records[0].record,{
+      inn:r.i,ogrn:r.o,kpp:r.p,full_name:r.n,short_name:r.c,address:"",active:null
+    });
+    const selected=chooseIndependentInnCandidate({
+      row:row("vps",r.c,{"Город/район":"Плодовое"}),
+      target:{...target,organization:r.c},region:"Ленинградская область",search:result
+    });
+    assert.equal(selected.status,"review");
+    assert.equal(selected.reason,"registry_address_unavailable");
+    assert.equal(selected.candidates[0].inn,r.i);
+  }
+});
+
+test("T-Bank address is read only from the same complete requisites panel",()=>{
+  const card=[short,"Действующая организация","Реквизиты",
+    "Полное название",full,"Краткое название",short,
+    "Юридический адрес",address,"ИНН",inn,"КПП",kpp,"ОГРН",ogrn,
+    "Регистрация ФНС"].join("\n");
+  const expected={...bankRecord};
+  assert.deepEqual(extractRegistryTbankRecord(card),expected);
+  assert.equal(Object.hasOwn(extractIndependentRegistryIdentity(card),"address"),false);
+  assert.equal(extractRegistryTbankRecord(card.replace("Юридический адрес\n"+address+"\n","")+
+    "\nЮридический адрес\n"+address).address,undefined);
+  assert.equal(extractRegistryTbankRecord(card.replace("ИНН\n"+inn,
+    "Юридический адрес\n183000, Мурманская область, г Мурманск, ул Пример, д 1\nИНН\n"+inn)).address,undefined);
+});
+
+test("addressless FNS candidates hydrate only from exact independent identifiers and keep address provenance",async()=>{
+  const data=parseFnsSearchResult({rows:[{...raw,a:null}]},{query:short,exactName:true});
+  const addressFromBank="187300, Ленинградская обл., г Кировск, ул Железнодорожная, д 59";
+  const second={record:{...bankRecord,address:addressFromBank},url:source};
+  const lookup={confirm:async id=>{assert.equal(id,ogrn);return second;}};
+  const resolved=await hydrateFnsSearchAddresses(data,target,lookup);
+  assert.equal(data.records[0].record.address,"");
+  assert.equal(resolved.confirmations.get(ogrn),second);
+  const candidate=chooseIndependentInnCandidate({row:row(),target,
+    region:"Ленинградская область",search:resolved.search});
+  assert.equal(candidate.status,"candidate");
+  assert.equal(candidate.address_source_url,source);
+  const proof=verifyIndependentInnCandidate(candidate,second,target);
+  assert.equal(proof.status,"verified");
+  assert.equal(proof.legal_address,addressFromBank);
+  assert.equal(proof.legal_address_source_url,source);
+  assert.equal(verifyIndependentInnCandidate(candidate,
+    {record:{...second.record,address:"Другой адрес, ул. Пример, д. 12"},url:source},target).status,"review");
+  for(const bad of [
+    null,{record:{...second.record,kpp:"470601002"},url:source},
+    {record:{...second.record,short_name:"АО Другое"},url:source},
+    {...second,url:"https://fake.test/business/contractor/legal/"+ogrn+"/"}
+  ]){
+    const x=await hydrateFnsSearchAddresses(data,target,{confirm:async()=>bad});
+    assert.equal(x.search.records[0].record.address,"");
+    assert.equal(chooseIndependentInnCandidate({row:row(),target,
+      region:"Ленинградская область",search:x.search}).status,"review");
+  }
+});
+
+test("unread competing address prevents geography-only assignment even for an inactive namesake",async()=>{
+  const other={...raw,i:"7810165652",o:"1024701479571",p:"472701001",
+    a:null,e:"01.01.2020",tot:"2"};
+  const data=parseFnsSearchResult({rows:[{...raw,a:null,tot:"2"},other]},
+    {query:short,exactName:true});
+  assert.equal(data.complete,true);
+  assert.equal(data.records.length,2);
+  const lookup={confirm:async id=>id===ogrn?{record:bankRecord,url:source}:null};
+  const partial=await hydrateFnsSearchAddresses(data,target,lookup);
+  assert.equal(chooseIndependentInnCandidate({row:row(),target,
+    region:"Ленинградская область",search:partial.search}).reason,"registry_address_unavailable");
+  const fullRead=await hydrateFnsSearchAddresses(data,target,{confirm:async id=>
+    id===ogrn?{record:bankRecord,url:source}:{
+      record:{...bankRecord,inn:other.i,kpp:other.p,ogrn:other.o,
+        active:false,address:"183000, Мурманская обл., г Кировск, ул Пример, д 1"},
+      url:"https://www.tbank.ru/business/contractor/legal/"+other.o+"/"
+    }});
+  const candidate=chooseIndependentInnCandidate({row:row(),target,
+    region:"Ленинградская область",search:fullRead.search});
+  assert.equal(candidate.status,"candidate");
+  assert.equal(candidate.record.inn,inn);
+});
+
+test("preflight skips a known inactive company but confirms a second complete live search with an independently read address",async()=>{
+  const known=cp([
+    row("inactive",short,{"ИНН":inn,__evidence:{identity_verification:{inn,source_urls:[source]}}}),
+    row("active",'АО "ВТОРОЙ ПРИМЕР"',{"ИНН":"7810165652",__evidence:{
+      identity_verification:{inn:"7810165652",source_urls:[source]}}})
+  ]);
+  const other={...raw,i:"7810165652",o:"1024701479571",p:"472701001",
+    n:'АКЦИОНЕРНОЕ ОБЩЕСТВО "ВТОРОЙ ПРИМЕР"',c:'АО "ВТОРОЙ ПРИМЕР"',a:null};
+  const calls=[];
+  const lookup={
+    search:async(t,hint)=>{
+      calls.push(hint?.inn||t.organization);
+      return parseFnsSearchResult({rows:[hint?.inn===inn?{...raw,a:null}:other]},
+        {query:hint?.inn||t.organization,exactName:!hint});
+    },
+    confirm:async id=>{
+      calls.push(id);
+      return id===ogrn?{record:{...bankRecord,active:false},url:source}:{
+        record:{...bankRecord,inn:other.i,ogrn:other.o,kpp:other.p,
+          full_name:other.n,short_name:other.c},
+        url:"https://www.tbank.ru/business/contractor/legal/"+other.o+"/"
+      };
+    }
+  };
+  assert.deepEqual(await checkFnsRegistryCanary(known,lookup),{verified:true,reason:"verified"});
+  assert.deepEqual(calls,[inn,ogrn,other.i,other.o,other.n]);
+});
+
+test("run reuses address confirmation without a second request and preserves original checkpoint",async()=>{
+  const checkpoint=cp([row()]);
+  const before=JSON.stringify(checkpoint),calls=[];
+  const output=await runIndependentInnBackfill({checkpoint,sourceId:"p",childId:"c",
+    provider:"fns",limit:1,lookup:{
+      search:async()=>parseFnsSearchResult({rows:[{...raw,a:null}]},{query:short,exactName:true}),
+      confirm:async id=>{calls.push(id);return {record:bankRecord,url:source};}
+    },onCheckpoint:async()=>{}});
+  assert.equal(output.stats.added,1);
+  assert.deepEqual(calls,[ogrn]);
+  assert.equal(output.snapshot.final_result.direct_buyers[0]["ИНН"],inn);
+  assert.equal(output.snapshot.final_result.direct_buyers[0].__evidence.identity_verification.legal_address_source_url,source);
+  assert.equal(JSON.stringify(checkpoint),before);
 });

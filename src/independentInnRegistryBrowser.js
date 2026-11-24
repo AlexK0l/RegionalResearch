@@ -96,7 +96,7 @@ export function extractRegistryVbrRecord(raw){
   return {...blocks[0],active:activeAtTop(raw,blocks[0])};
 }
 export function extractRegistryTbankRecord(raw){
-  const identity=extractIndependentRegistryIdentity(raw);
+  const identity=extractIndependentRegistryIdentity(raw,{includeAddress:true});
   return identity?{...identity,active:activeAtTop(raw,identity)}:null;
 }
 export async function createPublicRegistryLookup(page,{
@@ -211,13 +211,19 @@ export async function createPublicRegistryLookup(page,{
       const url=independentRegistryRoute(ogrn);
       const check=value=>canonicalIndependentRegistryRoute(value,ogrn)&&!new URL(value).hash;
       if(!url||!await navigate(url,check))return null;
+      let last=null;
       for(let i=0;i<4;i++){
         const raw=await readBody(check);
         const record=extractRegistryTbankRecord(raw);
-        if(record)return {record,url:page.url()};
+        if(record&&record.ogrn===ogrn){
+          last={record,url:page.url()};
+          // Address is essential when resolving official FNS name-search
+          // rows, which often omit it. Wait for the same panel to hydrate.
+          if(provider!=="fns"||record.address)return last;
+        }
         if(i<3)await page.waitForTimeout(650);
       }
-      return null;
+      return last;
     }
   };
 }
