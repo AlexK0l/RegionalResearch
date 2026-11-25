@@ -179,15 +179,27 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     release.beforeReopen=()=>recheckSabyBrowser(lease);
     lease.resolve(release);
   }
+  function admissionSample(){
+    const sample=memory.inspect(active);
+    const head=pending[0],summary=head?.job.latestCheckpointSummary;
+    if(active===0&&head?.paused&&summary?.phase==="saby"&&
+       summary.saby_browser_pending!==false&&sample.valid&&sample.canStart){
+      const required=sample.reserveMiB+(memory.settings.sabyBrowserMiB??640)+
+        (memory.settings.sabyResumeMarginMiB??192);
+      if(sample.availableMiB<required)
+        return {...sample,canStart:false,reason:"saby_resume_headroom",saby_resume_required_mib:required};
+    }
+    return sample;
+  }
   function inspect(){
     if(!enabled)return true;
     const now=memory.now();
-    lastMemory=memory.inspect(active);
+    lastMemory=admissionSample();
     // A queue with no running jobs must not wait indefinitely merely because
     // unreachable V8 objects have not yet been collected. Best-effort GC
     // cannot override the actual host/cgroup/heap admission check.
     if(active===0&&pending.length&&!lastMemory.canStart&&reclaimIdle()){
-      lastMemory=memory.inspect(active);
+      lastMemory=admissionSample();
     }
     // At a low-memory sample in a sole Saby job, try reclaiming dead
     // temporary checkpoint/DOM objects before setting an irreversible
@@ -321,7 +333,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   function idleBlockedJobs(){
     if(!enabled||quiesced||active!==0||sabyLease||!pending.length||
        pending.some(x=>!x.preemptible||x.job.cancelled||x.job.state!=="waiting"))return null;
-    const sample=memory.inspect(0);
+    const sample=admissionSample();
     if(!sample.valid||sample.canStart||sample.reason==="estimated_capacity")return null;
     return pending.map(x=>({id:x.job.id,region:x.job.region,mode:x.job.mode,paused:x.paused}));
   }
