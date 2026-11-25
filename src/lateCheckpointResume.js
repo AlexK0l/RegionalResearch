@@ -4,6 +4,7 @@
 import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
+import {girboStageEnabled} from "./girBoStage.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
@@ -125,7 +126,7 @@ export async function runLateCheckpointResume({
     deferredInns:asArray(source.saby_deferred_inns),
     attemptedInns:asArray(source.saby_attempted_inns)
   };
-  if(source.phase!=="priority"&&sabyStage12Settings(env).enabled){
+  if(source.phase!=="priority"&&(sabyStage12Settings(env).enabled||girboStageEnabled(env))){
     statuses[11].status="running";
     statuses[11].startedAt=Date.now();
     statuses[11].detail="продолжение Stage12 из сохранённых контактов";
@@ -135,7 +136,7 @@ export async function runLateCheckpointResume({
       result,
       completedInns:saby.completedInns,
       attemptedInns:saby.attemptedInns,
-      env,signal,startedAt,
+      env,signal,startedAt,girboPriorOutcomes:source.girbo_backfill_outcomes||{},
       recoverBrowserSession:true,
       persistCheckpoint:async(phase,patch)=>
         persistCheckpoint(phase,{stage11_completed:true,...patch}),

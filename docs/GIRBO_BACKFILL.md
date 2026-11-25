@@ -60,3 +60,32 @@ Other financial and contact fields and the workbook layout remain unchanged.
 No new PDF dependency for JSON mode. Actual structured-mode yield on the
 VPS still requires validation. This remains a standalone supplemental pass,
 not yet integrated into the full pipeline.
+
+## Production integration
+
+Live structured-mode run on 2026-11-25 finished all 131 eligible records:
+64 verified revenue additions, 67 review, 230 public HTTP requests, no
+OpenAI/Saby calls, no pending records. Missing revenue fell from 296 to 232.
+Review: 32 no exact INN, 17 report identity unproven, 9 structured identity
+unproven, 9 no usable line 2110. Do not replay the same completed queue.
+
+GIRBO_STAGE_ENABLED=true explicitly activates the validated JSON algorithm
+before Saby in new full studies and late/Saby-only continuations. Finance
+runs independently even when Saby is disabled on a full or late study. No
+new company discovery or paid work is triggered. The existing stage-12
+checkpoint callback persists verified revenue and the outcome ledger per
+row. Resume skips same-mode/revision/year completed rows. Browser reconnects
+with the same result do not rerun this finance pass. A transport stop leaves
+pending records and does not prevent the following Saby/priority stages.
+Cancellation and storage failures propagate. The Saby browser time budget
+is separate in full studies; the Saby-only outer job still has its total cap.
+
+The public HTTP collector is shared by CLI and production. Within a process
+one request at a time, at least 1500 ms between starts; cooldown on denial,
+transport failure or rate limiting, including Retry-After. Per-study default
+300 companies / 600 requests / 15 minutes. The cooldown is in process memory,
+not a distributed cross-process lock: do not run standalone finance and live
+research simultaneously against this source. No redirects or aggressive
+retries. Stage settings default off for existing deployments until explicitly
+enabled. Archive-based employee/INN discovery remains a standalone pass;
+a full national archive must not be downloaded independently by every study.

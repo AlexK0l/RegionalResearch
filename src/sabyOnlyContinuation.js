@@ -203,6 +203,7 @@ export async function runSabyOnlyContinuation({
       const options={
         result,completedInns,attemptedInns,maxDurationMs,
         env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
+        girboPriorOutcomes:source.girbo_backfill_outcomes||{},
         onProgress,persistCheckpoint:persist
       };
       // Offline tests can inject a simulated browser. Live runs use the
