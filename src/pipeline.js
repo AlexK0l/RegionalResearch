@@ -6194,6 +6194,7 @@ export async function runResearchPipeline({ job, apiKey }) {
       sourceJobId:String(job.data?.sourceJobId||""),
       client,env:process.env,signal:jobSignal,
       statuses,progress,persistCheckpoint,
+      acquireSabyBrowser:job.acquireSabyBrowser,
       remainingOverallUsd:()=>Math.max(0,costEnvLimitUsd()-estimatedApiCostUsd(client)),
       onAIUsage:usage=>recordTokenUsage(client,usage)
     });
@@ -9452,6 +9453,7 @@ ${JSON.stringify(gaps)}
     startedAt:stage12StartedAt,
     girboPriorOutcomes:resumeCheckpoint?.girbo_backfill_outcomes||{},
     persistCheckpoint,
+    acquireSabyBrowser:job.acquireSabyBrowser,
     recoverBrowserSession:true,
     onProgress:async stats=>{
       statuses[11].detail = `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
