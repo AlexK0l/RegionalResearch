@@ -129,7 +129,10 @@ export function planPhoneGapRecovery(rows,primaryResults,completed,attempted,idO
   const seen=new Set();
   return (rows||[]).filter(row=>{
     const id=String(idOf(row)||"");
-    if(!id||seen.has(id)||completed.has(id)||attempted.has(id)||hasContactPhone(row))return false;
+    // A primary source-backed response is recorded as completed BEFORE
+    // applying its contacts. That is exactly the cohort eligible for a
+    // phone-only retry. The persisted retry IDs prevent duplicate searches.
+    if(!id||seen.has(id)||attempted.has(id)||hasContactPhone(row))return false;
     seen.add(id);
     const answer=primaryResults.get(id);
     return Boolean(validInn(row?.["ИНН"])&&answer&&
