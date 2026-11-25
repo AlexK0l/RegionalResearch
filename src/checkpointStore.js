@@ -57,6 +57,19 @@ function ensureDb() {
     CREATE INDEX IF NOT EXISTS idx_research_checkpoints_updated
       ON research_checkpoints(updated_at DESC);
 
+    -- Only jobs which have not started are restored from this table.
+    CREATE TABLE IF NOT EXISTS queued_research_jobs (
+      id TEXT PRIMARY KEY,
+      region TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      pipeline_version INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      source_job_id TEXT NOT NULL DEFAULT '',
+      checkpoint_ref TEXT NOT NULL DEFAULT '',
+      checkpoint_payload TEXT,
+      summary TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS memory_paused_jobs (
       id TEXT PRIMARY KEY,
       mode TEXT NOT NULL,
@@ -335,6 +348,77 @@ export function checkpointSummary(value) {
     pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };
+}
+
+// Persist admission intent, not an API key or an executing paid job.
+const queuedModes=new Set(["full","resume","saby_only"]);
+const jobIdPattern=/^[a-f0-9-]{36}$/i;
+
+export function saveQueuedResearchJob(job){
+  const id=String(job?.id||""),mode=String(job?.mode||""),
+    region=String(job?.region||"").trim();
+  const createdAt=Number(job?.createdAt);
+  if(!jobIdPattern.test(id)||!queuedModes.has(mode)||!region||
+      !Number.isSafeInteger(createdAt)||createdAt<0)
+    throw Error("QUEUED_RESEARCH_JOB_INVALID");
+  const ref=String(job.data?.checkpointRef||"");
+  const rawSource=String(job.data?.sourceJobId||"");
+  const source=jobIdPattern.test(rawSource)?rawSource:ref;
+  if(ref&&!jobIdPattern.test(ref))throw Error("QUEUED_CHECKPOINT_REF_INVALID");
+  const inline=mode!=="full"&&!ref?job.data?.checkpoint:null;
+  if(mode!=="full"&&!ref&&(!inline||Number(inline.version)!==1||
+      Number(inline.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION||
+      String(inline.region||"").trim()!==region))
+    throw Error("QUEUED_CHECKPOINT_SOURCE_INVALID");
+  if(mode==="saby_only"&&!ref)throw Error("QUEUED_SABY_SOURCE_REQUIRED");
+  if(ref){
+    const parent=ensureDb().prepare("SELECT region,pipeline_version,status FROM research_checkpoints WHERE id=?").get(ref);
+    if(!parent||parent.region!==region||Number(parent.pipeline_version)!==PIPELINE_VERSION||
+       parent.status==="superseded")throw Error("QUEUED_CHECKPOINT_SOURCE_INVALID");
+  }
+  const summary=JSON.stringify(job.latestCheckpointSummary||null);
+  if(summary.length>8192)throw Error("QUEUED_CHECKPOINT_SUMMARY_LIMIT");
+  ensureDb().prepare(
+    "INSERT INTO queued_research_jobs(id,region,mode,pipeline_version,created_at_ms,"+
+    "source_job_id,checkpoint_ref,checkpoint_payload,summary) VALUES(?,?,?,?,?,?,?,?,?)"
+  ).run(id,region,mode,PIPELINE_VERSION,createdAt,source,ref,
+    inline?JSON.stringify(inline):null,summary);
+}
+
+export function listQueuedResearchJobs(){
+  // Do not hydrate large imported checkpoints while restoring the queue.
+  return ensureDb().prepare(
+    "SELECT id,region,mode,created_at_ms,source_job_id,checkpoint_ref,summary "+
+    "FROM queued_research_jobs WHERE pipeline_version=? ORDER BY created_at_ms,id"
+  ).all(PIPELINE_VERSION).flatMap(row=>{
+    try{
+      if(!queuedModes.has(row.mode)||!jobIdPattern.test(row.id))return [];
+      return [{id:row.id,region:row.region,mode:row.mode,createdAt:row.created_at_ms,
+        sourceJobId:row.source_job_id,checkpointRef:row.checkpoint_ref,
+        summary:JSON.parse(row.summary)}];
+    }catch{return [];}
+  });
+}
+
+export function loadQueuedResearchSource(id){
+  const row=ensureDb().prepare(
+    "SELECT checkpoint_payload FROM queued_research_jobs WHERE id=? AND pipeline_version=?"
+  ).get(String(id),PIPELINE_VERSION);
+  return row?.checkpoint_payload?JSON.parse(row.checkpoint_payload):null;
+}
+
+export function takeQueuedResearchJob(id){
+  // DELETE RETURNING atomically consumes admission intent BEFORE any paid
+  // operation. A later hard crash therefore never auto-replays that job.
+  const row=ensureDb().prepare(
+    "DELETE FROM queued_research_jobs WHERE id=? AND pipeline_version=? RETURNING checkpoint_payload"
+  ).get(String(id),PIPELINE_VERSION);
+  if(!row)throw Error("QUEUED_RESEARCH_JOB_NOT_DURABLE");
+  return row.checkpoint_payload?JSON.parse(row.checkpoint_payload):null;
+}
+
+export function clearQueuedResearchJob(id){
+  ensureDb().prepare("DELETE FROM queued_research_jobs WHERE id=?").run(String(id));
 }
 
 // Only confirmed cooperative pauses are automatically recoverable.
