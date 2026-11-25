@@ -15,6 +15,9 @@ export function memoryGuardSettings(env=process.env){
     enabled:String(env.RESEARCH_MEMORY_GUARD_ENABLED??"true").toLowerCase()!=="false",
     reserveMiB:integer(env.RESEARCH_MEMORY_RESERVE_MIB,384,128,32768),
     jobMiB:integer(env.RESEARCH_MEMORY_JOB_MIB,1536,256,32768),
+    // Extra physical RAM required BEFORE opening the Saby Chromium profile.
+    // It is separate from the already admitted research's own JS state.
+    sabyBrowserMiB:integer(env.RESEARCH_MEMORY_SABY_BROWSER_MIB,640,256,32768),
     heapReserveMiB:integer(env.RESEARCH_MEMORY_HEAP_RESERVE_MIB,256,64,8192),
     heapJobMiB:integer(env.RESEARCH_MEMORY_HEAP_JOB_MIB,256,64,8192),
     pollMs:integer(env.RESEARCH_MEMORY_POLL_MS,2000,500,30000),
@@ -106,6 +109,26 @@ export function evaluateMemoryAdmission(sample,settings,active=0){
     reserveMiB:reserve,heapReserveMiB:heapReserve,estimatedCapacity:capacity,
     ...sample};
 }
+// A browser is an additional allocation inside an existing research, not
+// a new research slot. Never count the owner's estimated RAM a second time.
+// Small servers run the browser alone; larger hosts may retain existing peers
+// if measured free RAM and V8 space suffice. No new peers start during the lease.
+export function evaluateSabyBrowserAdmission(sample,settings,active=1){
+  const peers=Math.max(0,active-1);
+  const browserMiB=settings.sabyBrowserMiB??640;
+  const reserve=Number(sample?.reserveMiB??settings.reserveMiB);
+  const heapReserve=Number(sample?.heapReserveMiB??settings.heapReserveMiB);
+  const exclusive=!!sample?.valid&&
+    sample.totalMiB<reserve+2*settings.jobMiB+browserMiB;
+  const requiredAvailableMiB=reserve+browserMiB+peers*128;
+  const requiredHeapMiB=heapReserve+64+peers*64;
+  const canOpen=!!sample?.valid&&sample.pressure==="normal"&&
+    (!exclusive||peers===0)&&
+    sample.availableMiB>=requiredAvailableMiB&&
+    sample.heapAvailableMiB>=requiredHeapMiB;
+  return {canOpen,exclusive,browserMiB,requiredAvailableMiB,requiredHeapMiB};
+}
+
 export function createMemoryAdmission({settings=memoryGuardSettings(),sample=readMemoryHeadroom,now=Date.now}={}){
   return {settings,now,inspect(active){
     try{return evaluateMemoryAdmission(sample(),settings,active);}

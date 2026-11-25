@@ -120,7 +120,8 @@ export async function runSabyOnlyContinuation({
   onProgress=async()=>{},
   persistCheckpoint=async()=>{},
   sessionRunner,
-  collectCompany
+  collectCompany,
+  acquireSabyBrowser
 }={}) {
   const checked=validateSabyOnlySource(input);
   if(!checked.ok)throw new Error(checked.code);
@@ -195,11 +196,26 @@ export async function runSabyOnlyContinuation({
     saby_attempted_inns:source.saby_attempted_inns||[]
   },true);
   await report({processed:0,scheduled:checked.pending});
-  const outcome=await runSabyOnlyWithRecovery({
+  // Keep one browser reservation across reconnect attempts. Each actual
+  // Playwright context is still closed by the stage before its next pass.
+  let releaseBrowser=null,browserWaitMs=0;
+  const acquireForPass=acquireSabyBrowser?async()=>{
+    if(!releaseBrowser){
+      const before=Date.now();
+      releaseBrowser=await acquireSabyBrowser();
+      browserWaitMs+=Date.now()-before;
+    }
+    // The outer recovery owns release; inner passes cannot reopen the queue.
+    return ()=>{};
+  }:undefined;
+  let outcome;
+  try{
+  outcome=await runSabyOnlyWithRecovery({
     total:checked.pending,
     completedInns:source.saby_completed_inns,
     attemptedInns:source.saby_attempted_inns||[],
     maxDurationMs:sabyOnlyMaxDurationMs(env),startedAt,signal,
+    excludedWaitMs:()=>browserWaitMs,
     onProgress:stats=>report(stats),
     onRecovery:stats=>report({...stats,review:0,verified:0,
       circuitOpen:false,browserError:"",restarting:true}),
@@ -208,6 +224,7 @@ export async function runSabyOnlyContinuation({
         result,completedInns,attemptedInns,maxDurationMs,
         env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
         girboPriorOutcomes:source.girbo_backfill_outcomes||{},
+        acquireSabyBrowser:acquireForPass,
         onProgress,persistCheckpoint:(phase,patch)=>persist(phase,patch,true)
       };
       // Offline tests can inject a simulated browser. Live runs use the
@@ -217,6 +234,7 @@ export async function runSabyOnlyContinuation({
       return runCheckpointedSabyStage12(options);
     }
   });
+  }finally{releaseBrowser?.();}
 
   await onProgress({phase:"priority",step:13,percent:99,
     statuses:stageStatuses.map((s,i)=>i===11

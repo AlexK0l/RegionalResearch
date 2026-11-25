@@ -56,7 +56,7 @@ function lateResultSummary(source,result,saby,priority,quality){
 
 export async function runLateCheckpointResume({
   checkpoint,sourceJobId="",client=null,env=process.env,signal=null,
-  statuses,progress,persistCheckpoint,
+  statuses,progress,persistCheckpoint,acquireSabyBrowser,
   remainingOverallUsd=()=>Infinity,onAIUsage=()=>{}
 }={}){
   if(!canResumeFromCompletedContacts(checkpoint))
@@ -142,7 +142,7 @@ export async function runLateCheckpointResume({
       completedInns:saby.completedInns,
       attemptedInns:saby.attemptedInns,
       env,signal,startedAt,girboPriorOutcomes:source.girbo_backfill_outcomes||{},
-      recoverBrowserSession:true,
+      recoverBrowserSession:true,acquireSabyBrowser,
       persistCheckpoint:async(phase,patch)=>
         persistCheckpoint(phase,{stage11_completed:true,...patch}),
       onProgress:async stats=>{
