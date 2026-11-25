@@ -5,6 +5,7 @@ import {setTimeout as sleep} from "node:timers/promises";
 import {parsePhoneEntries} from "./phoneExport.js";
 import {companyEmailCell} from "./emailContact.js";
 import {contactResearchPriority} from "./researchCostPolicy.js";
+import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {applySabyEnrichment,sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyMissingFinancials} from "./sabyEnrichment.js";
 import {collectSabySections,withSabyBrowser,SabyReview} from "./sabyBrowser.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
@@ -99,7 +100,8 @@ export async function runSabyContactFirst({
         passProcessed:phaseDone,passTotal:phaseTotal,passIndex:Math.min(state.phase_index+1,PHASES.length),passCount:PHASES.length,
         maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,unscheduled,
         previouslyCompleted:state.initially_complete,deferred:settings.enabled?deferred.length:0,
-        circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts},
+        circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts,
+        phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
       attemptedInns:[...visited].filter(id=>deferred.includes(id)),
       passState:stateSnapshot()
