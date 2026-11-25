@@ -1,5 +1,6 @@
-// Public GIR BO revenue only. Exact identity and the official report PDF
-// must corroborate the current annual 2110 value before a CRM field changes.
+// Public GIR BO revenue only. Default: exact identity, consistent published
+// annual line 2110 across two official JSON endpoints and FNS standard units.
+// The original explicit PDF verification remains available.
 import {createHash} from "node:crypto";
 import {auditSourceRows} from "./sabyIdentityAudit.js";
 import {verifiedInnChecksum} from "./sabyMissingInnRecovery.js";
@@ -9,6 +10,9 @@ import {archiveNameKey} from "./fnsOpenDataBackfill.js";
 import {REVENUE_FIELD} from "./preSabyFinancials.js";
 
 export const GIRBO_BASE="https://bo.nalog.gov.ru";
+export const GIRBO_UNIT_BASIS="https://www.nalog.gov.ru/rn11/news/activities_fts/16604859/";
+export const GIRBO_LEGACY_UNIT_BASIS="https://www.nalog.gov.ru/rn38/news/activities_fts/9684221/";
+const SEARCH_REVISION=2;
 const text=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
 const innOk=v=>typeof v==="string"&&/^\d{10}$/.test(v)&&verifiedInnChecksum(v);
 const ogrnOk=v=>typeof v==="string"&&/^\d{13}$/.test(v)&&!/^0+$/.test(v)&&normalizedOgrn(v)===v;
@@ -27,11 +31,12 @@ const conflicting=r=>{
   return !!(ev.legal_identity_conflicts?.length||identityOgrns(r).length>1||
     [ev.identity_verification,ev.saby,ev.saby_finance_backfill].some(v=>v?.inn&&text(v.inn)!==inn));
 };
-export function planGirBoBackfill(cp,{limit=10000,year=new Date().getUTCFullYear()-1}={}){
+export function planGirBoBackfill(cp,{limit=10000,year=new Date().getUTCFullYear()-1,confirmationMode="json"}={}){
   if(cp?.version!==1||!["full","saby"].includes(cp.source_mode)||
     !["completed","saby"].includes(cp.phase)||
     (cp.source_mode==="full"&&cp.phase!=="completed")||
     !Array.isArray(cp.final_result?.statistics)||
+    !["json","pdf"].includes(confirmationMode)||
     !Number.isSafeInteger(limit)||limit<1||limit>10000||
     !Number.isSafeInteger(year)||year<2019||year>new Date().getUTCFullYear()-1)
     throw Error("GIRBO_BAD_PLAN");
@@ -53,7 +58,8 @@ export function planGirBoBackfill(cp,{limit=10000,year=new Date().getUTCFullYear
     if(freq.get(inn)!==1){counts.duplicate_inn++;continue;}
     if(!safeName(r)){counts.unresolved_legal_name++;continue;}
     if(conflicting(r)){counts.identity_conflict++;continue;}
-    if(old?.year_ceiling===year&&old.inn===inn){counts.previously_reviewed++;continue;}
+    if(old?.year_ceiling===year&&old.inn===inn&&old.search_revision===SEARCH_REVISION&&
+      old.confirmation_mode===confirmationMode){counts.previously_reviewed++;continue;}
     eligible.push({id,inn,row:r});
   }
   return {total:rows.length,missing:gaps.length,eligible:eligible.length,
@@ -71,7 +77,14 @@ export function selectGirBoOrganization(row,payload){
   const r=matching[0],short=digits(r.shortName);
   if(!idOk(r.id)||!ogrnOk(r.ogrn)||!short||/<|>/u.test(short)||
     (stored.length&&stored[0]!==r.ogrn))return review("search_identity_unproven");
-  return {status:"candidate",inn,ogrn:r.ogrn,organization_id:r.id,short_name:short};
+  const b=r.bfo;
+  const searchSummary=b&&typeof b==="object"&&!Array.isArray(b)?{
+    period:b.period,knd:b.knd,isCb:b.isCb,gainSum:b.gainSum,
+    actualBfoDate:b.actualBfoDate,actualCorrectionNumber:b.actualCorrectionNumber,
+    actualCorrectionDate:b.actualCorrectionDate,bfoPeriodTypes:b.bfoPeriodTypes
+  }:null;
+  return {status:"candidate",inn,ogrn:r.ogrn,organization_id:r.id,short_name:short,
+    status_code:r.statusCode,search_summary:searchSummary};
 }
 export function selectGirBoAnnualReport(row,org,reports,{year=new Date().getUTCFullYear()-1}={}){
   if(org?.status!=="candidate"||!Array.isArray(reports)||reports.length>100)return review("report_response_unproven");
@@ -87,7 +100,7 @@ export function selectGirBoAnnualReport(row,org,reports,{year=new Date().getUTCF
   if(items.length!==1)return review("annual_correction_ambiguous");
   const c=items[0].correction,info=p.organizationInfo,detail=c?.bfoOrganizationInfo;
   if(!idOk(p.id)||!c||!idOk(c.id)||c.periodType!==12||p.isCb!==false||
-    !kndOk(p.knd)||c.knd!==p.knd||
+    !kndOk(p.knd)||c.knd!==p.knd||p.published===false||
     !Number.isSafeInteger(p.publishedCorrectionNumber)||p.publishedCorrectionNumber<0||
     c.correctionVersion!==p.publishedCorrectionNumber||!dateOk(p.publishedCorrectionDate))
     return review("published_annual_report_unproven");
@@ -109,8 +122,53 @@ export function selectGirBoAnnualReport(row,org,reports,{year=new Date().getUTCF
     organization_id:org.organization_id,year:latest,report_id:p.id,detail_id:c.id,
     knd:p.knd,correction_number:c.correctionVersion,published_date:p.publishedCorrectionDate,
     current:f.current2110,previous:f.previous2110??null,
+    legal_name:info.fullName,short_name:org.short_name,status_code:org.status_code,
+    search_summary:org.search_summary,
+    report_summary:{gainSum:p.gainSum,actualBfoDate:p.actualBfoDate,
+      actualCorrectionNumber:p.actualCorrectionNumber,actualCorrectionDate:p.actualCorrectionDate},
     source_url:GIRBO_BASE+"/organizations-card/"+org.organization_id,
+    search_url:GIRBO_BASE+"/advanced-search/organizations/search?"+new URLSearchParams({query:org.inn,page:"0",size:"20"}),
+    report_json_url:GIRBO_BASE+"/nbo/organizations/"+org.organization_id+"/bfo/",
     report_url:GIRBO_BASE+"/download/bfo/pdf/"+org.organization_id+"?period="+latest+"&detailId="+c.id};
+}
+// Two projections of the SAME official source, not independent registries.
+// Standard ordinary annual 0710002 values are in thousands of rubles;
+// FNS explicitly states this unit and its public card displays it.
+// Require both responses to refer to exactly the same annual correction.
+export function verifyGirBoStructuredReport(candidate){
+  if(candidate?.status!=="candidate")return review("structured_report_unproven");
+  const s=candidate.search_summary,p=candidate.report_summary;
+  if(!s||!p||candidate.status_code!=="ACTIVE"||
+    !archiveNameKey(candidate.legal_name)||
+    archiveNameKey(candidate.legal_name).split(":")[0]!==archiveNameKey(candidate.short_name).split(":")[0]||
+    !innOk(candidate.inn)||!ogrnOk(candidate.ogrn)||!kppOk(candidate.kpp)||
+    !kndOk(candidate.knd)||!idOk(candidate.organization_id)||!idOk(candidate.report_id)||!idOk(candidate.detail_id)||
+    !Number.isSafeInteger(candidate.year)||candidate.year<2019||
+    !Number.isSafeInteger(candidate.correction_number)||candidate.correction_number<0||
+    !dateOk(candidate.published_date))
+    return review("structured_report_identity_unproven");
+  if(String(s.period)!==String(candidate.year)||s.knd!==candidate.knd||s.isCb!==false||
+    !Array.isArray(s.bfoPeriodTypes)||s.bfoPeriodTypes.length!==1||s.bfoPeriodTypes[0]!==12||
+    s.actualCorrectionNumber!==candidate.correction_number||
+    p.actualCorrectionNumber!==candidate.correction_number||
+    !dateOk(s.actualBfoDate)||!dateOk(s.actualCorrectionDate)||
+    s.actualBfoDate!==p.actualBfoDate||s.actualCorrectionDate!==p.actualCorrectionDate)
+    return review("structured_annual_correction_unproven");
+  if(!Number.isSafeInteger(candidate.current)||candidate.current<0||
+    !Number.isSafeInteger(s.gainSum)||!Number.isSafeInteger(p.gainSum)||
+    s.gainSum!==candidate.current||p.gainSum!==candidate.current)
+    return review("structured_2110_disagreement");
+  const rub=candidate.current*1000;
+  if(!Number.isSafeInteger(rub)||rub<0||rub>1e15)return review("revenue_scale_unproven");
+  const projection={inn:candidate.inn,ogrn:candidate.ogrn,kpp:candidate.kpp,
+    organization_id:candidate.organization_id,report_id:candidate.report_id,detail_id:candidate.detail_id,
+    year:candidate.year,knd:candidate.knd,correction_number:candidate.correction_number,
+    published_date:candidate.published_date,search:s,report:p,current2110:candidate.current};
+  return {status:"verified",reason:"girbo_annual_2110_json_verified",revenue_rub:rub,
+    revenue_year:candidate.year,unit:"thousand_rubles",row_code:"2110",
+    verification:"matching_official_search_and_published_annual_report",
+    unit_basis_url:candidate.year>=2025?GIRBO_UNIT_BASIS:GIRBO_LEGACY_UNIT_BASIS,
+    projection_sha256:createHash("sha256").update(JSON.stringify(projection)).digest("hex"),projection};
 }
 function labelled(page,label,value){
   const matches=[...page.matchAll(new RegExp("(?:^|\\n)\\s*"+label+"\\s+([0-9]+)(?=\\s|$)","giu"))];
@@ -167,14 +225,16 @@ export function verifyGirBoPdfText(candidate,raw){
     revenue_year:candidate.year,unit:"thousand_rubles",row_code:"2110"};
 }
 export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
-  year=new Date().getUTCFullYear()-1,lookup,onCheckpoint,onProgress=()=>{}}){
+  year=new Date().getUTCFullYear()-1,confirmationMode="json",lookup,onCheckpoint,onProgress=()=>{}}){
   if(!sourceId||!childId||sourceId===childId||typeof lookup?.search!=="function"||
-    typeof lookup?.reports!=="function"||typeof lookup?.pdf!=="function"||
+    typeof lookup?.reports!=="function"||!["json","pdf"].includes(confirmationMode)||
+    (confirmationMode==="pdf"&&typeof lookup?.pdf!=="function")||
     typeof onCheckpoint!=="function")throw Error("GIRBO_BAD_RUN");
-  const snapshot=structuredClone(checkpoint),plan=planGirBoBackfill(snapshot,{limit,year});
+  const snapshot=structuredClone(checkpoint),plan=planGirBoBackfill(snapshot,{limit,year,confirmationMode});
   const outcomes={...(snapshot.girbo_backfill_outcomes||{})};
   const stats={scheduled:plan.selected.length,processed:0,added:0,review:0,pending:plan.eligible,
-    missing_before:plan.missing,missing_after:plan.missing,stop_reason:"",by_reason:{},openai_requests:0,saby_requests:0};
+    missing_before:plan.missing,missing_after:plan.missing,stop_reason:"",
+    confirmation_mode:confirmationMode,by_reason:{},openai_requests:0,saby_requests:0};
   const now=new Date().toISOString();
   Object.assign(snapshot,{created_at:now,updated_at:now,girbo_backfill_source_job_id:sourceId,
     girbo_backfill_root_job_id:checkpoint.girbo_backfill_root_job_id||sourceId,
@@ -196,7 +256,9 @@ export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
       if(org.status==="candidate"){
         candidate=selectGirBoAnnualReport(row,org,await lookup.reports(org.organization_id),{year});
         result=candidate;
-        if(candidate.status==="candidate"){
+        if(candidate.status==="candidate"&&confirmationMode==="json"){
+          result=verifyGirBoStructuredReport(candidate);
+        }else if(candidate.status==="candidate"){
           const pdf=await lookup.pdf(candidate);
           result=verifyGirBoPdfText(candidate,pdf?.text);
           if(result.status==="verified"){
@@ -227,22 +289,29 @@ export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
       if(saved(row[REVENUE_FIELD])||innOf(row)!==inn)result=review("source_row_changed");
       else{
         const detail={source:"GIR_BO",inn,ogrn:candidate.ogrn,kpp:candidate.kpp,
-          source_url:candidate.source_url,report_url:candidate.report_url,report_id:candidate.report_id,
+          source_url:candidate.source_url,report_id:candidate.report_id,
           detail_id:candidate.detail_id,correction_number:candidate.correction_number,
           published_date:candidate.published_date,revenue_rub:result.revenue_rub,
           revenue_year:result.revenue_year,unit:result.unit,row_code:"2110",
-          pdf_sha256:result.pdf_sha256,verified_at:new Date().toISOString()};
+          verification:result.verification||"official_pdf_and_json",
+          ...(confirmationMode==="json"?{search_url:candidate.search_url,
+            report_json_url:candidate.report_json_url,unit_basis_url:result.unit_basis_url,
+            projection_sha256:result.projection_sha256,projection:result.projection}:{
+            report_url:candidate.report_url,pdf_sha256:result.pdf_sha256}),
+          verified_at:new Date().toISOString()};
         row[REVENUE_FIELD]=detail.revenue_rub;
         const ev=row.__evidence||{};
+        const proofUrl=confirmationMode==="json"?detail.source_url:detail.report_url;
         row.__evidence={...ev,girbo_finance_backfill:detail,
-          source_urls:[...new Set([...(Array.isArray(ev.source_urls)?ev.source_urls:[]),detail.report_url])]};
+          source_urls:[...new Set([...(Array.isArray(ev.source_urls)?ev.source_urls:[]),proofUrl])]};
         row.__comment=[String(row.__comment||""),"ГИР БО, выручка за "+detail.revenue_year+
-          " г. (строка 2110): "+detail.revenue_rub+" руб.; "+detail.report_url].filter(Boolean).join("\n");
+          " г. (строка 2110): "+detail.revenue_rub+" руб.; "+proofUrl].filter(Boolean).join("\n");
         stats.added++;
       }
     }
     if(result.status!=="verified")stats.review++;
     outcomes[id]={status:result.status,reason:result.reason,inn,year_ceiling:year,
+      search_revision:SEARCH_REVISION,confirmation_mode:confirmationMode,
       ...(result.status==="verified"?{revenue_year:result.revenue_year,revenue_rub:result.revenue_rub}:{})};
     stats.processed++;
     stats.by_reason[result.reason]=(stats.by_reason[result.reason]||0)+1;

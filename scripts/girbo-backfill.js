@@ -16,7 +16,7 @@ const int=(k,d,max)=>{
 };
 function createLookup(maxRequests){
   let requests=0,last=0;
-  async function request(url,{pdf=false}={}){
+  async function request(url,{pdf=false,stage="unknown"}={}){
     const u=new URL(url);
     if(u.origin!==GIRBO_BASE||u.username||u.password||u.hash)
       throw Error("GIRBO_RESPONSE_UNPROVEN");
@@ -24,10 +24,21 @@ function createLookup(maxRequests){
     await delay(Math.max(0,1500-(Date.now()-last)));
     requests++;last=Date.now();
     let response;
-    try{response=await fetch(u,{redirect:"error",signal:AbortSignal.timeout(45000),
+    try{response=await fetch(u,{redirect:"manual",signal:AbortSignal.timeout(45000),
       headers:{"Accept":pdf?"application/pdf":"application/json","User-Agent":"RegionalResearch/2.1"}});}
-    catch{throw Error("GIRBO_HTTP_UNAVAILABLE");}
+    catch(e){
+      const raw=String(e?.cause?.code||e?.code||e?.name||"");
+      metric("GIRBO_HTTP_DIAG",{stage,reason:"GIRBO_HTTP_UNAVAILABLE",
+        transport_code:/^[A-Za-z0-9_]{1,60}$/.test(raw)?raw:"unknown"});
+      throw Error("GIRBO_HTTP_UNAVAILABLE");
+    }
     const reject=async code=>{
+      const location=response.headers.get("location");
+      let redirect_origin="none";
+      if(location){try{redirect_origin=new URL(location,u).origin===GIRBO_BASE?"same_origin":"other_origin";}
+        catch{redirect_origin="invalid";}}
+      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason:code,
+        redirect_origin,media_type:(response.headers.get("content-type")||"").split(";")[0].slice(0,80)});
       await response.body?.cancel().catch(()=>{});
       throw Error(code);
     };
@@ -47,16 +58,23 @@ function createLookup(maxRequests){
         if(total>cap){await reader.cancel();throw Error(pdf?"GIRBO_PDF_SIZE_LIMIT":"GIRBO_RESPONSE_UNPROVEN");}
         chunks.push(Buffer.from(value));
       }
-    }catch(e){throw Error(["GIRBO_PDF_SIZE_LIMIT","GIRBO_RESPONSE_UNPROVEN"].includes(e.message)?e.message:"GIRBO_HTTP_UNAVAILABLE");}
+    }catch(e){
+      const reason=["GIRBO_PDF_SIZE_LIMIT","GIRBO_RESPONSE_UNPROVEN"].includes(e.message)?e.message:"GIRBO_HTTP_UNAVAILABLE";
+      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason,body_read_interrupted:true});
+      throw Error(reason);
+    }
     const buffer=Buffer.concat(chunks);
     if(pdf)return buffer;
-    try{return JSON.parse(buffer.toString("utf8"));}catch{throw Error("GIRBO_RESPONSE_UNPROVEN");}
+    try{return JSON.parse(buffer.toString("utf8"));}catch{
+      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason:"GIRBO_RESPONSE_UNPROVEN",json_invalid:true});
+      throw Error("GIRBO_RESPONSE_UNPROVEN");
+    }
   }
   return {get requests(){return requests;},
-    search:inn=>request(GIRBO_BASE+"/advanced-search/organizations/search?"+new URLSearchParams({query:inn,page:"0",size:"20"})),
-    reports:id=>request(GIRBO_BASE+"/nbo/organizations/"+id+"/bfo/"),
+    search:inn=>request(GIRBO_BASE+"/advanced-search/organizations/search?"+new URLSearchParams({query:inn,page:"0",size:"20"}),{stage:"search"}),
+    reports:id=>request(GIRBO_BASE+"/nbo/organizations/"+id+"/bfo/",{stage:"reports"}),
     async pdf(candidate){
-      const buffer=await request(candidate.report_url,{pdf:true});
+      const buffer=await request(candidate.report_url,{pdf:true,stage:"pdf"});
       if(buffer.subarray(0,5).toString()!=="%PDF-")return {text:"",sha256:""};
       const out=spawnSync("pdftotext",["-layout","-","-"],{input:buffer,encoding:"utf8",
         maxBuffer:8*1024*1024,timeout:45000,windowsHide:true});
@@ -67,11 +85,13 @@ function createLookup(maxRequests){
 }
 async function main(){
   if(args.includes("--help")){
-    console.log("node scripts/girbo-backfill.js --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=10000] [--year=2025] [--max-requests=1500] [--run]");
+    console.log("node scripts/girbo-backfill.js --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=10000] [--year=2025] [--max-requests=1500] [--confirmation=json|pdf] [--run]");
     return;
   }
   const file=arg("db"),sourceId=arg("checkpoint"),year=int("year",new Date().getUTCFullYear()-1,2100),
-    limit=int("limit",10000,10000),maxRequests=int("max-requests",1500,3000);
+    limit=int("limit",10000,10000),maxRequests=int("max-requests",1500,3000),
+    confirmationMode=arg("confirmation","json");
+  if(!["json","pdf"].includes(confirmationMode))throw Error("GIRBO_BAD_ARGS");
   if(!path.isAbsolute(file)||!fs.existsSync(file)||!fs.statSync(file).isFile()||
     !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(sourceId))throw Error("GIRBO_BAD_ARGS");
   const db=new DatabaseSync(file,{readOnly:true});
@@ -82,19 +102,21 @@ async function main(){
     if(!row?.payload)throw Error("GIRBO_CHECKPOINT_NOT_FOUND");
     cp=JSON.parse(row.payload);
   }finally{db.close();}
-  const plan=planGirBoBackfill(cp,{limit,year}),run=args.includes("--run");
+  const plan=planGirBoBackfill(cp,{limit,year,confirmationMode}),run=args.includes("--run");
   const {selected,...summary}=plan;
   metric("GIRBO_PLAN",{source_checkpoint:sourceId,region:cp.region,dry_run:!run,
-    ...summary,scheduled:selected.length,max_requests:maxRequests,openai_requests:0,saby_requests:0});
+    ...summary,scheduled:selected.length,confirmation_mode:confirmationMode,max_requests:maxRequests,openai_requests:0,saby_requests:0});
   if(!run||!selected.length)return;
-  const poppler=spawnSync("pdftotext",["-v"],{encoding:"utf8",timeout:5000,windowsHide:true});
-  if(poppler.error||poppler.status!==0)throw Error("GIRBO_PDFTOTEXT_MISSING");
+  if(confirmationMode==="pdf"){
+    const poppler=spawnSync("pdftotext",["-v"],{encoding:"utf8",timeout:5000,windowsHide:true});
+    if(poppler.error||poppler.status!==0)throw Error("GIRBO_PDFTOTEXT_MISSING");
+  }
   process.env.CHECKPOINT_DB_PATH=file;
   const {saveCheckpoint,PIPELINE_VERSION}=await import("../src/checkpointStore.js");
   if(Number(cp.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION)throw Error("GIRBO_CHECKPOINT_VERSION_MISMATCH");
   const lookup=createLookup(maxRequests),childId=randomUUID();
   let saved=false;
-  const result=await runGirBoBackfill({checkpoint:cp,sourceId,childId,limit,year,lookup,
+  const result=await runGirBoBackfill({checkpoint:cp,sourceId,childId,limit,year,confirmationMode,lookup,
     onCheckpoint:async child=>{
       await saveCheckpoint(childId,child);
       if(!saved){saved=true;metric("GIRBO_CHILD",{child_checkpoint:childId,parent_checkpoint:sourceId});}
