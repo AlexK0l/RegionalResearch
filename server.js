@@ -613,6 +613,7 @@ function restoreMemoryPausedJobs(){
   const apiKey=String(process.env.OPENAI_API_KEY||"").trim();
   for(const item of listMemoryPausedJobs()){
     if(item.mode!=="saby_only"&&!apiKey)continue;
+    if(item.mode==="saby_only"&&!sabyOnlyConfigReady())continue;
     const job=makeResearchJob({...item,data:{region:item.region,sourceJobId:item.id,
       checkpointRef:item.id,memoryResume:true},progress:{phase:"memory_paused",percent:item.percent}});
     const queued=queueJob(job,apiKey);
@@ -916,7 +917,7 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   // The original remains available if the new attempt fails or is cancelled.
   if (activeRegionConflict(checkpoint.region, res)) return;
   const id = crypto.randomUUID();
-  const storedSource=await loadCheckpoint(req.params.id);
+  const storedSource=sourceJob?.latestCheckpoint?null:await loadCheckpoint(req.params.id);
   const job=makeResearchJob({id,region:checkpoint.region,mode:"resume",
     data:{region:checkpoint.region,checkpoint,sourceJobId:req.params.id,
       checkpointRef:storedSource?req.params.id:""},summary:checkpointSummary(checkpoint)});

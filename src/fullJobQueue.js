@@ -17,7 +17,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   if(typeof execute!=="function")throw TypeError("Queue executor required");
   const capacity=Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(Number(limit)||2)));
   const pending=[],regions=new Map(),running=new Map();
-  let active=0,sequence=0,nextStartAt=0,blocked=false,healthySince=null,lastMemory=null;
+  let active=0,sequence=0,nextStartAt=0,nextPauseAt=0,blocked=false,healthySince=null,lastMemory=null;
   const enabled=!!memory?.settings?.enabled;
   let previousStatus="";
   function status(){
@@ -59,7 +59,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
       const candidates=[...running.values()].sort((a,b)=>b.started-a.started);
       if(lastMemory.pressure==="critical"){
         for(const item of candidates)requestPause(item);
-      }else if(!candidates.some(x=>x.job.memoryPauseRequested)){
+      }else if(now>=nextPauseAt&&!candidates.some(x=>x.job.memoryPauseRequested)){
         const victim=candidates.find(x=>x.preemptible&&!x.job.cancelled&&x.job.state==="active");
         if(victim)requestPause(victim);
       }
@@ -79,7 +79,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     const key=[blocked,lastMemory.pressure,reason,lastMemory.estimatedCapacity].join("|");
     if(key!==previousStatus){
       previousStatus=key;
-      log("[MEMORY_ADMISSION] "+JSON.stringify({blocked,reason,...lastMemory,active}));
+      log("[MEMORY_ADMISSION] "+JSON.stringify({...lastMemory,blocked,reason,active}));
     }
     return !blocked&&lastMemory.canStart&&!waitingForPause&&now>=nextStartAt;
   }
@@ -117,9 +117,12 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
             item.job.progress={...item.job.progress,phase:"memory_paused",memoryPauseRequested:false};
             pending.unshift(item);
             blocked=true;healthySince=null;
+            // Give the just-unwound job time to reclaim its heap before
+            // asking another region to suspend. Critical pressure overrides.
+            nextPauseAt=memory.now()+2*memory.settings.pollMs;
             // Dropping the unwound stack and checkpoint payload is essential.
             // V8 GC may reclaim these objects; it need not return RSS instantly.
-            if(typeof global.gc==="function")global.gc();
+            if(typeof global.gc==="function"){try{global.gc();}catch{/* best effort */}}
           }else{
             if(item.job.cancelled&&item.job.state==="waiting")item.job.state="cancelled";
             release(item);

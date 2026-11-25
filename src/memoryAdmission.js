@@ -2,7 +2,7 @@
 // Admission estimates are intentionally conservative, not OOM guarantees.
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import {posix as path} from "node:path";
 import v8 from "node:v8";
 
 const M=1024*1024;

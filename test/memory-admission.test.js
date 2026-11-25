@@ -122,3 +122,45 @@ test("SQLite pause marker keeps only durable metadata, survives reopen and is re
     fs.rmSync(dir,{recursive:true,force:true});
   }
 });
+
+test("final INN workers finish and commit all started batches before yielding",async()=>{
+  const rows=Array.from({length:30},(_,i)=>({__canonical_id:"r"+i,"Организация":"ООО Тест "+i,"ИНН":""}));
+  let stop=false,drained=null;
+  const calls=[],holds=[];
+  const run=resolveFinalMissingInns({
+    client:{},finalResult:{direct_buyers:rows,intermediaries:[],leasing:[]},region:"Test",
+    assertNotCancelled:async()=>{},shouldPause:()=>stop,
+    lookupBatch:async({rows:batch})=>{
+      calls.push(batch.map(r=>r.__canonical_id));
+      const hold=deferred();holds.push(hold);await hold.promise;
+      return {items:[]};
+    },
+    onPause:async state=>{drained=state;throw Error("test-pause-committed");}
+  });
+  const observed=assert.rejects(run,/test-pause-committed/);
+  await tick();const started=calls.length;assert.ok(started>0);
+  stop=true;
+  for(const h of holds)h.resolve();
+  await observed;
+  assert.equal(calls.length,started);
+  assert.equal(drained.completedIds.size,calls.flat().length);
+  assert.equal(drained.attempted,calls.flat().length);
+});
+test("Saby checkpoint pause is propagated, closes its browser scope and is never a browser error",async()=>{
+  const {runSabyStage12}=await import("../src/sabyStage12.js");
+  const {MemoryPauseError}=await import("../src/memoryAdmission.js");
+  const result={direct_buyers:[{"Организация":"ООО Альфа","ИНН":"7707083893","Телефон":"","Наличие транспорта":"",
+    __canonical_id:"a",__evidence:{source_urls:["https://official.example/"]}}],
+    intermediaries:[],leasing:[],statistics:[]};
+  let closed=false,writes=0;
+  await assert.rejects(runSabyStage12({result,
+    env:{SABY_STAGE12_ENABLED:"true",SABY_CHECKPOINT_EVERY:"1"},
+    sessionRunner:async task=>{try{return await task({page:{},settings:{}});}finally{closed=true;}},
+    collectCompany:async(_page,row)=>({source:"SABY",source_url:"https://profile.saby.ru/page/contractor-info",
+      collected_at:"2026-11-25T00:00:00Z",identity:{inn:row["ИНН"],name:row["Организация"],verified:true},
+      contacts:{status:"collected",phones:["+74951234567"],emails:[]},
+      trucks:{status:"verified",count:0,vehicles:[]},errors:[]}),
+    onCheckpoint:async()=>{writes++;throw new MemoryPauseError();}
+  }),isMemoryPause);
+  assert.equal(closed,true);assert.equal(writes,1);
+});
