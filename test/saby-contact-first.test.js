@@ -163,3 +163,57 @@ test("explicit continuation resets exhausted section cursor before a memory paus
       throw new MemoryPauseError();
     }}),isMemoryPause);
 });
+
+
+test("planned Chromium rotation closes each context, saves its cursor, rechecks RAM and preserves total progress",async()=>{
+  const db=result(),events=[],calls=[],saved=[],progress=[];
+  let lastSaved=0,collects=0;
+  const release=()=>events.push("released");
+  release.beforeReopen=async()=>{
+    assert.equal(events.at(-1),"closed");
+    assert.equal(saved.at(-1).saby_pass_state.attempted.length,lastSaved);
+    events.push("admission");
+  };
+  const out=await runSabyContactFirst({result:db,env:{...env,SABY_BROWSER_RECYCLE_EVERY:"1",SABY_GC_EVERY:"1"},
+    acquireSabyBrowser:async()=>{events.push("acquired");return release;},
+    collectGarbage:()=>collects++,
+    sessionRunner:async task=>{
+      events.push("open");try{return await task({page:{},settings:{}});}
+      finally{events.push("closed");}
+    },
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push([r["ИНН"],sections.contacts?"contacts":"details"]);
+      lastSaved++;
+      return record(r,sections);
+    },
+    persistCheckpoint:async(_phase,patch)=>saved.push(structuredClone(patch)),
+    onProgress:async p=>progress.push(p)
+  });
+  assert.deepEqual(calls,[[innA,"contacts"],[innB,"contacts"],[innA,"details"],[innB,"details"]]);
+  assert.equal(out.stats.browserRotations,3);
+  assert.equal(out.stats.browserRestarts,0);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.equal(out.stats.deadlineReached,false);
+  assert.ok(collects>=7);
+  assert.equal(events.filter(x=>x==="open").length,4);
+  assert.equal(events.filter(x=>x==="admission").length,3);
+  assert.equal(events.at(-1),"released");
+  const contacts=progress.filter(x=>x.phase==="contacts");
+  assert.deepEqual(contacts.map(x=>x.passProcessed),[0,1,1,2]);
+  assert.ok(contacts.every(x=>x.passTotal===2));
+});
+
+test("storage failure at a planned rotation is not misclassified as a browser failure",async()=>{
+  let launches=0,closed=false;
+  await assert.rejects(runSabyContactFirst({result:result(),
+    env:{...env,SABY_BROWSER_RECYCLE_EVERY:"1"},
+    sessionRunner:async task=>{
+      launches++;
+      try{return await task({page:{},settings:{}});}finally{closed=true;}
+    },
+    collectSections:async(_p,r,_s,sections)=>record(r,sections),
+    persistCheckpoint:async(_phase,patch)=>{
+      if(closed&&patch.saby_stats.browserRotations===1)throw Error("disk write failed");
+    }}),/disk write failed/);
+  assert.equal(launches,1);
+});

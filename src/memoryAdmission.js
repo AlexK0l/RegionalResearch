@@ -18,6 +18,8 @@ export function memoryGuardSettings(env=process.env){
     // Extra physical RAM required BEFORE opening the Saby Chromium profile.
     // It is separate from the already admitted research's own JS state.
     sabyBrowserMiB:integer(env.RESEARCH_MEMORY_SABY_BROWSER_MIB,640,256,32768),
+    // Hydrating a paused SQLite snapshot consumes RAM before Chromium.
+    sabyResumeMarginMiB:integer(env.RESEARCH_MEMORY_SABY_RESUME_MARGIN_MIB,192,0,2048),
     heapReserveMiB:integer(env.RESEARCH_MEMORY_HEAP_RESERVE_MIB,256,64,8192),
     heapJobMiB:integer(env.RESEARCH_MEMORY_HEAP_JOB_MIB,256,64,8192),
     pollMs:integer(env.RESEARCH_MEMORY_POLL_MS,2000,500,30000),

@@ -114,6 +114,7 @@ export function sabyOnlyConfigReady(env=process.env) {
 
 export async function runSabyOnlyContinuation({
   checkpoint:input,
+  checkpointWritesSynchronous=false,
   sourceJobId,
   memoryResume=false,
   env=process.env,
@@ -161,7 +162,8 @@ export async function runSabyOnlyContinuation({
       source_mode:"saby",
       updated_at:new Date().toISOString()
     };
-    await persistCheckpoint(structuredClone(snapshot),{
+    await persistCheckpoint(checkpointWritesSynchronous&&phase==="saby"&&
+      snapshot.saby_pass_state?.version===1?snapshot:structuredClone(snapshot),{
       memorySafe:safe&&phase==="saby"&&snapshot.saby_deferred_inns?.length>0&&
         snapshot.saby_stats?.fullSweepCompleted!==true
     });

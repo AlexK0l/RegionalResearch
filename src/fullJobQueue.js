@@ -20,7 +20,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   const pending=[],regions=new Map(),running=new Map();
   let active=0,sequence=0,nextStartAt=0,nextPauseAt=0,blocked=false,healthySince=null,lastMemory=null;
   const enabled=!!memory?.settings?.enabled;
-  let previousStatus="",lastIdleGcAt=-Infinity,sabyLease=null;
+  let previousStatus="",lastIdleGcAt=-Infinity,lastSabyGcAt=-Infinity,sabyLease=null,quiesced=false;
   const sabyPolicy=()=>evaluateSabyBrowserAdmission(lastMemory,memory.settings,active);
   function sabyStatus(){
     if(!sabyLease)return null;
@@ -89,11 +89,27 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     }
     return new Promise((resolve,reject)=>{
       const lease={item,state:"waiting",resolve,reject,healthySince:null,
-        lastGcAt:-Infinity,previousPhase:item.job.progress?.phase||"saby"};
+        lastGcAt:-Infinity,waitingSince:memory.now(),previousPhase:item.job.progress?.phase||"saby"};
       sabyLease=lease;
       blocked=true;healthySince=null;
       item.job.progress={...item.job.progress,phase:"saby_memory_wait"};
       log("[SABY_MEMORY_GATE] "+JSON.stringify({event:"requested",job_id:item.job.id}));
+      pump();
+    });
+  }
+  // Retain exclusive priority while the old Chromium context is already
+  // closed and the next context waits for fresh measured headroom.
+  function recheckSabyBrowser(lease){
+    if(sabyLease!==lease||lease.state!=="active")throw Error("SABY_BROWSER_LEASE_INVALID");
+    const {job}=lease.item;
+    if(job.cancelled||job.abortController?.signal?.aborted)throw Error("JOB_CANCELLED");
+    if(job.memoryPauseRequested)throw new MemoryPauseError();
+    return new Promise((resolve,reject)=>{
+      Object.assign(lease,{state:"waiting",resolve,reject,healthySince:null,
+        waitingSince:memory.now(),lastGcAt:-Infinity});
+      blocked=true;healthySince=null;
+      job.progress={...job.progress,phase:"saby_memory_wait"};
+      log("[SABY_MEMORY_GATE] "+JSON.stringify({event:"reopen_requested",job_id:job.id}));
       pump();
     });
   }
@@ -143,6 +159,14 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     const draining=peers.some(peer=>peer.job.memoryPauseRequested);
     if(!policy.canOpen||draining){
       lease.healthySince=null;
+      // Do not hold the owner's full JS graph forever if its browser
+      // cannot be (re)opened after the peers have unwound.
+      if(active===1&&!policy.canOpen&&now-lease.waitingSince>=
+          Math.max(60000,2*memory.settings.stableMs)&&
+          requestPause(owner,"saby_browser_headroom_stalled")){
+        lease.state="unwinding";
+        lease.reject(new MemoryPauseError());
+      }
       return;
     }
     lease.healthySince??=now;
@@ -151,16 +175,39 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     owner.job.progress={...owner.job.progress,phase:lease.previousPhase};
     log("[SABY_MEMORY_GATE] "+JSON.stringify({event:"granted",...sabyStatus(),
       available_mib:lastMemory.availableMiB,active}));
-    lease.resolve(()=>releaseSabyBrowser(lease));
+    const release=()=>releaseSabyBrowser(lease);
+    release.beforeReopen=()=>recheckSabyBrowser(lease);
+    lease.resolve(release);
+  }
+  function admissionSample(){
+    const sample=memory.inspect(active);
+    const head=pending[0],summary=head?.job.latestCheckpointSummary;
+    if(active===0&&head?.paused&&summary?.phase==="saby"&&
+       summary.saby_browser_pending!==false&&sample.valid&&sample.canStart){
+      const required=sample.reserveMiB+(memory.settings.sabyBrowserMiB??640)+
+        (memory.settings.sabyResumeMarginMiB??192);
+      if(sample.availableMiB<required)
+        return {...sample,canStart:false,reason:"saby_resume_headroom",saby_resume_required_mib:required};
+    }
+    return sample;
   }
   function inspect(){
     if(!enabled)return true;
     const now=memory.now();
-    lastMemory=memory.inspect(active);
+    lastMemory=admissionSample();
     // A queue with no running jobs must not wait indefinitely merely because
     // unreachable V8 objects have not yet been collected. Best-effort GC
     // cannot override the actual host/cgroup/heap admission check.
     if(active===0&&pending.length&&!lastMemory.canStart&&reclaimIdle()){
+      lastMemory=admissionSample();
+    }
+    // At a low-memory sample in a sole Saby job, try reclaiming dead
+    // temporary checkpoint/DOM objects before setting an irreversible
+    // cooperative pause flag. Critical pressure still pauses immediately.
+    if(active===1&&sabyLease?.state==="active"&&lastMemory.pressure==="high"&&
+        typeof collectGarbage==="function"&&now-lastSabyGcAt>=10000){
+      lastSabyGcAt=now;
+      try{collectGarbage();}catch{/* best effort */}
       lastMemory=memory.inspect(active);
     }
     if(lastMemory.pressure==="critical"||lastMemory.pressure==="high"){
@@ -207,6 +254,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     return !sabyLease&&!blocked&&lastMemory.canStart&&!waitingForPause&&now>=nextStartAt;
   }
   function pump(){
+    if(quiesced)return;
     let allowed=inspect();
     while(active<capacity&&pending.length&&allowed){
       const item=pending.shift();
@@ -263,6 +311,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     updatePositions();
   }
   function enqueue(job,apiKey,{reserveRegion=true,paused=false}={}){
+    if(quiesced)throw Error("RESEARCH_QUEUE_QUIESCED");
     const key=reserveRegion?normalizedRegionKey(job?.region):"diagnostic:"+job.id;
     if(!key)throw TypeError("Research region required");
     const existing=regions.get(key);
@@ -279,7 +328,25 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     const [item]=pending.splice(index,1);
     release(item);pump();return true;
   }
+  // No executing job, no browser lease, and no diagnostic/non-durable
+  // work: the server must independently verify each durable marker.
+  function idleBlockedJobs(){
+    if(!enabled||quiesced||active!==0||sabyLease||!pending.length||
+       pending.some(x=>!x.preemptible||x.job.cancelled||x.job.state!=="waiting"))return null;
+    const sample=admissionSample();
+    if(!sample.valid||sample.canStart||sample.reason==="estimated_capacity")return null;
+    return pending.map(x=>({id:x.job.id,region:x.job.region,mode:x.job.mode,paused:x.paused}));
+  }
+  function freezeForRecycle(expected){
+    const current=idleBlockedJobs();
+    if(!current||current.length!==expected.length||
+       current.some((x,i)=>x.id!==expected[i].id||x.paused!==expected[i].paused))return false;
+    quiesced=true;
+    if(timer)clearInterval(timer);
+    return true;
+  }
   const timer=enabled&&autoPoll?setInterval(pump,memory.settings.pollMs):null;
   timer?.unref?.();
-  return {enqueue,cancelQueued,conflict,snapshot,poll:pump,close:()=>{if(timer)clearInterval(timer);}};
+  return {enqueue,cancelQueued,conflict,snapshot,poll:pump,idleBlockedJobs,freezeForRecycle,
+    close:()=>{if(timer)clearInterval(timer);}};
 }
