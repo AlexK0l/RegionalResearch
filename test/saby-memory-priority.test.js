@@ -190,7 +190,7 @@ const result=()=>({direct_buyers:[{__canonical_id:"a","Организация":"
   intermediaries:[],leasing:[],statistics:[]});
 const env={SABY_STAGE12_ENABLED:"true",GIRBO_STAGE_ENABLED:"false",
   SABY_CHECKPOINT_EVERY:"1",STAGE13_AI_SABY_ONLY_ENABLED:"false",
-  SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:"true",SABY_FLEET_TREE_PRODUCTION_OPT_IN:"true"};
+  SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED:"true",SABY_FLEET_TREE_PRODUCTION_ENABLED:"true",SABY_MAX_COMPANIES:"0"};
 const record=(_page,row)=>({source:"SABY",source_url:"https://profile.saby.ru/page/contractor-info",
   collected_at:"2026-11-25T00:00:00Z",identity:{inn:row["ИНН"],name:row["Организация"],verified:true},
   contacts:{status:"collected",phones:["+74951234567"],emails:[]},
@@ -242,4 +242,28 @@ test("disabled or empty Saby never reserves memory; a pause at admission propaga
     persistCheckpoint:async()=>{written=true;},
     acquireSabyBrowser:async()=>{assert.ok(written);throw new MemoryPauseError();},
     sessionRunner:async()=>assert.fail("browser started before admission")}),isMemoryPause);
+});
+
+test("Saby-only continuation uses the same durable pre-browser admission and releases before Stage13",async()=>{
+  const events=[];
+  const source={version:1,pipeline_version:1,region:"Test",source_mode:"full",phase:"saby",
+    completed_stage:9,final_result:result(),saby_completed_inns:[],saby_deferred_inns:[inn]};
+  await runSabyOnlyContinuation({
+    checkpoint:source,sourceJobId:"12345678-1234-1234-1234-123456789abc",env,
+    persistCheckpoint:async(cp)=>events.push("checkpoint:"+cp.phase),
+    acquireSabyBrowser:async()=>{
+      assert.ok(events.includes("checkpoint:saby"));
+      events.push("acquired");return ()=>events.push("released");
+    },
+    sessionRunner:async task=>{
+      events.push("opened");try{return await task({page:{},settings:{}});}
+      finally{events.push("closed");}
+    },
+    collectCompany:async(...args)=>record(...args),
+    onProgress:async p=>{if(p.phase==="priority"){assert.ok(events.includes("released"));events.push("priority");}}
+  });
+  assert.equal(events.filter(x=>x==="acquired").length,1);
+  assert.equal(events.filter(x=>x==="released").length,1);
+  assert.ok(events.indexOf("closed")<events.indexOf("released"));
+  assert.ok(events.indexOf("released")<events.indexOf("priority"));
 });
