@@ -68,7 +68,7 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
        .every(key=>Array.isArray(result[key])))
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
 
-  const plan=sabyEligibleRows(result);
+  const plan=sabyEligibleRows(result,{includeFinanceGaps:true});
   const legacy=legacySabyPlan(checkpoint,plan);
   if(legacy){
     // Only the normalized copy is amended. Original SQLite source remains
@@ -121,6 +121,10 @@ export async function runSabyOnlyContinuation({
   persistCheckpoint=async()=>{},
   sessionRunner,
   collectCompany,
+  collectSections,
+  // Legacy injected single-visit collectors remain supported for smoke tests.
+  // The normal server call always uses the unlimited production section sweep.
+  contactFirst=!collectCompany&&!sessionRunner,
   acquireSabyBrowser
 }={}) {
   const checked=validateSabyOnlySource(input);
@@ -168,11 +172,14 @@ export async function runSabyOnlyContinuation({
       // For Saby-only, 0-100% reflects this queue, not the already
       // completed paid stages 1-11. Long sweeps must have visible progress.
       percent:finished&&!paused?100:Math.min(99,Math.floor(100*Math.min(1,
+        stats?.passCount?((stats.passIndex-1)+(stats.passTotal?stats.passProcessed/stats.passTotal:1))/stats.passCount:
         Number(stats?.processed||0)/Math.max(1,Number(stats?.scheduled||1))))),
+      ...(stats?.phaseLabel?{sabySection:stats.phaseLabel}:{}),
       statuses:stageStatuses.map((s,i)=>
         paused&&i===11?{...s,status:"waiting",detail:"Saby приостановлен; продолжение доступно"}:
         finished&&i===11?{...s,status:"done",detail:"Saby-only завершён"}:
-        finished&&i===12?{...s,status:"done",detail:"Приоритеты рассчитаны"}:s),
+        finished&&i===12?{...s,status:"done",detail:"Приоритеты рассчитаны"}:
+        i===11&&stats?.phaseLabel?{...s,detail:stats.phaseLabel+" · "+stats.passProcessed+" / "+stats.passTotal}:s),
       sabyCurrent:Number(stats?.processed||0),
       sabyTotal:Number(stats?.scheduled||0),
       sabyStats:stats,
@@ -209,6 +216,20 @@ export async function runSabyOnlyContinuation({
     return ()=>{};
   }:undefined;
   let outcome;
+  if(contactFirst){
+    // Explicit new continuation after an exhausted sweep may retry its gaps;
+    // a memory resume preserves the exact per-section cursor.
+    const saved=source.saby_pass_state;
+    const passState=saved&&(memoryResume||Number(saved.phase_index)<4)?saved:null;
+    outcome=await runCheckpointedSabyStage12({
+      result,env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
+      girboPriorOutcomes:source.girbo_backfill_outcomes||{},contactFirst:true,passState,
+      acquireSabyBrowser,sessionRunner,collectSections,
+      onProgress:stats=>report(stats),
+      onGirboProgress:stats=>onProgress({phase:"saby",step:12,percent:0,statuses:stageStatuses,girboStats:stats}),
+      persistCheckpoint:(phase,patch)=>persist(phase,patch,true)
+    });
+  }else{
   try{
   outcome=await runSabyOnlyWithRecovery({
     total:checked.pending,
@@ -235,6 +256,7 @@ export async function runSabyOnlyContinuation({
     }
   });
   }finally{releaseBrowser?.();}
+  }
 
   await onProgress({phase:"priority",step:13,percent:99,
     statuses:stageStatuses.map((s,i)=>i===11
