@@ -825,10 +825,10 @@ test("row sequence parser diagnostic is numeric and never relaxes the official p
 });
 
 test("official contact parser uses only scoped current executive and explicitly labelled email fields",()=>{
-  const withEmail=firstExtractPage.replace("   5      Адрес юридического лица","   5      Адрес юридического лица");
+  const withEmail=firstExtractPage;
   // Add an email within the existing address section and re-number all
   // following table rows, not header/footer dates or identity values.
-  const shift=(text,start)=>text.replace(/^(\s{1,10})(\d{1,3})(\s{2,})(?=\D)/gm,
+  const shift=(text,start)=>text.replace(/^([ \t]{1,10})(\d{1,3})([ \t]+)(?=[А-Яа-яЁё])/gm,
     (all,pad,number,gap)=>Number(number)>=start?pad+String(Number(number)+1)+gap:all);
   const first=shift(withEmail,7).replace("                                           Сведения о регистрации",
     "   7      Адрес электронной почты                              office@alpha.example\n\n                                           Сведения о регистрации");
