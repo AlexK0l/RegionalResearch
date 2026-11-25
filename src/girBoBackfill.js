@@ -225,7 +225,7 @@ export function verifyGirBoPdfText(candidate,raw){
     revenue_year:candidate.year,unit:"thousand_rubles",row_code:"2110"};
 }
 export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
-  year=new Date().getUTCFullYear()-1,confirmationMode="json",lookup,onCheckpoint,onProgress=()=>{}}){
+  year=new Date().getUTCFullYear()-1,confirmationMode="json",lookup,signal=null,onCheckpoint,onProgress=()=>{}}){
   if(!sourceId||!childId||sourceId===childId||typeof lookup?.search!=="function"||
     typeof lookup?.reports!=="function"||!["json","pdf"].includes(confirmationMode)||
     (confirmationMode==="pdf"&&typeof lookup?.pdf!=="function")||
@@ -248,6 +248,7 @@ export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
   await save();
   let schemaFailures=0;
   for(const target of plan.selected){
+    if(signal?.aborted)throw Error("JOB_CANCELLED");
     const {row,inn,id}=target;
     let result,candidate;
     try{
@@ -269,7 +270,8 @@ export async function runGirBoBackfill({checkpoint,sourceId,childId,limit=10000,
         }
       }
     }catch(error){
-      const allowed=["GIRBO_REQUEST_BUDGET","GIRBO_HTTP_DENIED","GIRBO_RATE_LIMITED","GIRBO_HTTP_UNAVAILABLE",
+      if(signal?.aborted||error?.message==="JOB_CANCELLED"){await save();throw Error("JOB_CANCELLED");}
+      const allowed=["GIRBO_DEADLINE","GIRBO_CIRCUIT_OPEN","GIRBO_REQUEST_BUDGET","GIRBO_HTTP_DENIED","GIRBO_RATE_LIMITED","GIRBO_HTTP_UNAVAILABLE",
         "GIRBO_RESPONSE_UNPROVEN","GIRBO_PDFTOTEXT_MISSING","GIRBO_PDF_SIZE_LIMIT"];
       stats.stop_reason=allowed.includes(error?.message)?error.message:"GIRBO_SOURCE_UNAVAILABLE";
       await save();break;

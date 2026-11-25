@@ -5,84 +5,15 @@ import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 import {randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
-import {GIRBO_BASE,planGirBoBackfill,runGirBoBackfill,girboPdfHash} from "../src/girBoBackfill.js";
+import {planGirBoBackfill,runGirBoBackfill} from "../src/girBoBackfill.js";
+import {createGirBoLookup} from "../src/girBoLookup.js";
 const args=process.argv.slice(2),arg=(k,d="")=>args.find(a=>a.startsWith("--"+k+"="))?.slice(k.length+3)??d;
 const metric=(n,x)=>console.log("["+n+"] "+JSON.stringify(x));
-const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const int=(k,d,max)=>{
   const v=Number(arg(k,String(d)));
   if(!Number.isSafeInteger(v)||v<1||v>max)throw Error("GIRBO_BAD_ARGS");
   return v;
 };
-function createLookup(maxRequests){
-  let requests=0,last=0;
-  async function request(url,{pdf=false,stage="unknown"}={}){
-    const u=new URL(url);
-    if(u.origin!==GIRBO_BASE||u.username||u.password||u.hash)
-      throw Error("GIRBO_RESPONSE_UNPROVEN");
-    if(requests>=maxRequests)throw Error("GIRBO_REQUEST_BUDGET");
-    await delay(Math.max(0,1500-(Date.now()-last)));
-    requests++;last=Date.now();
-    let response;
-    try{response=await fetch(u,{redirect:"manual",signal:AbortSignal.timeout(45000),
-      headers:{"Accept":pdf?"application/pdf":"application/json","User-Agent":"RegionalResearch/2.1"}});}
-    catch(e){
-      const raw=String(e?.cause?.code||e?.code||e?.name||"");
-      metric("GIRBO_HTTP_DIAG",{stage,reason:"GIRBO_HTTP_UNAVAILABLE",
-        transport_code:/^[A-Za-z0-9_]{1,60}$/.test(raw)?raw:"unknown"});
-      throw Error("GIRBO_HTTP_UNAVAILABLE");
-    }
-    const reject=async code=>{
-      const location=response.headers.get("location");
-      let redirect_origin="none";
-      if(location){try{redirect_origin=new URL(location,u).origin===GIRBO_BASE?"same_origin":"other_origin";}
-        catch{redirect_origin="invalid";}}
-      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason:code,
-        redirect_origin,media_type:(response.headers.get("content-type")||"").split(";")[0].slice(0,80)});
-      await response.body?.cancel().catch(()=>{});
-      throw Error(code);
-    };
-    if(response.status===429||response.headers.has("retry-after"))return reject("GIRBO_RATE_LIMITED");
-    if(response.status===401||response.status===403)return reject("GIRBO_HTTP_DENIED");
-    if(!response.ok)return reject("GIRBO_HTTP_UNAVAILABLE");
-    if(response.url!==u.href||!response.body||
-      !(response.headers.get("content-type")||"").toLowerCase().includes(pdf?"application/pdf":"application/json"))
-      return reject("GIRBO_RESPONSE_UNPROVEN");
-    const cap=pdf?24*1024*1024:12*1024*1024,reader=response.body.getReader(),chunks=[];
-    let total=0;
-    try{
-      while(true){
-        const {done,value}=await reader.read();
-        if(done)break;
-        total+=value.length;
-        if(total>cap){await reader.cancel();throw Error(pdf?"GIRBO_PDF_SIZE_LIMIT":"GIRBO_RESPONSE_UNPROVEN");}
-        chunks.push(Buffer.from(value));
-      }
-    }catch(e){
-      const reason=["GIRBO_PDF_SIZE_LIMIT","GIRBO_RESPONSE_UNPROVEN"].includes(e.message)?e.message:"GIRBO_HTTP_UNAVAILABLE";
-      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason,body_read_interrupted:true});
-      throw Error(reason);
-    }
-    const buffer=Buffer.concat(chunks);
-    if(pdf)return buffer;
-    try{return JSON.parse(buffer.toString("utf8"));}catch{
-      metric("GIRBO_HTTP_DIAG",{stage,http_status:response.status,reason:"GIRBO_RESPONSE_UNPROVEN",json_invalid:true});
-      throw Error("GIRBO_RESPONSE_UNPROVEN");
-    }
-  }
-  return {get requests(){return requests;},
-    search:inn=>request(GIRBO_BASE+"/advanced-search/organizations/search?"+new URLSearchParams({query:inn,page:"0",size:"20"}),{stage:"search"}),
-    reports:id=>request(GIRBO_BASE+"/nbo/organizations/"+id+"/bfo/",{stage:"reports"}),
-    async pdf(candidate){
-      const buffer=await request(candidate.report_url,{pdf:true,stage:"pdf"});
-      if(buffer.subarray(0,5).toString()!=="%PDF-")return {text:"",sha256:""};
-      const out=spawnSync("pdftotext",["-layout","-","-"],{input:buffer,encoding:"utf8",
-        maxBuffer:8*1024*1024,timeout:45000,windowsHide:true});
-      if(out.error?.code==="ENOENT")throw Error("GIRBO_PDFTOTEXT_MISSING");
-      if(out.error||out.status!==0)return {text:"",sha256:""};
-      return {text:out.stdout,sha256:girboPdfHash(buffer)};
-    }};
-}
 async function main(){
   if(args.includes("--help")){
     console.log("node scripts/girbo-backfill.js --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=10000] [--year=2025] [--max-requests=1500] [--confirmation=json|pdf] [--run]");
@@ -114,7 +45,7 @@ async function main(){
   process.env.CHECKPOINT_DB_PATH=file;
   const {saveCheckpoint,PIPELINE_VERSION}=await import("../src/checkpointStore.js");
   if(Number(cp.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION)throw Error("GIRBO_CHECKPOINT_VERSION_MISMATCH");
-  const lookup=createLookup(maxRequests),childId=randomUUID();
+  const lookup=createGirBoLookup({maxRequests,metric}),childId=randomUUID();
   let saved=false;
   const result=await runGirBoBackfill({checkpoint:cp,sourceId,childId,limit,year,confirmationMode,lookup,
     onCheckpoint:async child=>{
