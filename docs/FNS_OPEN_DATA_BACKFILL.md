@@ -18,7 +18,17 @@ Do not infer revenue or treat missing data as zero employees.
 Each ZIP is downloaded once into a private temporary directory, SHA-256
 recorded, scanned in bounded blocks directly inside ZIP members, and deleted
 before the next download. No full extraction or nationwide database.
-Maintain at least 2 GiB disk reserve. Reject nonofficial redirects, unknown
+Maintain at least 2 GiB disk reserve for a local archive. If the initial
+disk-reserve check fails, a bounded HTTP Range reader can use the same
+official ZIP directly without saving the whole file. This requires a
+real 206 response and a stable strong ETag; every block must have the
+exact requested Content-Range and the same representation. Read XML
+members in physical order, hash every byte of the full archive (including
+non-XML members and directory metadata), bound memory to a small block
+cache, and keep the same ZIP CRC, XML and provenance checks. If the
+origin does not support validated ranges, fail explicitly and preserve
+the previous checkpoint. No TLS relaxation, reduced disk reserve or
+deletion of unrelated files. Reject nonofficial redirects, unknown
 schema declarations, oversized or encrypted members, unsafe XML and corrupt
 archives. XSD declaration checking is not full XSD validation. Validate
 actual scoped records and legal-entity checksums independently. Unsupported
@@ -50,3 +60,15 @@ No OpenAI, Saby, paid API or other browser requests.
 FNS_OPEN_DATA_DONE reports child UUID, actual employee additions, candidate
 coverage, overflow and failed datasets. A partial-source completion exits 2
 but retains successful work. Failed downloads leave the original unchanged.
+
+### First live result (2026-11-25)
+
+The annual headcount scan successfully processed 2,145 XML members and
+1,931,395 legal records, with no invalid documents or count mismatches.
+It added 11 headcounts (249 -> 238 missing) and retained candidates for
+72 of 106 eligible unresolved rows, 23 with overflow. The MSP source was
+not downloaded: the 2 GiB free-space reserve correctly blocked it. Resume
+from the new child with only the MSP URL; do not re-download the annual
+archive or repeat the old name search. Range support has been tested
+against synthetic, strictly validated HTTP responses, not yet on the
+actual FNS origin. Previous staff values remain untouched.

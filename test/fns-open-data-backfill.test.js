@@ -83,6 +83,9 @@ test("Python scanner reads documented XML, retains zero, skips individuals and w
   assert.equal(out.rsmp.hits.by_ogrn[ogrn][0].region_code,"47");
   assert.equal(out.rsmp.hits.by_name[archiveNameKey(name)].length,1);
   assert.equal(out.rsmp.hits.by_name_region[archiveNameKey(name)].length,1);
+  assert.equal(out.range.archive_mode,"http_range");
+  assert.match(out.range.sha256,/^[a-f0-9]{64}$/);
+  assert.ok(out.range.range_requests>1);
 });
 
 test("regional candidates survive nationwide name overflow and a single-source retry",()=>{

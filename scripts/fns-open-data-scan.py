@@ -2,6 +2,9 @@
 """Scan official XML ZIP members in place; retain only study-specific legal-entity hits."""
 import hashlib
 import json
+import os
+from collections import OrderedDict
+from urllib.error import HTTPError, URLError
 import re
 import shutil
 import sys
@@ -109,6 +112,164 @@ def fetch(url,path,limit):
             raise ValueError("FNS_ARCHIVE_TRUNCATED")
     return {"bytes":size,"sha256":digest.hexdigest()}
 
+class RangeArchive:
+    """Seekable, bounded HTTP ZIP reader for low disk space.
+
+    Require exact 206 responses and a stable strong ETag. Hash every byte
+    of that representation in ascending order, including non-XML members
+    and ZIP metadata. Never create a full archive file or accept a 200
+    response in place of a range. Use normal HTTPS validation.
+    """
+    def __init__(self,url,limit,*,opener=None,block_size=16*1024**2,progress=None):
+        self.url=url
+        self.opener=opener or urllib.request.build_opener(NoRedirect())
+        self.block_size=block_size
+        self.progress=progress
+        self.etag=""
+        self.size=0
+        self.pos=0
+        self.closed=False
+        self.cache=OrderedDict()
+        self.digest=hashlib.sha256()
+        self.next_block=0
+        self.hashed=0
+        self.wire_bytes=0
+        self.requests=0
+        self.hashing=False
+        self.last_progress=0
+        self.limit=limit
+        # A one-byte request proves real range support before any large transfer.
+        self._request(0,0,probe=True)
+        self.blocks=(self.size+self.block_size-1)//self.block_size
+
+    def _request(self,start,end,probe=False):
+        if not probe and (self.requests>=self.blocks+32 or
+                          self.wire_bytes+(end-start+1)>self.size+32*self.block_size):
+            raise ValueError("FNS_RANGE_BUDGET")
+        h={"User-Agent":"RegionalResearch/2.1",
+           "Accept-Encoding":"identity","Range":f"bytes={start}-{end}"}
+        if not probe:
+            h["If-Match"]=self.etag
+        self.requests+=1
+        req=urllib.request.Request(self.url,headers=h)
+        try:
+            res=self.opener.open(req,timeout=60)
+        except HTTPError as exc:
+            exc.close()
+            if exc.code in (412,416):
+                raise ValueError("FNS_RANGE_REPRESENTATION_CHANGED") from exc
+            raise ValueError("FNS_RANGE_HTTP_UNAVAILABLE") from exc
+        except URLError as exc:
+            raise ValueError("FNS_RANGE_HTTP_UNAVAILABLE") from exc
+        with res:
+            if res.status!=206 or res.geturl()!=self.url:
+                # Close without reading the body, especially for a full 200.
+                raise ValueError("FNS_RANGE_UNSUPPORTED")
+            content_range=res.headers.get("Content-Range","")
+            m=re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)",content_range)
+            if not m or int(m[1])!=start or int(m[2])!=end:
+                raise ValueError("FNS_RANGE_RESPONSE_UNPROVEN")
+            total=int(m[3])
+            if not 0<total<=self.limit or end>=total:
+                raise ValueError("FNS_ARCHIVE_SIZE_LIMIT")
+            tag=res.headers.get("ETag","")
+            if not re.fullmatch(r'"[\x21\x23-\x7e]+"',tag):
+                raise ValueError("FNS_RANGE_STRONG_ETAG_REQUIRED")
+            if probe:
+                self.size=total
+                self.etag=tag
+            elif total!=self.size or tag!=self.etag:
+                raise ValueError("FNS_RANGE_REPRESENTATION_CHANGED")
+            n=end-start+1
+            length=res.headers.get("Content-Length")
+            if (length is not None and length!=str(n)) or res.headers.get("Content-Encoding","identity").lower()!="identity":
+                raise ValueError("FNS_RANGE_RESPONSE_UNPROVEN")
+            body=res.read(n+1)
+            if len(body)!=n:
+                raise ValueError("FNS_RANGE_TRUNCATED")
+            self.wire_bytes+=n
+            return body
+
+    def _block(self,index):
+        if index in self.cache:
+            self.cache.move_to_end(index)
+            return self.cache[index]
+        start=index*self.block_size
+        data=self._request(start,min(self.size,start+self.block_size)-1)
+        self.cache[index]=data
+        while len(self.cache)>3:
+            self.cache.popitem(last=False)
+        return data
+
+    def _hash_through(self,index):
+        while self.next_block<=index:
+            data=self._block(self.next_block)
+            self.digest.update(data)
+            self.hashed+=len(data)
+            self.next_block+=1
+            if self.progress and (self.hashed-self.last_progress>=256*1024**2 or self.hashed==self.size):
+                self.progress(self.hashed,self.size,self.requests)
+                self.last_progress=self.hashed
+
+    def start_hashing(self):
+        self.hashing=True
+
+    def finish(self):
+        if not self.hashing:
+            raise ValueError("FNS_RANGE_SCAN_INCOMPLETE")
+        self._hash_through(self.blocks-1)
+        if self.hashed!=self.size:
+            raise ValueError("FNS_RANGE_HASH_INCOMPLETE")
+        return {"bytes":self.size,"sha256":self.digest.hexdigest(),
+                "archive_mode":"http_range","range_requests":self.requests,
+                "transferred_bytes":self.wire_bytes}
+
+    def tell(self):
+        return self.pos
+
+    def seekable(self):
+        return True
+
+    def readable(self):
+        return True
+
+    def seek(self,offset,whence=os.SEEK_SET):
+        base={os.SEEK_SET:0,os.SEEK_CUR:self.pos,os.SEEK_END:self.size}.get(whence)
+        if base is None or base+offset<0:
+            raise OSError("FNS_RANGE_INVALID_SEEK")
+        self.pos=base+offset
+        return self.pos
+
+    def read(self,n=-1):
+        if self.closed:
+            raise ValueError("FNS_RANGE_CLOSED")
+        remaining=max(0,self.size-self.pos)
+        n=remaining if n is None or n<0 else min(n,remaining)
+        # ZIP metadata and parser reads must remain bounded.
+        if n>64*1024**2:
+            raise ValueError("FNS_RANGE_READ_LIMIT")
+        out=[]
+        while n>0:
+            index,offset=divmod(self.pos,self.block_size)
+            if self.hashing and index>=self.next_block:
+                self._hash_through(index)
+            block=self._block(index)
+            take=min(n,len(block)-offset)
+            out.append(block[offset:offset+take])
+            self.pos+=take
+            n-=take
+        return b"".join(out)
+
+    def close(self):
+        self.cache.clear()
+        self.closed=True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self,*_):
+        self.close()
+
 def schema_check(path,kind):
     # Verify declarations, not full XSD validation. Check actual record scope independently.
     data=path.read_bytes()
@@ -189,6 +350,11 @@ def scan_archive(path,kind,release,year,targets):
             raise ValueError("FNS_ZIP_MEMBERS_UNPROVEN")
         if sum(m.file_size for m in xmls)>48*GIB:
             raise ValueError("FNS_ZIP_UNCOMPRESSED_LIMIT")
+        if isinstance(path,RangeArchive):
+            # ZIP directory is already validated. Physical order lets the
+            # reader hash nearly all compressed bytes in the same pass.
+            path.start_hashing()
+            xmls.sort(key=lambda member:member.header_offset)
         for member in xmls:
             if member.file_size>128*1024**2 or member.flag_bits&1:
                 raise ValueError("FNS_ZIP_MEMBER_LIMIT")
@@ -266,9 +432,26 @@ def main():
         tmp=Path(tmp)
         schema_meta=fetch(schema_url,tmp/"schema.xsd",1024*1024)
         schema_check(tmp/"schema.xsd",kind)
-        meta=fetch(url,tmp/"dataset.zip",3*GIB)
-        print("[FNS_DATASET_DOWNLOADED] "+json.dumps({"kind":kind,**meta}),file=sys.stderr,flush=True)
-        out=scan_archive(tmp/"dataset.zip",kind,release,year,c["targets"])
+        try:
+            meta=fetch(url,tmp/"dataset.zip",3*GIB)
+        except ValueError as exc:
+            if str(exc)!="FNS_DISK_RESERVE":
+                raise
+            print("[FNS_DATASET_RANGE_FALLBACK] "+json.dumps({"kind":kind,
+                "reason":"FNS_DISK_RESERVE"}),file=sys.stderr,flush=True)
+            def progress(hashed,total,requests):
+                print("[FNS_DATASET_RANGE_PROGRESS] "+json.dumps({"kind":kind,
+                    "bytes_hashed":hashed,"total_bytes":total,"range_requests":requests}),
+                    file=sys.stderr,flush=True)
+            with RangeArchive(url,3*GIB,progress=progress) as remote:
+                print("[FNS_DATASET_RANGE_READY] "+json.dumps({"kind":kind,"bytes":remote.size}),
+                    file=sys.stderr,flush=True)
+                out=scan_archive(remote,kind,release,year,c["targets"])
+                meta=remote.finish()
+        else:
+            meta["archive_mode"]="local_zip"
+            print("[FNS_DATASET_DOWNLOADED] "+json.dumps({"kind":kind,**meta}),file=sys.stderr,flush=True)
+            out=scan_archive(tmp/"dataset.zip",kind,release,year,c["targets"])
         out["source"]={"kind":kind,"url":url,"schema_url":schema_url,"schema_sha256":schema_meta["sha256"],
             "release":release.isoformat(),"report_year":year,**meta}
         print(json.dumps(out,ensure_ascii=True,separators=(",",":")))
