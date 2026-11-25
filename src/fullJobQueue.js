@@ -13,13 +13,21 @@ export function fullJobConcurrencyLimit(env=process.env){
     ?Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(value))):2;
 }
 export function createFullJobQueue({limit=2,execute,onError=console.error,memory=null,
-  autoPoll=true,log=console.info}={}){
+  autoPoll=true,log=console.info,
+  collectGarbage=typeof global.gc==="function"?()=>global.gc():null}={}){
   if(typeof execute!=="function")throw TypeError("Queue executor required");
   const capacity=Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(Number(limit)||2)));
   const pending=[],regions=new Map(),running=new Map();
   let active=0,sequence=0,nextStartAt=0,nextPauseAt=0,blocked=false,healthySince=null,lastMemory=null;
   const enabled=!!memory?.settings?.enabled;
-  let previousStatus="";
+  let previousStatus="",lastIdleGcAt=-Infinity;
+  function reclaimIdle(force=false){
+    if(!enabled||active!==0||typeof collectGarbage!=="function")return false;
+    const now=memory.now();
+    if(!force&&now-lastIdleGcAt<Math.max(15000,memory.settings.stableMs))return false;
+    lastIdleGcAt=now;
+    try{collectGarbage();return true;}catch{return false;}
+  }
   function status(){
     if(!enabled)return {};
     return {memory:{enabled:true,blocked,
@@ -58,6 +66,12 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     if(!enabled)return true;
     const now=memory.now();
     lastMemory=memory.inspect(active);
+    // A queue with no running jobs must not wait indefinitely merely because
+    // unreachable V8 objects have not yet been collected. Best-effort GC
+    // cannot override the actual host/cgroup/heap admission check.
+    if(active===0&&pending.length&&!lastMemory.canStart&&reclaimIdle()){
+      lastMemory=memory.inspect(active);
+    }
     if(lastMemory.pressure==="critical"||lastMemory.pressure==="high"){
       blocked=true;healthySince=null;
       const candidates=[...running.values()].sort((a,b)=>b.started-a.started);
@@ -124,13 +138,13 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
             // Give the just-unwound job time to reclaim its heap before
             // asking another region to suspend. Critical pressure overrides.
             nextPauseAt=memory.now()+2*memory.settings.pollMs;
-            // Dropping the unwound stack and checkpoint payload is essential.
-            // V8 GC may reclaim these objects; it need not return RSS instantly.
-            if(typeof global.gc==="function"){try{global.gc();}catch{/* best effort */}}
           }else{
             if(item.job.cancelled&&item.job.state==="waiting")item.job.state="cancelled";
             release(item);
           }
+          // Also collect after NORMAL completion/failure, not only a pause.
+          // Do not force GC in the middle of another active paid study.
+          reclaimIdle(true);
           pump();
         }
       });
