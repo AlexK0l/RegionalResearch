@@ -69,7 +69,7 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
        .every(key=>Array.isArray(result[key])))
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
 
-  const plan=sabyEligibleRows(result,{includeFinanceGaps:true});
+  const plan=sabyEligibleRows(result,{includeFinanceGaps:checkpoint.saby_pass_state?.version===1});
   const legacy=legacySabyPlan(checkpoint,plan);
   if(legacy){
     // Only the normalized copy is amended. Original SQLite source remains
