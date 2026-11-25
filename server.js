@@ -13,6 +13,7 @@ import {decorateCompanyBasisForExport} from "./src/companyBasisNarrative.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import {createJobMemoryMonitor,processMemorySnapshot} from "./src/runtimeMemory.js";
 import {createMemoryAdmission,isMemoryPause} from "./src/memoryAdmission.js";
+import {createIdleMemoryRecycleGuard,idleMemoryRecycleSettings,durableIdleJobsMatch} from "./src/idleMemoryRecycle.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
@@ -34,7 +35,8 @@ import {
   supersedeRegionCheckpoints,
   saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs,
   saveQueuedResearchJob,listQueuedResearchJobs,loadQueuedResearchSource,
-  takeQueuedResearchJob,clearQueuedResearchJob
+  takeQueuedResearchJob,clearQueuedResearchJob,
+  shrinkCheckpointMemory,claimIdleMemoryRecycle
 } from "./src/checkpointStore.js";
 
 initializeFileLogging();
@@ -45,6 +47,20 @@ app.set("trust proxy", "loopback");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
+const idleRecycleSettings=idleMemoryRecycleSettings();
+// INVOCATION_ID is assigned by systemd. Never exit a developer's
+// interactive process or ordinary non-supervised local launch.
+const idleRecycleEnabled=idleRecycleSettings.enabled&&process.platform==="linux"&&
+  Boolean(process.env.INVOCATION_ID);
+let activeHttp=0,recycling=false,startupBrowserBusy=false;
+app.use((_req,res,next)=>{
+  if(recycling)return res.status(503).json({error:"Служба освобождает память; задания сохранены"});
+  activeHttp++;
+  let done=false;
+  const finish=()=>{if(!done){done=true;activeHttp--;}};
+  res.once("finish",finish);res.once("close",finish);
+  next();
+});
 
 function lightweightJobCheckpointSummary(job){
   return job?.latestCheckpointSummary || checkpointSummary(job?.latestCheckpoint) ||
@@ -495,6 +511,7 @@ async function executeJob(job, apiKey) {
       const output = job.mode === "saby_only"
         ? await runSabyOnlyContinuation({
             checkpoint:job.data.checkpoint,
+            checkpointWritesSynchronous:job.checkpointWritesSynchronous===true,
             sourceJobId:job.data.sourceJobId,
             signal:job.abortController?.signal,
             onProgress:p=>job.updateProgress(p),
@@ -586,7 +603,13 @@ async function executeJob(job, apiKey) {
 const fullQueue = createFullJobQueue({
   limit: MAX_ACTIVE_FULL_JOBS,
   execute: executeJob,
-  memory:memoryAdmission
+  memory:memoryAdmission,
+  collectGarbage:typeof global.gc==="function"?()=>{
+    // SQLite's disposable page cache can otherwise remain resident after
+    // many large checkpoint upserts. GC alone cannot reclaim that cache.
+    try{shrinkCheckpointMemory();}catch{/* best effort */}
+    global.gc();
+  }:null
 });
 
 function queueJob(job, apiKey) {
@@ -611,6 +634,7 @@ function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
   memoryPauseCount=0,progress={}}){
   return {id,region,mode,data,createdAt,memoryPauseCount,queuedPersisted:false,
     state:"waiting",progress,result:null,error:null,cancelled:false,
+    checkpointWritesSynchronous:true,
     abortController:new AbortController(),latestCheckpoint:null,latestCheckpointSummary:summary,
     async updateProgress(progress){
       this.progress={...progress,memoryPauseRequested:!!this.memoryPauseRequested,
@@ -1166,15 +1190,44 @@ const httpServer = app.listen(port, BIND_HOST, () => {
     console.info("[MEMORY_CHROMIUM_SELFTEST_DEFERRED]");
     return;
   }
+  startupBrowserBusy=true;
   setTimeout(async () => {
     let browser;
     try {
+      if(fullQueue.snapshot().active||fullQueue.snapshot().pending)return;
       browser = await launchResearchBrowser();
       console.log("Chromium self-test passed");
     } catch (error) {
       console.error("Chromium self-test failed:", error?.message || error);
     } finally {
       if (browser) await browser.close().catch(() => {});
+      startupBrowserBusy=false;
     }
   }, 1000).unref();
 });
+
+if(idleRecycleEnabled&&memoryAdmission.settings.enabled){
+  const guard=createIdleMemoryRecycleGuard({
+    settings:idleRecycleSettings,
+    candidates:()=>fullQueue.idleBlockedJobs(),
+    canExit:()=>!startupBrowserBusy&&activeHttp===0&&
+      ![...jobs.values()].some(job=>job.state==="active"),
+    isDurable:items=>durableIdleJobsMatch(items,{
+      queued:listQueuedResearchJobs(),paused:listMemoryPausedJobs(),
+      canRestore:marker=>marker.mode==="saby_only"?sabyOnlyConfigReady():
+        Boolean(String(process.env.OPENAI_API_KEY||"").trim())
+    }),
+    claim:claimIdleMemoryRecycle,
+    freeze:items=>{
+      if(!fullQueue.freezeForRecycle(items))return false;
+      recycling=true;return true;
+    },
+    exit:code=>{
+      // No HTTP request is in flight and no job can now be admitted.
+      // The systemd unit must explicitly have Restart=on-failure.
+      httpServer.close(()=>process.exit(code));
+      httpServer.closeIdleConnections?.();
+    }
+  });
+  setInterval(()=>guard.poll(),5000).unref();
+}
