@@ -2438,39 +2438,66 @@ function applyFinalInnItems(rowsById, result) {
   return recovered;
 }
 
+function isFinalInnOutputExhausted(error) {
+  return !error?.status && /^OpenAI response status: incomplete; reason: max_output_tokens$/i.test(
+    String(error?.message || error || "")
+  );
+}
+
+function mergeFinalInnLookupParts(...parts) {
+  return {
+    items: parts.flatMap(part => part?.items || []),
+    tokenDeferredIds: [...new Set(parts.flatMap(part => part?.tokenDeferredIds || []))]
+  };
+}
+
 async function lookupFinalInnBatch({
   client,
   rows,
   region,
   assertNotCancelled,
-  label
+  label,
+  ask = askJson,
+  maxOutputTokens = FINAL_INN_MAX_OUTPUT_TOKENS,
+  retryOutputTokens = Math.min(OPENAI_MAX_OUTPUT_TOKENS, Math.max(5000, maxOutputTokens)),
+  singleRetry = false
 }) {
   await assertNotCancelled();
   const targets = rows.map(compactFinalInnTarget);
+  const part = (subset, suffix, retry = false) => lookupFinalInnBatch({
+    client, rows: subset, region, assertNotCancelled, label: label + suffix,
+    ask, maxOutputTokens, retryOutputTokens, singleRetry: retry
+  });
+  const split = async subset => {
+    const middle = Math.ceil(subset.length / 2);
+    const left = await part(subset.slice(0, middle), ".1");
+    const right = await part(subset.slice(middle), ".2");
+    return mergeFinalInnLookupParts(left, right);
+  };
   try {
-    const result = await askJson(client, {
+    const result = await ask(client, {
       input:
         finalInnLookupContract() +
+        (singleRetry ? "\nТЕХНИЧЕСКИЙ ПОВТОР ОДНОЙ КОМПАНИИ: сначала ИНН, точная юридическая идентичность и статус. Компактный JSON, observed_facts максимум два наиболее полезных прямо подтверждённых факта, приоритет телефону. Не сокращай обязательные доказательства ИНН или прекращения деятельности. Не угадывай." : "") +
         `\n\nРЕГИОН: ${region}
 КОМПАНИИ:
 ${JSON.stringify(targets)}`,
       model: TARGETED_SEARCH_MODEL,
-      maxOutputTokens: FINAL_INN_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: singleRetry ? retryOutputTokens : maxOutputTokens,
       webSearch: true,
       responseSchema: FINAL_INN_SCHEMA,
       schemaName: "final_inn_lookup",
       diagnosticLabel: `final inn | ${label} | size ${rows.length}`,
-      maxToolCalls: 2,
+      maxToolCalls: singleRetry ? 1 : 2,
       allowJsonRepair: false
     });
 
-    const returned = new Set(
-      (Array.isArray(result?.items) ? result.items : [])
-        .map((item) => String(item?.id || ""))
-        .filter(Boolean)
-    );
+    const expected = new Set(rows.map(checkpointRowId));
+    const items = (Array.isArray(result?.items) ? result.items : [])
+      .filter(item => expected.has(String(item?.id || "")));
+    const returned = new Set(items.map(item => String(item.id)));
     const omittedRows = rows.filter((row) => !returned.has(checkpointRowId(row)));
-    if (!omittedRows.length) return result;
+    if (!omittedRows.length) return {items, tokenDeferredIds: []};
 
     console.log("[FINAL_INN_RESPONSE_GAP] " + JSON.stringify({
       label,
@@ -2482,7 +2509,7 @@ ${JSON.stringify(targets)}`,
     if (rows.length <= 1) {
       return {
         items: [
-          ...(result?.items || []),
+          ...items,
           {
             id: checkpointRowId(rows[0]),
             confirmed_inn: "",
@@ -2493,28 +2520,52 @@ ${JSON.stringify(targets)}`,
       };
     }
 
-    const recovered = await lookupFinalInnBatch({
-      client,
-      rows: omittedRows,
-      region,
-      assertNotCancelled,
-      label: `${label}.gap`
-    });
-    return { items: [...(result?.items || []), ...(recovered?.items || [])] };
+    // Entirely omitted batches must shrink rather than recurse at the same size.
+    const recovered = omittedRows.length === rows.length
+      ? await split(omittedRows)
+      : await part(omittedRows, ".gap");
+    return mergeFinalInnLookupParts({items}, recovered);
   } catch (error) {
-    if (isOpenAIBillingStop(error)) throw error;
-    if (!isMaxOutputTokensError(error) || rows.length <= 1) throw error;
-    const middle = Math.ceil(rows.length / 2);
-    const left = await lookupFinalInnBatch({
-      client, rows: rows.slice(0, middle), region, assertNotCancelled,
-      label: `${label}.1`
-    });
-    const right = await lookupFinalInnBatch({
-      client, rows: rows.slice(middle), region, assertNotCancelled,
-      label: `${label}.2`
-    });
-    return { items: [...(left?.items || []), ...(right?.items || [])] };
+    if (isOpenAIBillingStop(error) || !isFinalInnOutputExhausted(error)) throw error;
+    if (rows.length > 1) return split(rows);
+    await assertNotCancelled();
+    if (!singleRetry) {
+      console.warn("[FINAL_INN_TOKEN_RETRY] " + JSON.stringify({
+        label, id: checkpointRowId(rows[0]), max_output_tokens: retryOutputTokens
+      }));
+      return part(rows, ".token_retry", true);
+    }
+    const id = checkpointRowId(rows[0]);
+    console.warn("[FINAL_INN_TOKEN_DEFERRED] " + JSON.stringify({
+      label, id, reason: "max_output_tokens", max_output_tokens: retryOutputTokens
+    }));
+    // An incomplete answer is not a completed identity check or a not-found.
+    return {items: [], tokenDeferredIds: [id]};
   }
+}
+
+function recordFinalInnTechnicalDeferrals(ledger, rows, result, pass) {
+  const requested = new Map(rows.map(row => [checkpointRowId(row), row]));
+  const deferred = new Set();
+  for (const raw of result?.tokenDeferredIds || []) {
+    const id = String(raw);
+    const row = requested.get(id);
+    if (!row || !id) continue;
+    deferred.add(id);
+    ledger.set(pass + ":" + id, {
+      id, pass, reason: "max_output_tokens",
+      organization: String(row["Организация"] || ""),
+      city: String(row["Город/район"] || "")
+    });
+  }
+  return deferred;
+}
+
+async function withFinalInnCheckpointFlush(run, flush) {
+  // Concurrent workers drain before failure propagates. Save their committed
+  // successes and actual paid usage even when a later request fails.
+  try { return await run(); }
+  finally { await flush(); }
 }
 
 // A second identical paid search without any newly obtained source usually
@@ -2534,6 +2585,7 @@ async function resolveFinalMissingInns({
   region,
   assertNotCancelled,
   completedIds = new Set(),
+  technicalDeferred = new Map(),
   onBatch = async () => {},
   lookupBatch = lookupFinalInnBatch,
   previousStats = {},
@@ -2551,7 +2603,7 @@ async function resolveFinalMissingInns({
   let evidenceVerified = 0;
   for (const row of companies) {
     const id = checkpointRowId(row);
-    if (!id || completedIds.has(id)) continue;
+    if (!id || completedIds.has(id) || technicalDeferred.has("primary:" + id)) continue;
     if (verifiedInnFromEvidence(row, normalizeInn)) {
       completedIds.add(id);
       evidenceVerified++;
@@ -2561,7 +2613,7 @@ async function resolveFinalMissingInns({
 
   const pending = companies.filter((row) => {
     const id = checkpointRowId(row);
-    return id && !completedIds.has(id);
+    return id && !completedIds.has(id) && !technicalDeferred.has("primary:" + id);
   });
   const batches = [];
   for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
@@ -2620,11 +2672,12 @@ async function resolveFinalMissingInns({
       return;
     }
     attempted += batch.length;
+    const deferred = recordFinalInnTechnicalDeferrals(technicalDeferred, batch, result, "primary");
     recovered += applyFinalInnItems(rowsById, result);
 
     for (const row of batch) {
       const id = checkpointRowId(row);
-      if (id) completedIds.add(id);
+      if (id && !deferred.has(id)) completedIds.add(id);
     }
 
     completedBatches++;
@@ -2654,7 +2707,8 @@ async function resolveFinalMissingInns({
 
   const primaryBudgetDeferredIds = primaryIdentityBudgetStop
     ? [...new Set(pending
-      .filter((row) => !completedIds.has(checkpointRowId(row)))
+      .filter((row) => !completedIds.has(checkpointRowId(row)) &&
+        !technicalDeferred.has("primary:" + checkpointRowId(row)))
       .map(checkpointRowId).filter(Boolean))]
     : [];
   const primaryBudgetDeferred = primaryBudgetDeferredIds.length;
@@ -2683,6 +2737,7 @@ async function resolveFinalMissingInns({
   const retryRows = remainingMissing.filter(row =>
     completedIds.has(checkpointRowId(row)) &&
     !completedIds.has("retry:" + checkpointRowId(row)) &&
+    !technicalDeferred.has("retry:" + checkpointRowId(row)) &&
     shouldRetryFinalInn(row));
   if (retryRows.length && primaryIdentityBudgetStop) {
     retryBudgetDeferred = retryRows.length;
@@ -2739,8 +2794,10 @@ async function resolveFinalMissingInns({
         break;
       }
       retried += batch.length;
+      const deferred = recordFinalInnTechnicalDeferrals(technicalDeferred, batch, result, "retry");
       recovered += applyFinalInnItems(rowsById, result);
-      for (const row of batch) completedIds.add(`retry:${checkpointRowId(row)}`);
+      for (const row of batch) if (!deferred.has(checkpointRowId(row)))
+        completedIds.add(`retry:${checkpointRowId(row)}`);
       await onBatch({
         completedIds,
         attempted,
@@ -2764,6 +2821,7 @@ async function resolveFinalMissingInns({
     retried,
     primary_budget_deferred: primaryBudgetDeferred,
     retry_budget_deferred: retryBudgetDeferred,
+    token_deferred: technicalDeferred.size,
     recovered,
     inn_present: companies.length - finalMissing,
     inn_missing: finalMissing
@@ -2771,6 +2829,7 @@ async function resolveFinalMissingInns({
 
   return {
     completedIds, attempted, retried, recovered, missing: finalMissing,
+    technicalDeferred: [...technicalDeferred.values()],
     primaryBudgetDeferred, primaryBudgetDeferredIds,
     retryBudgetDeferred, retryBudgetDeferredIds
   };
@@ -7660,6 +7719,13 @@ ${JSON.stringify(groupBatch)}`,
       ? resumeCheckpoint.final_inn_completed_ids.map(String)
       : []
   );
+  const finalInnTechnicalDeferred = new Map(
+    (Array.isArray(resumeCheckpoint?.final_inn_technical_deferred)
+      ? resumeCheckpoint.final_inn_technical_deferred : [])
+      .filter(entry => entry?.reason === "max_output_tokens" && entry.id &&
+        ["primary", "retry", "conflict"].includes(entry.pass))
+      .map(entry => [entry.pass + ":" + entry.id, entry])
+  );
   statuses[9].detail = `финальный поиск ИНН · уже обработано ${finalInnCompleted.size}`;
   await progress({ phase: "dedupe", step: 10, percent: 89 });
 
@@ -7686,6 +7752,7 @@ ${JSON.stringify(groupBatch)}`,
       qualification_counts: qualifiedFinal.counts,
       final_result: finalResult,
       final_inn_completed_ids: [...latestFinalInnProgress.completedIds],
+      final_inn_technical_deferred: [...finalInnTechnicalDeferred.values()],
       final_inn_attempted: latestFinalInnProgress.attempted,
       final_inn_recovered: latestFinalInnProgress.recovered,
       final_inn_retried: latestFinalInnProgress.retried,
@@ -7696,12 +7763,13 @@ ${JSON.stringify(groupBatch)}`,
     });
   });
 
-  const finalInnStats = await resolveFinalMissingInns({
+  const finalInnStats = await withFinalInnCheckpointFlush(() => resolveFinalMissingInns({
     client,
     finalResult,
     region,
     assertNotCancelled,
     completedIds: finalInnCompleted,
+    technicalDeferred: finalInnTechnicalDeferred,
     shouldPause:()=>pauseRequested("final_inn"),
     onPause:async state=>{
       latestFinalInnProgress=state;
@@ -7723,8 +7791,7 @@ ${JSON.stringify(groupBatch)}`,
       }
       await finalInnCheckpointBatcher.request();
     }
-  });
-  await finalInnCheckpointBatcher.flush();
+  }), () => finalInnCheckpointBatcher.request({force:true}));
 
   const preservedStatistics = Array.isArray(finalResult.statistics)
     ? cloneJson(finalResult.statistics)
@@ -7750,14 +7817,17 @@ ${JSON.stringify(groupBatch)}`,
     // claimants for review instead of failing the entire study.
     for (const [groupIndex, group] of innConflictGroups.entries()) {
       await assertNotCancelled();
+      const conflictRows = group.rows.filter(row =>
+        !finalInnTechnicalDeferred.has("conflict:" + checkpointRowId(row)));
+      if (!conflictRows.length) continue;
       const rowsById = new Map(
-        group.rows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
+        conflictRows.map((row) => [checkpointRowId(row), row]).filter(([id]) => id)
       );
       let result;
       try {
         result = await lookupFinalInnBatch({
           client,
-          rows: group.rows,
+          rows: conflictRows,
           region,
           assertNotCancelled,
           label: `post-inn-conflict-${groupIndex + 1}/${innConflictGroups.length}`
@@ -7774,7 +7844,8 @@ ${JSON.stringify(groupBatch)}`,
         }));
         break;
       }
-      innConflictRechecks += group.rows.length;
+      const deferred = recordFinalInnTechnicalDeferrals(finalInnTechnicalDeferred, conflictRows, result, "conflict");
+      innConflictRechecks += conflictRows.length - deferred.size;
       finalInnStats.recovered += applyFinalInnItems(rowsById, result);
     }
 
@@ -7887,6 +7958,11 @@ ${JSON.stringify(groupBatch)}`,
   console.log("[FINAL_NOTE_PROVENANCE_AUDIT] " + JSON.stringify(provenanceCounts));
   for (const row of allResearchRows(finalResult)) mergeResearchComment(row);
 
+  finalInnStats.technicalDeferred = [...finalInnTechnicalDeferred.values()];
+  finalResult.final_inn_technical_audit = {
+    count: finalInnStats.technicalDeferred.length,
+    deferred: finalInnStats.technicalDeferred
+  };
   finalInnStats.missing = allResearchRows(finalResult)
     .filter((row) => !normalizeInn(row?.["ИНН"])).length;
   finalInnStats.innConflictBudgetDeferred = innConflictBudgetDeferred;
@@ -7923,6 +7999,7 @@ ${JSON.stringify(groupBatch)}`,
     qualification_counts: qualifiedFinal.counts,
     final_result: finalResult,
     final_inn_completed_ids: [...finalInnStats.completedIds],
+    final_inn_technical_deferred: finalInnStats.technicalDeferred,
     final_inn_attempted: finalInnStats.attempted,
     final_inn_retried: finalInnStats.retried,
     final_inn_primary_budget_deferred: finalInnStats.primaryBudgetDeferred || 0,
@@ -8413,6 +8490,9 @@ ${JSON.stringify(gaps)}
   finishStep(statuses[9]);
   statuses[9].detail =
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}` +
+    (finalInnStats.technicalDeferred.length
+      ? ` · технически отложено проверок ИНН: ${finalInnStats.technicalDeferred.length} (лимит ответа)`
+      : "") +
     (finalInnStats.primaryBudgetDeferred
       ? ` · первичные проверки ИНН отложены: ${finalInnStats.primaryBudgetDeferred} (лимит identity, данные сохранены)`
       : "") +
@@ -9542,6 +9622,8 @@ export {
   duplicateInnConflictGroups,
   clearUnresolvedInnConflicts,
   applyFinalInnItems,
+  lookupFinalInnBatch,
+  withFinalInnCheckpointFlush,
   resolveFinalMissingInns,
   resolveClusterWithoutWeb,
   applyIdentityResult,
