@@ -2323,7 +2323,7 @@ function finalInnLookupContract() {
 Если эти сведения УЖЕ непосредственно видны в источнике, открытом для проверки ИНН, запиши их в observed_facts; иначе верни [].
 Каждый observed_fact: field, value, source_url (ОБЯЗАТЕЛЬНО один из source_urls ответа), evidence_excerpt (дословная выдержка с ЭТИМ ИНН и данным значением).
 Не приписывай сведения холдинга дочернему юрлицу, не переноси телефоны подрядчика, не угадывай и не интерпретируй единицы выручки; выручка строго целое число рублей.
-Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ.
+Сначала используй точное название + город/регион + existing_inn; при необходимости используй один дополнительный сильный идентификатор из переданных evidence: домен, адрес, закупку, судебный/официальный документ. Если переданы retry_urls, при повторной проверке используй новые источники вместо повторения прежнего безрезультатного запроса.
 Если ИНН надёжно не подтверждается — confirmed_inn оставь пустым. Не угадывай. Если надёжно подтверждён другой ИНН того же юрлица, верни подтверждённый корректный ИНН.
 source_urls — максимум 2 наиболее сильных URL. note — одно короткое предложение.
 legal_status: active/liquidated/ceased/unknown; при отсутствии однозначного источника unknown.
@@ -2340,6 +2340,10 @@ function compactFinalInnTarget(row) {
     existing_inn: normalizeInn(row?.["ИНН"]),
     evidence_urls: (Array.isArray(evidence.source_urls) ? evidence.source_urls : [])
       .map(String).filter(Boolean).slice(0, 3),
+    // Newly discovered legal-identity hints must not disappear behind the
+    // first three older discovery URLs on an already budgeted retry.
+    retry_urls: (Array.isArray(evidence.final_inn_retry_urls)?evidence.final_inn_retry_urls:[])
+      .filter(url=>/^https?:\/\/[^\s/]+\.[^\s/]+/i.test(String(url))).slice(0,3),
     legal_ogrns: identityOgrns(row).slice(0, 2),
     evidence_notes: (Array.isArray(evidence.notes) ? evidence.notes : [])
       .map(String).filter(Boolean)
@@ -2614,7 +2618,8 @@ async function resolveFinalMissingInns({
   const pending = companies.filter((row) => {
     const id = checkpointRowId(row);
     return id && !completedIds.has(id) && !technicalDeferred.has("primary:" + id);
-  });
+  }).sort((a,b)=>Number(!normalizeInn(b?.["ИНН"]))-Number(!normalizeInn(a?.["ИНН"]))||
+    contactResearchPriority(b)-contactResearchPriority(a));
   const batches = [];
   for (let offset = 0; offset < pending.length; offset += FINAL_INN_BATCH_SIZE) {
     batches.push(pending.slice(offset, offset + FINAL_INN_BATCH_SIZE));
@@ -2738,7 +2743,7 @@ async function resolveFinalMissingInns({
     completedIds.has(checkpointRowId(row)) &&
     !completedIds.has("retry:" + checkpointRowId(row)) &&
     !technicalDeferred.has("retry:" + checkpointRowId(row)) &&
-    shouldRetryFinalInn(row));
+    shouldRetryFinalInn(row)).sort((a,b)=>contactResearchPriority(b)-contactResearchPriority(a));
   if (retryRows.length && primaryIdentityBudgetStop) {
     retryBudgetDeferred = retryRows.length;
     retryBudgetDeferredIds = retryRows.map(checkpointRowId).filter(Boolean);
@@ -8867,6 +8872,8 @@ ${JSON.stringify(gaps)}
     googleCompanies.filter(row=>!hasConfirmedPhone(row)), contactUnsearched, contactCompleted,
     checkpointRowId, contactResearchPriority, omissionLimits
   );
+  const reservedPhoneRetries=Math.min(6,phoneRetryBudget.remaining,
+    planPhoneGapRecovery(googleCompanies,primaryResults,contactCompleted,phoneRetryIds,checkpointRowId).length);
   let omissionRecheckModelCalls = 0;
   let omissionRecheckResearched = 0;
   let omissionRecheckBudgetStopped = false;
@@ -8885,14 +8892,15 @@ ${JSON.stringify(gaps)}
       Number(budget.used.total || 0) -
       Number(budget.reserved?.total || 0);
     if (availableContacts <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
-        omissionLimits.reservedWebForPhoneConflicts ||
+        omissionLimits.reservedWebForPhoneConflicts + reservedPhoneRetries ||
         availableTotal <= CONTACT_BATCH_SETTINGS.batchWebCalls + 1 +
-        omissionLimits.reservedWebForPhoneConflicts ||
+        omissionLimits.reservedWebForPhoneConflicts + reservedPhoneRetries ||
         costEnvLimitUsd() - estimatedApiCostUsd(client) < 0.5 ||
         deadlineRemaining(stage11DeadlineAt) <= 12000) {
       console.log("[CONTACT_OMISSION_RECHECK_DEFER] " + JSON.stringify({
         reason: "protect_residual_phone_and_cost_budget",
-        available_contacts: availableContacts, available_total: availableTotal
+        available_contacts: availableContacts, available_total: availableTotal,
+        reserved_phone_retry_calls:reservedPhoneRetries
       }));
       break;
     }
@@ -9499,7 +9507,7 @@ ${JSON.stringify(gaps)}
     finishStep(statuses[11]);
     statuses[11].detail = !sabyStats.enabled
       ? "отключен (SABY_STAGE12_ENABLED=false)"
-      : `${sabyStats.deferred>0?"частично выполнен":"выполнен"} · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+      : `${sabyStats.deferred>0?"частично выполнен":"выполнен"} · проверено ${sabyStats.processed} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
   }
   // Finish remaining contact gaps using newly discovered site hints after
   // Saby. The cumulative HTTP budget is shared with the prepass. No paid
