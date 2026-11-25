@@ -4,6 +4,7 @@
 import {setTimeout as sleep} from "node:timers/promises";
 import {parsePhoneEntries} from "./phoneExport.js";
 import {companyEmailCell} from "./emailContact.js";
+import {contactResearchPriority} from "./researchCostPolicy.js";
 import {applySabyEnrichment,sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyMissingFinancials} from "./sabyEnrichment.js";
 import {collectSabySections,withSabyBrowser,SabyReview} from "./sabyBrowser.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
@@ -85,13 +86,15 @@ export async function runSabyContactFirst({
     const done=entries.filter(e=>!unresolved(e)).map(e=>sabyInn(e.row["ИНН"]));
     const visited=new Set([...attempted].map(key=>key.split(":")[1]));
     const phase=PHASES[state.phase_index]||"completed";
-    const fullSweepCompleted=state.phase_index===PHASES.length&&!circuitOpen&&!browserError;
+    const plannedSet=new Set(state.planned_inns);
+    const unscheduled=deferred.filter(id=>!plannedSet.has(id)).length;
+    const fullSweepCompleted=state.phase_index===PHASES.length&&!circuitOpen&&!browserError&&!unscheduled;
     return {
       stats:{enabled:settings.enabled,eligible:entries.length,invalidInnOrName:all.invalid.length,
         duplicateInn:all.duplicates.length,scheduled:planned.length,processed:visited.size,
         ...state.stats,totalAttempts:attempted.size,phase,phaseLabel:PHASE_LABELS[phase]||"Saby: проход завершён",
         passProcessed:phaseDone,passTotal:phaseTotal,passIndex:Math.min(state.phase_index+1,PHASES.length),passCount:PHASES.length,
-        maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,
+        maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,unscheduled,
         previouslyCompleted:Math.max(0,entries.length-deferred.length),deferred:settings.enabled?deferred.length:0,
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
@@ -121,7 +124,8 @@ export async function runSabyContactFirst({
     for(;state.phase_index<PHASES.length;){
       const phase=PHASES[state.phase_index];
       const tasks=planned.filter(e=>any(sectionNeeds(e,phase))&&
-        !attempted.has(phase+":"+sabyInn(e.row["ИНН"])));
+        !attempted.has(phase+":"+sabyInn(e.row["ИНН"])))
+        .sort((a,b)=>contactResearchPriority(b.row)-contactResearchPriority(a.row));
       phaseTotal=tasks.length;phaseDone=0;
       log("SABY_SECTION_PLAN",{phase,scheduled:phaseTotal,visited:attempted.size});
       await onProgress(snapshot().stats);
