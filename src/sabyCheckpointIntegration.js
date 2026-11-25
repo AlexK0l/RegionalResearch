@@ -8,6 +8,7 @@ import { runSabyStage12, sabyStage12Settings } from "./sabyStage12.js";
 import { sabyEligibleRows, sabyInn, sabyStoredSectionCoverage } from "./sabyEnrichment.js";
 import { runSabyOnlyWithRecovery } from "./sabyOnlyRecovery.js";
 import {girboStageEnabled,runGirBoStage} from "./girBoStage.js";
+import {runSabyContactFirst} from "./sabyContactFirst.js";
 // Browser reconnects can call this adapter again with the same result.
 // Only a distinct resumed job may retry a still-pending finance queue.
 const financeRuns=new WeakMap();
@@ -25,6 +26,7 @@ export async function runCheckpointedSabyStage12({
   sessionRunner,
   collectCompany,
   acquireSabyBrowser,
+  contactFirst=false,passState=null,collectSections,onGirboProgress=async()=>{},
   // Normal full/late resumes reconnect transient browser failures. Saby-only
   // already has an outer recovery and must not multiply retry sessions.
   recoverBrowserSession = false,
@@ -40,13 +42,20 @@ export async function runCheckpointedSabyStage12({
   if(girboStageEnabled(env)){
     const financeStartedAt=Date.now();
     if(!financeRuns.has(result))financeRuns.set(result,runGirBoStage({result,priorOutcomes:girboPriorOutcomes,
-      env,signal,persistCheckpoint,...(girboLookupFactory?{lookupFactory:girboLookupFactory}:{})}));
+      env,signal,persistCheckpoint,onProgress:onGirboProgress,
+      ...(girboLookupFactory?{lookupFactory:girboLookupFactory}:{})}));
     await financeRuns.get(result);
     // The separate public-finance budget must not consume the full-study
     // Saby browser budget. The Saby-only outer job retains its total cap.
     startedAt+=Date.now()-financeStartedAt;
   }
   if(signal?.aborted)throw Error("JOB_CANCELLED");
+  if(contactFirst)return runSabyContactFirst({
+    result,env,signal,passState,acquireSabyBrowser,onProgress,persistCheckpoint,
+    ...(sessionRunner?{sessionRunner}:{}),
+    ...(collectSections?{collectSections}:{}),
+    ...(recoveryWait?{recoveryWait}:{})
+  });
   const options = {
     result, completedInns, attemptedInns, maxDurationMs,
     signal, env, onProgress,

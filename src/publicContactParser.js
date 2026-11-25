@@ -327,6 +327,17 @@ export async function lookupPublicCompanyContacts(row,client){
   const candidates=contactSourceCandidates(row);
   if(!candidates.length)return {reason:"no_safe_source",facts:[]};
   const facts=[];let read=0,errors=0,verifiedPages=0,proven=false;
+  const sourceErrorReasons={};
+  const countError=reason=>{
+    const allowed=new Set(["CONTACT_DNS_UNAVAILABLE","CONTACT_REQUEST_TIMEOUT","CONTACT_TLS_UNAVAILABLE",
+      "CONTACT_CONNECTION_UNAVAILABLE","CONTACT_ACCESS_DENIED","CONTACT_HOST_COOLDOWN",
+      "CONTACT_ROBOTS_DENIED","CONTACT_ROBOTS_UNPROVEN","CONTACT_REDIRECT_UNSAFE",
+      "CONTACT_REDIRECT_LIMIT","CONTACT_RESPONSE_SIZE","CONTACT_CONTENT_UNSUPPORTED",
+      "CONTACT_CHARSET_UNSUPPORTED","CONTACT_PRIVATE_ADDRESS","CONTACT_URL_UNSAFE",
+      "CONTACT_REQUEST_BUDGET","CONTACT_HTTP_UNAVAILABLE","CONTACT_HTML_PARSE","CONTACT_PAGE_NOT_FOUND"]);
+    const key=allowed.has(reason)?reason:"CONTACT_OTHER_ERROR";
+    sourceErrorReasons[key]=(sourceErrorReasons[key]||0)+1;
+  };
   const seenHosts=new Set();
   for(const source of candidates){
     if(client.exhausted)break;
@@ -336,11 +347,11 @@ export async function lookupPublicCompanyContacts(row,client){
       seen.add(url);
       try{
         const response=await client.fetch(url);
-        if(response.status!==200)return;
+        if(response.status!==200){countError("CONTACT_PAGE_NOT_FOUND");return;}
         read++;
         const page=parsePublicContactPage(response.html,response.url);
-        if(page)pages.push(page);else errors++;
-      }catch(error){errors++;}
+        if(page)pages.push(page);else{errors++;countError("CONTACT_HTML_PARSE");}
+      }catch(error){errors++;countError(error?.code);}
     };
     if(seenHosts.has(source.host))continue;seenHosts.add(source.host);
     await readPage(source.url);
@@ -372,5 +383,6 @@ export async function lookupPublicCompanyContacts(row,client){
   return {facts:facts.slice(0,60),reason:client.exhausted?"deferred_budget":
     facts.length?"verified_contacts":proven?
     "verified_no_contacts":errors?"source_unavailable":read?"identity_unproven":"no_readable_source",
-    pages_read:read,source_errors:errors,verified_sources:verifiedPages};
+    pages_read:read,source_errors:errors,verified_sources:verifiedPages,
+    source_error_reasons:sourceErrorReasons};
 }

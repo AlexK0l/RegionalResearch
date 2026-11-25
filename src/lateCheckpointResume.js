@@ -5,7 +5,7 @@ import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js"
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {girboStageEnabled} from "./girBoStage.js";
-import {publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {publicContactEnabled,runPublicContactEnrichment,contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
@@ -143,13 +143,20 @@ export async function runLateCheckpointResume({
       attemptedInns:saby.attemptedInns,
       env,signal,startedAt,girboPriorOutcomes:source.girbo_backfill_outcomes||{},
       recoverBrowserSession:true,acquireSabyBrowser,
+      contactFirst:true,passState:source.saby_pass_state,
+      onGirboProgress:async stats=>{
+        statuses[11].detail="ГИР БО ФНС · "+stats.processed+" / "+stats.scheduled+" · выручка +"+stats.added;
+        await progress({phase:"saby",step:12,percent:96,statuses,girboStats:stats});
+      },
       persistCheckpoint:async(phase,patch)=>
         persistCheckpoint(phase,{stage11_completed:true,...patch}),
       onProgress:async stats=>{
-        statuses[11].detail="Saby: обработано "+asNumber(stats.processed)+
+        statuses[11].detail=(stats.phaseLabel?stats.phaseLabel+" · "+stats.passProcessed+" / "+stats.passTotal+" · ":"")+
+          "Saby: обработано "+asNumber(stats.processed)+
           " / "+asNumber(stats.scheduled)+
           ", отложено "+asNumber(stats.deferred);
-        const ratio=stats.scheduled?stats.processed/stats.scheduled:1;
+        const ratio=stats.passCount?((stats.passIndex-1)+(stats.passTotal?stats.passProcessed/stats.passTotal:1))/stats.passCount:
+          stats.scheduled?stats.processed/stats.scheduled:1;
         await progress({phase:"saby",step:12,percent:96+
           Math.floor(3*Math.min(1,ratio)),statuses,
           sabyCurrent:stats.processed,sabyTotal:stats.scheduled,
@@ -221,8 +228,11 @@ export async function runLateCheckpointResume({
   priority.commercial_postprocess=finalizeStage13CommercialOutput(result);
   markDone(12,"коэффициенты пересчитаны без повторения этапов 10 и 11");
 
+  const finalPhoneCoverage=contactPhoneCoverage(result);
+  console.info("[CONTACT_PHONE_COVERAGE] "+JSON.stringify({phase:"final",...finalPhoneCoverage}));
   await persistCheckpoint("completed",{
     completed_stage:9,stage11_completed:true,
+    contact_stats:{...source.contact_stats,final_phone_coverage:finalPhoneCoverage},
     final_result:result,final_quality_gate:quality,
     saby_stats:saby.stats,
     saby_completed_inns:saby.completedInns,

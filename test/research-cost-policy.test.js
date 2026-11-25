@@ -178,7 +178,7 @@ test("phone-first batches never mix phone gaps with secondary contacts",()=>{
   assert.deepEqual(groups.otherGroups.map(g=>g.map(x=>x.id)),[["a","d"]]);
 });
 
-test("phone-specific recovery selects sourced answers, excludes completed/omitted/retried/known-phone rows",()=>{
+test("phone-specific recovery includes primary-completed phone gaps, excludes omitted/retried/known-phone rows",()=>{
   const rows=["good","omitted","retried","known","done","no-inn","no-source","already-returned"]
     .map(id=>({...row(),id,"Телефон":id==="known"?"79001234567":"","ИНН":id==="no-inn"?"":"6732111122"}));
   const first={status:"ok",phones:[],emails:["sales@carrier.example"],leader:"Иванов И.И.",
@@ -187,7 +187,7 @@ test("phone-specific recovery selects sourced answers, excludes completed/omitte
   answers.get("no-source").source_urls=[];
   answers.get("already-returned").phones=["79001234567"];
   assert.deepEqual(planPhoneGapRecovery(rows,answers,new Set(["done"]),new Set(["retried"]),r=>r.id)
-    .map(r=>r.id),["good"]);
+    .map(r=>r.id),["good","done"]);
   assert.equal(mergeRecoveredPhoneResult(first,null),first);
   assert.equal(mergeRecoveredPhoneResult(first,{phones:["79001234567"],source_urls:[]}),first);
   const updated=mergeRecoveredPhoneResult(first,{phones:["8 900 1234567"],emails:["wrong@carrier.example"],

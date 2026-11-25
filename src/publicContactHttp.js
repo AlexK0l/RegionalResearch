@@ -10,7 +10,7 @@ const AGENT="RegionalResearchContact";
 const USER_AGENT=AGENT+"/1.0";
 const MAX_BYTES=1024*1024;
 const fail=code=>Object.assign(Error(code),{code});
-const transientCodes=new Set(["CONTACT_HTTP_UNAVAILABLE","CONTACT_REQUEST_TIMEOUT","CONTACT_DNS_UNAVAILABLE"]);
+const transientCodes=new Set(["CONTACT_HTTP_UNAVAILABLE","CONTACT_REQUEST_TIMEOUT","CONTACT_DNS_UNAVAILABLE","CONTACT_TLS_UNAVAILABLE","CONTACT_CONNECTION_UNAVAILABLE"]);
 export function contactPublicUrl(value){
   try{
     if(typeof value!=="string"||value.length>1800)return "";
@@ -134,7 +134,13 @@ function readResponse(url,ip,{signal,maxBytes=MAX_BYTES,timeoutMs=8000}={}){
       response.on("aborted",()=>finish(fail("CONTACT_HTTP_UNAVAILABLE")));
     });
     timer=setTimeout(()=>{finish(fail("CONTACT_REQUEST_TIMEOUT"));request.destroy();},timeoutMs);
-    request.on("error",()=>finish(fail("CONTACT_HTTP_UNAVAILABLE")));
+    request.on("error",error=>{
+      const code=String(error?.code||"");
+      finish(fail(signal?.aborted||code==="ETIMEDOUT"||code==="ABORT_ERR"?
+        "CONTACT_REQUEST_TIMEOUT":/^(?:ERR_TLS|ERR_SSL|CERT_|DEPTH_ZERO|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER)/.test(code)?
+        "CONTACT_TLS_UNAVAILABLE":/^(?:ECONN|EHOST|ENET|EPIPE)/.test(code)?
+        "CONTACT_CONNECTION_UNAVAILABLE":"CONTACT_HTTP_UNAVAILABLE"));
+    });
     request.end();
   });
 }
