@@ -6056,7 +6056,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const mode = job.data?.memoryResume===true&&job.mode==="full"?"resume":String(job.mode || "full");
   const resumeCheckpoint =
     mode === "resume" && job.data?.checkpoint?.version === PIPELINE_CHECKPOINT_VERSION
-      ? cloneJson(job.data.checkpoint)
+      ? (job.checkpointWritesSynchronous===true?job.data.checkpoint:cloneJson(job.data.checkpoint))
       : null;
   const executionMode = mode === "resume" ? "full" : mode;
   const requestedStage = Number(job.data?.stage || 0);
@@ -6142,7 +6142,13 @@ export async function runResearchPipeline({ job, apiKey }) {
       }));
       return;
     }
-    Object.assign(checkpointState, cloneJson(patch), {
+    // Production SQLite serializes synchronously before the first await.
+    // On serial Stage12 visits a second full JSON roundtrip serves no
+    // purpose; keep the old detached-snapshot contract in injected tests
+    // and all concurrent paid stages.
+    const serialSaby=job.checkpointWritesSynchronous===true&&phase==="saby"&&
+      patch.saby_pass_state?.version===1;
+    Object.assign(checkpointState, serialSaby?patch:cloneJson(patch), {
       version: PIPELINE_CHECKPOINT_VERSION,
       region,
       source_mode: "full",
