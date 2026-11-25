@@ -448,6 +448,7 @@ function jobStateText(job){
   if(job.phase==="memory_paused")return "Пауза по ОЗУ · автовозобновление";
   if(job.phase==="memory_wait")return "Ожидает свободную ОЗУ";
   if(job.memoryPauseRequested)return "Сохраняем данные перед паузой";
+  if(job.phase==="saby_memory_wait")return "Saby: освобождаем память для Chromium";
   if(job.state==="waiting"&&job.phase==="queued")
     return "В очереди"+(job.queuePosition?" №"+job.queuePosition:"");
   if(job.state==="active")return names.active+" · "+Math.round(Number(job.percent||0))+"%";
@@ -483,6 +484,12 @@ function renderJobs(payload){
       (Number.isFinite(guard.effectiveLimit)?" · лимит по ОЗУ: "+guard.effectiveLimit:"")+
       (guard.limitedByMemory?" · запуск по памяти ограничен":"")+
       (guard.paused?" · на паузе: "+guard.paused:"");
+    if(guard.saby_browser){
+      const saby=guard.saby_browser;
+      e.runtimeMemory.textContent+=" · приоритет Saby: "+saby.region+
+        (saby.state==="waiting"?" (ожидает "+saby.required_available_mib+" МиБ для Chromium)":
+          saby.state==="active"?" (Chromium выполняется)":" (сохранение перед паузой)");
+    }
   }
   e.jobsList.replaceChildren();
   if(!jobs.length){
@@ -625,6 +632,7 @@ function setProgress(p){
     dedupe:"Объединение и дедупликация",
     google_ai:"Поиск контактов",
     saby:"Saby: контакты и транспорт",
+    saby_memory_wait:"Saby: ожидание памяти для Chromium",
     priority:"Этап 13: приоритет покупателей",
     qualification:"Identity, дедупликация и A/B/C",
     completed:"Готово",
@@ -641,6 +649,9 @@ function setProgress(p){
     e.statusText.textContent=p.phase==="memory_paused"?
       "Контрольная точка сохранена. Исследование автоматически продолжится при достаточной свободной ОЗУ.":
       "Запуск автоматически возобновится при достаточной свободной ОЗУ.";
+    e.contactBox.hidden=true;
+  }else if(p.phase==="saby_memory_wait"){
+    e.statusText.textContent="Контрольная точка сохранена. Другие исследования освобождают память; Chromium откроется автоматически при достаточном запасе ОЗУ.";
     e.contactBox.hidden=true;
   }else if(p.phase==="queued"){
     e.statusText.textContent="Ожидание запуска · позиция "+Number(p.queuePosition||1);
@@ -707,7 +718,7 @@ async function poll(restoring=false){
     // wastes memory, serializes large JSON and adds HTTP load for no benefit.
     if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
       if(!d.progress?.memoryPauseRequested&&
-        !["memory_paused","memory_wait"].includes(d.progress?.phase))
+        !["memory_paused","memory_wait","saby_memory_wait"].includes(d.progress?.phase))
         void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
