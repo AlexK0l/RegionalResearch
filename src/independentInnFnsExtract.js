@@ -6,6 +6,7 @@ import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {verifiedInnChecksum} from "./sabyMissingInnRecovery.js";
 import {normalizedOgrn} from "./legalIdentity.js";
+import {normalizeEmail} from "./emailContact.js";
 import {isFnsFormRoute,fnsSourceUrl} from "./independentInnFns.js";
 
 const clean=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
@@ -15,7 +16,10 @@ const sectionNames=new Map([
   ["Наименование","names"],
   ["Место нахождения и адрес юридического лица","address"],
   ["Сведения о регистрации","registration"],
-  ["Сведения об учете в налоговом органе","tax"]
+  ["Сведения об учете в налоговом органе","tax"],
+  ["Сведения об адресе электронной почты","email"],
+  ["Адрес электронной почты","email"],
+  ["Сведения о лице, имеющем право без доверенности действовать от имени юридического лица","leader"]
 ].map(([a,b])=>[clean(a).toLowerCase(),b]));
 const adverseHeading=/^Сведения\s+(?:о|об)\s+(?:состоянии(?:\s+\(статусе\))?\s+юридического лица|статусе\s+юридического лица|прекращении(?:\s+деятельности)?\s+юридического лица|нахождении юридического лица в процессе|принятии решения о предстоящем исключении|принятом решении о предстоящем исключении|процессе реорганизации|ликвидации юридического лица|банкротстве юридического лица|недостоверности сведений|ограничении доступа к сведениям)/iu;
 const adverseRow=/^(?:Статус(?: юридического лица)?|Состояние юридического лица|Способ прекращения(?: деятельности)?|Дата прекращения(?: деятельности)?|Сведения о недостоверности|Признак недостоверности)/iu;
@@ -177,7 +181,36 @@ export function parseOfficialFnsExtract(text,{now=Date.now()}={}){
   // status or unreliable data is deliberately excluded from auto-write.
   const adverse=parsed.adverse||firstRows.some(r=>adverseRow.test(r.label))||
     firstRows.some(r=>/недостоверност[ьи]|доступ к сведениям ограничен/iu.test(r.label+" "+r.value));
-  return {reason:"fns_extract_parsed",record:{inn,kpp,ogrn,full_name:full,
+  // Read contacts only from the explicit CURRENT email or executive
+  // sections, never an arbitrary address/name anywhere in the extract.
+  // Require complete numbered rows up to the relevant section.
+  const contactFacts=[];
+  const safeRows=rows=>rows.length&&rows.every(r=>
+    !/недостоверн|доступ.{0,20}ограничен|сведения отсутствуют/iu.test(r.label+" "+r.value))&&
+    parsed.rows.slice(0,parsed.rows.indexOf(rows.at(-1))+1).every((r,i)=>r.number===i+1);
+  const emails=parsed.rows.filter(r=>["address","email"].includes(r.section)&&
+    /^Адрес электронной почты(?: юридического лица)?$/iu.test(r.label));
+  if(!adverse&&emails.length===1&&safeRows(emails)&&normalizeEmail(emails[0].value))
+    contactFacts.push({field:"Электронная почта",value:normalizeEmail(emails[0].value),
+      excerpt:emails[0].label+": "+emails[0].value});
+  const leaders=parsed.rows.filter(r=>r.section==="leader");
+  if(!adverse&&parsed.sections.filter(s=>s==="leader").length===1&&safeRows(leaders)){
+    const exactly=pattern=>{
+      const list=leaders.filter(r=>pattern.test(r.label));
+      return list.length===1?list[0].value:"";
+    };
+    const surname=exactly(/^Фамилия$/iu),given=exactly(/^Имя$/iu),patronymic=exactly(/^Отчество$/iu);
+    const role=exactly(/^Должность$/iu).toLowerCase();
+    const part=/^[А-ЯЁа-яё][А-ЯЁа-яё-]{1,50}$/u;
+    if(part.test(surname)&&part.test(given)&&(!patronymic||part.test(patronymic))&&
+      /^(?:генеральный директор|исполнительный директор|директор)$/iu.test(role)&&
+      leaders.filter(r=>/^Фамилия$|^Имя$|^Отчество$|^Должность$/iu.test(r.label)).length===(patronymic?4:3)){
+      const person=[surname,given,patronymic].filter(Boolean).join(" ");
+      contactFacts.push({field:"Руководитель / ЛПР",value:person+" ("+role+")",
+        excerpt:"Фамилия, имя, отчество: "+person+"; должность: "+role});
+    }
+  }
+  return {reason:"fns_extract_parsed",...(contactFacts.length?{contact_facts:contactFacts}:{}),record:{inn,kpp,ogrn,full_name:full,
     short_name:short,address,active:!adverse},
     metadata:{date:head.date,number:head.number,page_count:pages.page_count,
       status_basis:adverse?"current_adverse_status":"complete_extract_no_adverse_status"}};
@@ -237,6 +270,7 @@ export async function downloadOfficialFnsExtract(page,expected,{now=Date.now(),o
         parsed.record?.kpp===expected.kpp});
     if(!parsed.record)return null;
     return {kind:"fns_extract",url:fnsSourceUrl(expected.inn),record:parsed.record,
+      ...(parsed.contact_facts?.length?{contact_facts:parsed.contact_facts}:{}),
       extract:{...parsed.metadata,sha256:createHash("sha256").update(data).digest("hex")}};
   }finally{
     if(download)await download.delete().catch(()=>{});

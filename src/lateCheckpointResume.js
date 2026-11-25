@@ -5,6 +5,8 @@ import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js"
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {girboStageEnabled} from "./girBoStage.js";
+import {publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
@@ -150,6 +152,27 @@ export async function runLateCheckpointResume({
           sabyCurrent:stats.processed,sabyTotal:stats.scheduled,
           sabyStats:stats});
       }
+    });
+  }
+  // Completed Stage11 snapshots do not re-enter paid contact work. On a
+  // new version they may still use the independent public sources.
+  if(source.phase!=="priority"&&(publicContactEnabled(env)||fnsContactEnabled(env))){
+    await persistCheckpoint("saby",{stage11_completed:true,final_result:result,
+      saby_stats:saby.stats,saby_completed_inns:saby.completedInns,
+      saby_deferred_inns:saby.deferredInns,saby_attempted_inns:saby.attemptedInns});
+    if(publicContactEnabled(env))await runPublicContactEnrichment({
+      result,env,signal,priorOutcomes:source.public_contact_outcomes||{},
+      previousStats:source.public_contact_stats,
+      onCheckpoint:({stats,outcomes})=>persistCheckpoint("saby",{
+        stage11_completed:true,final_result:result,
+        public_contact_stats:stats,public_contact_outcomes:outcomes},true)
+    });
+    if(fnsContactEnabled(env))await runFnsContactEnrichment({
+      result,env,signal,priorOutcomes:source.fns_contact_outcomes||{},
+      previousStats:source.fns_contact_stats,
+      onCheckpoint:({stats,outcomes})=>persistCheckpoint("saby",{
+        stage11_completed:true,final_result:result,
+        fns_contact_stats:stats,fns_contact_outcomes:outcomes},true)
     });
   }
   if(saby.stats?.browserError || saby.stats?.circuitOpen){

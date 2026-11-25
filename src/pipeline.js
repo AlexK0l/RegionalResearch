@@ -6,6 +6,8 @@ import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
+import {needsAnyContact,knownContactLeader,publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
@@ -778,6 +780,8 @@ const CONTACT_SEARCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
+    organization: {type:"string"},
+    inn: {type:"string"},
     status: { type: "string", enum: ["ok", "not_found"] },
     phones: { type: "array", items: { type: "string" } },
     emails: { type: "array", items: { type: "string" } },
@@ -786,7 +790,7 @@ const CONTACT_SEARCH_SCHEMA = {
     source_urls: { type: "array", items: { type: "string" } },
     note: { type: "string" }
   },
-  required: ["status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
+  required: ["organization", "inn", "status", "phones", "emails", "leader", "official_site", "source_urls", "note"]
 };
 
 const PHONE_VERIFY_SCHEMA = {
@@ -5226,20 +5230,26 @@ function contactSearchPrompt(row, region, kind = "contacts") {
   const exactQuery = [
     organization,
     inn,
-    kind === "phone" ? "телефон" : "контакты"
+    kind === "phone" ? "телефон" : ["контакты",
+      !hasConfirmedPhone(row)?"телефон":"",
+      !companyEmailCell(row)?"электронная почта email":"",
+      !hasConfirmedLeader(row)?"руководитель":""].filter(Boolean).join(" ")
   ].filter(Boolean).join(" ");
 
   return `ПОИСК КОНТАКТОВ ОДНОЙ КОМПАНИИ.
 РЕГИОН: ${region}
 ОРГАНИЗАЦИЯ: ${organization}
 ИНН: ${inn || "не подтверждён"}
+НЕЗАПОЛНЕННЫЕ ПОЛЯ: ${[!hasConfirmedPhone(row)?"телефон":"",!companyEmailCell(row)?"email":"",!hasConfirmedLeader(row)?"руководитель / ЛПР":""].filter(Boolean).join(", ")}.
 
 ОБЯЗАТЕЛЬНЫЙ ПЕРВИЧНЫЙ ЗАПРОС: "${exactQuery}".
 Используй web_search. Приоритет: официальный сайт/страница контактов, официальный реестр/документ, устойчивый бизнес-реестр.
 Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
 Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
 Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
-Если в тех же источниках встретился публичный email ЭТОГО юрлица, верни его в emails и укажи точные source_urls. Не трать отдельные web_search ради почты и не угадывай адрес.
+Email ищи как самостоятельное незаполненное поле, даже если телефон и руководитель уже известны. В пределах этого же запроса включай электронную почту в поисковую формулировку. Не угадывай домен или адрес.
+Предпочитай публичные рабочие контакты закупок, снабжения, транспортного отдела и главного механика. Не подменяй их чужими номерами.
+Возвращай organization точно из задания и inn только при подтверждённой привязке. Для каждого ответа укажи конкретную страницу источника; если источник не найден, не выдавай его за подтверждённую проверку.
 Не выдумывай и не дополняй цифры.
 Верни ТОЛЬКО JSON по схеме.`;
 }
@@ -5268,7 +5278,7 @@ async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
       "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
       "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
       "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
-      "Для найденных контактов обязательны точные source_urls. Если там же есть подтверждённый email именно этого юрлица, верни его в emails без отдельных запросов. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
+      "Флаги need_phone, need_email, need_leader независимы. Включай email в общий запрос, если он нужен хотя бы одному юрлицу; известный телефон не отменяет поиск почты. Для найденных контактов обязательны точные source_urls, привязанные к этому ИНН. Приоритет — закупки, снабжение, транспорт, главный механик. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
       "Не выполняй отдельный web_search ради каждого телефона или директора. " +
       "Верни JSON строго по схеме. Каждый id представь один раз.",
     model: TARGETED_SEARCH_MODEL,
@@ -5298,14 +5308,14 @@ async function searchContactsWithWeb({
   deadlineAt,
   phoneRetryBudget = null
 }) {
-  if (hasConfirmedPhone(row) && hasConfirmedLeader(row)) {
+  if (!needsAnyContact(row)) {
     return { status: "ok", phones: [], emails: [], leader: "", official_site: "", source_urls: [], note: "Already confirmed" };
   }
   const firstTimeout = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
     Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
   );
-  const first = await askJson(client, {
+  const firstRaw = await askJson(client, {
     input: contactSearchPrompt(row, region, "contacts"),
     model: TARGETED_SEARCH_MODEL,
     maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
@@ -5318,6 +5328,11 @@ async function searchContactsWithWeb({
     allowJsonRepair: false
   });
 
+  // Single-company replies have the same identity and source gate as
+  // batch replies; missing source is an omission, not a proven absence.
+  const contactId=checkpointRowId(row);
+  const first=validBatchContactItem({...firstRaw,id:contactId},row,contactId);
+  if(!first)return null;
   const phones = new Set(
     (Array.isArray(first?.phones) ? first.phones : [])
       .map(normalizePhoneDigits)
@@ -5339,7 +5354,7 @@ async function searchContactsWithWeb({
       CONTACT_SEARCH_TIMEOUT_MS,
       Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
     );
-    second = await askJson(client, {
+    const secondRaw = await askJson(client, {
       input: contactSearchPrompt(row, region, "phone"),
       model: TARGETED_SEARCH_MODEL,
       maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
@@ -5351,6 +5366,7 @@ async function searchContactsWithWeb({
       timeoutMs: secondTimeout,
       allowJsonRepair: false
     });
+    second=validBatchContactItem({...secondRaw,id:contactId},row,contactId);
     for (const phone of Array.isArray(second?.phones) ? second.phones : []) {
       const normalized = normalizePhoneDigits(phone);
       if (normalized) phones.add(normalized);
@@ -5854,11 +5870,11 @@ function hasConfirmedPhone(row) {
 }
 
 function hasConfirmedLeader(row) {
-  return Boolean(String(row?.["Руководитель / ЛПР"] || "").trim());
+  return knownContactLeader(row);
 }
 
 function needsGoogleResearch(row) {
-  return !hasConfirmedPhone(row) || !hasConfirmedLeader(row);
+  return needsAnyContact(row);
 }
 
 function isPriorityAB(row) {
@@ -8486,6 +8502,36 @@ ${JSON.stringify(gaps)}
         String(process.env.OPENAI_PREVIOUS_CONTACT_CACHE || "").toLowerCase() === "true"
     }));
   }
+  // Low-memory, no-paid-request prepass. All prior paid discovery and
+  // Stage10 ledgers remain intact; a checkpoint created by an older
+  // binary simply has no public-contact ledger yet.
+  let publicContactOutcomes=resumeCheckpoint?.public_contact_outcomes||{};
+  let publicContactStats=resumeCheckpoint?.public_contact_stats||null;
+  let fnsContactOutcomes=resumeCheckpoint?.fns_contact_outcomes||{};
+  let fnsContactStats=resumeCheckpoint?.fns_contact_stats||null;
+  const publicContactPass=async(phase)=>{
+    if(executionMode!=="full"||!publicContactEnabled(process.env))return;
+    const state=await runPublicContactEnrichment({
+      result:finalResult,signal:jobSignal,priorOutcomes:publicContactOutcomes,
+      previousStats:publicContactStats,shouldPause:()=>pauseRequested(phase),
+      onCheckpoint:async({stats,outcomes})=>{
+        publicContactOutcomes=outcomes;publicContactStats=stats;
+        await persistCheckpoint(phase,{
+          completed_stage:9,final_result:finalResult,
+          public_contact_stats:stats,public_contact_outcomes:outcomes
+        },true);
+      },
+      onProgress:async stats=>{
+        const index=phase==="saby"?11:10;
+        statuses[index].detail="Открытые контакты · "+stats.current+" / "+stats.total+
+          " · телефон +"+stats.phone_added+" · email +"+stats.email_added;
+        await progress({phase:index===11?"saby":"google_ai",step:index+1,
+          percent:index===11?99:90,publicContactStats:stats});
+      }
+    });
+    publicContactOutcomes=state.outcomes;publicContactStats=state.stats;
+  };
+  await publicContactPass(resumeCheckpoint?.phase==="contacts"?"contacts":"statistics");
   const phoneOwners = buildPhoneOwnerMap(companies);
   const googleCompanies = companies.filter(needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
@@ -8704,6 +8750,7 @@ ${JSON.stringify(gaps)}
           primaryResults.set(rowId, {
             ...result,
             __needPhone: !hasConfirmedPhone(row),
+            __needEmail: !companyEmailCell(row),
             __needLeader: !hasConfirmedLeader(row)
           });
           if (result.status === "ok") webOk++;
@@ -8801,6 +8848,7 @@ ${JSON.stringify(gaps)}
         primaryResults.set(item.id, {
           ...item.result,
           __needPhone: !hasConfirmedPhone(row),
+          __needEmail: !companyEmailCell(row),
           __needLeader: !hasConfirmedLeader(row)
         });
         if (item.result.status === "ok") webOk++;
@@ -8885,7 +8933,7 @@ ${JSON.stringify(gaps)}
     if (result.leader && !hasConfirmedLeader(row)) {
       row["Руководитель / ЛПР"] = String(result.leader).trim();
     }
-    if (result.emails?.length && result.source_urls?.length)
+    if (result.emails?.length && result.source_urls?.length&&!companyEmailCell(row))
       mergeCompanyEmail(row,result.emails);
 
     for (const phone of result.phones || []) {
@@ -8948,6 +8996,14 @@ ${JSON.stringify(gaps)}
     const result = primaryResults.get(rowId);
     if (!result) continue;
     const verifiedSource = String(result.official_site || "").trim();
+    if(verifiedSource&&result.source_urls?.length){
+      const ev=row.__evidence||{};
+      // A model's proposed site is a HINT, not legal-identity proof. The
+      // public parser independently verifies the actual page before use.
+      row.__evidence={...ev,public_contact_site_hints:[...new Set([
+        ...(Array.isArray(ev.public_contact_site_hints)?ev.public_contact_site_hints:[]),
+        verifiedSource])].slice(0,5)};
+    }
     const inn = normalizeInn(row["ИНН"]);
     if (inn && /^https?:\/\//i.test(verifiedSource)) {
       const accepted = (result.phones || []).map(normalizePhoneDigits).filter(Boolean)
@@ -8958,7 +9014,7 @@ ${JSON.stringify(gaps)}
       };
     }
     const gainedPhone = Boolean(result.__needPhone && hasConfirmedPhone(row));
-    const gainedEmail=Boolean(result.emails?.length && companyEmailCell(row));
+    const gainedEmail=Boolean(result.__needEmail!==false&&result.emails?.length&&companyEmailCell(row));
     const gainedLeader = Boolean(
       result.__needLeader &&
       result?.leader &&
@@ -9034,6 +9090,7 @@ ${JSON.stringify(gaps)}
               row,
               region,
               needPhone: !hasConfirmedPhone(row),
+              needEmail: !companyEmailCell(row),
               needLeader: !hasConfirmedLeader(row),
               forceFallback: false,
               isCancelled: () => Boolean(job.cancelled || jobSignal?.aborted),
@@ -9072,7 +9129,8 @@ ${JSON.stringify(gaps)}
           if (contact?.status === "ok") {
             // Google AI must provide the company's own official source before
             // its e-mail is accepted; no guessed domain or group leakage.
-            if (contact.email && String(contact.official_site||"").startsWith("https://"))
+            if (contact.email && !companyEmailCell(row) &&
+              String(contact.official_site||"").startsWith("https://"))
               applied=mergeCompanyEmail(row,contact.email)||applied;
             if (contact.leader && !hasConfirmedLeader(row)) {
               row["Руководитель / ЛПР"] = String(contact.leader).trim();
@@ -9284,6 +9342,7 @@ ${JSON.stringify(gaps)}
     attemptedInns:resumeCheckpoint?.saby_attempted_inns || [],
     signal:jobSignal,
     startedAt:stage12StartedAt,
+    girboPriorOutcomes:resumeCheckpoint?.girbo_backfill_outcomes||{},
     persistCheckpoint,
     recoverBrowserSession:true,
     onProgress:async stats=>{
@@ -9314,6 +9373,29 @@ ${JSON.stringify(gaps)}
     statuses[11].detail = !sabyStats.enabled
       ? "отключен (SABY_STAGE12_ENABLED=false)"
       : `${sabyStats.deferred>0?"частично выполнен":"выполнен"} · проверено ${sabyStats.verified} / ${sabyStats.scheduled} · телефоны +${sabyStats.phonesAdded} · транспорт +${sabyStats.transportsAdded} · отложено ${sabyStats.deferred}`;
+  }
+  // Finish remaining contact gaps using newly discovered site hints after
+  // Saby. The cumulative HTTP budget is shared with the prepass. No paid
+  // contact searches are restarted and no Stage13 score is changed here.
+  if(executionMode==="full"&&(publicContactEnabled(process.env)||fnsContactEnabled(process.env))){
+    await persistCheckpoint("saby",{
+      stage11_completed:true,final_result:finalResult,
+      saby_stats:sabyStats,saby_completed_inns:sabyOutcome.completedInns,
+      saby_deferred_inns:sabyOutcome.deferredInns,saby_attempted_inns:sabyOutcome.attemptedInns
+    });
+    await publicContactPass("saby");
+    if(fnsContactEnabled(process.env)){
+      const state=await runFnsContactEnrichment({
+        result:finalResult,signal:jobSignal,priorOutcomes:fnsContactOutcomes,
+        previousStats:fnsContactStats,shouldPause:()=>pauseRequested("saby"),
+        onCheckpoint:async({stats,outcomes})=>{
+          fnsContactStats=stats;fnsContactOutcomes=outcomes;
+          await persistCheckpoint("saby",{stage11_completed:true,final_result:finalResult,
+            fns_contact_stats:stats,fns_contact_outcomes:outcomes},true);
+        }
+      });
+      fnsContactOutcomes=state.outcomes;fnsContactStats=state.stats;
+    }
   }
   // Stage 13: exact 57-model catalog stays deterministic. Optionally classify
   // UNKNOWN models using the existing OpenAI client, without web search.
@@ -9394,6 +9476,7 @@ ${JSON.stringify(gaps)}
       statistics: finalResult.statistics.length
     },
     contacts: {
+      public_sources:publicContactStats,fns:fnsContactStats,
       total: companies.length,
       checked: googleCompanies.length,
       skipped: skippedGoogle,
