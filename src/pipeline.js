@@ -5342,9 +5342,13 @@ async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
         "Телефоны этих организаций уже найдены. Ищи только незаполненные email и руководителя. ") +
       "Для найденных контактов обязательны точные source_urls, привязанные к этому ИНН. Приоритет — закупки, снабжение, транспорт, главный механик, затем общий телефон или приёмная. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
       "Не выполняй отдельный web_search ради каждого телефона или директора. " +
-      "Верни JSON строго по схеме. Каждый id представь один раз.",
+      "Верни компактный JSON строго по схеме. Обязателен один элемент для КАЖДОГО id, включая not_found. " +
+      "Не пропускай компании. Для неподтверждённых контактов используй пустые поля, не длинные пояснения. " +
+      "Для найденных данных максимум две конкретные страницы-источника, короткое примечание. " +
+      "Не изобретай источники для заполнения обязательных полей.",
     model: TARGETED_SEARCH_MODEL,
-    maxOutputTokens: Math.max(CONTACT_SEARCH_MAX_OUTPUT_TOKENS, 3200),
+    maxOutputTokens: Math.min(OPENAI_MAX_OUTPUT_TOKENS,
+      Math.max(CONTACT_SEARCH_MAX_OUTPUT_TOKENS, 3200, rows.length*900)),
     webSearch: true,
     responseSchema: CONTACT_BATCH_SCHEMA,
     schemaName: "contact_batch_search",
@@ -8954,9 +8958,15 @@ ${JSON.stringify(gaps)}
     const available=key=>Number(budget.limits[key])-Number(budget.used[key]||0)-
       Number(budget.reserved?.[key]||0);
     // Reserve the existing conflict-check allowance and overcall buffer.
+    const remainingCalls=Math.min(available("contacts"),available("total"));
+    const remainingCost=costEnvLimitUsd()-estimatedApiCostUsd(client);
     if(phoneRetryBudget.remaining<=0||deadlineRemaining(stage11DeadlineAt)<=12000||
-      costEnvLimitUsd()-estimatedApiCostUsd(client)<0.5||
-      Math.min(available("contacts"),available("total"))<=omissionLimits.reservedWebForPhoneConflicts+2)break;
+      remainingCost<0.5||remainingCalls<=omissionLimits.reservedWebForPhoneConflicts+2){
+      console.info("[CONTACT_PHONE_RECOVERY_LIMIT] "+JSON.stringify({
+        remaining_retries:phoneRetryBudget.remaining,remaining_calls:remainingCalls,
+        remaining_cost_usd:remainingCost,remaining_ms:deadlineRemaining(stage11DeadlineAt)
+      }));break;
+    }
     const id=checkpointRowId(row),first=primaryResults.get(id);
     phoneRetryIds.add(id);phoneRetryBudget.remaining--;
     try{
