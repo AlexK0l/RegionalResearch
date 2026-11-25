@@ -56,12 +56,14 @@ function safeState(raw,entries,limit){
       return !rest.length&&PHASES.includes(phase)&&allowed.has(id);
     });
     return {version:1,planned_inns:ids,attempted:[...new Set(attempted)],
+      verified_inns:[...new Set((Array.isArray(raw.verified_inns)?raw.verified_inns:[]).map(sabyInn).filter(id=>allowed.has(id)))],
+      initially_complete:Math.max(0,Math.min(entries.length,Number(raw.initially_complete)||0)),
       phase_index:Math.max(0,Math.min(PHASES.length,Math.trunc(Number(raw.phase_index)||0))),
       stats:Object.fromEntries(counters.map(k=>[k,Math.max(0,Number(raw.stats?.[k])||0)]))};
   }
   const pending=entries.filter(unresolved);
   return {version:1,planned_inns:(limit?pending.slice(0,limit):pending).map(e=>sabyInn(e.row["ИНН"])),
-    attempted:[],phase_index:0,stats:emptyStats()};
+    attempted:[],verified_inns:[],initially_complete:entries.length-pending.length,phase_index:0,stats:emptyStats()};
 }
 export async function runSabyContactFirst({
   result,passState=null,env=process.env,signal=null,
@@ -70,17 +72,18 @@ export async function runSabyContactFirst({
   recoveryWait=ms=>sleep(ms,undefined,{signal}),maxRestarts=2
 }={}){
   const settings=sabyStage12Settings(env);
+  maxRestarts=Math.max(0,Math.min(2,Math.trunc(Number(maxRestarts)||0)));
   const all=sabyEligibleRows(result,{includeAll:true,includeFinanceGaps:true});
   // Stable INN mapping includes rows whose gaps are filled during the run.
   const entries=all.eligible,byInn=new Map(entries.map(e=>[sabyInn(e.row["ИНН"]),e]));
   const state=safeState(passState,entries,settings.maxCompanies);
-  const attempted=new Set(state.attempted);
+  const attempted=new Set(state.attempted),verifiedInns=new Set(state.verified_inns);
   const planned=state.planned_inns.map(id=>byInn.get(id)).filter(Boolean);
   const ownerMap=phoneOwnersForResult(result);
   const abort=()=>{if(signal?.aborted)throw Error("JOB_CANCELLED");};
   let restarts=0,consecutive=0,circuitOpen=false,browserError="";
   let releaseBrowser,phaseDone=0,phaseTotal=0;
-  const stateSnapshot=()=>({...state,attempted:[...attempted],stats:{...state.stats}});
+  const stateSnapshot=()=>({...state,attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats}});
   const snapshot=()=>{
     const deferred=entries.filter(unresolved).map(e=>sabyInn(e.row["ИНН"]));
     const done=entries.filter(e=>!unresolved(e)).map(e=>sabyInn(e.row["ИНН"]));
@@ -92,10 +95,10 @@ export async function runSabyContactFirst({
     return {
       stats:{enabled:settings.enabled,eligible:entries.length,invalidInnOrName:all.invalid.length,
         duplicateInn:all.duplicates.length,scheduled:planned.length,processed:visited.size,
-        ...state.stats,totalAttempts:attempted.size,phase,phaseLabel:PHASE_LABELS[phase]||"Saby: проход завершён",
+        ...state.stats,verified:verifiedInns.size,verifiedTasks:state.stats.verified,totalAttempts:attempted.size,phase,phaseLabel:PHASE_LABELS[phase]||"Saby: проход завершён",
         passProcessed:phaseDone,passTotal:phaseTotal,passIndex:Math.min(state.phase_index+1,PHASES.length),passCount:PHASES.length,
         maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,unscheduled,
-        previouslyCompleted:Math.max(0,entries.length-deferred.length),deferred:settings.enabled?deferred.length:0,
+        previouslyCompleted:state.initially_complete,deferred:settings.enabled?deferred.length:0,
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
       attemptedInns:[...visited].filter(id=>deferred.includes(id)),
@@ -154,6 +157,7 @@ export async function runSabyContactFirst({
           const applied=relevant?applySabyEnrichment(row,record,{phoneOwners:ownerMap,transport}):null;
           if(applied?.status==="ok"){
             state.stats.verified++;
+            verifiedInns.add(inn);
             for(const [stat,flag] of [["phonesAdded","phoneAdded"],["emailsAdded","emailAdded"],
               ["transportsAdded","transportAdded"],["revenuesAdded","revenueAdded"],["employeesAdded","employeesAdded"]])
               if(applied[flag])state.stats[stat]++;
