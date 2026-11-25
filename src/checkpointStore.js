@@ -70,6 +70,11 @@ function ensureDb() {
       summary TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_maintenance (
+      name TEXT PRIMARY KEY,
+      last_at_ms INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS memory_paused_jobs (
       id TEXT PRIMARY KEY,
       mode TEXT NOT NULL,
@@ -456,6 +461,24 @@ export function listMemoryPausedJobs(){
         memoryPauseCount:row.pause_count,summary,percent:row.percent}];
     }catch{return [];}
   });
+}
+
+// Release SQLite's disposable page caches, never the live checkpoint data.
+export function shrinkCheckpointMemory(){
+  ensureDb().exec("PRAGMA shrink_memory;");
+}
+
+// The cooldown survives process exit and prevents reboot loops even when
+// the real bottleneck is outside Node. No payloads or secrets are loaded.
+export function claimIdleMemoryRecycle(now,cooldownMs){
+  if(!Number.isSafeInteger(now)||now<0||!Number.isSafeInteger(cooldownMs)||cooldownMs<60000)
+    throw Error("IDLE_RECYCLE_BAD_CLOCK");
+  const out=ensureDb().prepare(
+    "INSERT INTO runtime_maintenance(name,last_at_ms) VALUES('idle_memory_recycle',?) "+
+    "ON CONFLICT(name) DO UPDATE SET last_at_ms=excluded.last_at_ms "+
+    "WHERE runtime_maintenance.last_at_ms<=?"
+  ).run(now,now-cooldownMs);
+  return Number(out.changes)===1;
 }
 
 export async function checkpointBackendStatus() {
