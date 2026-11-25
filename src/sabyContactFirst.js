@@ -70,9 +70,18 @@ export async function runSabyContactFirst({
   result,passState=null,env=process.env,signal=null,
   sessionRunner=withSabyBrowser,collectSections=collectSabySections,
   acquireSabyBrowser,onProgress=async()=>{},persistCheckpoint=async()=>{},
-  recoveryWait=ms=>sleep(ms,undefined,{signal:signal??undefined}),maxRestarts=2
+  recoveryWait=ms=>sleep(ms,undefined,{signal:signal??undefined}),maxRestarts=2,
+  collectGarbage=typeof global.gc==="function"?()=>global.gc():null
 }={}){
   const settings=sabyStage12Settings(env);
+  // This bounds browser lifetime, never the regional sweep. A rotation is
+  // ordinary maintenance, not a failed task or a consumed retry.
+  const boundedPositive=(raw,fallback,max)=>{
+    const n=Number(raw);
+    return Number.isSafeInteger(n)&&n>=1?Math.min(n,max):fallback;
+  };
+  const sessionLimit=boundedPositive(env.SABY_BROWSER_RECYCLE_EVERY,25,200);
+  const gcEvery=boundedPositive(env.SABY_GC_EVERY,10,100);
   maxRestarts=Math.max(0,Math.min(2,Math.trunc(Number(maxRestarts)||0)));
   const all=sabyEligibleRows(result,{includeAll:true,includeFinanceGaps:true});
   // Stable INN mapping includes rows whose gaps are filled during the run.
@@ -83,7 +92,10 @@ export async function runSabyContactFirst({
   const ownerMap=phoneOwnersForResult(result);
   const abort=()=>{if(signal?.aborted)throw Error("JOB_CANCELLED");};
   let restarts=0,consecutive=0,circuitOpen=false,browserError="";
-  let releaseBrowser,phaseDone=0,phaseTotal=0;
+  let releaseBrowser,phaseDone=0,phaseTotal=0,rotations=0;
+  const reclaim=()=>{
+    if(typeof collectGarbage==="function")try{collectGarbage();}catch{/* best effort */}
+  };
   const stateSnapshot=()=>({...state,attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats}});
   const snapshot=()=>{
     const deferred=entries.filter(unresolved).map(e=>sabyInn(e.row["ИНН"]));
@@ -101,6 +113,7 @@ export async function runSabyContactFirst({
         maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,unscheduled,
         previouslyCompleted:state.initially_complete,deferred:settings.enabled?deferred.length:0,
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts,
+        browserRotations:rotations,browserSessionTaskLimit:sessionLimit,
         phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
       attemptedInns:[...visited].filter(id=>deferred.includes(id)),
@@ -126,19 +139,22 @@ export async function runSabyContactFirst({
   const circuit=Error("SABY_SECTION_CIRCUIT");
   const log=(event,payload)=>console.info("["+event+"] "+JSON.stringify(payload));
   const runSession=async({page,settings:browserSettings})=>{
+    let visits=0;
     for(;state.phase_index<PHASES.length;){
       const phase=PHASES[state.phase_index];
       const tasks=planned.filter(e=>any(sectionNeeds(e,phase))&&
         !attempted.has(phase+":"+sabyInn(e.row["ИНН"])))
         .sort((a,b)=>contactResearchPriority(b.row)-contactResearchPriority(a.row));
-      phaseTotal=tasks.length;phaseDone=0;
-      log("SABY_SECTION_PLAN",{phase,scheduled:phaseTotal,visited:attempted.size});
+      phaseDone=[...attempted].filter(key=>key.startsWith(phase+":")).length;
+      phaseTotal=phaseDone+tasks.length;
+      log("SABY_SECTION_PLAN",{phase,scheduled:phaseTotal,visited:phaseDone});
       await onProgress(snapshot().stats);
       for(const entry of tasks){
         abort();
         const {row,transport}=entry,inn=sabyInn(row["ИНН"]),sections=sectionNeeds(entry,phase);
         const key=phase+":"+inn;
         if(attempted.has(key)||!any(sections))continue;
+        if(visits>=sessionLimit)return "rotate";
         let record,error;
         try{record=await collectSections(page,row,browserSettings,sections);}
         catch(e){if(isMemoryPause(e)||signal?.aborted||e?.message==="JOB_CANCELLED")throw e;error=e;}
@@ -172,11 +188,15 @@ export async function runSabyContactFirst({
         }
         // Persist even an unsuccessful attempted task, but keep its data
         // gaps unresolved. Another pass may retry it at most once.
-        attempted.add(key);phaseDone++;
-        await save();
-        await onProgress({...snapshot().stats,company:row["Организация"]});
+        attempted.add(key);phaseDone++;visits++;
+        // Drop the last browser record before the GC/snapshot boundary.
+        record=undefined;error=undefined;
+        if(attempted.size%gcEvery===0)reclaim();
+        const saved=await save();
+        await onProgress({...saved.stats,company:row["Организация"]});
         if(consecutive>=settings.consecutiveErrors)throw circuit;
-        if(phaseDone<phaseTotal)await sleep(settings.delayMs,undefined,{signal:signal??undefined});
+        if(phaseDone<phaseTotal&&visits<sessionLimit)
+          await sleep(settings.delayMs,undefined,{signal:signal??undefined});
       }
       state.phase_index++;
       await save();
@@ -184,16 +204,26 @@ export async function runSabyContactFirst({
   };
   try{
     if(acquireSabyBrowser)releaseBrowser=await acquireSabyBrowser();
-    for(let i=0;i<=maxRestarts;i++){
+    while(true){
       abort();
       consecutive=0;
       let callbackError;
+      let sessionOutcome;
       try{
         await sessionRunner(async ctx=>{
-          try{await runSession(ctx);}
+          try{sessionOutcome=await runSession(ctx);}
           catch(e){callbackError=e;throw e;}
         },{env});
-        circuitOpen=false;browserError="";break;
+        circuitOpen=false;browserError="";
+        if(sessionOutcome!=="rotate")break;
+        // withSabyBrowser has awaited context.close() at this point.
+        // Reclaim only after the context's async stack has unwound.
+        rotations++;
+        reclaim();
+        log("SABY_BROWSER_ROTATED",{rotations,total_attempts:attempted.size});
+        await save();
+        if(releaseBrowser?.beforeReopen)await releaseBrowser.beforeReopen();
+        continue;
       }catch(e){
         if(isMemoryPause(e)||signal?.aborted||e?.message==="JOB_CANCELLED")throw e;
         // A checkpoint/storage/programming failure must never be treated
@@ -201,11 +231,13 @@ export async function runSabyContactFirst({
         if(callbackError&&callbackError!==circuit)throw callbackError;
         circuitOpen=e===circuit;
         browserError=circuitOpen?"":"SABY_BROWSER_UNAVAILABLE";
-        if(i===maxRestarts)break;
+        if(restarts===maxRestarts)break;
         restarts++;
+        reclaim();
         log("SABY_SECTION_RECONNECT",{attempt:restarts,reason:circuitOpen?"systemic":"browser"});
         await save();
         await recoveryWait(restarts===1?5000:15000);
+        if(releaseBrowser?.beforeReopen)await releaseBrowser.beforeReopen();
       }
     }
     const out=await save();
