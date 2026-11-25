@@ -316,7 +316,7 @@ export async function runSabyOnlyContinuation({
       leasing:result.leasing.length,
       statistics:result.statistics.length
     },
-    contacts:source.contact_stats||null,
+    contacts:{...source.contact_stats,final_phone_coverage:finalPhoneCoverage},
     saby:outcome.stats,
     priority:priorityStats
   };
