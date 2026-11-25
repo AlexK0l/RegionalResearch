@@ -1211,7 +1211,10 @@ if(idleRecycleEnabled&&memoryAdmission.settings.enabled){
     settings:idleRecycleSettings,
     candidates:()=>fullQueue.idleBlockedJobs(),
     canExit:()=>!startupBrowserBusy&&activeHttp===0&&
-      ![...jobs.values()].some(job=>job.state==="active"),
+      ![...jobs.values()].some(job=>job.state==="active"||
+        // A diagnostic result may live only in the HTTP job map. Refuse to
+        // recycle rather than silently discard any non-durable output.
+        job.state==="completed"&&job.result&&!job.result.resultStored),
     isDurable:items=>durableIdleJobsMatch(items,{
       queued:listQueuedResearchJobs(),paused:listMemoryPausedJobs(),
       canRestore:marker=>marker.mode==="saby_only"?sabyOnlyConfigReady():
