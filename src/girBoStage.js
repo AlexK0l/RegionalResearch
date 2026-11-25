@@ -20,7 +20,7 @@ const asNumber=v=>(typeof v==="number"||typeof v==="string"&&/^\d+$/.test(v.trim
 const log=(n,x)=>console.info("["+n+"] "+JSON.stringify(x));
 
 export async function runGirBoStage({result,priorOutcomes={},env=process.env,signal=null,
-  persistCheckpoint,lookupFactory=createGirBoLookup,metric=log,year=new Date().getUTCFullYear()-1}={}){
+  persistCheckpoint,lookupFactory=createGirBoLookup,metric=log,onProgress=async()=>{},year=new Date().getUTCFullYear()-1}={}){
   const settings=girboStageSettings(env);
   if(!settings.enabled)return {enabled:false};
   if(signal?.aborted)throw Error("JOB_CANCELLED");
@@ -69,7 +69,11 @@ export async function runGirBoStage({result,priorOutcomes={},env=process.env,sig
         final_result:result,girbo_backfill_outcomes:snapshot.girbo_backfill_outcomes,
         girbo_backfill_stats:{...snapshot.girbo_backfill_stats,enabled:true,http_requests:lookup.requests??0}});
     },
-    onProgress:stats=>metric("GIRBO_STAGE_PROGRESS",{...stats,http_requests:lookup.requests??0})});
+    onProgress:async stats=>{
+      const progress={...stats,http_requests:lookup.requests??0};
+      metric("GIRBO_STAGE_PROGRESS",progress);
+      await onProgress(progress);
+    }});
   const stats={...out.stats,enabled:true,http_requests:lookup.requests??0};
   if(stats.stop_reason==="GIRBO_CONSECUTIVE_PROOF_FAILURES")
     sharedGirBoGate.cooldown(stats.stop_reason,5*60000);
