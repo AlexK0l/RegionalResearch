@@ -143,13 +143,20 @@ export async function runLateCheckpointResume({
       attemptedInns:saby.attemptedInns,
       env,signal,startedAt,girboPriorOutcomes:source.girbo_backfill_outcomes||{},
       recoverBrowserSession:true,acquireSabyBrowser,
+      contactFirst:true,passState:source.saby_pass_state,
+      onGirboProgress:async stats=>{
+        statuses[11].detail="ГИР БО ФНС · "+stats.processed+" / "+stats.scheduled+" · выручка +"+stats.added;
+        await progress({phase:"saby",step:12,percent:96,statuses,girboStats:stats});
+      },
       persistCheckpoint:async(phase,patch)=>
         persistCheckpoint(phase,{stage11_completed:true,...patch}),
       onProgress:async stats=>{
-        statuses[11].detail="Saby: обработано "+asNumber(stats.processed)+
+        statuses[11].detail=(stats.phaseLabel?stats.phaseLabel+" · "+stats.passProcessed+" / "+stats.passTotal+" · ":"")+
+          "Saby: обработано "+asNumber(stats.processed)+
           " / "+asNumber(stats.scheduled)+
           ", отложено "+asNumber(stats.deferred);
-        const ratio=stats.scheduled?stats.processed/stats.scheduled:1;
+        const ratio=stats.passCount?((stats.passIndex-1)+(stats.passTotal?stats.passProcessed/stats.passTotal:1))/stats.passCount:
+          stats.scheduled?stats.processed/stats.scheduled:1;
         await progress({phase:"saby",step:12,percent:96+
           Math.floor(3*Math.min(1,ratio)),statuses,
           sabyCurrent:stats.processed,sabyTotal:stats.scheduled,
