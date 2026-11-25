@@ -208,6 +208,7 @@ export async function runPublicContactEnrichment({
     leader_added:Number(prior.leader_added||0),department_added:Number(prior.department_added||0),
     conflicts:Number(prior.conflicts||0),http_requests:Number(prior.http_requests||0),
     elapsed_ms:Number(prior.elapsed_ms||0),by_reason:{...prior.by_reason},
+    source_error_reasons:{...prior.source_error_reasons},
     pending:plan.eligible,stop_reason:"",openai_requests:0,saby_requests:0,
     phone_only:phoneOnly,phone_coverage_before:prior.phone_coverage_before||contactPhoneCoverage(result)};
   if(!settings.enabled)return {stats,outcomes};
@@ -246,10 +247,14 @@ export async function runPublicContactEnrichment({
       "source_unavailable","no_readable_source","identity_invalid","deferred_budget"].includes(observed?.reason)?
       observed.reason:"source_unavailable";
     outcomes[t.id]={revision:REVISION,signature:t.signature,reason,
-      gains,attempted_at:new Date().toISOString()};
+      gains,source_error_reasons:observed?.source_error_reasons||{},attempted_at:new Date().toISOString()};
     stats.processed++;processedHere++;dirty++;
     if(reason==="deferred_budget")incompleteHere++;
     stats.by_reason[reason]=Number(stats.by_reason[reason]||0)+1;
+    for(const [key,n] of Object.entries(observed?.source_error_reasons||{})){
+      if(!/^CONTACT_[A-Z_]{1,45}$/.test(key)||!Number.isSafeInteger(n)||n<0)continue;
+      stats.source_error_reasons[key]=Number(stats.source_error_reasons[key]||0)+n;
+    }
     if(dirty>=settings.checkpointEvery||shouldPause())await save();
     if(shouldPause())throw Error("MEMORY_PAUSE_NOT_COMMITTED");
     if(processedHere%10===0)await onProgress({...stats,current:processedHere,total:targets.length});
