@@ -225,6 +225,22 @@ const UNCOMPLETED_SERVICE_A = /(?:предварител.{0,35}заказ.{0,10}
 const ACTUAL_COMPLETED_SERVICE_A = /(?:выполн.{0,25}ремонт|фактическ.{0,30}отремонтирован|акт.{0,20}выполненн.{0,30}работ)/;
 
 /** Return a diagnostic reason to reject a false A evidence note, or "". */
+// Insufficient proof is a negative claim even when the sentence contains
+// "эксплуатация полуприцепов" or "парк". Evaluate each clause independently
+// and do not conflate an unknown model/plate with unproven ownership.
+export function insufficientTrailerEvidence(claim) {
+  const clauses=String(claim||"").toLowerCase().replace(/ё/g,"е")
+    .split(/;\s*|\.\s+|\s+(?:но|однако)\s+/u);
+  for(const clause of clauses){
+    if(/для\s+(?:уровн[яей]|класс[аов]|категори[ий])\s*[abcавс](?:\s*[/–-]\s*[abcавс])?\s+(?:недостаточн|не\s+хватает)/u.test(clause))return true;
+    const trailer=/(?:полуприцеп|прицеп|тягач|автопоезд|тяжел[а-я]*\s+(?:авто)?парк)/u.test(clause);
+    const deficit=/(?:подтвержд|доказательств|сведени|данн|сигнал).{0,200}(?:недостаточн|не\s+хватает)|(?:недостаточн|не\s+хватает).{0,100}(?:подтвержд|доказательств|сведени|данн|сигнал)/u.test(clause);
+    const modelOnly=/(?:модел|марк|vin|госномер|регистрационн.{0,15}номер)/u.test(clause)&&
+      !/(?:эксплуатац|владени|приобретен|закупк|покупк|лизинг|ремонт|собственн.{0,25}парк|в собственности|на балансе)/u.test(clause);
+    if(trailer&&deficit&&!modelOnly)return true;
+  }
+  return false;
+}
 export function rejectUnsafeAEvidence(record, note) {
   // Preserve the colon in provenance prefixes (Final INN:, Identity:).
   const s = String(note || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
@@ -268,6 +284,7 @@ export function rejectUnsafeAEvidence(record, note) {
       return "tractor_unit_does_not_prove_trailer";
     }
   }
+  if (insufficientTrailerEvidence(s)) return "insufficient_trailer_evidence";
   if (DENIED_TRAILER_A.test(s)) return "explicit_denial_of_own_trailer_evidence";
   if (UNSUPPORTED_TRAILER_NOTE_A.test(s) ||
       (UNSPECIFIED_TRAILER_MODELS_A.test(s) && !AFFIRMED_OWN_TRAILERS_A.test(s))) {

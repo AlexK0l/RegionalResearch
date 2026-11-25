@@ -4,6 +4,7 @@
 // facts from the attached evidence instead of repeating those messages.
 // This is a deterministic, read-only presentation pass: no OpenAI, no
 // invented claims, and no changes to scores, role, or provenance.
+import {formatEmailCell,EMAIL_COLUMN} from "./emailContact.js";
 const SECTION_KEYS=["direct_buyers","intermediaries","leasing"];
 const BASIS_NOTE_KEY="__basis_comment";
 const URL_RE=/https?:\/\/[^\s<>"'()[\]]+/gi;
@@ -29,6 +30,9 @@ function urlsIn(value){
   const values=String(value??"").match(URL_RE)||[];
   return unique(values.map(url=>url.replace(/[.,;:]+$/,"")).filter(url=>url.length<1800));
 }
+function removeEmptyCitationLabels(value){
+  return String(value??"").replace(/\s*\(\s*(?:(?:источник(?:и)?|ссылка|url)\s*:?\s*)?\)/giu,"");
+}
 function cleanFact(value){
   let s=String(value??"")
     .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g,"$1")
@@ -38,6 +42,7 @@ function cleanFact(value){
     .replace(/^[\s"'\-—•:]+|[\s"'\-—•:]+$/g,"")
     .replace(/^\s*[ABC]\s*[—–-]\s*/i,"")
     .replace(/\s+/g," ").trim();
+  s=removeEmptyCitationLabels(s);
   if(s && !/[.!?]$/.test(s))s+=".";
   return s;
 }
@@ -118,7 +123,7 @@ function sourceList(row,chosen){
 }
 function basisAndNote(row){
   const grade=gradeOf(row);
-  const original=text(row?.["Основание"]);
+  const original=removeEmptyCitationLabels(text(row?.["Основание"]));
   if(!grade)return null;
   const candidates=noteCandidates(row,grade);
   const chosen=candidates[0];
@@ -162,15 +167,21 @@ function readableCompanyComment(row,info){
   const isSource=line=>/^Сайт\/источник\s*:/i.test(line);
   const activityLines=lines.filter(isActivity);
   const sourceLines=lines.filter(isSource);
+  // Current cell is authoritative for presentation. Do not leave a stale
+  // "Email: не найден" from a pre-contact checkpoint next to a saved address.
+  // Preserve all non-email evidence and retain legacy lines when the cell
+  // is empty; no new address is inferred here.
+  const emails=formatEmailCell(row?.[EMAIL_COLUMN]);
   const others=lines.filter(line=>!isTitle(line)&&!isSummary(line)&&
-    !isActivity(line)&&!isSource(line));
+    !isActivity(line)&&!isSource(line)&&!(emails&&/^Email\s*:/i.test(line)));
   const activityLine=activityLines[0]||
     (activity(row)?"Деятельность: "+activity(row):"");
   const existingHeading=lines.find(isTitle);
   const top=[
     existingHeading||"СВЕДЕНИЯ О КОМПАНИИ",
     summary?"Краткое основание: "+summary:"",
-    activityLine
+    activityLine,
+    emails?"Email: "+emails:""
   ].filter(Boolean);
   return unique([...top,...others,...sourceLines,...activityLines.slice(1)]).join("\n");
 }

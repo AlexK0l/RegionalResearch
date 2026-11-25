@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
-import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey } from "./legalIdentity.js";
+import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey, numberedLegalNameConflict } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
@@ -2930,6 +2930,7 @@ export function canonicalizeCandidates(candidates, region = "") {
   };
 
   const innOwners = new Map();
+  const ownerMembers = new Map();
 
   for (let i = 0; i < candidates.length; i++) {
     const row = candidates[i]?.data || {};
@@ -2940,13 +2941,14 @@ export function canonicalizeCandidates(candidates, region = "") {
       let compatibleOwner = null;
 
       for (const ownerIndex of owners) {
-        const ownerName = String(candidates[ownerIndex]?.data?.["Организация"] || "").trim();
-        // Early discovery dedupe must obey the SAME legal-identity guard
-        // as post-INN dedupe; compatible trade names alone are insufficient
-        // across distinct ООО/АО/IP forms, OGRNs or parent/branch roles.
-        const ownerRow = candidates[ownerIndex]?.data || {};
-        if (organizationNamesCompatible(name, ownerName, region) &&
-            !legalEvidenceConflict(row, ownerRow)) {
+        // Require compatibility with EVERY member, including explicit
+        // numbered-name discriminators and legal evidence conflicts. An
+        // unnumbered representative may not bridge two distinct companies.
+        if ((ownerMembers.get(ownerIndex)||[ownerIndex]).every(member=>{
+          const ownerRow=candidates[member]?.data||{};
+          return organizationNamesCompatible(name,ownerRow["Организация"],region)&&
+            !legalEvidenceConflict(row,ownerRow);
+        })) {
           compatibleOwner = ownerIndex;
           break;
         }
@@ -2954,6 +2956,7 @@ export function canonicalizeCandidates(candidates, region = "") {
 
       if (compatibleOwner !== null) {
         union(i, compatibleOwner);
+        ownerMembers.get(compatibleOwner).push(i);
       } else {
         if (owners.length) {
           console.log("[CANONICAL_INN_CONFLICT] " + JSON.stringify({
@@ -2965,6 +2968,7 @@ export function canonicalizeCandidates(candidates, region = "") {
           }));
         }
         owners.push(i);
+        ownerMembers.set(i,[i]);
         innOwners.set(inn, owners);
       }
     }
@@ -3586,6 +3590,7 @@ function organizationIdentityTokens(value, region = "") {
 }
 
 function organizationNamesCompatible(a, b, region = "") {
+  if(numberedLegalNameConflict(a,b))return false;
   const left = normalizeOrgKey(a);
   const right = normalizeOrgKey(b);
   if (!left || !right) return false;
@@ -3756,11 +3761,10 @@ function conservativeAliasDedupe(records, diagnostics = null, region = "") {
     for (let j = i + 1; j < records.length; j++) {
       if (consumed.has(j)) continue;
 
-      // Every candidate must be directly compatible with the representative.
-      if (!safeAliasIdentityCompatible(records[i], records[j], region)) continue;
-
-      // If the candidate has an INN and the representative does not, do not let
-      // that candidate turn the group into a bridge for other legal entities.
+      // Every candidate must be compatible with ALL prior members.
+      // Otherwise a generic/unnumbered representative bridges distinct
+      // numbered legal names or different OGRNs even without two saved INNs.
+      if (!group.every(prior=>safeAliasIdentityCompatible(prior,records[j],region))) continue;
       group.push(records[j]);
       consumed.add(j);
     }
