@@ -345,6 +345,9 @@ export function checkpointSummary(value) {
       ? value.saby_completed_inns.length : 0,
     saby_deferred: Array.isArray(value.saby_deferred_inns)
       ? value.saby_deferred_inns.length : 0,
+    ...(value.phase==="saby"?{saby_browser_pending:
+      value.public_contact_post_saby_ready!==true&&value.saby_stats?.fullSweepCompleted!==true&&
+      (value.saby_pass_state?.phase_index??0)<4}:{}),
     continuation_available:
       (Array.isArray(value.contact_unsearched_ids) &&
        value.contact_unsearched_ids.length > 0) ||
