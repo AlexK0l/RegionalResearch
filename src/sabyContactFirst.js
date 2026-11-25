@@ -70,7 +70,7 @@ export async function runSabyContactFirst({
   result,passState=null,env=process.env,signal=null,
   sessionRunner=withSabyBrowser,collectSections=collectSabySections,
   acquireSabyBrowser,onProgress=async()=>{},persistCheckpoint=async()=>{},
-  recoveryWait=ms=>sleep(ms,undefined,{signal}),maxRestarts=2
+  recoveryWait=ms=>sleep(ms,undefined,{signal:signal??undefined}),maxRestarts=2
 }={}){
   const settings=sabyStage12Settings(env);
   maxRestarts=Math.max(0,Math.min(2,Math.trunc(Number(maxRestarts)||0)));
@@ -176,7 +176,7 @@ export async function runSabyContactFirst({
         await save();
         await onProgress({...snapshot().stats,company:row["Организация"]});
         if(consecutive>=settings.consecutiveErrors)throw circuit;
-        if(phaseDone<phaseTotal)await sleep(settings.delayMs,undefined,{signal});
+        if(phaseDone<phaseTotal)await sleep(settings.delayMs,undefined,{signal:signal??undefined});
       }
       state.phase_index++;
       await save();
