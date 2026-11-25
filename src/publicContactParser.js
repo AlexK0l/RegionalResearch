@@ -39,10 +39,12 @@ function observedNames(blocks){
   const names=new Set();
   for(const b of blocks){
     if(b.text.length>500)continue;
-    for(const m of b.text.matchAll(quotedForm)){
+    const quoted=[...b.text.matchAll(quotedForm)];
+    for(const m of quoted){
       const key=registeredContactName(m[1]+" "+m[2]);
       if(key)names.add(key);
     }
+    if(quoted.length)continue;
     let value=b.text.replace(explicitNamePrefix,"")
       .replace(/^(?:контакты|реквизиты|о компании)\s*[:—–-]?\s*/iu,"")
       .replace(/^©\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s*)?/u,"");
@@ -289,14 +291,14 @@ export function extractVerifiedPublicContacts(pages,row,{directory=false}={}){
   const list=pages.filter(Boolean),anchors=list.filter(p=>pageIdentity(p,target));
   if(!anchors.length)return {reason:"identity_unproven",facts:[]};
   const facts=[];
+  const conflict=list.some(p=>p.inns.some(x=>x!==target.inn)||
+    p.names.some(x=>x!==target.name));
   for(const page of list){
     const own=anchors.find(x=>x===page);
     const linked=!directory&&!page.inns.length&&page.names.length===1&&page.names[0]===target.name?
       anchors.find(x=>contactHost(x.url)===contactHost(page.url)&&isLinked(x,page)):null;
     // A site with another explicit INN or named legal entity anywhere in
     // its inspected contact pages cannot confer cross-page ownership.
-    const conflict=list.some(p=>p.inns.some(x=>x!==target.inn)||
-      p.names.some(x=>x!==target.name));
     const identity=own||(!conflict?linked:null);
     if(!identity||directory&&!own)continue;
     facts.push(...contactFacts(page,target,identity));
@@ -349,7 +351,8 @@ export async function lookupPublicCompanyContacts(row,client){
     facts.push(...result.facts);
     if(facts.length>=30)break;
   }
-  return {facts:facts.slice(0,60),reason:facts.length?"verified_contacts":proven?
+  return {facts:facts.slice(0,60),reason:client.exhausted?"deferred_budget":
+    facts.length?"verified_contacts":proven?
     "verified_no_contacts":errors?"source_unavailable":read?"identity_unproven":"no_readable_source",
     pages_read:read,source_errors:errors,verified_sources:verifiedPages};
 }

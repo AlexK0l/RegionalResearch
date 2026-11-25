@@ -6,7 +6,8 @@ the singleton schema has the same name/INN/source requirements as batch items.
 Saby includes email-missing leasing and intermediary companies even with an
 existing telephone. New HTML pass before paid contacts and a remaining/new
 source pass after Saby share one cumulative 350-company / 750-request /
-12-minute budget by default, with no added pipeline stage or XLSX column.
+12-minute budget by default (70% prepass, 30% reserved for later hints),
+with no added pipeline stage or XLSX column.
 Checkpoint version stays 1. Earlier checkpoints without these ledgers resume
 normally. A completed Stage11 resume does not replay paid contact work.
 
@@ -19,6 +20,7 @@ Phone and email ownership conflicts are held rather than blindly copied.
 Only missing fields and explicitly labelled useful department numbers are
 added; classification and finance are untouched. Proof includes exact page
 and identity page, content hashes, field, observed excerpt, INN, date.
+Contact-specific URLs are not added to the A/B/C qualification source list.
 Each source attempt is recorded separately from "no contact"; an unchanged
 source is not retried just because the field is still empty. A new site
 hint can reopen that company. Normal resume retains the request/time budgets.

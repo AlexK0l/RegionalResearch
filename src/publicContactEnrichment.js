@@ -73,7 +73,7 @@ export function planPublicContactEnrichment(result,{priorOutcomes={},retryUnavai
     const old=priorOutcomes[id];
     // A new verified-site hint may reopen just that firm's source pass.
     // An unchanged "no contact" or access failure is not blindly retried.
-    if(old?.revision===REVISION&&old.signature===signature&&
+    if(old?.revision===REVISION&&old.signature===signature&&old.reason!=="deferred_budget"&&
       !(retryUnavailable&&["source_unavailable","no_readable_source","fns_unavailable"].includes(old.reason))){
       stats.previously_attempted++;continue;
     }
@@ -154,9 +154,9 @@ export function applyPublicContactFacts(row,facts,{owners,target=publicContactTa
     const key=f=>[f.field,f.value,f.source_url].join("|");
     const byKey=new Map(existing.map(f=>[key(f),f]));
     for(const f of accepted)byKey.set(key(f),{...f,verified_at:now});
-    row.__evidence={...ev,public_contact_facts:[...byKey.values()].slice(-30),
-      source_urls:[...new Set([...(Array.isArray(ev.source_urls)?ev.source_urls:[]),
-        ...accepted.flatMap(f=>[f.source_url,f.identity_url])])]};
+    // Keep contact proofs separate from qualification source_urls: adding
+    // a procurement phone must not inflate A/B/C source diversity.
+    row.__evidence={...ev,public_contact_facts:[...byKey.values()].slice(-30)};
   }
   return {phone:Number(!beforePhone.length&&parsePhoneEntries(row["Телефон"]).length>0),
     email:Number(!beforeEmail&&!!companyEmailCell(row)),
@@ -211,7 +211,7 @@ export async function runPublicContactEnrichment({
     for(const field of ["phone","email","leader","department"])stats[field+"_added"]+=gains[field];
     stats.conflicts+=gains.conflicts;
     const reason=["verified_contacts","verified_no_contacts","identity_unproven","no_safe_source",
-      "source_unavailable","no_readable_source","identity_invalid"].includes(observed?.reason)?
+      "source_unavailable","no_readable_source","identity_invalid","deferred_budget"].includes(observed?.reason)?
       observed.reason:"source_unavailable";
     outcomes[t.id]={revision:REVISION,signature:t.signature,reason,
       gains,attempted_at:new Date().toISOString()};
@@ -220,6 +220,7 @@ export async function runPublicContactEnrichment({
     if(dirty>=settings.checkpointEvery||shouldPause())await save();
     if(shouldPause())throw Error("MEMORY_PAUSE_NOT_COMMITTED");
     if(processedHere%10===0)await onProgress({...stats,current:processedHere,total:targets.length});
+    if(reason==="deferred_budget"){stats.stop_reason="budget_or_deadline";break;}
   }
   if(!stats.stop_reason&&plan.eligible>processedHere)stats.stop_reason="company_limit";
   await save();

@@ -6,7 +6,7 @@ import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
-import {needsAnyContact,knownContactLeader,publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {needsAnyContact,knownContactLeader,publicContactEnabled,publicContactSettings,runPublicContactEnrichment} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
@@ -8511,8 +8511,16 @@ ${JSON.stringify(gaps)}
   let fnsContactStats=resumeCheckpoint?.fns_contact_stats||null;
   const publicContactPass=async(phase)=>{
     if(executionMode!=="full"||!publicContactEnabled(process.env))return;
+    const settings=publicContactSettings(process.env);
+    // Reserve 30% of each free-source budget for site hints discovered
+    // during the paid contact stage and Saby. A prepass must not consume
+    // the whole recovery budget before the new sources become available.
+    const contactEnv=phase==="saby"?process.env:{...process.env,
+      PUBLIC_CONTACTS_MAX_COMPANIES:String(Math.max(1,Math.floor(settings.maxCompanies*0.7))),
+      PUBLIC_CONTACTS_MAX_REQUESTS:String(Math.max(1,Math.floor(settings.maxRequests*0.7))),
+      PUBLIC_CONTACTS_MAX_MS:String(Math.max(15000,Math.floor(settings.maxMs*0.7)))};
     const state=await runPublicContactEnrichment({
-      result:finalResult,signal:jobSignal,priorOutcomes:publicContactOutcomes,
+      result:finalResult,env:contactEnv,signal:jobSignal,priorOutcomes:publicContactOutcomes,
       previousStats:publicContactStats,shouldPause:()=>pauseRequested(phase),
       onCheckpoint:async({stats,outcomes})=>{
         publicContactOutcomes=outcomes;publicContactStats=stats;

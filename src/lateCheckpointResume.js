@@ -122,6 +122,8 @@ export async function runLateCheckpointResume({
       source.priority_stats,quality);
   }
 
+  let publicContactStats=source.public_contact_stats||null;
+  let fnsContactStats=source.fns_contact_stats||null;
   let saby={
     stats:source.saby_stats||null,
     completedInns:asArray(source.saby_completed_inns),
@@ -163,16 +165,22 @@ export async function runLateCheckpointResume({
     if(publicContactEnabled(env))await runPublicContactEnrichment({
       result,env,signal,priorOutcomes:source.public_contact_outcomes||{},
       previousStats:source.public_contact_stats,
-      onCheckpoint:({stats,outcomes})=>persistCheckpoint("saby",{
-        stage11_completed:true,final_result:result,
-        public_contact_stats:stats,public_contact_outcomes:outcomes},true)
+      onCheckpoint:({stats,outcomes})=>{
+        publicContactStats=stats;
+        return persistCheckpoint("saby",{
+          stage11_completed:true,final_result:result,
+          public_contact_stats:stats,public_contact_outcomes:outcomes},true);
+      }
     });
     if(fnsContactEnabled(env))await runFnsContactEnrichment({
       result,env,signal,priorOutcomes:source.fns_contact_outcomes||{},
       previousStats:source.fns_contact_stats,
-      onCheckpoint:({stats,outcomes})=>persistCheckpoint("saby",{
-        stage11_completed:true,final_result:result,
-        fns_contact_stats:stats,fns_contact_outcomes:outcomes},true)
+      onCheckpoint:({stats,outcomes})=>{
+        fnsContactStats=stats;
+        return persistCheckpoint("saby",{
+          stage11_completed:true,final_result:result,
+          fns_contact_stats:stats,fns_contact_outcomes:outcomes},true);
+      }
     });
   }
   if(saby.stats?.browserError || saby.stats?.circuitOpen){
@@ -226,5 +234,8 @@ export async function runLateCheckpointResume({
     source_phase:source.phase,restored_stage:11,
     skipped_paid_stages:[10,11],source_job_id:sourceJobId
   }));
-  return lateResultSummary(source,result,saby.stats,priority,quality);
+  const output=lateResultSummary(source,result,saby.stats,priority,quality);
+  output.contacts.public_sources=publicContactStats;
+  output.contacts.fns=fnsContactStats;
+  return output;
 }

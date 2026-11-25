@@ -67,12 +67,13 @@ export function robotsAllows(text,path,userAgent=AGENT){
     if(!m)continue;
     const key=m[1].toLowerCase(),value=m[2].trim();
     if(key==="user-agent"){
-      if(!current||current.rules.length||current.hasDelay){
-        current={agents:[],rules:[],hasDelay:false};groups.push(current);
+      if(!current||current.hasRules||current.hasDelay){
+        current={agents:[],rules:[],hasRules:false,hasDelay:false};groups.push(current);
       }
       current.agents.push(value.toLowerCase());
-    }else if(current&&(key==="allow"||key==="disallow")&&value){
-      current.rules.push({allow:key==="allow",value});
+    }else if(current&&(key==="allow"||key==="disallow")){
+      current.hasRules=true;
+      if(value)current.rules.push({allow:key==="allow",value});
     }else if(current&&key==="crawl-delay"){
       // Conservatively do not crawl sites asking for a custom delay.
       current.hasDelay=true;
@@ -207,7 +208,16 @@ export function createPublicContactHttp({
     if(!robots.has(u.origin)){
       // Cache only policy text, bounded per origin. No robots redirects:
       // a missing or unproven policy is not permission to crawl.
-      const r=await one(u.origin+"/robots.txt",64*1024);
+      let r=await one(u.origin+"/robots.txt",64*1024);
+      if([301,302,303,307,308].includes(r.status)){
+        let target="";
+        try{target=contactPublicUrl(new URL(String(r.headers?.location||""),u.origin+"/robots.txt").href);}
+        catch{/* malformed redirect */}
+        if(!target||contactHost(target)!==contactHost(url)||
+          new URL(target).pathname!=="/robots.txt"||new URL(target).protocol!=="https:")
+          throw fail("CONTACT_ROBOTS_UNPROVEN");
+        r=await one(target,64*1024);
+      }
       if([404,410].includes(r.status))robots.set(u.origin,"");
       else if(r.status===200&&/^text\/plain\b/i.test(String(r.headers?.["content-type"]||"")))
         robots.set(u.origin,decodeContactHtml(r.body,r.headers["content-type"]));
