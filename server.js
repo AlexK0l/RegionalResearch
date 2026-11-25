@@ -499,6 +499,7 @@ async function executeJob(job, apiKey) {
             signal:job.abortController?.signal,
             onProgress:p=>job.updateProgress(p),
             memoryResume:job.data.memoryResume===true,
+            acquireSabyBrowser:job.acquireSabyBrowser,
             persistCheckpoint:async(cp,options)=>{
               await job.updateCheckpoint(cp);
               if(options?.memorySafe)await job.memorySafePoint?.();
