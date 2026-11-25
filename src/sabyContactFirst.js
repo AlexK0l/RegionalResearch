@@ -206,7 +206,6 @@ export async function runSabyContactFirst({
     if(acquireSabyBrowser)releaseBrowser=await acquireSabyBrowser();
     while(true){
       abort();
-      consecutive=0;
       let callbackError;
       let sessionOutcome;
       try{
@@ -214,16 +213,6 @@ export async function runSabyContactFirst({
           try{sessionOutcome=await runSession(ctx);}
           catch(e){callbackError=e;throw e;}
         },{env});
-        circuitOpen=false;browserError="";
-        if(sessionOutcome!=="rotate")break;
-        // withSabyBrowser has awaited context.close() at this point.
-        // Reclaim only after the context's async stack has unwound.
-        rotations++;
-        reclaim();
-        log("SABY_BROWSER_ROTATED",{rotations,total_attempts:attempted.size});
-        await save();
-        if(releaseBrowser?.beforeReopen)await releaseBrowser.beforeReopen();
-        continue;
       }catch(e){
         if(isMemoryPause(e)||signal?.aborted||e?.message==="JOB_CANCELLED")throw e;
         // A checkpoint/storage/programming failure must never be treated
@@ -233,12 +222,23 @@ export async function runSabyContactFirst({
         browserError=circuitOpen?"":"SABY_BROWSER_UNAVAILABLE";
         if(restarts===maxRestarts)break;
         restarts++;
+        consecutive=0;
         reclaim();
         log("SABY_SECTION_RECONNECT",{attempt:restarts,reason:circuitOpen?"systemic":"browser"});
         await save();
         await recoveryWait(restarts===1?5000:15000);
         if(releaseBrowser?.beforeReopen)await releaseBrowser.beforeReopen();
+        continue;
       }
+      circuitOpen=false;browserError="";
+      if(sessionOutcome!=="rotate")break;
+      // Context closure was awaited. Storage/re-admission failures below
+      // are NOT browser failures and must propagate without consuming retries.
+      rotations++;
+      reclaim();
+      log("SABY_BROWSER_ROTATED",{rotations,total_attempts:attempted.size});
+      await save();
+      if(releaseBrowser?.beforeReopen)await releaseBrowser.beforeReopen();
     }
     const out=await save();
     log("SABY_SECTION_DONE",{...out.stats,remaining:out.deferredInns.length});
