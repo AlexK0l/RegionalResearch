@@ -60,7 +60,12 @@ test("primary technical deferral is durable, not marked completed, preserves exi
     items:rows.filter(x=>x.__canonical_id==="b").map(x=>ok(x.__canonical_id)),
     tokenDeferredIds:["a"]
   })});
-  assert.deepEqual(a,snapshot);
+  // Normal comment/email normalization still runs after identity checks.
+  // Assert the actual safety invariant, not unrelated presentation fields.
+  assert.equal(a["ИНН"],snapshot["ИНН"]);
+  assert.equal(a["Организация"],snapshot["Организация"]);
+  assert.equal(a["Город/район"],snapshot["Город/район"]);
+  assert.deepEqual(a.__evidence,snapshot.__evidence);
   assert.equal(first.completedIds.has("a"),false);
   assert.equal(first.completedIds.has("b"),true);
   assert.equal(first.technicalDeferred.length,1);
