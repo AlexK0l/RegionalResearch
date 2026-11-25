@@ -153,11 +153,15 @@ export function sabyEligibleRows(result) {
       eligible.push(entry);
     }
   }
-  // Prioritize missing contacts and direct buyers; no additional API searches.
+  // Telephone gaps first, then A/B/C and secondary fields; keep the
+  // stage's separate fresh-before-retry cursor and existing full coverage.
   eligible.sort((a,b) => {
-    const score = x => (hasKnownPhone(x.row["Телефон"]) ? 0 : 4) +
-      (companyEmailCell(x.row)?0:2)+(x.transport ? 2 : 0);
-    return score(b) - score(a);
+    const score = x => {
+      const g=String(x.row.__final_grade||x.row["Основание"]||"").trim().toUpperCase()[0];
+      return (hasKnownPhone(x.row["Телефон"])?0:100)+(g==="A"?30:g==="B"?20:10)+
+        (companyEmailCell(x.row)?0:2)+(x.transport?3:0);
+    };
+    return score(b)-score(a);
   });
   return {eligible, duplicates, invalid};
 }

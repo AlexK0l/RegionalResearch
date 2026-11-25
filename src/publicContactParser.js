@@ -219,6 +219,7 @@ function isLinked(a,b){
 }
 const unsafeContext=/разработ(?:ка|чик)\s+сайта|создание\s+сайта|веб[- ]?студи|webmaster|сайт\s+(?:создан|разработан)|политик[аи]\s+конфиденциальности|партн[её]р|контрагент|поставщик\s*[:—-]|заказчик\s*[:—-]|субподрядчик|сторонн|филиал|представительств|факс|fax|ИНН|ОГРН|КПП|пример\s+заполнения|тестов[а-я]+\s+(?:номер|адрес)/iu;
 const phoneLabel=/тел(?:ефон)?(?:ы)?\s*[:.]|телефон|горячая линия|при[её]мная|(?:отдел|служба|диспетчерская)\s*[:—-]|phone\s*:/iu;
+const standalonePhoneLabel=/^(?:(?:рабочий|контактный|мобильный)\s+)?(?:тел(?:ефон)?(?:ы)?\.?|phone|горячая линия|при[её]мная)\s*[:—–-]?$/iu;
 const emailLabel=/e[\s-]?mail|электронн[а-я]*\s+почт|почта\s*:/iu;
 const leaderLabel=/^(генеральный директор|исполнительный директор|директор|главный механик|руководитель отдела закупок|начальник отдела снабжения|начальник транспортного отдела)\s*[:—–-]\s*(.+)$/iu;
 const fullName=/^[А-ЯЁ][а-яё-]{1,40}(?:\s+[А-ЯЁ][а-яё-]{1,40}){1,2}$/u;
@@ -277,6 +278,15 @@ function contactFacts(page,target,identity){
     }
     if(phoneLabel.test(v)||department){
       for(const p of parsePhoneEntries(v))add("Телефон",p.phone,v,p.department||department);
+    }
+    // Real directory/contact cards often place the label and the value in
+    // separate table cells or divs, without a tel: hyperlink. Only accept
+    // a whole visible number immediately after an explicit phone label.
+    // No masked values, arbitrary ID fields, hidden or unrelated footer.
+    if(i>0&&page.blocks[i-1].landmark===b.landmark&&
+      standalonePhoneLabel.test(previous)&&/^[+()\d .-]{10,28}$/.test(v)){
+      const number=normalizeRussianPhone(v);
+      if(number)add("Телефон",number,previous+": "+v,department);
     }
     if(emailLabel.test(v)){
       for(const e of parseEmailEntries(v))add("Электронная почта",usableEmail(e),v);

@@ -17,12 +17,14 @@ const int=(k,d,max)=>{
 };
 async function main(){
   if(args.includes("--help")){
-    console.log("npm run contacts:backfill -- --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=350] [--max-requests=750] [--fns] [--fns-only] [--retry-unavailable] [--run]");
+    console.log("npm run contacts:backfill -- --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=350] [--max-requests=750] [--phone-only] [--fns] [--fns-only] [--retry-unavailable] [--run]");
     return;
   }
   const file=arg("db"),id=arg("checkpoint"),run=args.includes("--run"),
     onlyFns=args.includes("--fns-only"),fns=onlyFns||args.includes("--fns"),
-    retryUnavailable=args.includes("--retry-unavailable");
+    retryUnavailable=args.includes("--retry-unavailable"),phoneOnly=args.includes("--phone-only");
+  if(phoneOnly&&fns)throw Error("CONTACT_BAD_ARGUMENT");
+  const prefix=phoneOnly?"public_phone_backfill":"public_contact";
   if(!path.isAbsolute(file)||!fs.existsSync(file)||!fs.statSync(file).isFile()||
     !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id))
     throw Error("CONTACT_BAD_ARGUMENT");
@@ -40,11 +42,11 @@ async function main(){
     !["direct_buyers","intermediaries","leasing","statistics"].every(k=>Array.isArray(source.final_result?.[k])))
     throw Error("CONTACT_CHECKPOINT_NOT_READY");
   const result=source.final_result;
-  const htmlPlan=planPublicContactEnrichment(result,{priorOutcomes:source.public_contact_outcomes||{},retryUnavailable});
+  const htmlPlan=planPublicContactEnrichment(result,{priorOutcomes:source[prefix+"_outcomes"]||{},retryUnavailable,phoneOnly});
   const fnsPlan=planPublicContactEnrichment(result,{priorOutcomes:source.fns_contact_outcomes||{},source:"fns",retryUnavailable});
   const summary=p=>Object.fromEntries(Object.entries(p).filter(([k])=>k!=="selected"));
   metric("CONTACT_BACKFILL_PLAN",{parent_checkpoint:id,region:source.region,dry_run:!run,
-    html:onlyFns?null:summary(htmlPlan),fns:fns?summary(fnsPlan):null,openai_requests:0,saby_requests:0});
+    phone_only:phoneOnly,html:onlyFns?null:summary(htmlPlan),fns:fns?summary(fnsPlan):null,openai_requests:0,saby_requests:0});
   if(!run||!(onlyFns?0:htmlPlan.eligible)&&!(fns&&fnsPlan.eligible))return;
   process.env.CHECKPOINT_DB_PATH=file;
   const {saveCheckpoint,PIPELINE_VERSION}=await import("../src/checkpointStore.js");
@@ -71,14 +73,14 @@ async function main(){
   };
   try{
     if(!onlyFns)await runPublicContactEnrichment({result,env,signal:controller.signal,
-      priorOutcomes:source.public_contact_outcomes||{},retryUnavailable,
-      onCheckpoint:x=>persist("public_contact",x)});
+      priorOutcomes:source[prefix+"_outcomes"]||{},retryUnavailable,phoneOnly,
+      onCheckpoint:x=>persist(prefix,x)});
     if(fns)await runFnsContactEnrichment({result,env,signal:controller.signal,
       priorOutcomes:source.fns_contact_outcomes||{},retryUnavailable,
       onCheckpoint:x=>persist("fns_contact",x)});
     if(saved){snapshot.contact_backfill_in_progress=false;await saveCheckpoint(childId,snapshot);}
     metric("CONTACT_BACKFILL_DONE",{parent_checkpoint:id,child_checkpoint:saved?childId:null,
-      html:snapshot.public_contact_stats||null,fns:fns?snapshot.fns_contact_stats||null:null,
+      phone_only:phoneOnly,html:snapshot[prefix+"_stats"]||null,fns:fns?snapshot.fns_contact_stats||null:null,
       original_checkpoint_unchanged:true,openai_requests:0,saby_requests:0});
   }finally{process.removeListener("SIGINT",stop);process.removeListener("SIGTERM",stop);}
 }

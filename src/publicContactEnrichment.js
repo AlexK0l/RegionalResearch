@@ -47,10 +47,33 @@ function grade(row){
   return txt(row?.__final_grade||row?.["Основание"]).toUpperCase().slice(0,1);
 }
 function priority(row,gaps){
-  return (grade(row)==="A"?300:grade(row)==="B"?200:100)+
-    (gaps.phone&&gaps.email?50:0)+(gaps.phone?20:0)+(gaps.email?10:0)+(gaps.leader?3:0)+(gaps.department?1:0);
+  return (gaps.phone?1000:0)+(grade(row)==="A"?300:grade(row)==="B"?200:100)+
+    (gaps.email?10:0)+(gaps.leader?3:0)+(gaps.department?1:0);
 }
-export function planPublicContactEnrichment(result,{priorOutcomes={},retryUnavailable=false,source="html"}={}){
+// Actual phone coverage, never substitute "contact ok" (which may be
+// email-only). No source lookup and no mutation.
+export function contactPhoneCoverage(result){
+  const overall={rows:0,with_phone:0,without_phone:0,without_phone_with_inn:0,
+    without_phone_without_inn:0},by_grade={},by_sheet={};
+  const count=(target,row,has)=>{
+    target.rows=(target.rows||0)+1;
+    target.with_phone=(target.with_phone||0)+Number(has);
+    target.without_phone=(target.without_phone||0)+Number(!has);
+    target.without_phone_with_inn=(target.without_phone_with_inn||0)+
+      Number(!has&&/^\d{10}(?:\d{2})?$/.test(txt(row["ИНН"])));
+    target.without_phone_without_inn=(target.without_phone_without_inn||0)+
+      Number(!has&&!/^\d{10}(?:\d{2})?$/.test(txt(row["ИНН"])));
+  };
+  for(const {row,sheet} of rowsOf(result)){
+    const has=parsePhoneEntries(row["Телефон"]).length>0;
+    const g=["A","B","C"].includes(grade(row))?grade(row):"other";
+    if(!by_grade[g])by_grade[g]={};
+    if(!by_sheet[sheet])by_sheet[sheet]={};
+    count(overall,row,has);count(by_grade[g],row,has);count(by_sheet[sheet],row,has);
+  }
+  return {...overall,by_grade,by_sheet};
+}
+export function planPublicContactEnrichment(result,{priorOutcomes={},retryUnavailable=false,source="html",phoneOnly=false}={}){
   const rows=rowsOf(result),counts=new Map();
   for(const {row} of rows){
     const inn=txt(row?.["ИНН"]);if(inn)counts.set(inn,(counts.get(inn)||0)+1);
@@ -63,7 +86,9 @@ export function planPublicContactEnrichment(result,{priorOutcomes={},retryUnavai
     const gaps=contactMissingFields(row,{department:source==="html"&&sheet==="direct_buyers"&&["A","B"].includes(grade(row))});
     stats.missing_phone+=Number(gaps.phone);stats.missing_email+=Number(gaps.email);
     stats.missing_leader+=Number(gaps.leader);stats.missing_both+=Number(gaps.phone&&gaps.email);
+    if(phoneOnly&&!gaps.phone)continue;
     if(source==="fns"?!(gaps.email||gaps.leader):!Object.values(gaps).some(Boolean))continue;
+    if(phoneOnly){gaps.email=false;gaps.leader=false;gaps.department=false;}
     const target=publicContactTarget(row);
     if(!target){stats.missing_identity++;continue;}
     if(counts.get(target.inn)!==1){stats.duplicate_identity++;continue;}
@@ -170,12 +195,12 @@ export function applyPublicContactFacts(row,facts,{owners,target=publicContactTa
 }
 export async function runPublicContactEnrichment({
   result,env=process.env,signal=null,priorOutcomes={},previousStats=null,
-  retryUnavailable=false,clientFactory=createPublicContactHttp,
+  retryUnavailable=false,phoneOnly=false,clientFactory=createPublicContactHttp,
   lookup=lookupPublicCompanyContacts,shouldPause=()=>false,
   onCheckpoint=async()=>{},onProgress=async()=>{}
 }={}){
   const settings=publicContactSettings(env);
-  const outcomes={...priorOutcomes},plan=planPublicContactEnrichment(result,{priorOutcomes:outcomes,retryUnavailable});
+  const outcomes={...priorOutcomes},plan=planPublicContactEnrichment(result,{priorOutcomes:outcomes,retryUnavailable,phoneOnly});
   const prior=previousStats?.revision===REVISION?previousStats:{};
   const stats={revision:REVISION,enabled:settings.enabled,
     eligible:plan.eligible,scheduled:0,processed:Number(prior.processed||0),
@@ -183,7 +208,8 @@ export async function runPublicContactEnrichment({
     leader_added:Number(prior.leader_added||0),department_added:Number(prior.department_added||0),
     conflicts:Number(prior.conflicts||0),http_requests:Number(prior.http_requests||0),
     elapsed_ms:Number(prior.elapsed_ms||0),by_reason:{...prior.by_reason},
-    pending:plan.eligible,stop_reason:"",openai_requests:0,saby_requests:0};
+    pending:plan.eligible,stop_reason:"",openai_requests:0,saby_requests:0,
+    phone_only:phoneOnly,phone_coverage_before:prior.phone_coverage_before||contactPhoneCoverage(result)};
   if(!settings.enabled)return {stats,outcomes};
   const started=Date.now(),priorElapsed=stats.elapsed_ms;
   const deadlineAt=started+Math.max(0,settings.maxMs-priorElapsed);
@@ -196,6 +222,7 @@ export async function runPublicContactEnrichment({
     stats.http_requests=client.requests;
     stats.elapsed_ms=priorElapsed+Math.max(0,Date.now()-started);
     stats.pending=Math.max(0,plan.eligible-processedHere+incompleteHere);
+    stats.phone_coverage_after=contactPhoneCoverage(result);
     await onCheckpoint({stats:{...stats,by_reason:{...stats.by_reason}},outcomes:{...outcomes}});
     dirty=0;
   };
