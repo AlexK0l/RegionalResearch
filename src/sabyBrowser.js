@@ -1199,8 +1199,9 @@ async function ownTrucks(page, settings,progress={}) {
   return {status:"verified",count:preview.count,vehicles:rows};
 }
 
-async function collectSabyCompanyAttempt(page, row, settings) {
-  const identity=await openCompany(page,row,settings);
+async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
+  const identity=sections?(await openSavedSabyFinanceCard(page,row,settings)||
+    await openCompany(page,row,settings)):await openCompany(page,row,settings);
   // A verified legal name and INN does not imply detail widgets are hydrated.
   await waitForDetailSections(page, Math.min(7000,settings.timeoutMs||45000));
   const result={identity,source:"SABY",source_url:page.url(),
@@ -1210,10 +1211,16 @@ async function collectSabyCompanyAttempt(page, row, settings) {
   // Financial indicators live on the already-verified company card. Read
   // them before opening contacts or the fleet overlay so this is one visit,
   // not a new request, and the widgets remain company scoped.
-  try { result.financials=await readSabyFinancials(page); }
-  catch { result.errors.push("financials: unavailable"); }
-  try { result.contacts=await ownContacts(page); }
-  catch(error) { result.errors.push("contacts: "+error.message); }
+  if(!sections||sections.financials){
+    try { result.financials=await readSabyFinancials(page); }
+    catch { result.errors.push("financials: unavailable"); }
+  }
+  if(!sections||sections.contacts){
+    try { result.contacts=await ownContacts(page); }
+    catch { result.errors.push("contacts: "+error.message); }
+  }
+  // Do not even open the fleet overlay during the phone-first pass.
+  if(sections&&!sections.trucks)return result;
   const fleetProgress={phase:"overlay"};
   try {
     await closeContactOverlay(page);
@@ -1354,6 +1361,13 @@ export async function collectSabyFinancialsOnly(page, row, settings = sabyBrowse
     contacts:{phones:[],emails:[],status:"missing"},
     trucks:{status:"missing"},financials,errors:[]
   };
+}
+
+// Section-scoped production collector. Re-verify the saved card or search
+// by exact INN/name. A section omitted on purpose is not a missing widget
+// warranting a second full visit. The stage owns bounded gap recovery.
+export async function collectSabySections(page,row,settings,sections){
+  return collectSabyCompanyAttempt(page,row,settings,sections);
 }
 
 export async function collectSabyCompany(page, row, settings = sabyBrowserSettings()) {
