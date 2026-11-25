@@ -697,6 +697,7 @@ function setProgress(p){
       "")+"Компаний проверено: "+Number(p.sabyCurrent||0)+
       " / "+Number(p.sabyTotal||0)+
       " · телефоны: +"+Number(stats.phonesAdded||0)+
+      (stats.phoneCoverage?" ("+Number(stats.phoneCoverage.with_phone||0)+" / "+Number(stats.phoneCoverage.rows||0)+")":"")+
       " · транспорт: +"+Number(stats.transportsAdded||0)+
       " · на проверку: "+Number(stats.review||0)+
       (p.sabyRecoveryText?" · "+p.sabyRecoveryText:"");
