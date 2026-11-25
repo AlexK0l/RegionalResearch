@@ -24,6 +24,7 @@ export async function runCheckpointedSabyStage12({
   persistCheckpoint = async () => {},
   sessionRunner,
   collectCompany,
+  acquireSabyBrowser,
   // Normal full/late resumes reconnect transient browser failures. Saby-only
   // already has an outer recovery and must not multiply retry sessions.
   recoverBrowserSession = false,
@@ -67,7 +68,7 @@ export async function runCheckpointedSabyStage12({
   if (sessionRunner) options.sessionRunner = sessionRunner;
   if (collectCompany) options.collectCompany = collectCompany;
   const settings = sabyStage12Settings(env);
-  if (!recoverBrowserSession || !settings.enabled) {
+  if (!settings.enabled || (!recoverBrowserSession && !acquireSabyBrowser)) {
     return runSabyStage12(options);
   }
   // Exactly the same fair-queue plan as runSabyStage12. This count is only
@@ -87,9 +88,29 @@ export async function runCheckpointedSabyStage12({
   const total = Math.min(pending.length,
     settings.maxCompanies || pending.length);
   if (!total) return runSabyStage12(options);
+  let releaseBrowser;
+  if(acquireSabyBrowser){
+    // A peer can request a cooperative pause even before the first company.
+    // Persist the actual remaining INNs and the fair-queue cursor first.
+    const pendingIds=pending.map(entry=>sabyInn(entry.row["ИНН"]));
+    const pendingSet=new Set(pendingIds);
+    await persistCheckpoint("saby",{
+      completed_stage:9,final_result:result,
+      saby_completed_inns:[...completed],
+      saby_deferred_inns:pendingIds,
+      saby_attempted_inns:[...new Set(attemptedInns.map(sabyInn)
+        .filter(inn=>pendingSet.has(inn)))]
+    });
+    const waitStarted=Date.now();
+    releaseBrowser=await acquireSabyBrowser();
+    // Waiting for RAM is not browser work and must not consume its deadline.
+    startedAt+=Date.now()-waitStarted;
+  }
+  try{
+  if(!recoverBrowserSession)return await runSabyStage12(options);
   const duration = maxDurationMs == null
     ? settings.maxMs : Number(maxDurationMs);
-  return runSabyOnlyWithRecovery({
+  return await runSabyOnlyWithRecovery({
     runPass: ({completedInns:done, attemptedInns:visited,
       maxDurationMs:remaining, onProgress:report}) =>
       runSabyStage12({
@@ -121,4 +142,9 @@ export async function runCheckpointedSabyStage12({
       });
     }
   });
+  }finally{
+    // runSabyStage12 awaits Playwright context.close() in its sessionRunner.
+    // Hold priority through bounded reconnects; release on every exit.
+    releaseBrowser?.();
+  }
 }
