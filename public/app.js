@@ -670,13 +670,31 @@ function setProgress(p){
         :"");
   }else if(p.phase==="saby"||p.phase==="saby_paused"){
     const stats=p.sabyStats||{};
+    if(p.girboStats){
+      const g=p.girboStats;
+      e.statusText.textContent="ГИР БО ФНС: проверка выручки";
+      e.contactBox.hidden=false;
+      e.contactBox.textContent="Проверено: "+Number(g.processed||0)+" / "+Number(g.scheduled||0)+
+        " · выручка: +"+Number(g.added||0);
+      return;
+    }
+    if(p.publicContactStats){
+      const c=p.publicContactStats;
+      e.statusText.textContent="Дополнительный поиск контактов в открытых источниках";
+      e.contactBox.hidden=false;
+      e.contactBox.textContent="Проверено: "+Number(c.current||0)+" / "+Number(c.total||0)+
+        " · телефоны: +"+Number(c.phone_added||0)+" · почта: +"+Number(c.email_added||0);
+      return;
+    }
     e.statusText.textContent=p.phase==="saby_paused"
       ?"Автоматические попытки восстановления завершены. Результат доступен для скачивания."
       :stats.restarting?"Повторное подключение к Saby · "+Number(stats.browserRestarts||0)+
         " / "+Number(stats.maxBrowserRestarts||2)
-      :"Проверка контактов и грузовых автомобилей в Saby";
+      :stats.phaseLabel||"Проверка контактов и грузовых автомобилей в Saby";
     e.contactBox.hidden=false;
-    e.contactBox.textContent="Проверено: "+Number(p.sabyCurrent||0)+
+    e.contactBox.textContent=(stats.passCount?
+      "Проход "+stats.passIndex+"/"+stats.passCount+" · "+Number(stats.passProcessed||0)+" / "+Number(stats.passTotal||0)+" · ":
+      "")+"Компаний проверено: "+Number(p.sabyCurrent||0)+
       " / "+Number(p.sabyTotal||0)+
       " · телефоны: +"+Number(stats.phonesAdded||0)+
       " · транспорт: +"+Number(stats.transportsAdded||0)+
