@@ -95,6 +95,35 @@ function legalFormConflict(nameA, nameB) {
   const a = legalFormFamily(nameA), b = legalFormFamily(nameB);
   return Boolean(a && b && a !== b);
 }
+// A numbered legal name is an identity discriminator, not an insignificant
+// stop token. Even a single shared INN or two overlapping name words must
+// not combine distinctly numbered companies. A documented change of legal
+// name with different numbers is an explicit review case, not a fuzzy merge.
+function numericNameSignature(name) {
+  return [...new Set(String(name||"").normalize("NFKC").match(/\d+/g)||[])]
+    .sort().join("|");
+}
+export function numberedLegalNameConflict(nameA,nameB) {
+  const a=numericNameSignature(nameA), b=numericNameSignature(nameB);
+  return Boolean(a&&b&&a!==b);
+}
+// Old checkpoints may already contain merged originals. Inspect the entire
+// saved lineage, not just the survivor's display name. Retain its records
+// for explicit evidence review rather than importing another entity's facts.
+export function mergedNumberedLegalNameConflict(row) {
+  const pending=[row],seen=new Set(),signatures=new Set();
+  while(pending.length){
+    const record=pending.pop();
+    if(!record||typeof record!=="object"||seen.has(record))continue;
+    seen.add(record);
+    const sig=numericNameSignature(record["Организация"]);
+    if(sig)signatures.add(sig);
+    if(signatures.size>1)return true;
+    if(Array.isArray(record.__merged_original_records))
+      pending.push(...record.__merged_original_records);
+  }
+  return false;
+}
 // Reused after an INN was cleared. A blank INN must never disable OGRN
 // conflict checks and permit the same records to merge by name alone.
 export function legalEvidenceConflict(recordA, recordB) {
@@ -105,6 +134,7 @@ export function legalEvidenceConflict(recordA, recordB) {
   if (ogA.length && ogB.length && ogA[0] !== ogB[0]) return "different_ogrns";
   if (!sameRole(a["Организация"], b["Организация"])) return "different_legal_roles";
   if (legalFormConflict(a["Организация"], b["Организация"])) return "different_legal_forms";
+  if (numberedLegalNameConflict(a["Организация"],b["Организация"])) return "different_numbered_legal_names";
   return "";
 }
 
@@ -159,6 +189,7 @@ export function confirmedInnAliasDecision(recordA, recordB, inn, compatibleNames
   }
   if (!sameRole(nameA, nameB)) return { ...base, merge: false, reason: "different_legal_roles" };
   if (legalFormConflict(nameA, nameB)) return { ...base, merge: false, reason: "different_legal_forms" };
+  if (numberedLegalNameConflict(nameA,nameB)) return {...base,merge:false,reason:"different_numbered_legal_names"};
   if (legalNameKey(nameA) === legalNameKey(nameB)) {
     return { ...base, merge: true, reason: "same_normalized_legal_name" };
   }

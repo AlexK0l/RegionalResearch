@@ -4,7 +4,8 @@
 // pipeline; this gate never guesses identities, merges companies or uses APIs.
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { populateCommercialActions } from "./researchQuality.js";
-import { commercialEligibility } from "./qualificationSafety.js";
+import { commercialEligibility, insufficientTrailerEvidence } from "./qualificationSafety.js";
+import {mergedNumberedLegalNameConflict} from "./legalIdentity.js";
 
 export const FINAL_QUALITY_GATE_VERSION = "2";
 const SECTIONS = ["direct_buyers", "intermediaries", "leasing"];
@@ -91,6 +92,7 @@ export function selectedAEvidenceSource(row, aEvidence) {
 export function disclaimsSelectedTrailerEvidence(claim) {
   const note = string(claim).toLowerCase().replace(/ё/g, "е");
   if (!note) return false;
+  if(insufficientTrailerEvidence(note))return true;
   // Specific make/model/registration details are OPTIONAL for an otherwise
   // clearly confirmed own trailer fleet. A negative statement solely about
   // those details must never cancel a positive ownership/operation assertion.
@@ -405,6 +407,7 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
         /^(?:ооо|общество с ограниченной ответственностью)(?:\s|[«"'(]|$)/i.test(string(row["Организация"]))) {
       issues.push("llc_with_individual_inn");
     }
+    if(mergedNumberedLegalNameConflict(row))issues.push("merged_numbered_legal_names_conflict");
     if (contestedInn.has(index)) issues.push("unresolved_shared_inn");
     if (verifiedLineageConflicts.has(index)) issues.push("cross_queue_lineage_inn_conflict");
     if (unverifiedQueueInnConflicts.has(index)) issues.push("cross_queue_canonical_invalid_inn_collision");
@@ -478,7 +481,8 @@ export function finalizeProductionResearch(source, { qualify, isActionable = () 
     }
     if (mustHold) {
       const reviewable = !eligibility.blocked && (
-        eligible || isActionable({ sheet, row, id: id || "quality_record_" + index }));
+        eligible || issues.includes("merged_numbered_legal_names_conflict") ||
+        isActionable({ sheet, row, id: id || "quality_record_" + index }));
       const issueDescription = issues.length
         ? "Автоматический контроль качества: " + issues.join(", ") + ". " + reason
         : reason;
