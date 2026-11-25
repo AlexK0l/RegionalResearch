@@ -148,3 +148,18 @@ test("public HTTP diagnostics distinguish TLS, DNS and robots without weakening 
   assert.deepEqual(out.facts,[]);
   assert.deepEqual(out.source_error_reasons,Object.fromEntries(codes.map(k=>[k,1])));
 });
+
+test("explicit continuation resets exhausted section cursor before a memory pause at startup",async()=>{
+  const source={version:1,pipeline_version:1,region:"Test",source_mode:"full",phase:"completed",
+    completed_stage:9,final_result:result([row(innA,"Альфа")]),
+    saby_completed_inns:[],saby_deferred_inns:[innA],
+    saby_pass_state:{version:1,planned_inns:[innA],attempted:["contacts:"+innA],
+      phase_index:4,stats:{}}};
+  await assert.rejects(runSabyOnlyContinuation({checkpoint:source,
+    sourceJobId:"12345678-1234-1234-1234-123456789abc",env,contactFirst:true,
+    sessionRunner:async()=>assert.fail("must not open before durable admission"),
+    persistCheckpoint:async cp=>{
+      assert.equal(cp.saby_pass_state,null);
+      throw new MemoryPauseError();
+    }}),isMemoryPause);
+});
