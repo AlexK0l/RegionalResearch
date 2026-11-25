@@ -63,6 +63,10 @@ export function estimateResearchEta(job, {
   if (job.state === "failed" || job.state === "cancelled") {
     return unestimated(job.state, "Исследование не выполняется");
   }
+  if(job?.progress?.phase==="memory_paused"||job?.progress?.phase==="memory_wait")
+    return unestimated("memory_wait","Ожидание свободной оперативной памяти");
+  if(job?.progress?.memoryPauseRequested)
+    return unestimated("memory_pausing","Сохранение контрольной точки перед паузой");
   if (job.state === "waiting" || job?.progress?.phase === "queued") {
     return unestimated("queued", "В очереди — время начала неизвестно");
   }

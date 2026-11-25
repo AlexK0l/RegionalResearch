@@ -5,6 +5,7 @@ import { applySabyEnrichment, sabyEligibleRows, sabyInn,
   sabyStoredSectionCoverage } from "./sabyEnrichment.js";
 import { withSabyBrowser, collectSabyCompany, SabyReview } from "./sabyBrowser.js";
 import { validSabyFinancialEvidence } from "./sabyFinancials.js";
+import {isMemoryPause} from "./memoryAdmission.js";
 
 const bounded = (value, fallback, min, max) => {
   const n = Number(value);
@@ -214,7 +215,7 @@ export async function runSabyStage12({
             }
           }
         } catch(error) {
-          if(signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
+          if(isMemoryPause(error)||signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
           const scope=error instanceof SabyReview&&
             error.scope==="company"?"company":"systemic";
           if(scope==="company"){
@@ -247,7 +248,7 @@ export async function runSabyStage12({
       }
     },{env});
   } catch(error) {
-    if(signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
+    if(isMemoryPause(error)||signal?.aborted || error?.message==="JOB_CANCELLED") throw error;
     stats.browserError=String(error?.message||error).slice(0,400);
     console.warn("[SABY_BROWSER_UNAVAILABLE] "+JSON.stringify({
       error:stats.browserError

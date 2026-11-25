@@ -12,6 +12,7 @@ import {preparePersistedCheckpointExport} from "./src/persistedCheckpointExport.
 import {decorateCompanyBasisForExport} from "./src/companyBasisNarrative.js";
 import { createFullJobQueue, fullJobConcurrencyLimit } from "./src/fullJobQueue.js";
 import {createJobMemoryMonitor,processMemorySnapshot} from "./src/runtimeMemory.js";
+import {createMemoryAdmission,isMemoryPause} from "./src/memoryAdmission.js";
 import { estimateResearchEta, historicalStageDurations } from "./src/researchEta.js";
 import { STEPS } from "./src/constants.js";
 import { launchResearchBrowser } from "./src/googleAiAgent.js";
@@ -30,7 +31,8 @@ import {
   normalizeCheckpoint,
   PIPELINE_VERSION,
   saveCheckpoint,
-  supersedeRegionCheckpoints
+  supersedeRegionCheckpoints,
+  saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs
 } from "./src/checkpointStore.js";
 
 initializeFileLogging();
@@ -80,6 +82,7 @@ function compactCompletedJobPayload(job){
 }
 
 const MAX_ACTIVE_FULL_JOBS = fullJobConcurrencyLimit();
+const memoryAdmission=createMemoryAdmission();
 if (process.env.MAX_ACTIVE_FULL_JOBS && String(process.env.MAX_ACTIVE_FULL_JOBS) !== String(MAX_ACTIVE_FULL_JOBS)) {
   console.warn("[MAX_ACTIVE_FULL_JOBS_ADJUSTED] " + JSON.stringify({configured:process.env.MAX_ACTIVE_FULL_JOBS,effective:MAX_ACTIVE_FULL_JOBS}));
 }
@@ -464,13 +467,31 @@ async function executeJob(job, apiKey) {
     }));
 
     try {
+      // Load large source snapshots only after the memory gate admits the job.
+      if(job.data?.checkpointRef){
+        const cp=await loadCheckpoint(job.data.checkpointRef);
+        if(!cp||Number(cp.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION)
+          throw Error("MEMORY_RESUME_CHECKPOINT_UNAVAILABLE");
+        job.data.checkpoint=cp;
+      }
+      if(job.cancelled)throw Error("JOB_CANCELLED");
+      if(job.data?.memoryResume){
+        // Consuming a paused marker is deliberate: a subsequent hard crash
+        // may have unsaved paid requests and must NOT auto-replay blindly.
+        clearMemoryPausedJob(job.id);
+        console.info("[MEMORY_JOB_RESUMED] "+JSON.stringify({job_id:job.id,pause_count:job.memoryPauseCount}));
+      }
       const output = job.mode === "saby_only"
         ? await runSabyOnlyContinuation({
             checkpoint:job.data.checkpoint,
             sourceJobId:job.data.sourceJobId,
             signal:job.abortController?.signal,
             onProgress:p=>job.updateProgress(p),
-            persistCheckpoint:cp=>job.updateCheckpoint(cp)
+            memoryResume:job.data.memoryResume===true,
+            persistCheckpoint:async(cp,options)=>{
+              await job.updateCheckpoint(cp);
+              if(options?.memorySafe)await job.memorySafePoint?.();
+            }
           })
         : await runResearchPipeline({ job, apiKey });
       if (job.cancelled) throw new Error("JOB_CANCELLED");
@@ -502,6 +523,24 @@ async function executeJob(job, apiKey) {
       }
       job.state = "completed";
     } catch (error) {
+      if(isMemoryPause(error)&&job.memoryPauseRequested&&!job.cancelled){
+        try{
+          job.memoryPauseCount=Number(job.memoryPauseCount||0)+1;
+          saveMemoryPausedJob(job);
+          job.data.memoryResume=true;
+          job.data.checkpointRef=job.id;
+          if(!job.data.sourceJobId)job.data.sourceJobId=job.id;
+          job.result=null;job.error=null;job.state="waiting";
+          job.progress={...job.progress,phase:"memory_paused",memoryPauseRequested:false};
+          console.info("[MEMORY_JOB_PAUSED] "+JSON.stringify({job_id:job.id,
+            phase:job.latestCheckpointSummary?.phase,pause_count:job.memoryPauseCount}));
+          return {memoryPaused:true};
+        }catch(persistError){
+          job.state="failed";
+          job.error="Не удалось сохранить автоматическую паузу: "+persistError.message;
+          return;
+        }
+      }
       if (
         error?.message === "JOB_CANCELLED" ||
         error?.name === "AbortError" ||
@@ -534,17 +573,55 @@ async function executeJob(job, apiKey) {
 
 const fullQueue = createFullJobQueue({
   limit: MAX_ACTIVE_FULL_JOBS,
-  execute: executeJob
+  execute: executeJob,
+  memory:memoryAdmission
 });
 
 function queueJob(job, apiKey) {
   if (job.mode === "full" || job.mode === "resume" || job.mode === "saby_only") {
-    return fullQueue.enqueue(job, apiKey);
+    if(job.data?.checkpointRef)delete job.data.checkpoint;
+    return fullQueue.enqueue(job, apiKey,{paused:job.data?.memoryResume===true});
   }
+  // Diagnostic jobs use RAM too; apply admission without pretending that
+  // they have a resumable production checkpoint or reserving their region.
+  if(memoryAdmission.settings.enabled)return fullQueue.enqueue(job,apiKey,{reserveRegion:false});
   queueMicrotask(() => executeJob(job, apiKey));
   return { accepted: true };
 }
 
+function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
+  memoryPauseCount=0,progress={}}){
+  return {id,region,mode,data,createdAt,memoryPauseCount,
+    state:"waiting",progress,result:null,error:null,cancelled:false,
+    abortController:new AbortController(),latestCheckpoint:null,latestCheckpointSummary:summary,
+    async updateProgress(progress){
+      this.progress={...progress,memoryPauseRequested:!!this.memoryPauseRequested,
+        memoryPauseCount:this.memoryPauseCount};
+      this.memoryMonitor?.phase(progress?.phase);
+    },
+    async updateCheckpoint(checkpoint){
+      if(Number(checkpoint?.version)!==1||!String(checkpoint?.region||"").trim())
+        throw Error("Некорректный checkpoint pipeline");
+      await saveCheckpoint(this.id,checkpoint);
+      this.latestCheckpointSummary=checkpointSummary(checkpoint);
+      this.latestCheckpoint=null;
+    }
+  };
+}
+function restoreMemoryPausedJobs(){
+  if(!memoryAdmission.settings.enabled)return;
+  const apiKey=String(process.env.OPENAI_API_KEY||"").trim();
+  for(const item of listMemoryPausedJobs()){
+    if(item.mode!=="saby_only"&&!apiKey)continue;
+    const job=makeResearchJob({...item,data:{region:item.region,sourceJobId:item.id,
+      checkpointRef:item.id,memoryResume:true},progress:{phase:"memory_paused",percent:item.percent}});
+    const queued=queueJob(job,apiKey);
+    if(queued.accepted){
+      jobs.set(job.id,job);
+      console.info("[MEMORY_JOB_RESTORED] "+JSON.stringify({job_id:job.id,pause_count:job.memoryPauseCount}));
+    }
+  }
+}
 function activeRegionConflict(region, res) {
   const existing = fullQueue.conflict(region);
   if (!existing) return false;
@@ -608,7 +685,7 @@ app.post("/api/jobs", async (req, res) => {
         error:"Для региона существует более новый checkpoint Saby"
       });
     }
-    data={region,checkpoint:checked.checkpoint,sourceJobId:checkpointId};
+    data={region,checkpoint:checked.checkpoint,sourceJobId:checkpointId,checkpointRef:checkpointId};
   }
 
   if (mode === "replay" || mode === "dedupe_replay") {
@@ -677,7 +754,8 @@ app.post("/api/jobs", async (req, res) => {
     data = {
       region,
       checkpoint,
-      sourceJobId: checkpointId
+      sourceJobId: checkpointId,
+      checkpointRef:storedCheckpoint&&!sourceJob?.latestCheckpoint?checkpointId:""
     };
   }
 
@@ -699,34 +777,8 @@ app.post("/api/jobs", async (req, res) => {
   }
 
   const id = crypto.randomUUID();
-  const job = {
-    id,
-    region,
-    mode,
-    data,
-    state: "waiting",
-    progress: {},
-    result: null,
-    error: null,
-    cancelled: false,
-    abortController: new AbortController(),
-    createdAt: Date.now(),
-    latestCheckpoint:null,
-    latestCheckpointSummary:["resume","saby_only"].includes(mode)
-      ?checkpointSummary(data.checkpoint):null,
-    async updateProgress(progress) {
-      this.progress = progress;
-      this.memoryMonitor?.phase(progress?.phase);
-    },
-    async updateCheckpoint(checkpoint) {
-      if(Number(checkpoint?.version)!==1||
-         !String(checkpoint?.region||"").trim())
-        throw new Error("Некорректный checkpoint pipeline");
-      await saveCheckpoint(this.id,checkpoint);
-      this.latestCheckpointSummary=checkpointSummary(checkpoint);
-      this.latestCheckpoint=null;
-    }
-  };
+  const job = makeResearchJob({id,region,mode,data,
+    summary:["resume","saby_only"].includes(mode)?checkpointSummary(data.checkpoint):null});
   const queued = queueJob(job, apiKey);
   if (!queued.accepted) {
     return res.status(409).json({
@@ -771,6 +823,8 @@ app.get("/api/jobs", (_req, res) => {
         phase: job.progress?.phase || "",
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
+        memoryPauseRequested:!!job.memoryPauseRequested,
+        memoryPauseCount:Number(job.memoryPauseCount||0),
         createdAt: job.createdAt,
         hasResult: job.state === "completed" &&
           Boolean(job.result?.result || job.result?.resultStored),
@@ -862,33 +916,10 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   // The original remains available if the new attempt fails or is cancelled.
   if (activeRegionConflict(checkpoint.region, res)) return;
   const id = crypto.randomUUID();
-  const job = {
-    id,
-    region: checkpoint.region,
-    mode: "resume",
-    data: { region: checkpoint.region, checkpoint, sourceJobId: req.params.id },
-    state: "waiting",
-    progress: {},
-    result: null,
-    error: null,
-    cancelled: false,
-    abortController: new AbortController(),
-    createdAt: Date.now(),
-    latestCheckpoint:null,
-    latestCheckpointSummary:checkpointSummary(checkpoint),
-    async updateProgress(progress) {
-      this.progress = progress;
-      this.memoryMonitor?.phase(progress?.phase);
-    },
-    async updateCheckpoint(nextCheckpoint) {
-      if(Number(nextCheckpoint?.version)!==1||
-         !String(nextCheckpoint?.region||"").trim())
-        throw new Error("Некорректный checkpoint pipeline");
-      await saveCheckpoint(this.id,nextCheckpoint);
-      this.latestCheckpointSummary=checkpointSummary(nextCheckpoint);
-      this.latestCheckpoint=null;
-    }
-  };
+  const storedSource=await loadCheckpoint(req.params.id);
+  const job=makeResearchJob({id,region:checkpoint.region,mode:"resume",
+    data:{region:checkpoint.region,checkpoint,sourceJobId:req.params.id,
+      checkpointRef:storedSource?req.params.id:""},summary:checkpointSummary(checkpoint)});
   const queued = queueJob(job, apiKey);
   if (!queued.accepted) {
     return res.status(409).json({
@@ -924,6 +955,8 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
 
   const wasWaiting = job.state === "waiting";
+  // A cancelled memory-paused job must not resurrect on service restart.
+  if(wasWaiting&&job.data?.memoryResume)clearMemoryPausedJob(job.id);
   job.cancelled = true;
   job.state = wasWaiting ? "cancelled" : "cancelling";
   job.error = wasWaiting ? "Остановлено пользователем" : job.error;
@@ -1070,6 +1103,8 @@ app.use((error, _req, res, _next) => {
 const httpServer = app.listen(port, BIND_HOST, () => {
   const boundPort = httpServer.address()?.port || port;
   console.log(`SAT research web service listening on ${BIND_HOST}:${boundPort}`);
+  try{restoreMemoryPausedJobs();}
+  catch(error){console.error("[MEMORY_RESTORE_ERROR] "+String(error?.message||error));}
   // The launch smoke-test exercises HTTP and SQLite without downloading or
   // opening Chromium. Normal local launches still perform the self-test.
   if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;

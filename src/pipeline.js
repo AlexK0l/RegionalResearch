@@ -1124,22 +1124,24 @@ function emptyResearchResult() {
   return { direct_buyers: [], intermediaries: [], leasing: [] };
 }
 
-async function mapWithConcurrency(items, concurrency, worker) {
-  const source = Array.isArray(items) ? items : [];
-  if (!source.length) return [];
-  const limit = Math.max(1, Math.min(Number(concurrency || 1), source.length));
-  const results = new Array(source.length);
-  let cursor = 0;
-
-  async function run(workerIndex) {
-    while (true) {
-      const index = cursor++;
-      if (index >= source.length) return;
-      results[index] = await worker(source[index], index, workerIndex);
-    }
+export async function mapWithConcurrency(items, concurrency, worker, shouldDrain=()=>false) {
+  const source=Array.isArray(items)?items:[];
+  if(!source.length)return [];
+  const limit=Math.max(1,Math.min(Number(concurrency||1),source.length));
+  const results=new Array(source.length);
+  let cursor=0,failed=false,firstError;
+  async function run(workerIndex){
+    try{
+      while(!failed&&!shouldDrain()){
+        const index=cursor++;
+        if(index>=source.length)return;
+        results[index]=await worker(source[index],index,workerIndex);
+      }
+    }catch(error){if(!failed){failed=true;firstError=error;}}
   }
-
-  await Promise.all(Array.from({ length: limit }, (_, workerIndex) => run(workerIndex)));
+  // Never free a job's slot while other workers still mutate its snapshot.
+  await Promise.all(Array.from({length:limit},(_,i)=>run(i)));
+  if(failed)throw firstError;
   return results;
 }
 
@@ -2530,7 +2532,8 @@ async function resolveFinalMissingInns({
   completedIds = new Set(),
   onBatch = async () => {},
   lookupBatch = lookupFinalInnBatch,
-  previousStats = {}
+  previousStats = {},
+  shouldPause=()=>false,onPause=async()=>{}
 }) {
   const companies = [
     ...(finalResult?.direct_buyers || []),
@@ -2639,7 +2642,11 @@ async function resolveFinalMissingInns({
       retried,
       pendingTotal: pending.length
     });
-  });
+  },shouldPause);
+  if(shouldPause()){
+    await onPause({completedIds,attempted,recovered,retried,pendingTotal:pending.length});
+    throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+  }
 
   const primaryBudgetDeferredIds = primaryIdentityBudgetStop
     ? [...new Set(pending
@@ -2737,6 +2744,10 @@ async function resolveFinalMissingInns({
         retried,
         pendingTotal: pending.length
       });
+      if(shouldPause()){
+        await onPause({completedIds,attempted,recovered,retried,pendingTotal:pending.length});
+        throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+      }
     }
   }
 
@@ -5993,7 +6004,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   const jobSignal = job.abortController?.signal;
   client.__jobSignal = jobSignal;
   const region = String(job.region || job.data?.region || "").trim();
-  const mode = String(job.mode || "full");
+  const mode = job.data?.memoryResume===true&&job.mode==="full"?"resume":String(job.mode || "full");
   const resumeCheckpoint =
     mode === "resume" && job.data?.checkpoint?.version === PIPELINE_CHECKPOINT_VERSION
       ? cloneJson(job.data.checkpoint)
@@ -6066,7 +6077,11 @@ export async function runResearchPipeline({ job, apiKey }) {
     created_at: new Date().toISOString()
   };
 
-  const persistCheckpoint = async (phase, patch = {}) => {
+  const pauseRequested=phase=>Boolean(job.memoryPauseRequested&&!job.cancelled&&
+    (!resumeCheckpoint||Number(PIPELINE_PHASE_ORDER[phase]??-1)>=
+      Number(PIPELINE_PHASE_ORDER[resumeCheckpoint.phase]??-1)));
+  const memorySafePoint=async()=>{await job.memorySafePoint?.();};
+  const persistCheckpoint = async (phase, patch = {}, memorySafe=false) => {
     // A resumed Stage11/12 snapshot is newer than Stage10. Replaying an
     // older deterministic step must never downgrade the only durable source
     // back to final_inn/enrichment/statistics before it can advance.
@@ -6101,6 +6116,12 @@ export async function runResearchPipeline({ job, apiKey }) {
       job_id: job.id || "",
       ...checkpointSummaryForLog(checkpointState)
     }));
+    // Only quiescent, committed boundaries may unwind this job. Do not
+    // throw out of checkpoint callbacks of concurrent paid workers.
+    if(executionMode==="full"&&(memorySafe||
+      ["starting","pre_identity","identity","final_batches","dedupe","qualification","statistics","saby","priority"].includes(phase)||
+      (phase==="contacts"&&patch.stage11_completed===true)))
+      await memorySafePoint();
   };
 
   const assertNotCancelled = async () => {
@@ -6475,6 +6496,15 @@ ${JSON.stringify(compactCourtArchive)}
         step: i + 1,
         percent: i * 9 + Math.floor(((branchIndex + 1) / Math.max(1, branches.length)) * 8)
       });
+      if(executionMode==="full"&&pauseRequested("discovery")){
+        parts[i]=combined;
+        await persistCheckpoint("discovery",{
+          completed_stage:i,discovery_partial_stage:i+1,
+          discovery_partial_branch:branchIndex+1,
+          discovery_partial_branch_diagnostics:branchDiagnostics,
+          parts,research_scopes:researchScopes
+        },true);
+      }
     }
 
     // Recovery should deepen branches that have already proven they can yield
@@ -6843,7 +6873,7 @@ ${JSON.stringify(compactCourtArchive)}
       parts,
       research_scopes: researchScopes,
       web_usage_total: webUsageSnapshot(client)
-    });
+    },true);
   }
 
   if (diagnosticMode) {
@@ -7253,7 +7283,7 @@ ${JSON.stringify(compactCourtArchive)}
       completed_stage: 9, parts, research_scopes: researchScopes,
       historical_recall: historicalRecall,
       web_usage_total: webUsageSnapshot(client)
-    });
+    },true);
   }
 
   const censusCompatibleWithResume =
@@ -7285,7 +7315,7 @@ ${JSON.stringify(compactCourtArchive)}
       coverage_snapshot: census.coverage,
       coverage_gap_buckets: census.gapBuckets,
       web_usage_total: webUsageSnapshot(client)
-    });
+    },true);
     statuses[8].detail =
       `выполнен · entity census добавил ${uniqueResearchCount(census.additions)} уникальных · coverage сохранён`;
   } else if (resumeCheckpoint && checkpointPhaseAtLeast(resumeCheckpoint, "pre_identity")) {
@@ -7399,7 +7429,7 @@ ${JSON.stringify(compactCourtArchive)}
       completed_stage: 9, parts, research_scopes: researchScopes,
       census_completed: true, autonomous_coverage: autonomousCoverage,
       web_usage_total: webUsageSnapshot(client)
-    });
+    },true);
   }
 
   await assertNotCancelled();
@@ -7691,6 +7721,12 @@ ${JSON.stringify(groupBatch)}`,
     region,
     assertNotCancelled,
     completedIds: finalInnCompleted,
+    shouldPause:()=>pauseRequested("final_inn"),
+    onPause:async state=>{
+      latestFinalInnProgress=state;
+      await finalInnCheckpointBatcher.request({force:true});
+      await memorySafePoint();
+    },
     previousStats: {
       attempted: resumeCheckpoint?.final_inn_attempted || 0,
       recovered: resumeCheckpoint?.final_inn_recovered || 0,
@@ -7921,7 +7957,7 @@ ${JSON.stringify(groupBatch)}`,
     enrichment_completed_ids: Array.isArray(resumeCheckpoint?.enrichment_completed_ids)
       ? resumeCheckpoint.enrichment_completed_ids
       : []
-  });
+  },true);
 
   await assertNotCancelled();
   // Before ANY paid enrichment/contact lookups, run the same deterministic
@@ -7969,7 +8005,7 @@ ${JSON.stringify(groupBatch)}`,
 
   const statisticsPromise =
     resumeCheckpoint &&
-    checkpointPhaseAtLeast(resumeCheckpoint, "statistics") &&
+    (checkpointPhaseAtLeast(resumeCheckpoint, "statistics")||resumeCheckpoint?.statistics_completed===true) &&
     Array.isArray(resumeCheckpoint?.final_result?.statistics)
       ? Promise.resolve(cloneJson(resumeCheckpoint.final_result.statistics))
       : askJson(client, {
@@ -7992,6 +8028,7 @@ ${JSON.stringify(groupBatch)}`,
             return [];
           });
 
+  let statisticsCompletedForPause=resumeCheckpoint?.statistics_completed===true;
   const enrichmentCheckpointBatcher = createCheckpointBatcher(async () => {
     await persistCheckpoint("enrichment", {
       completed_stage: 9,
@@ -8013,9 +8050,20 @@ ${JSON.stringify(groupBatch)}`,
       enrichment_completed_ids: [...enrichmentCompleted],
       enrichment_errors: enrichmentErrors,
       enrichment_deadline_skipped: enrichmentDeadlineSkipped,
-      enrichment_budget_deferred: enrichmentBudgetDeferred
+      enrichment_budget_deferred: enrichmentBudgetDeferred,
+      statistics_completed:statisticsCompletedForPause
     });
   });
+  const pauseDrainedEnrichment=async()=>{
+    if(!pauseRequested("enrichment"))return;
+    // The regional-statistics request runs concurrently with enrichment.
+    // Drain and preserve it too, otherwise a resume would pay for it again.
+    finalResult.statistics=await statisticsPromise;
+    statisticsCompletedForPause=true;
+    await enrichmentCheckpointBatcher.request({force:true});
+    await memorySafePoint();
+    throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+  };
 
   const enrichmentPending = finalCompaniesForEnrichment.filter((row) => {
     const id = checkpointRowId(row);
@@ -8212,8 +8260,10 @@ ${JSON.stringify(gaps)}
         }
         await enrichmentCheckpointBatcher.request();
       }
-    }
+    },
+    ()=>pauseRequested("enrichment")
   );
+  await pauseDrainedEnrichment();
   console.log("[ENRICHMENT_EFFICIENCY] " + JSON.stringify({
     planned_companies: enrichmentPending.length,
     batch_answered: enrichmentBatchAccepted,
@@ -8329,12 +8379,13 @@ ${JSON.stringify(gaps)}
         if (isWebBudgetStop(error)) break;
       }
       // Accepted facts and completed IDs are saved in the same checkpoint.
-      if (abRecoveryBatches % 4 === 0 || abRecoveryFailed > 0) {
+      if (abRecoveryBatches % 4 === 0 || abRecoveryFailed > 0 || pauseRequested("enrichment")) {
         await persistCheckpoint("enrichment", {
           final_result: finalResult,
           ab_recovery_completed_ids: [...abRecoveredIds]
         });
       }
+      await pauseDrainedEnrichment();
     }
     await persistCheckpoint("enrichment", {
       final_result: finalResult,
@@ -8690,8 +8741,14 @@ ${JSON.stringify(gaps)}
         }
         await contactCheckpointBatcher.request();
       }
-    }
+    },
+    ()=>pauseRequested("contacts")
   );
+  if(pauseRequested("contacts")){
+    await contactCheckpointBatcher.request({force:true});
+    await memorySafePoint();
+    throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+  }
   // In the 05-Nov paid run 92 companies had no attributable batch response
   // after exhausting 30 individual fallbacks, despite 33 contacts web slots
   // remaining. Retry a small high-priority sample in groups of three, never
@@ -8772,6 +8829,10 @@ ${JSON.stringify(gaps)}
       if (omissionRecheckBudgetStopped) break;
     }
     await contactCheckpointBatcher.request({ force: true });
+    if(pauseRequested("contacts")){
+      await memorySafePoint();
+      throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+    }
   }
   console.log("[CONTACT_BATCH_EFFICIENCY] " + JSON.stringify({
     batch_model_calls: contactBatchCalls,
