@@ -72,3 +72,27 @@ from the new child with only the MSP URL; do not re-download the annual
 archive or repeat the old name search. Range support has been tested
 against synthetic, strictly validated HTTP responses, not yet on the
 actual FNS origin. Previous staff values remain untouched.
+
+### Live range interruption and bounded block recovery
+
+The next VPS run proved actual FNS HTTP Range support with a stable strong
+ETag and validated ranges through at least 536,870,912 bytes. A later
+range returned fewer bytes than promised (FNS_RANGE_TRUNCATED), stopping
+the source before any child was saved. The received length alone does not
+establish the underlying network/server cause.
+
+Transient truncation, incomplete reads, connection interruption, timeout
+and selected temporary HTTP errors now retry only the affected logical
+block. A failed range is discarded, a smaller exact range is requested,
+and complete subranges are retained in memory. Every response retains the
+same strong ETag and exact range validation. No malformed response, changed
+representation, throttling, Retry-After or certificate failure is treated
+as a retryable body error. Retry backoff is bounded (up to five retries per
+logical block and 48 per archive, plus request/byte budgets). Logs report
+range offsets and retry counts, not document contents. No whole-archive
+retry is automatically initiated. The final SHA-256 still covers the
+entire archive, and partial scans are not saved. The previous annual-data
+child remains the resume point. Synthetic fixtures verify identical full
+hash/scan after interruptions, smaller ranges, persistent-failure bounds,
+and immediate rejection of changed representation or throttling. Actual
+recovery of the remaining large FNS ZIP still requires a live run.

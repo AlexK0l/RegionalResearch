@@ -1,4 +1,6 @@
 import sys, json, importlib.util, zipfile, tempfile, io, hashlib, re
+from http.client import IncompleteRead
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 from datetime import date
 spec=importlib.util.spec_from_file_location("scanner",sys.argv[1])
@@ -30,6 +32,13 @@ class Reply(io.BytesIO):
         self.url=url
         self.status=status
         self.headers=headers
+        self.fault=""
+    def read(self,n=-1):
+        if self.fault=="incomplete":
+            raise IncompleteRead(super().read(max(0,n//2)),max(0,n//2))
+        if self.fault=="timeout":
+            raise TimeoutError("fixture body timeout")
+        return super().read(n)
     def geturl(self):
         return self.url
 
@@ -38,6 +47,7 @@ class Origin:
         self.data=data
         self.mode=mode
         self.calls=0
+        self.attempts=[]
     def open(self,req,timeout):
         self.calls+=1
         h={k.lower():v for k,v in req.header_items()}
@@ -45,11 +55,13 @@ class Origin:
         assert h["accept-encoding"]=="identity"
         a,b=map(int,match.groups())
         assert 0<=a<=b<len(self.data)
+        self.attempts.append((a,b))
         if self.calls>1:
             assert h["if-match"]=='"fixture-zip"'
         body=self.data[a:b+1]
         tag='"fixture-zip"'
-        if self.mode=="changed" and self.calls>1:
+        if (self.mode=="changed" and self.calls>1 or
+                self.mode=="change_after_truncation" and self.calls==3):
             tag='"other-zip"'
         if self.mode=="weak":
             tag='W/"fixture-zip"'
@@ -57,9 +69,19 @@ class Origin:
                  "Content-Length":str(len(body)),"ETag":tag}
         if self.mode=="wrong_range":
             headers["Content-Range"]=f"bytes 1-{b}/{len(self.data)}"
-        if self.mode=="truncated" and self.calls>1:
+        if (self.mode=="truncated" and self.calls>1 or
+                self.mode in ("once_truncated","change_after_truncation") and self.calls==2):
             body=body[:-1]
-        return Reply(body,req.full_url,200 if self.mode=="ignored" else 206,headers)
+        if self.mode=="temporary_http" and self.calls==2:
+            raise HTTPError(req.full_url,503,"fixture",{},None)
+        if self.mode=="throttled" and self.calls==2:
+            raise HTTPError(req.full_url,429,"fixture",{},None)
+        if self.mode=="timeout_open" and self.calls==2:
+            raise URLError(TimeoutError("fixture"))
+        reply=Reply(body,req.full_url,200 if self.mode=="ignored" else 206,headers)
+        if self.calls==2 and self.mode in ("incomplete","timeout"):
+            reply.fault=self.mode
+        return reply
 
 buffer=io.BytesIO()
 with zipfile.ZipFile(buffer,"w",zipfile.ZIP_DEFLATED) as z:
@@ -79,14 +101,54 @@ out["range"]=meta
 for mode,code in [("ignored","FNS_RANGE_UNSUPPORTED"),
                   ("weak","FNS_RANGE_STRONG_ETAG_REQUIRED"),
                   ("changed","FNS_RANGE_REPRESENTATION_CHANGED"),
-                  ("truncated","FNS_RANGE_TRUNCATED"),
+                  ("truncated","FNS_RANGE_RETRY_EXHAUSTED"),
+                  ("change_after_truncation","FNS_RANGE_REPRESENTATION_CHANGED"),
+                  ("throttled","FNS_RANGE_RATE_LIMITED"),
                   ("wrong_range","FNS_RANGE_RESPONSE_UNPROVEN")]:
     try:
-        with m.RangeArchive(url,1024**2,opener=Origin(data,mode),block_size=64) as remote:
+        with m.RangeArchive(url,1024**2,opener=Origin(data,mode),block_size=64,sleep=lambda _:None) as remote:
             m.scan_archive(remote,"rsmp",date(2026,11,10),2025,targets)
             remote.finish()
     except ValueError as e:
         assert str(e)==code,(mode,str(e))
     else:
         raise AssertionError("Untrusted range accepted: "+mode)
+# Recover each observed transient failure and require a bit-identical
+# archive hash and equivalent full XML scan. No actual sleeps/network.
+for mode in ("once_truncated","incomplete","timeout","timeout_open","temporary_http"):
+    origin=Origin(data,mode)
+    notices=[]
+    with m.RangeArchive(url,1024**2,opener=origin,block_size=64,
+                        sleep=lambda _:None,on_retry=notices.append) as remote:
+        recovered=m.scan_archive(remote,"rsmp",date(2026,11,10),2025,targets)
+        meta=remote.finish()
+        assert recovered==out["rsmp"],mode
+        assert meta["sha256"]==hashlib.sha256(data).hexdigest(),mode
+        assert meta["range_retries"]==1 and len(notices)==1,mode
+        assert origin.attempts[2][0]==origin.attempts[1][0],mode
+        assert meta["requested_bytes"]>=len(data),mode
+
+# Force subrange fallback with a small test-only minimum. The returned
+# logical block must be identical, and the second request smaller.
+origin=Origin(data,"once_truncated")
+with m.RangeArchive(url,1024**2,opener=origin,block_size=64,sleep=lambda _:None) as remote:
+    remote.MIN_RETRY_RANGE=8
+    recovered=m.scan_archive(remote,"rsmp",date(2026,11,10),2025,targets)
+    meta=remote.finish()
+    assert recovered==out["rsmp"]
+    assert meta["sha256"]==hashlib.sha256(data).hexdigest()
+    assert origin.attempts[2][0]==origin.attempts[1][0]
+    assert origin.attempts[2][1]<origin.attempts[1][1]
+out["recovered_range"]=meta
+
+# Persistent interruption must stop after the configured finite budget.
+origin=Origin(data,"truncated")
+try:
+    with m.RangeArchive(url,1024**2,opener=origin,block_size=64,sleep=lambda _:None) as remote:
+        remote.read(32)
+except ValueError as e:
+    assert str(e)=="FNS_RANGE_RETRY_EXHAUSTED"
+    assert origin.calls==2+m.RangeArchive.MAX_BLOCK_RETRIES
+else:
+    raise AssertionError("unbounded retries")
 print(json.dumps(out))
