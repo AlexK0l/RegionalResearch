@@ -9454,10 +9454,17 @@ ${JSON.stringify(gaps)}
     girboPriorOutcomes:resumeCheckpoint?.girbo_backfill_outcomes||{},
     persistCheckpoint,
     acquireSabyBrowser:job.acquireSabyBrowser,
+    contactFirst:true,passState:resumeCheckpoint?.saby_pass_state,
     recoverBrowserSession:true,
+    onGirboProgress:async stats=>{
+      statuses[11].detail="ГИР БО ФНС · "+stats.processed+" / "+stats.scheduled+" · выручка +"+stats.added;
+      await progress({phase:"saby",step:12,percent:96,girboStats:stats});
+    },
     onProgress:async stats=>{
-      statuses[11].detail = `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
-      const ratio=stats.scheduled ? stats.processed/stats.scheduled : 1;
+      statuses[11].detail = (stats.phaseLabel?stats.phaseLabel+" · "+stats.passProcessed+" / "+stats.passTotal+" · ":"")+
+        `проверено ${stats.processed} / ${stats.scheduled} · контакты +${stats.phonesAdded} · транспорт +${stats.transportsAdded} · review ${stats.review}`;
+      const ratio=stats.passCount?((stats.passIndex-1)+(stats.passTotal?stats.passProcessed/stats.passTotal:1))/stats.passCount:
+        stats.scheduled ? stats.processed/stats.scheduled : 1;
       await progress({phase:"saby", step:12,
         percent:96+Math.floor(Math.min(1,ratio)*3),
         sabyCurrent:stats.processed, sabyTotal:stats.scheduled,
