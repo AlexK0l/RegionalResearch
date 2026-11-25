@@ -38,7 +38,10 @@ strict registered name, no identity conflict, and consistent official
 headcount. Prefer the dedicated annual dataset if figures agree.
 Keep existing values, revenue, contacts, Saby evidence and Excel layout.
 Exact name/OGRN archive matches for unresolved companies are stored in a
-bounded candidate-only sidecar. MSP region/locality is a priority signal,
+bounded candidate-only sidecar. National name hits and same-region hits
+have separate caps, so common nationwide names cannot hide local matches.
+A single-source retry retains candidates from other successful sources of
+the same report year. MSP region/locality is a priority signal,
 not proof that no namesake exists. Never populate an INN from a name hit
 or import finance into an unresolved company. A separate confirmation
 step must prove source-row linkage. Do not retain personal records.

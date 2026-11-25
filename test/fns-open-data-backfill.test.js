@@ -19,8 +19,8 @@ const source=kind=>{
 const record=(extra={})=>({inn,ogrn:"",full_name:full,short_name:"",region_code:"",region_name:"",
   localities:[],employees:0,as_of:"2025-12-31",document_id:"fixture",member:"fixture.xml",...extra});
 function archive(kind,groups,overflow={}){
-  return {source:source(kind),stats:{legal_records:1},hits:{by_inn:{},by_ogrn:{},by_name:{},...groups},
-    overflow:{by_inn:[],by_ogrn:[],by_name:[],...overflow}};
+  return {source:source(kind),stats:{legal_records:1},hits:{by_inn:{},by_ogrn:{},by_name:{},by_name_region:{},...groups},
+    overflow:{by_inn:[],by_ogrn:[],by_name:[],by_name_region:[],...overflow}};
 }
 const opts={sourceId:"p",childId:"c"};
 test("exact INN and registered name fill numeric zero, preserve old values and parent",()=>{
@@ -82,4 +82,19 @@ test("Python scanner reads documented XML, retains zero, skips individuals and w
   assert.equal(out.rsmp.stats.skipped_non_legal,1);
   assert.equal(out.rsmp.hits.by_ogrn[ogrn][0].region_code,"47");
   assert.equal(out.rsmp.hits.by_name[archiveNameKey(name)].length,1);
+  assert.equal(out.rsmp.hits.by_name_region[archiveNameKey(name)].length,1);
+});
+
+test("regional candidates survive nationwide name overflow and a single-source retry",()=>{
+  const checkpoint=cp([row("a",name)]);
+  const r=record({ogrn,short_name:name,region_code:"47",region_name:"Ленинградская область",
+    localities:["Кировск"],as_of:"2026-11-10"});
+  const key=archiveNameKey(name);
+  const first=applyFnsOpenData(checkpoint,[archive("rsmp",{by_name_region:{[key]:[r]}},{by_name:[key]})],opts);
+  assert.equal(first.stats.candidate_region_locality_rows,1);
+  assert.equal(first.stats.candidate_overflow_rows,1);
+  const second=applyFnsOpenData(first.snapshot,[archive("sshr",{})],{sourceId:"c",childId:"d"});
+  assert.equal(second.snapshot.fns_open_data_sources.length,2);
+  assert.equal(second.snapshot.fns_open_data_candidates.a.records[0].inn,inn);
+  assert.equal(second.snapshot.final_result.direct_buyers[0]["ИНН"],"");
 });

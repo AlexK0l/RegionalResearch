@@ -52,7 +52,8 @@ export function planFnsOpenData(cp){
   return {rows,staff,candidates,total:rows.length,employees_missing:rows.filter(r=>!number(r[FIELD])).length,
     missing_inn:missing.length,targets:{inns:[...new Set(staff.map(innOf))],
       ogrns:[...new Set(candidates.flatMap(identityOgrns).filter(v=>v.length===13))],
-      names:[...new Set(candidates.map(r=>clean(r["Организация"])))]}};
+      names:[...new Set(candidates.map(r=>clean(r["Организация"])))],
+      region:clean(cp.region)}};
 }
 function trustedSource(s){
   if(!["sshr","rsmp"].includes(s?.kind)||!Number.isSafeInteger(s.report_year)||
@@ -61,7 +62,11 @@ function trustedSource(s){
   const prefix="https://file.nalog.ru/opendata/7707329152-"+(s.kind==="sshr"?"sshr2019":"rsmp")+"/";
   if(typeof s.url!=="string"||!s.url.startsWith(prefix))return false;
   const m=/^data-(\d{8})-structure-(\d{8})\.zip$/.exec(s.url.slice(prefix.length));
-  return !!m&&s.schema_url===prefix+"structure-"+m[2]+".xsd";
+  if(!m||s.schema_url!==prefix+"structure-"+m[2]+".xsd")return false;
+  const raw=m[1],release=s.kind==="sshr"?
+    raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6):
+    raw.slice(4)+"-"+raw.slice(2,4)+"-"+raw.slice(0,2);
+  return s.release===release;
 }
 function validRecord(r,s){
   return !!r&&validInn(r.inn)&&(s.kind==="sshr"?!r.ogrn:/^\d{13}$/.test(r.ogrn||"")&&normalizedOgrn(r.ogrn)===r.ogrn)&&
@@ -79,7 +84,8 @@ function bucket(a,group,key){
   if(!Array.isArray(rows)||rows.length>24||rows.some(r=>!validRecord(r,a.source)))throw Error("FNS_OPEN_DATA_RECORD_INVALID");
   return {rows,overflow:a.overflow[group].includes(key)};
 }
-const regionKey=s=>token(s).split(" ").map(x=>({обл:"область",респ:"республика",окр:"округ",авт:"автономный"}[x]||x)).filter(Boolean).sort().join(" ");
+const regionKey=s=>[...new Set(token(s).split(" ").filter(x=>x&&!["г","город"].includes(x))
+  .map(x=>({обл:"область",респ:"республика",окр:"округ",авт:"автономный"}[x]||x)))].sort().join(" ");
 const cityKey=s=>token(s).replace(/^(?:город|г|поселок|пос|пгт|п|село|с|деревня|д)\s+/u,"");
 const proof=(r,s)=>({source:"FNS_OPEN_DATA",dataset:s.kind,source_url:s.url,release:s.release,
   report_year:s.report_year,as_of:r.as_of,archive_sha256:s.sha256,member:r.member,document_id:r.document_id});
@@ -116,12 +122,29 @@ export function applyFnsOpenData(cp,archives,{sourceId,childId,now=new Date().to
     stats.employees_added++;
   }
   const candidates={},occupied=new Set(plan.rows.map(innOf).filter(Boolean));
+  const refreshed=new Set(archives.map(a=>a.source.kind));
+  const year=archives[0].source.report_year;
+  const older=(Array.isArray(cp.fns_open_data_sources)?cp.fns_open_data_sources:[])
+    .filter(s=>trustedSource(s)&&s.report_year===year&&!refreshed.has(s.kind));
   for(const row of plan.candidates){
     const id=clean(row.__canonical_id),key=archiveNameKey(row["Организация"]),ogrns=identityOgrns(row);
     const list=[],seen=new Set();
     let overflow=false;
+    // Preserve previous successful sources on a single-source retry.
+    const old=cp.fns_open_data_candidates?.[id];
+    for(const r of Array.isArray(old?.records)?old.records:[]){
+      const s=older.find(s=>s.kind===r.dataset&&s.url===r.source_url&&s.sha256===r.archive_sha256);
+      if(!s||r.status!=="candidate_only"||!validRecord(r,s)||!exactName(row,r)||
+        occupied.has(r.inn)||(ogrns.length&&r.ogrn&&r.ogrn!==ogrns[0]))continue;
+      const k=s.kind+":"+r.inn+":"+r.ogrn+":"+r.document_id;
+      if(seen.has(k))continue;
+      if(list.length>=48){overflow=true;continue;}
+      list.push(r);seen.add(k);
+    }
+    if(older.length&&old?.overflow)overflow=true;
     for(const a of archives){
-      for(const b of [bucket(a,"by_name",key),...ogrns.map(o=>bucket(a,"by_ogrn",o))]){
+      for(const b of [...ogrns.map(o=>bucket(a,"by_ogrn",o)),
+        bucket(a,"by_name_region",key),bucket(a,"by_name",key)]){
         overflow||=b.overflow;
         for(const r of b.rows){
           if(!exactName(row,r)||occupied.has(r.inn)||(ogrns.length&&r.ogrn&&r.ogrn!==ogrns[0]))continue;
@@ -151,7 +174,7 @@ export function applyFnsOpenData(cp,archives,{sourceId,childId,now=new Date().to
   snapshot.created_at=now;snapshot.updated_at=now;
   snapshot.fns_open_data_source_job_id=sourceId;
   snapshot.fns_open_data_root_job_id=cp.fns_open_data_root_job_id||sourceId;
-  snapshot.fns_open_data_sources=archives.map(a=>({...a.source,scan:a.stats}));
+  snapshot.fns_open_data_sources=[...older,...archives.map(a=>({...a.source,scan:a.stats}))];
   snapshot.fns_open_data_candidates=candidates;
   snapshot.fns_open_data_stats=stats;
   return {snapshot,stats};

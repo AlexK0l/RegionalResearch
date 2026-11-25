@@ -39,6 +39,11 @@ def name_key(v):
             return form+":"+s[:-len(form)-1]
     return ""
 
+def region_key(v):
+    t=re.findall(r"[a-zа-я0-9]+",clean(v).lower().replace("ё","е"))
+    aliases={"обл":"область","респ":"республика","окр":"округ","авт":"автономный"}
+    return " ".join(sorted({aliases.get(x,x) for x in t if x not in ("г","город")}))
+
 def inn_ok(v):
     return bool(re.fullmatch(r"[0-9]{10}",v or "")) and v!="0000000000" and (
         sum(int(a)*b for a,b in zip(v[:9],[2,4,10,3,5,9,4,6,8]))%11%10==int(v[9]))
@@ -106,7 +111,10 @@ def fetch(url,path,limit):
 
 def schema_check(path,kind):
     # Verify declarations, not full XSD validation. Check actual record scope independently.
-    root=ET.parse(path).getroot()
+    data=path.read_bytes()
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data or b"\x00" in data:
+        raise ValueError("FNS_SCHEMA_UNSAFE_DECLARATION")
+    root=ET.fromstring(data)
     ns="{http://www.w3.org/2001/XMLSchema}"
     e={x.get("name") for x in root.iter(ns+"element")}
     a={x.get("name") for x in root.iter(ns+"attribute")}
@@ -156,7 +164,8 @@ def scan_archive(path,kind,release,year,targets):
     inns=set(targets["inns"])
     ogrns=set(targets["ogrns"])
     names={name_key(n) for n in targets["names"]}-{""}
-    hits={k:{} for k in ("by_inn","by_ogrn","by_name")}
+    region=region_key(targets.get("region",""))
+    hits={k:{} for k in ("by_inn","by_ogrn","by_name","by_name_region")}
     overflow={k:set() for k in hits}
     signatures={k:{} for k in hits}
     stats={"xml_members":0,"documents":0,"legal_records":0,"invalid_records":0,
@@ -216,6 +225,11 @@ def scan_archive(path,kind,release,year,targets):
                                         keep("by_ogrn",row["ogrn"],row)
                                     for k in {name_key(row["full_name"]),name_key(row["short_name"])}&names:
                                         keep("by_name",k,row)
+                                        if region and region_key(row["region_name"])==region:
+                                            # A common name may have 24 national hits before
+                                            # the first local company. Keep regional hits
+                                            # independently so that overflow cannot hide them.
+                                            keep("by_name_region",k,row)
                                 root.remove(el)
                                 el.clear()
                             depth-=1
