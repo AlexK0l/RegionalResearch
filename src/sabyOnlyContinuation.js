@@ -14,6 +14,7 @@ import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {runSabyOnlyWithRecovery} from "./sabyOnlyRecovery.js";
 import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage} from "./sabyEnrichment.js";
+import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 
 // Older completed regional studies may predate Stage12 entirely. Derive a
 // bounded Saby work plan strictly from their existing, finalized commercial
@@ -291,8 +292,11 @@ export async function runSabyOnlyContinuation({
   const paused=Boolean(outcome.stats.circuitOpen || outcome.stats.browserError ||
     outcome.stats.deadlineReached ||
     (!outcome.stats.fullSweepCompleted && outcome.deferredInns.length>0));
+  const finalPhoneCoverage=contactPhoneCoverage(result);
+  console.info("[CONTACT_PHONE_COVERAGE] "+JSON.stringify({phase:"final",...finalPhoneCoverage}));
   await persist(paused?"saby":"completed",{
     completed_stage:9,
+    contact_stats:{...source.contact_stats,final_phone_coverage:finalPhoneCoverage},
     final_result:result,
     saby_completed_inns:outcome.completedInns,
     saby_deferred_inns:outcome.deferredInns,
