@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits,
-  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone, contactResearchPriority, protectedContactAllowance
+  validBatchContactItem, mayRetryContactPhone, normalizeRussianPhone, contactResearchPriority, protectedContactAllowance,
+  planContactGroups,planPhoneGapRecovery,mergeRecoveredPhoneResult
 } from "../src/researchCostPolicy.js";
 import { identitySnippetFact, reuseIdentityObservedFacts } from "../src/identityFactReuse.js";
 
@@ -129,13 +130,15 @@ test("different INN, source URL or missing excerpt never supplies identity-sourc
   assert.equal(identitySnippetFact(r, r.observed_facts[0], same)?.field, "Телефон");
 });
 
-test("contact research prioritizes missing phones within a sales grade", () => {
+test("phone gaps across all grades precede email and leader gaps; retain A/B/C within phone cohort", () => {
   const grade = "__final_grade";
   const phoneMissing = { [grade]: "A", "Телефон": "", "Руководитель / ЛПР": "И.И. Иванов" };
   const leaderMissing = { [grade]: "A", "Телефон": "79001234567", "Руководитель / ЛПР": "" };
   assert.ok(contactResearchPriority(phoneMissing) > contactResearchPriority(leaderMissing));
-  assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "B" }) <
-    contactResearchPriority(leaderMissing), "A remains ahead of B");
+  assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "B" }) >
+    contactResearchPriority(leaderMissing), "B without a phone precedes A with a phone");
+  assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "C" }) >
+    contactResearchPriority(leaderMissing));
   assert.ok(contactResearchPriority({ ...phoneMissing, [grade]: "C" }) <
     contactResearchPriority({ ...phoneMissing, [grade]: "B" }));
   assert.ok(contactResearchPriority({ ...phoneMissing, "Телефон": "не найден" }) >
@@ -162,4 +165,36 @@ test("protected contacts share is conditional and does not enlarge the global ca
     OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD: "10"
   }), { webCalls: 270, estimatedUsd: 5 });
   assert.equal(fullWebLimits({}).total, 1850);
+});
+
+
+test("phone-first batches never mix phone gaps with secondary contacts",()=>{
+  const a={...row(),id:"a",__final_grade:"A","Телефон":"79001234567"};
+  const b={...row(),id:"b",__final_grade:"C","Телефон":""};
+  const c={...row(),id:"c",__final_grade:"B","Телефон":""};
+  const d={...row(),id:"d",__final_grade:"B","Телефон":"79001234568"};
+  const groups=planContactGroups([a,b,c,d],3);
+  assert.deepEqual(groups.phoneGroups.map(g=>g.map(x=>x.id)),[["c","b"]]);
+  assert.deepEqual(groups.otherGroups.map(g=>g.map(x=>x.id)),[["a","d"]]);
+});
+
+test("phone-specific recovery selects sourced answers, excludes completed/omitted/retried/known-phone rows",()=>{
+  const rows=["good","omitted","retried","known","done","no-inn","no-source","already-returned"]
+    .map(id=>({...row(),id,"Телефон":id==="known"?"79001234567":"","ИНН":id==="no-inn"?"":"6732111122"}));
+  const first={status:"ok",phones:[],emails:["sales@carrier.example"],leader:"Иванов И.И.",
+    source_urls:["https://carrier.example/contacts"],__needPhone:true};
+  const answers=new Map(rows.filter(x=>x.id!=="omitted").map(x=>[x.id,{...first}]));
+  answers.get("no-source").source_urls=[];
+  answers.get("already-returned").phones=["79001234567"];
+  assert.deepEqual(planPhoneGapRecovery(rows,answers,new Set(["done"]),new Set(["retried"]),r=>r.id)
+    .map(r=>r.id),["good"]);
+  assert.equal(mergeRecoveredPhoneResult(first,null),first);
+  assert.equal(mergeRecoveredPhoneResult(first,{phones:["79001234567"],source_urls:[]}),first);
+  const updated=mergeRecoveredPhoneResult(first,{phones:["8 900 1234567"],emails:["wrong@carrier.example"],
+    leader:"Не заменять",source_urls:["https://other.example/contacts"]});
+  assert.deepEqual(updated.phones,["79001234567"]);
+  assert.deepEqual(updated.emails,first.emails);
+  assert.equal(updated.leader,first.leader);
+  assert.deepEqual(first.phones,[]);
+  assert.deepEqual(updated.phone_recovery_source_urls,["https://other.example/contacts"]);
 });

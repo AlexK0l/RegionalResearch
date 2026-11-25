@@ -58,3 +58,35 @@ still uses existing bounded OpenAI search. Maps, uncited directory search,
 procurement PDF parsing, JS-only contact pages and guessing contacts are
 not automated by this release. No claim of live coverage or guaranteed
 yield until measured on actual regional data.
+
+
+## Phone-first follow-up
+
+All missing-phone rows now precede email/leader-only rows in the paid and
+public-source queues, with A/B/C preserved within each cohort. Saby sorts
+phone gaps first within the existing fresh/retry fairness boundaries.
+Stage11's existing bounded individual retry allowance is applied to
+source-attributed primary answers with no phone, before secondary batches;
+omitted phone results retain their separate recovery pass. No web/cost
+limit is increased. Retry IDs and used allowance survive checkpoint resume.
+A second query cannot overwrite previously found email/leader, and all new
+phone claims still pass the existing global ownership check.
+The HTML reader also accepts a complete visible number in a separate cell
+immediately after a standalone telephone label, never masked digits.
+
+Run saved-data recovery with --phone-only --run to read only companies
+without phones from already cited public HTML. It writes a new checkpoint,
+adds only phone values and their provenance, and keeps a separate
+public_phone_backfill_outcomes ledger. Do not combine with --fns:
+EGRUL is not a telephone source. With no --run the same flag is dry plan.
+Track CONTACT_PHONE_COVERAGE at Stage11/final and phone_coverage_before/after
+in backfill output. A generic successful contact lookup (email or director)
+is no longer used as the measure of phone coverage.
+
+Baseline from the saved Leningrad-region JSON on 25 Nov 2026:
+608 commercial rows; 228 have phones, 380 do not; 252 of the latter have
+an INN (245 legal-entity and 7 twelve-digit records), 128 lack one.
+Saby reported 91 added phones. Among the 252 missing-phone rows with INN,
+219 have no saved Saby evidence and 33 have it. Two collected Saby
+numbers already belong to other rows and remain withheld.
+This is a saved-data observation, not a live test or a promise of yield.

@@ -5,7 +5,7 @@ import {contactPublicUrl,isPublicContactIPv4,resolvePublicContactAddress,
 import {registeredContactName,parsePublicContactPage,extractVerifiedPublicContacts,
   contactSourceCandidates,lookupPublicCompanyContacts} from "../src/publicContactParser.js";
 import {needsAnyContact,knownContactLeader,planPublicContactEnrichment,
-  runPublicContactEnrichment,applyPublicContactFacts,publicContactOwnership} from "../src/publicContactEnrichment.js";
+  runPublicContactEnrichment,applyPublicContactFacts,publicContactOwnership,contactPhoneCoverage} from "../src/publicContactEnrichment.js";
 import {lookupFnsCompanyContacts,runFnsContactEnrichment} from "../src/publicContactFns.js";
 import {sabyEligibleRows} from "../src/sabyEnrichment.js";
 import {validBatchContactItem,contactResearchPriority} from "../src/researchCostPolicy.js";
@@ -196,4 +196,40 @@ test("mid-company request exhaustion remains a deferred source, not a completed 
     clientFactory:()=>({requests:1,exhausted:false})});
   assert.equal(done.stats.pending,1);assert.equal(done.stats.stop_reason,"budget_or_deadline");
   assert.equal(planPublicContactEnrichment(r,{priorOutcomes:done.outcomes}).eligible,1);
+});
+
+
+test("phone-only backfill checks only missing phones, preserves other fields and reports actual coverage",async()=>{
+  const missing=company({__final_grade:"C","Руководитель / ЛПР":"не найден"});
+  const known=company({"Организация":"ООО Бета","ИНН":otherInn,__canonical_id:"b",
+    "Телефон":"74951230000"});
+  const r=result([known,missing]),prior=structuredClone(known);
+  const plan=planPublicContactEnrichment(r,{phoneOnly:true});
+  assert.equal(plan.eligible,1);
+  assert.equal(plan.selected[0].row,missing);
+  assert.equal(planPublicContactEnrichment(r).selected[0].row,missing);
+  assert.equal(sabyEligibleRows(r).eligible[0].row,missing);
+  const run=await runPublicContactEnrichment({result:r,phoneOnly:true,
+    env:{PUBLIC_CONTACTS_ENABLED:"true"},
+    clientFactory:()=>({requests:0,exhausted:false}),
+    lookup:async row=>extractVerifiedPublicContacts(pages(),row)});
+  assert.equal(run.stats.phone_added,1);
+  assert.equal(run.stats.email_added,0);
+  assert.equal(run.stats.leader_added,0);
+  assert.equal(run.stats.phone_coverage_before.with_phone,1);
+  assert.equal(run.stats.phone_coverage_after.with_phone,2);
+  assert.equal(missing["Электронная почта"],"");
+  assert.equal(missing["Руководитель / ЛПР"],"не найден");
+  assert.deepEqual(known,prior);
+  assert.equal(contactPhoneCoverage(r).without_phone,0);
+});
+
+test("telephone label and a separate visible number in a table cell are valid, masked/ID/fax cells are not",()=>{
+  const page=parsePublicContactPage('<h1>ООО «АЛЬФА»</h1><p>ИНН: '+inn+'</p>'+
+    '<table><tr><td>Телефон</td><td>+7 (495) 123-45-67</td></tr>'+
+    '<tr><td>Телефон</td><td>8 (921) 779-░░-░░</td></tr>'+
+    '<tr><td>ОГРН</td><td>1027700132195</td></tr>'+
+    '<tr><td>Факс</td><td>74959999999</td></tr></table>',contact);
+  const facts=extractVerifiedPublicContacts([page],company()).facts;
+  assert.deepEqual(facts.filter(f=>f.field==="Телефон").map(f=>f.value),["74951234567"]);
 });

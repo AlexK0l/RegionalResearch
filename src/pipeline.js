@@ -6,7 +6,7 @@ import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
 import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAutonomousDiscoveryFindings } from "./autonomousDiscoveryCoverage.js";
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
-import {needsAnyContact,knownContactLeader,publicContactEnabled,publicContactSettings,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {needsAnyContact,knownContactLeader,publicContactEnabled,publicContactSettings,runPublicContactEnrichment,contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
@@ -19,7 +19,7 @@ import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalIn
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, disclaimsSelectedTrailerEvidence } from "./productionFinalQuality.js";
 import { reuseIdentityObservedFacts } from "./identityFactReuse.js";
-import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, mayRetryContactPhone, contactResearchPriority, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
+import { fullWebLimits, researchWebScope, costEnvLimitUsd, contactLimits, validBatchContactItem, contactResearchPriority, planContactGroups, planPhoneGapRecovery, mergeRecoveredPhoneResult, protectedContactAllowance, previousContactCacheEnabled } from "./researchCostPolicy.js";
 import { COLS, STAT_COLS, MODEL, STEPS } from "./constants.js";
 import { companyEmailCell, mergeCompanyEmail, formatEmailCell } from "./emailContact.js";
 import { runCheckpointedSabyStage12 } from "./sabyCheckpointIntegration.js";
@@ -5230,8 +5230,7 @@ function contactSearchPrompt(row, region, kind = "contacts") {
   const exactQuery = [
     organization,
     inn,
-    kind === "phone" ? "телефон" : ["контакты",
-      !hasConfirmedPhone(row)?"телефон":"",
+    kind === "phone" || !hasConfirmedPhone(row) ? "телефон контакты" : ["контакты",
       !companyEmailCell(row)?"электронная почта email":"",
       !hasConfirmedLeader(row)?"руководитель":""].filter(Boolean).join(" ")
   ].filter(Boolean).join(" ");
@@ -5247,7 +5246,7 @@ function contactSearchPrompt(row, region, kind = "contacts") {
 Возвращай телефон ТОЛЬКО если он явно относится к этому юрлицу/ИНН. Не используй номер одноимённой или связанной компании.
 Руководителя/ЛПР возвращай отдельно от телефона и только при явной привязке к этому юрлицу.
 Российские телефоны нормализуй к 7XXXXXXXXXX. Несколько телефонов — отдельными элементами массива.
-Email ищи как самостоятельное незаполненное поле, даже если телефон и руководитель уже известны. В пределах этого же запроса включай электронную почту в поисковую формулировку. Не угадывай домен или адрес.
+${kind==="phone"?"ЭТО ПОВТОРНЫЙ ПОИСК ТОЛЬКО ТЕЛЕФОНА. Найди номер организации по ИНН и названию, предпочтительно из другого публичного источника. Не трать запрос на email или руководителя. Если номер не подтверждён, оставь phones пустым.":!hasConfirmedPhone(row)?"ГЛАВНАЯ ЦЕЛЬ — найти хотя бы один действующий публичный телефон именно этого юридического лица. Сначала ищи телефон; email и руководителя извлекай лишь из тех же результатов, если они подтверждены. Не заменяй поиск телефона поиском email или директора.":"Телефон уже есть; ищи независимо только незаполненные email и руководителя. Не угадывай домен или адрес."}
 Предпочитай публичные рабочие контакты закупок, снабжения, транспортного отдела и главного механика. Не подменяй их чужими номерами.
 Возвращай organization точно из задания и inn только при подтверждённой привязке. Для каждого ответа укажи конкретную страницу источника; если источник не найден, не выдавай его за подтверждённую проверку.
 Не выдумывай и не дополняй цифры.
@@ -5271,14 +5270,18 @@ function compactContactBatchTarget(row) {
 async function searchContactBatchWithWeb({ client, rows, region, deadlineAt }) {
   const remaining = deadlineRemaining(deadlineAt);
   if (remaining <= 8000) throw new Error("CONTACT_BATCH_DEADLINE");
-  // The model sees all five legal entities at once; it must not search
-  // for each one separately or infer phone ownership from group websites.
+  // Homogeneous primary cohorts keep telephone queries focused, without
+  // increasing the number of tools allowed per existing paid batch.
+  const phoneFirst=rows.some(row=>!hasConfirmedPhone(row));
   const response = await askJson(client, {
     input: "ПАКЕТНЫЙ ПОИСК КОНТАКТОВ. РЕГИОН: " + region +
       "\nКОМПАНИИ: " + JSON.stringify(rows.map(compactContactBatchTarget)) +
       "\nИспользуй только 1–2 общих web_search на пакет. Возвращай отдельные элементы по id/ИНН. " +
       "Убедись в строгой принадлежности телефона или руководителя К ЭТОМУ юрлицу, а не группе, филиалу, чужому перевозчику или одноимённой компании. " +
-      "Флаги need_phone, need_email, need_leader независимы. Включай email в общий запрос, если он нужен хотя бы одному юрлицу; известный телефон не отменяет поиск почты. Для найденных контактов обязательны точные source_urls, привязанные к этому ИНН. Приоритет — закупки, снабжение, транспорт, главный механик. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
+      (phoneFirst?
+        "ГЛАВНАЯ ЦЕЛЬ ПАКЕТА — телефоны. Для каждого need_phone=true включай точное название и ИНН в телефонный поиск. Сначала найди хотя бы один публичный рабочий номер; email и ЛПР извлекай только попутно. Не расходуй web_search на email или руководителя вместо телефона. ":
+        "Телефоны этих организаций уже найдены. Ищи только незаполненные email и руководителя. ") +
+      "Для найденных контактов обязательны точные source_urls, привязанные к этому ИНН. Приоритет — закупки, снабжение, транспорт, главный механик, затем общий телефон или приёмная. Не подтверждены — оставь phones=[], emails=[], leader='' и status='not_found'. " +
       "Не выполняй отдельный web_search ради каждого телефона или директора. " +
       "Верни JSON строго по схеме. Каждый id представь один раз.",
     model: TARGETED_SEARCH_MODEL,
@@ -5305,8 +5308,7 @@ async function searchContactsWithWeb({
   client,
   row,
   region,
-  deadlineAt,
-  phoneRetryBudget = null
+  deadlineAt
 }) {
   if (!needsAnyContact(row)) {
     return { status: "ok", phones: [], emails: [], leader: "", official_site: "", source_urls: [], note: "Already confirmed" };
@@ -5333,60 +5335,23 @@ async function searchContactsWithWeb({
   const contactId=checkpointRowId(row);
   const first=validBatchContactItem({...firstRaw,id:contactId},row,contactId);
   if(!first)return null;
-  const phones = new Set(
-    (Array.isArray(first?.phones) ? first.phones : [])
-      .map(normalizePhoneDigits)
-      .filter(Boolean)
-  );
+  return first;
+}
 
-  let second = null;
-  // Never retry merely because the first search found no phone (or found only
-  // a leader). A strict A + sourced official-site reason and global one-call
-  // reservation is required.
-  const retryAllowed = mayRetryContactPhone(
-    row, { phones: [...phones], official_site: first?.official_site,
-      source_urls: first?.source_urls },
-    Number(phoneRetryBudget?.remaining || 0), deadlineRemaining(deadlineAt)
-  );
-  if (retryAllowed && !hasConfirmedPhone(row)) {
-    phoneRetryBudget.remaining--;
-    const secondTimeout = Math.min(
-      CONTACT_SEARCH_TIMEOUT_MS,
-      Math.max(5000, deadlineRemaining(deadlineAt) - 2000)
-    );
-    const secondRaw = await askJson(client, {
-      input: contactSearchPrompt(row, region, "phone"),
-      model: TARGETED_SEARCH_MODEL,
-      maxOutputTokens: CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
-      webSearch: true,
-      responseSchema: CONTACT_SEARCH_SCHEMA,
-      schemaName: "contact_phone_search",
-      diagnosticLabel: `contact phone retry | ${row?.["Организация"] || ""}`,
-      maxToolCalls: 1,
-      timeoutMs: secondTimeout,
-      allowJsonRepair: false
-    });
-    second=validBatchContactItem({...secondRaw,id:contactId},row,contactId);
-    for (const phone of Array.isArray(second?.phones) ? second.phones : []) {
-      const normalized = normalizePhoneDigits(phone);
-      if (normalized) phones.add(normalized);
-    }
-  }
-
-  const leader = String(first?.leader || second?.leader || "").trim();
-  const sources=[...new Set([
-    ...(Array.isArray(first?.source_urls)?first.source_urls:[]),
-    ...(Array.isArray(second?.source_urls)?second.source_urls:[])
-  ].filter(url=>String(url).startsWith("https://")))];
-  const emails=sources.length?formatEmailCell(first?.emails,second?.emails):"";
-  return {
-    status: phones.size || leader || emails ? "ok" : "not_found",
-    phones: [...phones], emails: emails?emails.split("; "):[],
-    source_urls:sources,
-    leader,
-    official_site: String(first?.official_site || second?.official_site || "").trim(),
-    note: [first?.note, second?.note].map((value) => String(value || "").trim()).filter(Boolean).join(" | ")
-  };
+async function searchMissingPhoneWithWeb({client,row,region,deadlineAt,previous}) {
+  const id=checkpointRowId(row);
+  const raw=await askJson(client,{
+    input:contactSearchPrompt(row,region,"phone")+
+      "\nПРЕДЫДУЩИЕ ИСТОЧНИКИ БЕЗ ТЕЛЕФОНА: "+
+      JSON.stringify((previous?.source_urls||[]).slice(0,4))+
+      "\nПроверь альтернативный источник с полным номером, если доступен. Не угадывай скрытые цифры.",
+    model:TARGETED_SEARCH_MODEL,maxOutputTokens:CONTACT_SEARCH_MAX_OUTPUT_TOKENS,
+    webSearch:true,responseSchema:CONTACT_SEARCH_SCHEMA,schemaName:"contact_phone_search",
+    diagnosticLabel:"contact phone retry | "+String(row?.["Организация"]||""),
+    maxToolCalls:1,timeoutMs:Math.min(CONTACT_SEARCH_TIMEOUT_MS,
+      Math.max(5000,deadlineRemaining(deadlineAt)-2000)),allowJsonRepair:false
+  });
+  return validBatchContactItem({...raw,id},row,id);
 }
 
 async function verifyPhoneWithWebSearch({
@@ -8596,7 +8561,11 @@ ${JSON.stringify(gaps)}
   // and may be called before the first batch starts.
   let contactBatchCalls = 0, contactBatchMatched = 0, contactFallbackCalls = 0;
   let contactBatchOmissions = 0, contactBudgetDeferred = 0;
-  const phoneRetryBudget = { remaining: CONTACT_BATCH_SETTINGS.phoneRetries };
+  const phoneRetryIds=new Set((Array.isArray(resumeCheckpoint?.contact_phone_retry_ids)?
+    resumeCheckpoint.contact_phone_retry_ids:[]).map(String));
+  const previousPhoneRetries=Math.max(phoneRetryIds.size,Number(resumedContactStats.phoneRetriesUsed)||0);
+  const phoneRetryBudget={remaining:Math.max(0,CONTACT_BATCH_SETTINGS.phoneRetries-previousPhoneRetries)};
+  let phoneRetryRecovered=Number(resumedContactStats.phoneRetryRecovered)||0;
 
   const contactStatsSnapshot = () => ({
     version: 2,
@@ -8619,7 +8588,8 @@ ${JSON.stringify(gaps)}
     batchModelCalls: contactBatchCalls,
     batchMatchedCompanies: contactBatchMatched,
     individualFallbacks: contactFallbackCalls,
-    phoneRetriesUsed: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    phoneRetriesUsed: Math.max(previousPhoneRetries,CONTACT_BATCH_SETTINGS.phoneRetries-phoneRetryBudget.remaining),
+    phoneRetryRecovered,
     batchOmissions: contactBatchOmissions,
     budgetDeferred: contactBudgetDeferred,
     browserCircuitOpen: false,
@@ -8644,6 +8614,7 @@ ${JSON.stringify(gaps)}
       enrichment_completed_ids: [...enrichmentCompleted],
       contact_completed_ids: [...contactCompleted],
       contact_primary_results: Object.fromEntries(primaryResults),
+      contact_phone_retry_ids:[...phoneRetryIds],
       contact_unsearched_ids: [...contactUnsearched],
       contact_stats: stats,
       stage10_duration_ms: Date.now() - stage10StartedAt,
@@ -8666,12 +8637,9 @@ ${JSON.stringify(gaps)}
     stage_deadline_ms: STAGE11_MAX_MS
   }));
 
-  const contactGroups = [];
   const batchEnabled = String(process.env.OPENAI_CONTACT_BATCH_ENABLED || "true").toLowerCase() !== "false";
   const groupSize = batchEnabled ? CONTACT_BATCH_SETTINGS.batchSize : 1;
-  for (let i = 0; i < contactPending.length; i += groupSize) {
-    contactGroups.push(contactPending.slice(i, i + groupSize));
-  }
+  const {phoneGroups,otherGroups}=planContactGroups(contactPending,groupSize);
   const contactFallbackBudget = { remaining: CONTACT_BATCH_SETTINGS.individualFallbacks };
   const contactUnsearched = restoredDeferredContactIds(
     resumeCheckpoint,
@@ -8681,7 +8649,8 @@ ${JSON.stringify(gaps)}
 
   console.log("[CONTACT_BATCH_PLAN] " + JSON.stringify({
     pending: contactPending.length,
-    batches: contactGroups.length,
+    batches: phoneGroups.length+otherGroups.length,
+    phone_batches:phoneGroups.length,secondary_batches:otherGroups.length,
     batch_enabled: batchEnabled,
     batch_size: groupSize,
     max_web_tools_per_batch: CONTACT_BATCH_SETTINGS.batchWebCalls,
@@ -8689,8 +8658,8 @@ ${JSON.stringify(gaps)}
     max_phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries
   }));
 
-  await mapWithConcurrency(
-    contactGroups,
+  const runContactGroups=groups=>mapWithConcurrency(
+    groups,
     Math.min(CONTACT_CONCURRENCY, 6),
     async (batch) => {
       await assertNotCancelled();
@@ -8703,8 +8672,7 @@ ${JSON.stringify(gaps)}
             // Avoid an expensive batch request for the final singleton.
             const row = batch[0];
             const result = await searchContactsWithWeb({
-              client, row, region, deadlineAt: stage11DeadlineAt,
-              phoneRetryBudget
+              client, row, region, deadlineAt: stage11DeadlineAt
             });
             answers.set(checkpointRowId(row), result);
           } else {
@@ -8734,7 +8702,8 @@ ${JSON.stringify(gaps)}
         const rowId = checkpointRowId(row);
         let result = answers.get(rowId) || null;
         const priority = safeSearchPriority(row);
-        const mayFallback = !budgetStop && !result && priority >= 2 &&
+        const mayFallback = !budgetStop && !result &&
+          (!hasConfirmedPhone(row)||priority>=2) &&
           contactFallbackBudget.remaining > 0 &&
           deadlineRemaining(stage11DeadlineAt) > 8000;
         if (mayFallback) {
@@ -8744,8 +8713,7 @@ ${JSON.stringify(gaps)}
           contactFallbackCalls++;
           try {
             result = await searchContactsWithWeb({
-              client, row, region, deadlineAt: stage11DeadlineAt,
-              phoneRetryBudget
+              client, row, region, deadlineAt: stage11DeadlineAt
             });
           } catch (error) {
             if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
@@ -8799,6 +8767,7 @@ ${JSON.stringify(gaps)}
     },
     ()=>pauseRequested("contacts")
   );
+  await runContactGroups(phoneGroups);
   if(pauseRequested("contacts")){
     await contactCheckpointBatcher.request({force:true});
     await memorySafePoint();
@@ -8810,7 +8779,7 @@ ${JSON.stringify(gaps)}
   // entries with a completed source-backed "not_found" result.
   const omissionLimits = contactOmissionRecheckLimits();
   const omissionPlan = planContactOmissionRechecks(
-    googleCompanies, contactUnsearched, contactCompleted,
+    googleCompanies.filter(row=>!hasConfirmedPhone(row)), contactUnsearched, contactCompleted,
     checkpointRowId, contactResearchPriority, omissionLimits
   );
   let omissionRecheckModelCalls = 0;
@@ -8890,13 +8859,62 @@ ${JSON.stringify(gaps)}
       throw Error("MEMORY_PAUSE_NOT_COMMITTED");
     }
   }
+  // The old singleton-only retry allowance was rarely used in batched
+  // research. Spend only its remaining slots on exact-INN phone gaps before
+  // email/leader-only batches. No increase to the study/web/dollar caps.
+  const phoneRecovery=planPhoneGapRecovery(googleCompanies,primaryResults,
+    contactCompleted,phoneRetryIds,checkpointRowId);
+  console.info("[CONTACT_PHONE_RECOVERY_PLAN] "+JSON.stringify({
+    eligible:phoneRecovery.length,remaining_retries:phoneRetryBudget.remaining
+  }));
+  for(const row of phoneRecovery){
+    await assertNotCancelled();
+    const budget=client.__webBudget;
+    const available=key=>Number(budget.limits[key])-Number(budget.used[key]||0)-
+      Number(budget.reserved?.[key]||0);
+    // Reserve the existing conflict-check allowance and overcall buffer.
+    if(phoneRetryBudget.remaining<=0||deadlineRemaining(stage11DeadlineAt)<=12000||
+      costEnvLimitUsd()-estimatedApiCostUsd(client)<0.5||
+      Math.min(available("contacts"),available("total"))<=omissionLimits.reservedWebForPhoneConflicts+2)break;
+    const id=checkpointRowId(row),first=primaryResults.get(id);
+    phoneRetryIds.add(id);phoneRetryBudget.remaining--;
+    try{
+      const recovered=await searchMissingPhoneWithWeb({client,row,region,deadlineAt:stage11DeadlineAt,previous:first});
+      const merged=mergeRecoveredPhoneResult(first,recovered);
+      if(merged!==first){
+        primaryResults.set(id,merged);phoneRetryRecovered++;
+      }
+    }catch(error){
+      if(jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
+      console.warn("[CONTACT_PHONE_RECOVERY_DEFER] "+JSON.stringify({
+        id,budget_stop:isWebBudgetStop(error)}));
+      if(isWebBudgetStop(error)){
+        await contactCheckpointBatcher.request({force:true});
+        break;
+      }
+    }
+    await contactCheckpointBatcher.request({force:true});
+    if(pauseRequested("contacts")){
+      await memorySafePoint();
+      throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+    }
+  }
+  // Only after primary phone work, its bounded omission recovery and
+  // targeted retries, spend any remaining contact budget on other gaps.
+  await runContactGroups(otherGroups);
+  if(pauseRequested("contacts")){
+    await contactCheckpointBatcher.request({force:true});
+    await memorySafePoint();
+    throw Error("MEMORY_PAUSE_NOT_COMMITTED");
+  }
   console.log("[CONTACT_BATCH_EFFICIENCY] " + JSON.stringify({
     batch_model_calls: contactBatchCalls,
     batch_matched_companies: contactBatchMatched,
     individual_fallbacks: contactFallbackCalls,
     omission_recheck_batches: omissionRecheckModelCalls,
     omission_recheck_researched: omissionRecheckResearched,
-    phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries - phoneRetryBudget.remaining,
+    phone_retries: Math.max(previousPhoneRetries,CONTACT_BATCH_SETTINGS.phoneRetries-phoneRetryBudget.remaining),
+    phone_recovery_candidates:phoneRecovery.length,phone_recovery_results:phoneRetryRecovered,
     companies_deferred: contactUnsearched.size,
     budget_deferred: contactBudgetDeferred,
     recheck_budget_stopped: omissionRecheckBudgetStopped
@@ -9215,6 +9233,8 @@ ${JSON.stringify(gaps)}
   await contactCheckpointBatcher.flush();
 
   const contactStats = contactStatsSnapshot();
+  contactStats.phone_coverage=contactPhoneCoverage(finalResult);
+  console.info("[CONTACT_PHONE_COVERAGE] "+JSON.stringify({phase:"stage11",...contactStats.phone_coverage}));
   contactStats.browserCircuitOpen = browserCircuitOpen;
   contactStats.unsearched = contactUnsearched.size;
   const ok = contactStats.ok;
@@ -9432,6 +9452,8 @@ ${JSON.stringify(gaps)}
   const priorityStats=applyPriorityStage13(finalResult,{aiStats:priorityAIStats});
   const commercialPostprocess=finalizeStage13CommercialOutput(finalResult);
   priorityStats.commercial_postprocess=commercialPostprocess;
+  contactStats.final_phone_coverage=contactPhoneCoverage(finalResult);
+  console.info("[CONTACT_PHONE_COVERAGE] "+JSON.stringify({phase:"final",...contactStats.final_phone_coverage}));
   finishStep(statuses[12]);
   statuses[12].detail=`выполнен · проверено ${priorityStats.processed} · прямых ${finalResult.direct_buyers.length} · лизинг ${finalResult.leasing.length} · зелёных ${priorityStats.tiers.green} · белых ${priorityStats.tiers.white}`;
   await progress({

@@ -45,6 +45,7 @@ export function preparePersistedCheckpointExport(checkpoint){
       checkpoint.phase==="saby",
     saby_stats:snapshot.saby_stats||null,
     public_contact_stats:snapshot.public_contact_stats||null,
+    public_phone_backfill_stats:snapshot.public_phone_backfill_stats||null,
     fns_contact_stats:snapshot.fns_contact_stats||null
   };
 }

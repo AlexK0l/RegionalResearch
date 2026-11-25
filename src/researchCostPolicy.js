@@ -90,19 +90,66 @@ export function normalizeRussianPhone(value) {
   return v.length === 11 && v.startsWith("7") ? v : "";
 }
 
-// Contact calls are scarce when the global cost cap is near exhaustion.
-// Within each A/B/C grade, prioritize missing PHONE ahead of merely missing
-// leadership. Do not drop rows: ordering only, not automatic verification.
+// The sales team's primary outcome is a usable telephone. All companies
+// without a telephone precede email/leader-only gaps; preserve A/B/C order
+// within each cohort. Never change a company's grade to obtain a phone.
+export function hasContactPhone(row) {
+  return String(row?.["Телефон"] || "").split(/[;\r\n]+/)
+    .some(entry => Boolean(normalizeRussianPhone(entry)));
+}
 export function contactResearchPriority(row) {
   const grade = String(row?.__final_grade || row?.["Основание"] || "")
     .trim().toUpperCase().slice(0, 1);
   const gradeWeight = grade === "A" ? 3 : grade === "B" ? 2 : 1;
-  const phoneKnown = String(row?.["Телефон"] || "").split(";")
-    .some(entry => Boolean(normalizeRussianPhone(entry)));
+  const phoneKnown = hasContactPhone(row);
   const emailKnown=Boolean(companyEmailCell(row));
   const leader=String(row?.["Руководитель / ЛПР"]||"").trim();
   const leaderKnown=Boolean(leader&&!/^(?:[-—–]+|н\/д|нет данных|не найден|не подтвержд|не установл)/iu.test(leader));
-  return gradeWeight * 10 + (phoneKnown ? 0 : 4) + (emailKnown?0:2) + (leaderKnown ? 0 : 1);
+  return (phoneKnown ? 0 : 100) + gradeWeight * 10 + (emailKnown?0:2) + (leaderKnown ? 0 : 1);
+}
+
+// Keep telephone and secondary-contact batches homogeneous. An email-only
+// company cannot consume part of a limited phone-first web search.
+export function planContactGroups(rows, batchSize) {
+  const ordered=[...(rows||[])].sort((a,b)=>contactResearchPriority(b)-contactResearchPriority(a));
+  const size=Number.isSafeInteger(batchSize)&&batchSize>0?batchSize:1;
+  const chunk=list=>{
+    const out=[];
+    for(let i=0;i<list.length;i+=size)out.push(list.slice(i,i+size));
+    return out;
+  };
+  return {phoneGroups:chunk(ordered.filter(row=>!hasContactPhone(row))),
+    otherGroups:chunk(ordered.filter(hasContactPhone))};
+}
+
+// Only a source-attributed primary response with an INN and no phone can
+// justify a dedicated second query. Omitted responses are handled by the
+// separate omission queue, not counted twice. Persist attempted IDs.
+export function planPhoneGapRecovery(rows,primaryResults,completed,attempted,idOf) {
+  const seen=new Set();
+  return (rows||[]).filter(row=>{
+    const id=String(idOf(row)||"");
+    if(!id||seen.has(id)||completed.has(id)||attempted.has(id)||hasContactPhone(row))return false;
+    seen.add(id);
+    const answer=primaryResults.get(id);
+    return Boolean(validInn(row?.["ИНН"])&&answer&&
+      Array.isArray(answer.source_urls)&&answer.source_urls.some(validHttpUrl)&&
+      !(Array.isArray(answer.phones)&&answer.phones.some(normalizeRussianPhone)));
+  }).sort((a,b)=>contactResearchPriority(b)-contactResearchPriority(a));
+}
+
+// Recovery may contribute phones only. Preserve the first response even
+// when a second query fails, and apply ownership checks later in one place.
+export function mergeRecoveredPhoneResult(first,second) {
+  if(!first||!second||!Array.isArray(second.source_urls)||!second.source_urls.some(validHttpUrl))
+    return first;
+  const phones=[...new Set([...(first.phones||[]),...(second.phones||[])]
+    .map(normalizeRussianPhone).filter(Boolean))];
+  if(!phones.length)return first;
+  return {...first,phones,status:"ok",
+    source_urls:[...new Set([...(first.source_urls||[]),...second.source_urls])].filter(validHttpUrl),
+    official_site:first.official_site||second.official_site||"",
+    phone_recovery_source_urls:second.source_urls.filter(validHttpUrl)};
 }
 
 /**

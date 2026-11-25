@@ -16,12 +16,12 @@ test("recheck only omitted companies, never a source-backed completed not_found"
   assert.deepEqual(result.groups.map(g=>g.map(x=>x.id)),[["missing"]]);
 });
 
-test("within grades, recover missing phones before missing leaders", () => {
+test("recover missing phones before missing leaders even across sales grades", () => {
   const rows=[company("c-no-phone","C"),company("b-no-leader","B","79001234567"),
     company("a-no-leader","A","79001234567"),company("a-no-phone","A","", "Петров П.П.")];
   const result=plan(rows, rows.map(x=>x.id),[],{batches:2,batchSize:2});
   assert.deepEqual(result.groups.map(g=>g.map(x=>x.id)),[
-    ["a-no-phone","a-no-leader"],["b-no-leader","c-no-phone"]
+    ["a-no-phone","c-no-phone"],["a-no-leader","b-no-leader"]
   ]);
 });
 
