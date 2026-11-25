@@ -410,6 +410,8 @@ function etaLabel(eta, receivedAt, now=Date.now()){
   }
   if(eta?.status==="completed")return "Завершено";
   if(eta?.status==="queued")return "Ожидание очереди";
+  if(eta?.status==="memory_wait")return "Ожидание свободной ОЗУ";
+  if(eta?.status==="memory_pausing")return "Сохранение перед паузой";
   if(eta?.status==="calibrating")return "Оцениваем скорость этапов…";
   if(eta?.status==="recalibrating")return "Уточняем прогноз…";
   if(eta?.status==="finishing")return "Сохраняем результат…";
@@ -443,6 +445,9 @@ function jobStateText(job){
   const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
     completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",
     cancelling:"Останавливается"};
+  if(job.phase==="memory_paused")return "Пауза по ОЗУ · автовозобновление";
+  if(job.phase==="memory_wait")return "Ожидает свободную ОЗУ";
+  if(job.memoryPauseRequested)return "Сохраняем данные перед паузой";
   if(job.state==="waiting"&&job.phase==="queued")
     return "В очереди"+(job.queuePosition?" №"+job.queuePosition:"");
   if(job.state==="active")return names.active+" · "+Math.round(Number(job.percent||0))+"%";
@@ -470,6 +475,15 @@ function renderJobs(payload){
       " МиБ · JS-объекты "+Number(memory.node_heap_used_mib||0)+
       " МиБ · память Chromium отдельная";
   }else e.runtimeMemory.textContent="Данные об ОЗУ пока недоступны";
+  const guard=q.memory;
+  if(guard?.enabled){
+    const free=Number(guard.availableMiB),reserve=Number(guard.reserveMiB);
+    e.runtimeMemory.textContent+=(Number.isFinite(free)?" · доступно "+free+" МиБ":"")+
+      (Number.isFinite(reserve)?" · резерв "+reserve+" МиБ":"")+
+      (Number.isFinite(guard.effectiveLimit)?" · лимит по ОЗУ: "+guard.effectiveLimit:"")+
+      (guard.limitedByMemory?" · запуск по памяти ограничен":"")+
+      (guard.paused?" · на паузе: "+guard.paused:"");
+  }
   e.jobsList.replaceChildren();
   if(!jobs.length){
     const p=document.createElement("p");
@@ -604,6 +618,8 @@ function setProgress(p){
 
   const labels={
     queued:"В очереди",
+    memory_wait:"Ожидание оперативной памяти",
+    memory_paused:"Исследование на паузе по памяти",
     starting:"Подготовка",
     research:"Исследование",
     dedupe:"Объединение и дедупликация",
@@ -617,7 +633,16 @@ function setProgress(p){
   };
   e.statusTitle.textContent=labels[p.phase]||"Исследование";
 
-  if(p.phase==="queued"){
+  if(p.memoryPauseRequested){
+    e.statusTitle.textContent="Сохранение перед паузой по памяти";
+    e.statusText.textContent="Завершаем текущий безопасный пакет, сохраняем результат в SQLite.";
+    e.contactBox.hidden=true;
+  }else if(p.phase==="memory_paused"||p.phase==="memory_wait"){
+    e.statusText.textContent=p.phase==="memory_paused"?
+      "Контрольная точка сохранена. Исследование автоматически продолжится при достаточной свободной ОЗУ.":
+      "Запуск автоматически возобновится при достаточной свободной ОЗУ.";
+    e.contactBox.hidden=true;
+  }else if(p.phase==="queued"){
     e.statusText.textContent="Ожидание запуска · позиция "+Number(p.queuePosition||1);
     e.contactBox.hidden=true;
   }else if(p.phase==="google_ai"){
@@ -681,7 +706,9 @@ async function poll(restoring=false){
     // copying its entire multi-hundred-company checkpoint to sessionStorage
     // wastes memory, serializes large JSON and adds HTTP load for no benefit.
     if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
-      void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
+      if(!d.progress?.memoryPauseRequested&&
+        !["memory_paused","memory_wait"].includes(d.progress?.phase))
+        void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
     const sabyCanResume=Number(d.checkpoint?.saby_deferred||0)>0 &&

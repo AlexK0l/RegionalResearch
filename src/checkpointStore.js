@@ -56,6 +56,15 @@ function ensureDb() {
 
     CREATE INDEX IF NOT EXISTS idx_research_checkpoints_updated
       ON research_checkpoints(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_paused_jobs (
+      id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      pause_count INTEGER NOT NULL,
+      summary TEXT NOT NULL,
+      percent REAL NOT NULL DEFAULT 0
+    );
   `);
   return db;
 }
@@ -326,6 +335,43 @@ export function checkpointSummary(value) {
     pipeline_version: Number(value.pipeline_version || 0),
     updated_at: value.updated_at || null
   };
+}
+
+// Only confirmed cooperative pauses are automatically recoverable.
+// Never persist API keys or automatically replay an abruptly killed job.
+export function saveMemoryPausedJob(job){
+  const id=String(job?.id||""),mode=String(job?.mode||"");
+  if(!/^[a-f0-9-]{36}$/i.test(id)||!["full","resume","saby_only"].includes(mode))
+    throw Error("MEMORY_PAUSE_JOB_INVALID");
+  const summary=JSON.stringify(job.latestCheckpointSummary||{});
+  if(summary.length>8192)throw Error("MEMORY_PAUSE_SUMMARY_LIMIT");
+  const out=ensureDb().prepare(
+    "INSERT INTO memory_paused_jobs(id,mode,created_at_ms,pause_count,summary,percent) "+
+    "SELECT id,?,?,?,?,? FROM research_checkpoints WHERE id=? AND status='resumable' "+
+    "AND pipeline_version=? ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,"+
+    "created_at_ms=excluded.created_at_ms,pause_count=excluded.pause_count,"+
+    "summary=excluded.summary,percent=excluded.percent"
+  ).run(mode,Number(job.createdAt),Number(job.memoryPauseCount||1),summary,
+    Math.max(0,Math.min(99,Number(job.progress?.percent||0))),id,PIPELINE_VERSION);
+  if(Number(out.changes)!==1)throw Error("MEMORY_PAUSE_CHECKPOINT_NOT_DURABLE");
+}
+export function clearMemoryPausedJob(id){
+  ensureDb().prepare("DELETE FROM memory_paused_jobs WHERE id=?").run(String(id));
+}
+export function listMemoryPausedJobs(){
+  return ensureDb().prepare(
+    "SELECT p.*,c.region,c.phase FROM memory_paused_jobs p "+
+    "JOIN research_checkpoints c ON c.id=p.id WHERE c.status='resumable' "+
+    "AND c.pipeline_version=? ORDER BY p.created_at_ms,p.id"
+  ).all(PIPELINE_VERSION).flatMap(row=>{
+    try{
+      if(!["full","resume","saby_only"].includes(row.mode))return [];
+      const summary=JSON.parse(row.summary);
+      if(summary.region!==row.region||summary.phase!==row.phase)return [];
+      return [{id:row.id,region:row.region,mode:row.mode,createdAt:row.created_at_ms,
+        memoryPauseCount:row.pause_count,summary,percent:row.percent}];
+    }catch{return [];}
+  });
 }
 
 export async function checkpointBackendStatus() {

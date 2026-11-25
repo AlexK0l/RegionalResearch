@@ -114,6 +114,7 @@ export function sabyOnlyConfigReady(env=process.env) {
 export async function runSabyOnlyContinuation({
   checkpoint:input,
   sourceJobId,
+  memoryResume=false,
   env=process.env,
   signal=null,
   onProgress=async()=>{},
@@ -136,11 +137,11 @@ export async function runSabyOnlyContinuation({
   let snapshot={
     ...source,
     source_mode:"saby",
-    created_at:new Date(startedAt).toISOString(),
-    saby_continuation_source_job_id:sourceJobId,
+    created_at:memoryResume&&source.created_at?source.created_at:new Date(startedAt).toISOString(),
+    saby_continuation_source_job_id:memoryResume?(source.saby_continuation_source_job_id||sourceJobId):sourceJobId,
     saby_continuation_root_job_id:rootJobId
   };
-  const persist=async (phase, patch={})=>{
+  const persist=async (phase, patch={},safe=false)=>{
     snapshot={
       // One deep copy below is enough to freeze the durable Saby snapshot.
       // Avoid cloning a large final_result twice for each company.
@@ -149,7 +150,10 @@ export async function runSabyOnlyContinuation({
       source_mode:"saby",
       updated_at:new Date().toISOString()
     };
-    await persistCheckpoint(structuredClone(snapshot));
+    await persistCheckpoint(structuredClone(snapshot),{
+      memorySafe:safe&&phase==="saby"&&snapshot.saby_deferred_inns?.length>0&&
+        snapshot.saby_stats?.fullSweepCompleted!==true
+    });
   };
   const stageStatuses=STEPS.map((name,i)=>({
     step:i+1,name,
@@ -189,7 +193,7 @@ export async function runSabyOnlyContinuation({
     saby_completed_inns:source.saby_completed_inns,
     saby_deferred_inns:source.saby_deferred_inns,
     saby_attempted_inns:source.saby_attempted_inns||[]
-  });
+  },true);
   await report({processed:0,scheduled:checked.pending});
   const outcome=await runSabyOnlyWithRecovery({
     total:checked.pending,
@@ -204,7 +208,7 @@ export async function runSabyOnlyContinuation({
         result,completedInns,attemptedInns,maxDurationMs,
         env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
         girboPriorOutcomes:source.girbo_backfill_outcomes||{},
-        onProgress,persistCheckpoint:persist
+        onProgress,persistCheckpoint:(phase,patch)=>persist(phase,patch,true)
       };
       // Offline tests can inject a simulated browser. Live runs use the
       // real guarded Playwright collector and the same single Saby profile.
