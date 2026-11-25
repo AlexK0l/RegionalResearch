@@ -88,10 +88,13 @@ export function evaluateMemoryAdmission(sample,settings,active=0){
   const capacity=Math.max(0,Math.min(10,Math.floor((sample.totalMiB-reserve)/settings.jobMiB),
     Math.floor((sample.heapLimitMiB-heapReserve)/settings.heapJobMiB)));
   const critical=sample.availableMiB<=reserve/2||sample.heapAvailableMiB<=heapReserve/2;
-  // Begin draining before the emergency reserve is consumed. Parallel
-  // studies need additional headroom while their in-flight batches finish.
-  const drainMargin=active>1?Math.min(512,Math.ceil(settings.jobMiB/3)):128;
-  const heapDrainMargin=active>1?Math.min(256,Math.ceil(settings.heapJobMiB/2)):64;
+  // Parallel studies need additional headroom while in-flight batches
+  // finish. Once only one study remains, do not repeatedly preempt it merely
+  // for using the extra parallel-drain margin (e.g. Chromium at Saby).
+  // The full reserve and emergency limits still apply; admission of new
+  // studies still requires reserve + job estimate + per-active headroom.
+  const drainMargin=active>1?Math.min(512,Math.ceil(settings.jobMiB/3)):0;
+  const heapDrainMargin=active>1?Math.min(256,Math.ceil(settings.heapJobMiB/2)):0;
   const pressured=active>0&&(sample.availableMiB<=reserve+drainMargin||
     sample.heapAvailableMiB<=heapReserve+heapDrainMargin);
   const enough=sample.availableMiB>=reserve+settings.jobMiB+active*128&&
