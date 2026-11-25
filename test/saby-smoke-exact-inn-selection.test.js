@@ -64,9 +64,11 @@ test("missing or malformed INN fails closed without any company",()=>{
   assert.throws(()=>selectSabySmokeTarget(base,"7707083893"),/найден 0 раз/);
 });
 
-test("ineligible intermediary with known phone cannot be forced into the smoke",()=>{
+test("known phone without email remains eligible; complete intermediary cannot be forced into the smoke",()=>{
   const base=source();
   base.intermediaries[0]["Телефон"]="78123456789";
+  assert.equal(selectSabySmokeTarget(base,"7802131219").section,"intermediaries");
+  base.intermediaries[0]["Электронная почта"]="office@example.org";
   assert.throws(()=>selectSabySmokeTarget(base,"7802131219"),/не входит/);
 });
 

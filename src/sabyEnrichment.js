@@ -2,7 +2,7 @@
 // row until legal identity and the source have both passed validation.
 import { normalizeRussianPhone } from "./researchCostPolicy.js";
 import { formatPhoneCell, parsePhoneEntries, explicitPhoneDepartment } from "./phoneExport.js";
-import { mergeCompanyEmail } from "./emailContact.js";
+import { mergeCompanyEmail,companyEmailCell } from "./emailContact.js";
 import { validSabyFinancialEvidence } from "./sabyFinancials.js";
 
 const LEGAL_WORDS = new Set([
@@ -149,14 +149,14 @@ export function sabyEligibleRows(result) {
       invalid.push(entry);
     } else if (counts.get(inn) !== 1) {
       duplicates.push(entry);
-    } else if (entry.transport || !hasKnownPhone(entry.row?.["Телефон"])) {
+    } else if (entry.transport || !hasKnownPhone(entry.row?.["Телефон"]) || !companyEmailCell(entry.row)) {
       eligible.push(entry);
     }
   }
   // Prioritize missing contacts and direct buyers; no additional API searches.
   eligible.sort((a,b) => {
     const score = x => (hasKnownPhone(x.row["Телефон"]) ? 0 : 4) +
-      (x.transport ? 2 : 0);
+      (companyEmailCell(x.row)?0:2)+(x.transport ? 2 : 0);
     return score(b) - score(a);
   });
   return {eligible, duplicates, invalid};

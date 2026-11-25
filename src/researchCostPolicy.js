@@ -2,7 +2,7 @@
 // All limits are independently configurable; budgets are not quality claims.
 // A new autonomous study must not inherit phone numbers from older studies.
 // Legacy cache requires an explicit opt-in AND autonomous discovery disabled.
-import { parseEmailEntries } from "./emailContact.js";
+import { parseEmailEntries,companyEmailCell } from "./emailContact.js";
 
 export function previousContactCacheEnabled(env = process.env) {
   const autonomous = String(env.OPENAI_AUTONOMOUS_DISCOVERY_ENABLED ?? "true")
@@ -99,8 +99,10 @@ export function contactResearchPriority(row) {
   const gradeWeight = grade === "A" ? 3 : grade === "B" ? 2 : 1;
   const phoneKnown = String(row?.["Телефон"] || "").split(";")
     .some(entry => Boolean(normalizeRussianPhone(entry)));
-  const leaderKnown = Boolean(String(row?.["Руководитель / ЛПР"] || "").trim());
-  return gradeWeight * 10 + (phoneKnown ? 0 : 2) + (leaderKnown ? 0 : 1);
+  const emailKnown=Boolean(companyEmailCell(row));
+  const leader=String(row?.["Руководитель / ЛПР"]||"").trim();
+  const leaderKnown=Boolean(leader&&!/^(?:[-—–]+|н\/д|нет данных|не найден|не подтвержд|не установл)/iu.test(leader));
+  return gradeWeight * 10 + (phoneKnown ? 0 : 4) + (emailKnown?0:2) + (leaderKnown ? 0 : 1);
 }
 
 /**
@@ -114,8 +116,8 @@ export function validBatchContactItem(item, row, expectedId) {
   const itemInn = validInn(item.inn);
   if (rowInn ? rowInn !== itemInn : Boolean(itemInn)) return null;
   const name = normalizedName(row?.["Организация"]);
-  if (!name || (item.organization &&
-      normalizedName(item.organization) !== name)) return null;
+  if (!name || (!rowInn&&!normalizedName(item.organization)) ||
+      (item.organization&&normalizedName(item.organization)!==name)) return null;
   const sources = Array.isArray(item.source_urls)
     ? [...new Set(item.source_urls.filter(validHttpUrl))].slice(0, 4) : [];
   // Without a specific cited page we cannot know whether a particular

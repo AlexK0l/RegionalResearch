@@ -5,6 +5,8 @@ import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js"
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {girboStageEnabled} from "./girBoStage.js";
+import {publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
@@ -120,13 +122,16 @@ export async function runLateCheckpointResume({
       source.priority_stats,quality);
   }
 
+  let publicContactStats=source.public_contact_stats||null;
+  let fnsContactStats=source.fns_contact_stats||null;
   let saby={
     stats:source.saby_stats||null,
     completedInns:asArray(source.saby_completed_inns),
     deferredInns:asArray(source.saby_deferred_inns),
     attemptedInns:asArray(source.saby_attempted_inns)
   };
-  if(source.phase!=="priority"&&(sabyStage12Settings(env).enabled||girboStageEnabled(env))){
+  if(source.phase!=="priority"&&source.public_contact_post_saby_ready!==true&&
+    (sabyStage12Settings(env).enabled||girboStageEnabled(env))){
     statuses[11].status="running";
     statuses[11].startedAt=Date.now();
     statuses[11].detail="продолжение Stage12 из сохранённых контактов";
@@ -149,6 +154,33 @@ export async function runLateCheckpointResume({
           Math.floor(3*Math.min(1,ratio)),statuses,
           sabyCurrent:stats.processed,sabyTotal:stats.scheduled,
           sabyStats:stats});
+      }
+    });
+  }
+  // Completed Stage11 snapshots do not re-enter paid contact work. On a
+  // new version they may still use the independent public sources.
+  if(source.phase!=="priority"&&(publicContactEnabled(env)||fnsContactEnabled(env))){
+    await persistCheckpoint("saby",{stage11_completed:true,public_contact_post_saby_ready:true,final_result:result,
+      saby_stats:saby.stats,saby_completed_inns:saby.completedInns,
+      saby_deferred_inns:saby.deferredInns,saby_attempted_inns:saby.attemptedInns});
+    if(publicContactEnabled(env))await runPublicContactEnrichment({
+      result,env,signal,priorOutcomes:source.public_contact_outcomes||{},
+      previousStats:source.public_contact_stats,
+      onCheckpoint:({stats,outcomes})=>{
+        publicContactStats=stats;
+        return persistCheckpoint("saby",{
+          stage11_completed:true,final_result:result,
+          public_contact_stats:stats,public_contact_outcomes:outcomes},true);
+      }
+    });
+    if(fnsContactEnabled(env))await runFnsContactEnrichment({
+      result,env,signal,priorOutcomes:source.fns_contact_outcomes||{},
+      previousStats:source.fns_contact_stats,
+      onCheckpoint:({stats,outcomes})=>{
+        fnsContactStats=stats;
+        return persistCheckpoint("saby",{
+          stage11_completed:true,final_result:result,
+          fns_contact_stats:stats,fns_contact_outcomes:outcomes},true);
       }
     });
   }
@@ -203,5 +235,8 @@ export async function runLateCheckpointResume({
     source_phase:source.phase,restored_stage:11,
     skipped_paid_stages:[10,11],source_job_id:sourceJobId
   }));
-  return lateResultSummary(source,result,saby.stats,priority,quality);
+  const output=lateResultSummary(source,result,saby.stats,priority,quality);
+  output.contacts.public_sources=publicContactStats;
+  output.contacts.fns=fnsContactStats;
+  return output;
 }

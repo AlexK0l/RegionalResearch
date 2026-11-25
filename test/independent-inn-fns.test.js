@@ -823,3 +823,24 @@ test("row sequence parser diagnostic is numeric and never relaxes the official p
   assert.equal(parsed.diagnostic.observed_row,3);
   assert.equal(parsed.record,undefined);
 });
+
+test("official contact parser uses only scoped current executive and explicitly labelled email fields",()=>{
+  const withEmail=firstExtractPage;
+  // Add an email within the existing address section and re-number all
+  // following table rows, not header/footer dates or identity values.
+  const shift=(text,start)=>text.replace(/^([ \t]{1,10})(\d{1,3})([ \t]+)(?=[А-Яа-яЁё])/gm,
+    (all,pad,number,gap)=>Number(number)>=start?pad+String(Number(number)+1)+gap:all);
+  const first=shift(withEmail,7).replace("                                           Сведения о регистрации",
+    "   7      Адрес электронной почты                              office@alpha.example\n\n                                           Сведения о регистрации");
+  const second=shift(lastExtractPage,10).replace("  18      ИНН                                                    7707083893",
+    "  18      Фамилия                                               ИВАНОВ\n"+
+    "  19      Имя                                                   ИВАН\n"+
+    "  20      Отчество                                              ИВАНОВИЧ\n"+
+    "  21      Должность                                             ГЕНЕРАЛЬНЫЙ ДИРЕКТОР\n"+
+    "  22      ИНН                                                   7707083893");
+  const parsed=extractParse(first+"\f"+second+"\f");
+  assert.equal(parsed.reason,"fns_extract_parsed");
+  assert.deepEqual(parsed.contact_facts?.map(f=>f.field),["Электронная почта","Руководитель / ЛПР"]);
+  assert.equal(parsed.contact_facts[0].value,"office@alpha.example");
+  assert.equal(parsed.contact_facts[1].value,"ИВАНОВ ИВАН ИВАНОВИЧ (генеральный директор)");
+});

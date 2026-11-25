@@ -260,7 +260,7 @@ function logGoogleAiSummary(diagnostic) {
   }));
 }
 
-function agentPrompt(row, region, { needPhone, needLeader }) {
+function agentPrompt(row, region, { needPhone, needEmail, needLeader }) {
   const org = row["Организация"] || "";
   const inn = row["ИНН"] || "";
   const city = row["Город/район"] || "";
@@ -282,15 +282,16 @@ Existing leader cell: ${currentLeader || "empty"}
 
 NEEDED FIELDS
 Phone needed: ${needPhone ? "yes" : "no"}
+Email needed: ${needEmail ? "yes" : "no"}
 Leader / decision-maker needed: ${needLeader ? "yes" : "no"}
 
 MANDATORY PROCEDURE
 1. Use the visible Google interface and switch to "Режим ИИ" / AI Mode through the page UI.
-2. Query exactly: "${org} ${inn} контакты телефон руководитель".
+2. Query exactly: "${org} ${inn} контакты ${needPhone?"телефон":""} ${needEmail?"электронная почта email":""} ${needLeader?"руководитель":""}".
 3. Verify the company primarily by INN. Never use contacts of namesakes or related legal entities unless explicitly tied to this INN.
 4. If phone is needed, extract only phone numbers explicitly belonging to this exact legal entity. If the first answer has no confirmed phone, use at most one second query: "${org} ${inn} телефон".
 5. If leader is needed, extract a named owner/director/transport or fleet decision-maker only when clearly tied to this exact legal entity.
-6. Never invent, complete, extrapolate, or guess contact data. If an existing contact page already displays a public email of this exact legal entity, extract it; do not start a separate query just for email.
+6. Never invent, complete, extrapolate, or guess contact data. If email is needed, include it in the same search even when phone and leader are known. Extract only a public email explicitly belonging to this legal entity with the exact source page. Do not start extra searches beyond the allowed turns.
 7. If a field is already populated and not needed, do not spend additional searches trying to replace it.
 8. Normalize Russian phones to 7XXXXXXXXXX. Multiple new phones must be separated with "; ".
 9. Do not sign in, bypass CAPTCHA, bot checks, access controls, or paywalls. If blocked or AI Mode is unavailable, return "unavailable".
@@ -564,7 +565,7 @@ export async function verifyPhoneForCompanyWithGoogleAI({ client, session, row, 
   }
 }
 
-export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needLeader = true, forceFallback = false, isCancelled, signal }) {
+export async function enrichCompanyWithGoogleAI({ client, session, row, region, needPhone = true, needEmail = false, needLeader = true, forceFallback = false, isCancelled, signal }) {
   if (isCancelled?.()) throw new Error("JOB_CANCELLED");
   if (!session?.page) throw new Error("Research browser session is required");
 
@@ -578,6 +579,7 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
       row["Организация"],
       row["ИНН"] ? `ИНН ${row["ИНН"]}` : "",
       needPhone ? "контакты телефон" : "",
+      needEmail ? "электронная почта email" : "",
       needLeader ? "руководитель директор" : ""
     ].filter(Boolean);
 
@@ -594,7 +596,7 @@ export async function enrichCompanyWithGoogleAI({ client, session, row, region, 
     const result = await runComputerJson({
       client,
       page,
-      prompt: agentPrompt(row, region, { needPhone, needLeader }),
+      prompt: agentPrompt(row, region, { needPhone, needEmail, needLeader }),
       forceFallback,
       signal,
       diagnostic,

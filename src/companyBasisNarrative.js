@@ -183,7 +183,16 @@ function readableCompanyComment(row,info){
     activityLine,
     emails?"Email: "+emails:""
   ].filter(Boolean);
-  return unique([...top,...others,...sourceLines,...activityLines.slice(1)]).join("\n");
+  // Contacts have their own evidence; never use them as an A/B/C claim.
+  const contactFacts=Array.isArray(row?.__evidence?.public_contact_facts)?
+    row.__evidence.public_contact_facts:[];
+  const contactLines=unique(contactFacts.slice(0,15).filter(f=>
+    f?.inn===String(row?.["ИНН"]||"").trim()&&
+    /^https?:\/\//i.test(String(f.source_url||""))&&
+    ["Телефон","Электронная почта","Руководитель / ЛПР"].includes(f.field))
+    .map(f=>f.field+": "+text(f.value)+(f.department?" ("+text(f.department)+")":"")+
+      " · "+f.source_url));
+  return unique([...top,...others,...contactLines,...sourceLines,...activityLines.slice(1)]).join("\n");
 }
 
 export function decorateCompanyBasisForExport(result){
