@@ -5,7 +5,7 @@ import {recoverPriorityCheckpointOffline} from "./priorityCheckpointRecovery.js"
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {girboStageEnabled} from "./girBoStage.js";
-import {publicContactEnabled,runPublicContactEnrichment} from "./publicContactEnrichment.js";
+import {publicContactEnabled,runPublicContactEnrichment,contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
@@ -228,8 +228,11 @@ export async function runLateCheckpointResume({
   priority.commercial_postprocess=finalizeStage13CommercialOutput(result);
   markDone(12,"коэффициенты пересчитаны без повторения этапов 10 и 11");
 
+  const finalPhoneCoverage=contactPhoneCoverage(result);
+  console.info("[CONTACT_PHONE_COVERAGE] "+JSON.stringify({phase:"final",...finalPhoneCoverage}));
   await persistCheckpoint("completed",{
     completed_stage:9,stage11_completed:true,
+    contact_stats:{...source.contact_stats,final_phone_coverage:finalPhoneCoverage},
     final_result:result,final_quality_gate:quality,
     saby_stats:saby.stats,
     saby_completed_inns:saby.completedInns,
