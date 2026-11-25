@@ -138,7 +138,7 @@ export function sabyMissingFinancials(row) {
   return !known(row?.["Выручка последнего подтвержденного года"])||
     !known(row?.["Численность"]);
 }
-export function sabyEligibleRows(result,{includeFinanceGaps=false}={}) {
+export function sabyEligibleRows(result,{includeFinanceGaps=false,includeAll=false}={}) {
   const groups = [
     ...(result?.direct_buyers || []).map(row => ({row, transport:true})),
     ...(result?.intermediaries || []).map(row => ({row, transport:false})),
@@ -156,7 +156,7 @@ export function sabyEligibleRows(result,{includeFinanceGaps=false}={}) {
       invalid.push(entry);
     } else if (counts.get(inn) !== 1) {
       duplicates.push(entry);
-    } else if (entry.transport || !hasKnownPhone(entry.row?.["Телефон"]) || !companyEmailCell(entry.row) ||
+    } else if (includeAll || entry.transport || !hasKnownPhone(entry.row?.["Телефон"]) || !companyEmailCell(entry.row) ||
       (includeFinanceGaps&&sabyMissingFinancials(entry.row))) {
       eligible.push(entry);
     }
