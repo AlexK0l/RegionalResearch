@@ -66,7 +66,10 @@ export async function runLateCheckpointResume({
     throw TypeError("Late resume requires progress and durable checkpoint callbacks");
   if(signal?.aborted)throw Error("JOB_CANCELLED");
 
-  const source=clone(checkpoint);
+  // Source metadata is read only here; keep the top-level original
+  // fields stable when the production writer updates its own checkpoint
+  // object. Clone the mutable CRM rows, not the entire discovery history.
+  const source={...checkpoint};
   const result=clone(source.final_result);
   const quality=clone(source.final_quality_gate||result.final_quality_gate);
   const markDone=(index,detail)=>{
