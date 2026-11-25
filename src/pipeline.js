@@ -9387,7 +9387,7 @@ ${JSON.stringify(gaps)}
   // contact searches are restarted and no Stage13 score is changed here.
   if(executionMode==="full"&&(publicContactEnabled(process.env)||fnsContactEnabled(process.env))){
     await persistCheckpoint("saby",{
-      stage11_completed:true,final_result:finalResult,
+      stage11_completed:true,public_contact_post_saby_ready:true,final_result:finalResult,
       saby_stats:sabyStats,saby_completed_inns:sabyOutcome.completedInns,
       saby_deferred_inns:sabyOutcome.deferredInns,saby_attempted_inns:sabyOutcome.attemptedInns
     });

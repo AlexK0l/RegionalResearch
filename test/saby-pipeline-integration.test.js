@@ -31,8 +31,12 @@ function fixture(){
       row("ООО Бета","7702070139"),
       row("ООО Гамма","7736207543")
     ],
-    intermediaries:[row("ООО Посредник","7710140679","74951234568")],
-    leasing:[row("ООО Лизинг","7707083900","74951234569")],
+    // Both contact channels are already present, so these are still
+    // intentionally ineligible. Email-only gaps have their own regression.
+    intermediaries:[{...row("ООО Посредник","7710140679","74951234568"),
+      "Электронная почта":"office@dealer.example"}],
+    leasing:[{...row("ООО Лизинг","7707083900","74951234569"),
+      "Электронная почта":"office@leasing.example"}],
     statistics:[]
   };
 }

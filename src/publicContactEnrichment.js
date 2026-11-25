@@ -5,9 +5,9 @@ import {createHash} from "node:crypto";
 import {companyEmailCell,mergeCompanyEmail,normalizeEmail} from "./emailContact.js";
 import {parsePhoneEntries,formatPhoneCell,explicitPhoneDepartment} from "./phoneExport.js";
 import {normalizeRussianPhone} from "./researchCostPolicy.js";
-import {contactPublicUrl} from "./publicContactHttp.js";
+import {contactPublicUrl,contactHost} from "./publicContactHttp.js";
 import {createPublicContactHttp} from "./publicContactHttp.js";
-import {contactSourceCandidates,publicContactTarget,lookupPublicCompanyContacts,publicPersonName}
+import {contactSourceCandidates,contactDirectoryCard,publicContactTarget,lookupPublicCompanyContacts,publicPersonName}
   from "./publicContactParser.js";
 const SECTIONS=["direct_buyers","intermediaries","leasing"];
 const REVISION=1;
@@ -101,14 +101,19 @@ function proofValid(f,target){
     !contactPublicUrl(f.source_url)||!contactPublicUrl(f.identity_url)||
     !/^[a-f0-9]{64}$/.test(f.source_sha256||"")||!txt(f.excerpt)||
     txt(f.excerpt).length>300)return false;
-  return ["public_html_exact_entity","public_directory_exact_inn","fns_extract_exact_entity"].includes(f.method)&&
-    /^[a-f0-9]{64}$/.test(f.identity_sha256||"");
+  if(!/^[a-f0-9]{64}$/.test(f.identity_sha256||""))return false;
+  if(f.method==="fns_extract_exact_entity")return f.source_url==="https://egrul.nalog.ru/index.html"&&
+    f.identity_url===f.source_url&&f.source_sha256===f.identity_sha256&&
+    /^\d{2}\.\d{2}\.\d{4}$/.test(f.extract_date||"")&&!!f.extract_number;
+  if(f.method==="public_directory_exact_inn")return contactDirectoryCard(f.source_url)&&f.identity_url===f.source_url;
+  return f.method==="public_html_exact_entity"&&contactHost(f.source_url)===contactHost(f.identity_url);
 }
 function safeOwner(map,value,row){
   return !map.has(value)||[...map.get(value)].every(x=>x===row);
 }
 export function applyPublicContactFacts(row,facts,{owners,target=publicContactTarget(row),gaps=contactMissingFields(row)}={}){
-  if(!target||publicContactTarget(row)?.inn!==target.inn||!owners)
+  if(!target||publicContactTarget(row)?.inn!==target.inn||
+    publicContactTarget(row)?.name!==target.name||!owners)
     return {phone:0,email:0,leader:0,department:0,conflicts:0};
   const beforePhone=parsePhoneEntries(row["Телефон"]),beforeEmail=companyEmailCell(row),
     oldPhone=new Set(beforePhone.map(x=>x.phone));
@@ -186,11 +191,11 @@ export async function runPublicContactEnrichment({
   const targets=plan.selected.slice(0,Math.max(0,settings.maxCompanies-stats.processed));
   stats.scheduled=targets.length;
   const owners=ownership(result);
-  let dirty=0,processedHere=0;
+  let dirty=0,processedHere=0,incompleteHere=0;
   const save=async()=>{
     stats.http_requests=client.requests;
     stats.elapsed_ms=priorElapsed+Math.max(0,Date.now()-started);
-    stats.pending=Math.max(0,plan.eligible-processedHere);
+    stats.pending=Math.max(0,plan.eligible-processedHere+incompleteHere);
     await onCheckpoint({stats:{...stats,by_reason:{...stats.by_reason}},outcomes:{...outcomes}});
     dirty=0;
   };
@@ -216,6 +221,7 @@ export async function runPublicContactEnrichment({
     outcomes[t.id]={revision:REVISION,signature:t.signature,reason,
       gains,attempted_at:new Date().toISOString()};
     stats.processed++;processedHere++;dirty++;
+    if(reason==="deferred_budget")incompleteHere++;
     stats.by_reason[reason]=Number(stats.by_reason[reason]||0)+1;
     if(dirty>=settings.checkpointEvery||shouldPause())await save();
     if(shouldPause())throw Error("MEMORY_PAUSE_NOT_COMMITTED");

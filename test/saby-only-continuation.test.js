@@ -213,7 +213,7 @@ test("legacy planning respects exactly Stage12 eligible rows: no duplicate INN, 
   const cp=oldCompletedResearch();
   cp.final_result.intermediaries=[
     {"ИНН":"7710140679","Организация":"ООО Посредник",
-      "Телефон":"74951234567"},
+      "Телефон":"74951234567","Электронная почта":"office@dealer.example"},
     {"ИНН":"000invalid","Организация":"ООО Неизвестный","Телефон":""}
   ];
   cp.final_result.leasing=[{

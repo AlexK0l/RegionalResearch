@@ -130,7 +130,8 @@ export async function runLateCheckpointResume({
     deferredInns:asArray(source.saby_deferred_inns),
     attemptedInns:asArray(source.saby_attempted_inns)
   };
-  if(source.phase!=="priority"&&(sabyStage12Settings(env).enabled||girboStageEnabled(env))){
+  if(source.phase!=="priority"&&source.public_contact_post_saby_ready!==true&&
+    (sabyStage12Settings(env).enabled||girboStageEnabled(env))){
     statuses[11].status="running";
     statuses[11].startedAt=Date.now();
     statuses[11].detail="продолжение Stage12 из сохранённых контактов";
@@ -159,7 +160,7 @@ export async function runLateCheckpointResume({
   // Completed Stage11 snapshots do not re-enter paid contact work. On a
   // new version they may still use the independent public sources.
   if(source.phase!=="priority"&&(publicContactEnabled(env)||fnsContactEnabled(env))){
-    await persistCheckpoint("saby",{stage11_completed:true,final_result:result,
+    await persistCheckpoint("saby",{stage11_completed:true,public_contact_post_saby_ready:true,final_result:result,
       saby_stats:saby.stats,saby_completed_inns:saby.completedInns,
       saby_deferred_inns:saby.deferredInns,saby_attempted_inns:saby.attemptedInns});
     if(publicContactEnabled(env))await runPublicContactEnrichment({

@@ -21,7 +21,9 @@ export function contactPublicUrl(value){
       !/^[a-z0-9.-]+$/i.test(u.hostname))return "";
     // Never submit source-supplied tokens, search terms or arbitrary query
     // parameters. These may be private, or cause unintended actions.
-    if(u.search||/(?:^|\/)(?:login|logout|auth|admin|account|cart|checkout|api|wp-admin|cgi-bin)(?:\/|$)/i.test(u.pathname)||
+    const decoded=decodeURIComponent(u.pathname);
+    if(u.search||/[\\\x00-\x1f\x7f]/.test(decoded)||/%(?:2f|5c)/i.test(u.pathname)||
+       /(?:^|\/)(?:login|logout|auth|admin|account|cart|checkout|api|wp-admin|cgi-bin)(?:\/|$)/i.test(decoded)||
        /\.(?:zip|rar|7z|exe|docx?|xlsx?|pptx?|pdf|jpg|png|svg|mp[34]|webp|xml|json)$/i.test(u.pathname))return "";
     u.hash="";
     return u.href;
@@ -158,7 +160,7 @@ async function serial(task,signal){
     try{return await task();}
     finally{nextRequestAt=Date.now()+750;}
   });
-  tail=run.catch(()=>{});
+  tail=run.then(()=>undefined,()=>undefined);
   return run;
 }
 function blockHost(host,ms){

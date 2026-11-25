@@ -177,3 +177,23 @@ test("FNS accepts only exact current official extract proof; mismatch and source
   assert.equal(done.stats.email_added,1);assert.equal(closed,true);
   assert.equal(row["Электронная почта"],"office@alpha.example");
 });
+
+test("quoted organization in an article does not establish own-site identity; directory footer contacts never belong to card",()=>{
+  const article=parsePublicContactPage('<h1>Новости ООО «АЛЬФА» и рынок перевозок</h1>'+
+    '<p>ИНН: '+inn+'</p><footer><p>Телефон: +7 495 1234567</p></footer>',base+"news");
+  assert.equal(extractVerifiedPublicContacts([article],company()).facts.length,0);
+  const card=parsePublicContactPage('<h1>ООО «АЛЬФА»</h1><p>ИНН: '+inn+'</p>'+
+    '<p>Email: office@alpha.example</p>'+
+    '<footer><p>Телефон: +7 495 1234567</p><p>Email: support@rusprofile.ru</p></footer>',
+    "https://rusprofile.ru/id/12345");
+  const found=extractVerifiedPublicContacts([card],company(),{directory:true});
+  assert.deepEqual(found.facts.map(x=>x.value),["office@alpha.example"]);
+});
+test("mid-company request exhaustion remains a deferred source, not a completed not-found",async()=>{
+  const r=result([company()]);
+  const done=await runPublicContactEnrichment({result:r,env:{PUBLIC_CONTACTS_ENABLED:"true"},
+    lookup:async()=>({reason:"deferred_budget",facts:[]}),
+    clientFactory:()=>({requests:1,exhausted:false})});
+  assert.equal(done.stats.pending,1);assert.equal(done.stats.stop_reason,"budget_or_deadline");
+  assert.equal(planPublicContactEnrichment(r,{priorOutcomes:done.outcomes}).eligible,1);
+});

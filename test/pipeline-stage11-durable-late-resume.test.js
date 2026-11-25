@@ -142,3 +142,29 @@ test("regular stage11 saves explicit final-quality and contact completion marker
   assert.match(source,/CHECKPOINT_PHASE_REGRESSION_BLOCKED/);
   assert.match(source,/canResumeFromCompletedContacts\(resumeCheckpoint\)/);
 });
+
+test("post-Saby public-contact pause resumes without starting Saby or paid contact work again",async()=>{
+  const cp={...checkpoint("saby"),stage11_completed:true,
+    public_contact_post_saby_ready:true,saby_stats:{enabled:true,processed:1,deferred:1},
+    saby_completed_inns:[],saby_deferred_inns:["7707083893"],
+    saby_attempted_inns:["7707083893"]};
+  const previous={};
+  for(const name of ["SABY_STAGE12_ENABLED","GIRBO_STAGE_ENABLED","PUBLIC_CONTACTS_ENABLED",
+    "PUBLIC_CONTACTS_FNS_ENABLED","STAGE13_AI_ENABLED"])previous[name]=process.env[name];
+  try{
+    process.env.SABY_STAGE12_ENABLED="true";
+    process.env.GIRBO_STAGE_ENABLED="true";
+    process.env.PUBLIC_CONTACTS_ENABLED="false";
+    process.env.PUBLIC_CONTACTS_FNS_ENABLED="false";
+    process.env.STAGE13_AI_ENABLED="false";
+    const {job:data,history}=job(cp);
+    const out=await runResearchPipeline({job:data,apiKey:"sk-test-no-network"});
+    assert.equal(out.saby.processed,1);
+    assert.deepEqual(history.saved.at(-1).saby_deferred_inns,cp.saby_deferred_inns);
+    assert.equal(history.saved.at(-1).phase,"completed");
+  }finally{
+    for(const [name,value] of Object.entries(previous)){
+      if(value===undefined)delete process.env[name];else process.env[name]=value;
+    }
+  }
+});

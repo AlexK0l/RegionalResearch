@@ -35,21 +35,24 @@ export function registeredContactName(raw){
 }
 const quotedForm=new RegExp("(?<![\\p{L}\\p{N}])("+forms.map(f=>f[0]).join("|")+")\\s*[«\"“„]([^»\"”\\n]{1,300})[»\"”]","giu");
 const explicitNamePrefix=/^(?:полное |сокращ[её]нное )?(?:наименование(?: юридического лица)?(?: на русском языке)?|организация|юридическое лицо)\s*[:—-]\s*/iu;
-function observedNames(blocks){
+function observedNames(blocks,{anchorOnly=false}={}){
   const names=new Set();
   for(const b of blocks){
     if(b.text.length>500)continue;
+    const value=b.text.replace(explicitNamePrefix,"")
+      .replace(/^(?:официальный сайт|контакты|реквизиты|о компании)\s*[:—–-]?\s*/iu,"")
+      .replace(/^©\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s*)?/u,"")
+      .replace(/\s*[|—–-]\s*(?:официальный сайт|контакты|реквизиты)\s*$/iu,"");
     const quoted=[...b.text.matchAll(quotedForm)];
     for(const m of quoted){
       const key=registeredContactName(m[1]+" "+m[2]);
-      if(key)names.add(key);
+      // An article that mentions a quoted company name is a reference,
+      // not the website/card's own legal identity. Require an explicit
+      // whole-name label for the anchor; retain all quoted names to detect
+      // contradictory identities on the same page.
+      if(key&&(!anchorOnly||registeredContactName(value)===key))names.add(key);
     }
     if(quoted.length)continue;
-    let value=b.text.replace(explicitNamePrefix,"")
-      .replace(/^(?:контакты|реквизиты|о компании)\s*[:—–-]?\s*/iu,"")
-      .replace(/^©\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s*)?/u,"");
-    // An unquoted legal name is accepted only as a short entire label or
-    // heading, never as a fuzzy match within an article or partner list.
     if(value.length<=180&&!/[:;|]/u.test(value)){
       const key=registeredContactName(value);
       if(key)names.add(key);
@@ -82,15 +85,15 @@ const voidTags=new Set(["area","base","br","col","embed","hr","img","input","lin
 export function parsePublicContactPage(html,url){
   if(typeof html!=="string"||html.length>1024*1024||!contactPublicUrl(url))return null;
   const stack=[],blocks=[],links=[];
-  let text="",anchors=[],bad=false;
+  let text="",anchors=[],bad=false,landmark="";
   const visible=()=>!stack.some(x=>x.hidden);
   const flush=()=>{
     const value=clean(text);
     if(value){
       if(value.length>1600||blocks.length>=5000)bad=true;
-      else blocks.push({text:value,anchors:anchors.slice(0,20)});
+      else blocks.push({text:value,anchors:anchors.slice(0,20),landmark});
     }
-    text="";anchors=[];
+    text="";anchors=[];landmark="";
   };
   const closeNode=node=>{
     if(node.anchor&&!node.hidden){
@@ -116,6 +119,8 @@ export function parsePublicContactPage(html,url){
     if(!tag){
       if(visible()){
         const value=decodeContactEntities(token);
+        if(!text.trim()&&value.trim())
+          landmark=stack.findLast(x=>["footer","header","nav","aside","title"].includes(x.tag))?.tag||"";
         text+=value;
         for(const node of stack)if(node.anchor)node.anchor.text+=value;
         if(text.length>3200){bad=true;break;}
@@ -149,7 +154,8 @@ export function parsePublicContactPage(html,url){
   // the two bounded blocks, never arbitrary digits in prose.
   const ids=new Set([...full.matchAll(innPattern)].map(x=>x[1]));
   return {url,hash:hash(html),blocks,links,
-    inns:[...ids],names:[...observedNames(blocks)]};
+    inns:[...ids],names:[...observedNames(blocks)],
+    anchorNames:[...observedNames(blocks,{anchorOnly:true})]};
 }
 const contactPath=/(?:^|[/_.-])(?:contacts?|kontakty?|kontakti|contact-us|requisites?|rekvizity?|rekviziti|about|o-kompanii|company|management|rukovodstvo|zakupki|procurement|snabzhenie|transport|logistics)(?:$|[/_.-])/i;
 const contactTitle=/^(?:контакт[ыа]?|наши контакты|контактная информация|реквизиты|о компании|о нас|руководство|закупки|снабжение|отдел закупок|транспортный отдел|служба логистики|contacts?|contact us|about us)(?:\s*[:—–-].*)?$/iu;
@@ -206,7 +212,7 @@ export function publicContactTarget(row){
 }
 function pageIdentity(page,target){
   return page&&page.names.length===1&&page.names[0]===target.name&&
-    page.inns.length===1&&page.inns[0]===target.inn;
+    page.anchorNames?.includes(target.name)&&page.inns.length===1&&page.inns[0]===target.inn;
 }
 function isLinked(a,b){
   return a.links.some(x=>x.url===b.url)||b.links.some(x=>x.url===a.url);
@@ -248,7 +254,8 @@ function contactFacts(page,target,identity){
   };
   for(let i=0;i<page.blocks.length;i++){
     const b=page.blocks[i],v=b.text;
-    if(v.length>450||unsafeContext.test(v))continue;
+    if(v.length>450||unsafeContext.test(v)||
+      contactDirectoryCard(page.url)&&["footer","header","nav","aside","title"].includes(b.landmark))continue;
     const previous=i>0?page.blocks[i-1].text:"";
     const preceding=previous.length<=65&&!unsafeContext.test(previous)&&
       !parsePhoneEntries(previous).length?explicitPhoneDepartment(previous):"";
@@ -295,7 +302,8 @@ export function extractVerifiedPublicContacts(pages,row,{directory=false}={}){
     p.names.some(x=>x!==target.name));
   for(const page of list){
     const own=anchors.find(x=>x===page);
-    const linked=!directory&&!page.inns.length&&page.names.length===1&&page.names[0]===target.name?
+    const linked=!directory&&!page.inns.length&&page.names.length===1&&page.names[0]===target.name&&
+      page.anchorNames?.includes(target.name)?
       anchors.find(x=>contactHost(x.url)===contactHost(page.url)&&isLinked(x,page)):null;
     // A site with another explicit INN or named legal entity anywhere in
     // its inspected contact pages cannot confer cross-page ownership.
