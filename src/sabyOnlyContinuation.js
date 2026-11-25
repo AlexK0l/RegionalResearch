@@ -138,6 +138,11 @@ export async function runSabyOnlyContinuation({
   // by the HTTP queue; our copied snapshot uses source_mode=saby.
   const source=checked.checkpoint;
   const result=structuredClone(source.final_result);
+  // Reset a finished cursor for an explicitly requested NEW sweep before
+  // the first durable safe point. A memory pause there must not accidentally
+  // resurrect the already exhausted parent sweep.
+  const savedPass=source.saby_pass_state;
+  const contactPassState=savedPass&&(memoryResume||Number(savedPass.phase_index)<4)?savedPass:null;
   const startedAt=Date.now();
   const rootJobId=String(source.saby_continuation_root_job_id||sourceJobId);
   let snapshot={
@@ -201,7 +206,8 @@ export async function runSabyOnlyContinuation({
     final_result:result,
     saby_completed_inns:source.saby_completed_inns,
     saby_deferred_inns:source.saby_deferred_inns,
-    saby_attempted_inns:source.saby_attempted_inns||[]
+    saby_attempted_inns:source.saby_attempted_inns||[],
+    ...(contactFirst?{saby_pass_state:contactPassState}:{})
   },true);
   await report({processed:0,scheduled:checked.pending});
   // Keep one browser reservation across reconnect attempts. Each actual
@@ -220,11 +226,9 @@ export async function runSabyOnlyContinuation({
   if(contactFirst){
     // Explicit new continuation after an exhausted sweep may retry its gaps;
     // a memory resume preserves the exact per-section cursor.
-    const saved=source.saby_pass_state;
-    const passState=saved&&(memoryResume||Number(saved.phase_index)<4)?saved:null;
     outcome=await runCheckpointedSabyStage12({
       result,env:{...env,SABY_CHECKPOINT_EVERY:"1"},signal,startedAt,
-      girboPriorOutcomes:source.girbo_backfill_outcomes||{},contactFirst:true,passState,
+      girboPriorOutcomes:source.girbo_backfill_outcomes||{},contactFirst:true,passState:contactPassState,
       acquireSabyBrowser,sessionRunner,collectSections,
       onProgress:stats=>report(stats),
       onGirboProgress:stats=>onProgress({phase:"saby",step:12,percent:0,statuses:stageStatuses,girboStats:stats}),
