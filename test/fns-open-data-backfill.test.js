@@ -86,6 +86,9 @@ test("Python scanner reads documented XML, retains zero, skips individuals and w
   assert.equal(out.range.archive_mode,"http_range");
   assert.match(out.range.sha256,/^[a-f0-9]{64}$/);
   assert.ok(out.range.range_requests>1);
+  assert.equal(out.recovered_range.sha256,out.range.sha256);
+  assert.equal(out.recovered_range.range_retries,1);
+  assert.ok(out.recovered_range.requested_bytes>out.recovered_range.bytes);
 });
 
 test("regional candidates survive nationwide name overflow and a single-source retry",()=>{

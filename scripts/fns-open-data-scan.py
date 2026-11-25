@@ -3,6 +3,9 @@
 import hashlib
 import json
 import os
+import ssl
+import time
+from http.client import IncompleteRead, RemoteDisconnected
 from collections import OrderedDict
 from urllib.error import HTTPError, URLError
 import re
@@ -120,11 +123,22 @@ class RangeArchive:
     and ZIP metadata. Never create a full archive file or accept a 200
     response in place of a range. Use normal HTTPS validation.
     """
-    def __init__(self,url,limit,*,opener=None,block_size=16*1024**2,progress=None):
+    # Retry only transient transport failures. Identity and response
+    # metadata failures remain immediate, non-retryable proof failures.
+    MAX_BLOCK_RETRIES=5
+    MAX_RUN_RETRIES=48
+    MIN_RETRY_RANGE=1024**2
+    RETRYABLE={"FNS_RANGE_TRUNCATED","FNS_RANGE_TRANSFER_INTERRUPTED",
+               "FNS_RANGE_HTTP_TEMPORARY"}
+
+    def __init__(self,url,limit,*,opener=None,block_size=16*1024**2,
+                 progress=None,on_retry=None,sleep=time.sleep):
         self.url=url
         self.opener=opener or urllib.request.build_opener(NoRedirect())
         self.block_size=block_size
         self.progress=progress
+        self.on_retry=on_retry
+        self.sleep=sleep
         self.etag=""
         self.size=0
         self.pos=0
@@ -134,7 +148,9 @@ class RangeArchive:
         self.next_block=0
         self.hashed=0
         self.wire_bytes=0
+        self.requested_bytes=0
         self.requests=0
+        self.retries=0
         self.hashing=False
         self.last_progress=0
         self.limit=limit
@@ -143,24 +159,72 @@ class RangeArchive:
         self.blocks=(self.size+self.block_size-1)//self.block_size
 
     def _request(self,start,end,probe=False):
-        if not probe and (self.requests>=self.blocks+32 or
-                          self.wire_bytes+(end-start+1)>self.size+32*self.block_size):
+        # A logical block is returned only after all of its ranges pass
+        # the existing strict response checks. Completed subranges stay
+        # in memory; the incomplete range is discarded, never hashed.
+        cursor=start
+        window=end-start+1
+        parts=[]
+        failures=0
+        while cursor<=end:
+            last=min(end,cursor+window-1)
+            try:
+                body=self._request_once(cursor,last,probe=probe)
+            except ValueError as exc:
+                reason=str(exc)
+                if reason not in self.RETRYABLE:
+                    raise
+                if failures>=self.MAX_BLOCK_RETRIES or self.retries>=self.MAX_RUN_RETRIES:
+                    raise ValueError("FNS_RANGE_RETRY_EXHAUSTED") from exc
+                failures+=1
+                self.retries+=1
+                # Shorter requests reduce the cost of another interruption.
+                # Never enlarge a small remaining range.
+                window=min(last-cursor+1,max(self.MIN_RETRY_RANGE,window//2))
+                if self.on_retry:
+                    self.on_retry({"reason":reason,"offset":cursor,
+                        "failed_range_bytes":last-cursor+1,"next_range_bytes":window,
+                        "block_retry":failures,"run_retries":self.retries})
+                self.sleep(min(8,2**(failures-1)))
+                continue
+            parts.append(body)
+            cursor=last+1
+        return b"".join(parts)
+
+    def _request_once(self,start,end,probe=False):
+        # Charge all requests, including failed attempts, against a bounded
+        # transfer allowance. Metadata seeks and smaller retry ranges may
+        # add requests beyond the ordinary sequential block count.
+        n=end-start+1
+        if not probe and (self.requests>=self.blocks+32+3*self.MAX_RUN_RETRIES or
+                          self.requested_bytes+n>self.size+(32+self.MAX_RUN_RETRIES)*self.block_size):
             raise ValueError("FNS_RANGE_BUDGET")
         h={"User-Agent":"RegionalResearch/2.1",
            "Accept-Encoding":"identity","Range":f"bytes={start}-{end}"}
         if not probe:
             h["If-Match"]=self.etag
         self.requests+=1
+        self.requested_bytes+=n
         req=urllib.request.Request(self.url,headers=h)
         try:
             res=self.opener.open(req,timeout=60)
         except HTTPError as exc:
+            retry_after=exc.headers.get("Retry-After") if exc.headers else None
             exc.close()
             if exc.code in (412,416):
                 raise ValueError("FNS_RANGE_REPRESENTATION_CHANGED") from exc
+            # Never retry explicit throttling or bypass a Retry-After.
+            if exc.code==429 or retry_after:
+                raise ValueError("FNS_RANGE_RATE_LIMITED") from exc
+            if exc.code in (408,500,502,503,504):
+                raise ValueError("FNS_RANGE_HTTP_TEMPORARY") from exc
             raise ValueError("FNS_RANGE_HTTP_UNAVAILABLE") from exc
         except URLError as exc:
+            if isinstance(exc.reason,(TimeoutError,ConnectionError)) and not isinstance(exc.reason,ssl.SSLError):
+                raise ValueError("FNS_RANGE_TRANSFER_INTERRUPTED") from exc
             raise ValueError("FNS_RANGE_HTTP_UNAVAILABLE") from exc
+        except (TimeoutError,ConnectionError,RemoteDisconnected) as exc:
+            raise ValueError("FNS_RANGE_TRANSFER_INTERRUPTED") from exc
         with res:
             if res.status!=206 or res.geturl()!=self.url:
                 # Close without reading the body, especially for a full 200.
@@ -175,19 +239,26 @@ class RangeArchive:
             tag=res.headers.get("ETag","")
             if not re.fullmatch(r'"[\x21\x23-\x7e]+"',tag):
                 raise ValueError("FNS_RANGE_STRONG_ETAG_REQUIRED")
-            if probe:
+            if probe and not self.etag:
                 self.size=total
                 self.etag=tag
             elif total!=self.size or tag!=self.etag:
                 raise ValueError("FNS_RANGE_REPRESENTATION_CHANGED")
-            n=end-start+1
             length=res.headers.get("Content-Length")
             if (length is not None and length!=str(n)) or res.headers.get("Content-Encoding","identity").lower()!="identity":
                 raise ValueError("FNS_RANGE_RESPONSE_UNPROVEN")
-            body=res.read(n+1)
-            if len(body)!=n:
+            try:
+                body=res.read(n+1)
+            except IncompleteRead as exc:
+                self.wire_bytes+=len(exc.partial)
+                raise ValueError("FNS_RANGE_TRUNCATED") from exc
+            except (TimeoutError,ConnectionError,RemoteDisconnected) as exc:
+                raise ValueError("FNS_RANGE_TRANSFER_INTERRUPTED") from exc
+            self.wire_bytes+=len(body)
+            if len(body)>n:
+                raise ValueError("FNS_RANGE_RESPONSE_UNPROVEN")
+            if len(body)<n:
                 raise ValueError("FNS_RANGE_TRUNCATED")
-            self.wire_bytes+=n
             return body
 
     def _block(self,index):
@@ -222,7 +293,8 @@ class RangeArchive:
             raise ValueError("FNS_RANGE_HASH_INCOMPLETE")
         return {"bytes":self.size,"sha256":self.digest.hexdigest(),
                 "archive_mode":"http_range","range_requests":self.requests,
-                "transferred_bytes":self.wire_bytes}
+                "transferred_bytes":self.wire_bytes,
+                "requested_bytes":self.requested_bytes,"range_retries":self.retries}
 
     def tell(self):
         return self.pos
@@ -443,7 +515,10 @@ def main():
                 print("[FNS_DATASET_RANGE_PROGRESS] "+json.dumps({"kind":kind,
                     "bytes_hashed":hashed,"total_bytes":total,"range_requests":requests}),
                     file=sys.stderr,flush=True)
-            with RangeArchive(url,3*GIB,progress=progress) as remote:
+            def on_retry(info):
+                print("[FNS_DATASET_RANGE_RETRY] "+json.dumps({"kind":kind,**info}),
+                    file=sys.stderr,flush=True)
+            with RangeArchive(url,3*GIB,progress=progress,on_retry=on_retry) as remote:
                 print("[FNS_DATASET_RANGE_READY] "+json.dumps({"kind":kind,"bytes":remote.size}),
                     file=sys.stderr,flush=True)
                 out=scan_archive(remote,kind,release,year,c["targets"])
