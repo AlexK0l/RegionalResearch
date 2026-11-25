@@ -88,12 +88,17 @@ export function evaluateMemoryAdmission(sample,settings,active=0){
   const capacity=Math.max(0,Math.min(10,Math.floor((sample.totalMiB-reserve)/settings.jobMiB),
     Math.floor((sample.heapLimitMiB-heapReserve)/settings.heapJobMiB)));
   const critical=sample.availableMiB<=reserve/2||sample.heapAvailableMiB<=heapReserve/2;
-  const pressured=sample.availableMiB<=reserve||sample.heapAvailableMiB<=heapReserve;
+  // Begin draining before the emergency reserve is consumed. Parallel
+  // studies need additional headroom while their in-flight batches finish.
+  const drainMargin=active>1?Math.min(512,Math.ceil(settings.jobMiB/3)):128;
+  const heapDrainMargin=active>1?Math.min(256,Math.ceil(settings.heapJobMiB/2)):64;
+  const pressured=active>0&&(sample.availableMiB<=reserve+drainMargin||
+    sample.heapAvailableMiB<=heapReserve+heapDrainMargin);
   const enough=sample.availableMiB>=reserve+settings.jobMiB+active*128&&
     sample.heapAvailableMiB>=heapReserve+settings.heapJobMiB+active*64;
-  return {canStart:!pressured&&enough&&active<capacity,
+  return {canStart:!critical&&!pressured&&enough&&active<capacity,
     pressure:critical?"critical":pressured?"high":"normal",
-    reason:pressured?"memory_reserve_reached":active>=capacity?"estimated_capacity":
+    reason:critical?"memory_reserve_reached":pressured?"memory_drain_margin":active>=capacity?"estimated_capacity":
       !enough?"insufficient_headroom":"",
     reserveMiB:reserve,heapReserveMiB:heapReserve,estimatedCapacity:capacity,
     ...sample};

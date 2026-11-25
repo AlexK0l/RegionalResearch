@@ -13,7 +13,8 @@ defaults may intentionally admit zero jobs: tune against measured peaks,
 not against available swap or a desired arbitrary concurrency count.
 
 When headroom is insufficient new jobs remain in the queue. A high-pressure
-sample requests cooperative suspension of the newest active resumable job;
+sample (including a drain margin above the reserve) requests cooperative
+suspension of the newest active resumable job;
 critical pressure requests suspension of all active resumable jobs. No
 SIGKILL/SIGSTOP, process restart, browser/profile kill or cancellation of
 in-flight paid requests is used as a memory-control strategy. Diagnostics
@@ -45,7 +46,9 @@ normal jobs are still process-local. Source snapshots that already exist in
 SQLite are loaded only after admission.
 
 UI: memory_wait / memory_paused, pause requested, available memory and
-reserve in job list; ETA suspended while waiting. Manual cancellation of
+reserve and effective memory-based concurrency limit in job list; ETA
+suspended while waiting. Automatic browser checkpoint copies are suppressed
+during a memory pause. Manual cancellation of
 a paused job prevents automatic revival. Monitor MEMORY_ADMISSION,
 MEMORY_PAUSE_REQUEST, MEMORY_JOB_PAUSED/RESUMED/RESTORED in service logs.
 No new paid run is required for regression tests.

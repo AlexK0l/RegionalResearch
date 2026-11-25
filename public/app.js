@@ -480,7 +480,8 @@ function renderJobs(payload){
     const free=Number(guard.availableMiB),reserve=Number(guard.reserveMiB);
     e.runtimeMemory.textContent+=(Number.isFinite(free)?" · доступно "+free+" МиБ":"")+
       (Number.isFinite(reserve)?" · резерв "+reserve+" МиБ":"")+
-      (guard.blocked?" · запуск по памяти приостановлен":"")+
+      (Number.isFinite(guard.effectiveLimit)?" · лимит по ОЗУ: "+guard.effectiveLimit:"")+
+      (guard.limitedByMemory?" · запуск по памяти ограничен":"")+
       (guard.paused?" · на паузе: "+guard.paused:"");
   }
   e.jobsList.replaceChildren();
@@ -705,7 +706,9 @@ async function poll(restoring=false){
     // copying its entire multi-hundred-company checkpoint to sessionStorage
     // wastes memory, serializes large JSON and adds HTTP load for no benefit.
     if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
-      void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
+      if(!d.progress?.memoryPauseRequested&&
+        !["memory_paused","memory_wait"].includes(d.progress?.phase))
+        void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
     }
 
     const sabyCanResume=Number(d.checkpoint?.saby_deferred||0)>0 &&

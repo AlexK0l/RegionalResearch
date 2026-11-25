@@ -1109,6 +1109,13 @@ const httpServer = app.listen(port, BIND_HOST, () => {
   // The launch smoke-test exercises HTTP and SQLite without downloading or
   // opening Chromium. Normal local launches still perform the self-test.
   if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;
+  // Startup browser smoke is optional; never allocate Chromium while
+  // automatic memory recovery is waiting for headroom.
+  if(memoryAdmission.settings.enabled&&
+    (fullQueue.snapshot().pending>0||!memoryAdmission.inspect(0).canStart)){
+    console.info("[MEMORY_CHROMIUM_SELFTEST_DEFERRED]");
+    return;
+  }
   setTimeout(async () => {
     let browser;
     try {

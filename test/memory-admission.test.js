@@ -164,3 +164,20 @@ test("Saby checkpoint pause is propagated, closes its browser scope and is never
   }),isMemoryPause);
   assert.equal(closed,true);assert.equal(writes,1);
 });
+
+test("estimated RAM capacity below configured concurrency shows memory wait",async()=>{
+  const settings={...memoryGuardSettings({}),stableMs:1000,startSpacingMs:1000};
+  let now=0;
+  const memory=createMemoryAdmission({settings,now:()=>now,sample:()=>({
+    valid:true,totalMiB:3500,availableMiB:3000,heapLimitMiB:4096,heapAvailableMiB:3000})});
+  const d=deferred(),a=job("a","A"),b=job("b","B");
+  const q=createFullJobQueue({limit:10,memory,autoPoll:false,log:()=>{},
+    execute:async j=>{j.state="active";if(j.id==="a")await d.promise;j.state="completed";}});
+  q.enqueue(a,"key");await tick();q.enqueue(b,"key");
+  assert.equal(q.snapshot().memory.effectiveLimit,2);
+  // Tighten the effective cgroup limit while one region is active.
+  memory.inspect=()=>({canStart:false,pressure:"normal",reason:"estimated_capacity",estimatedCapacity:1});
+  now+=1000;q.poll();
+  assert.equal(b.progress.phase,"memory_wait");assert.equal(q.snapshot().memory.effectiveLimit,1);
+  b.cancelled=true;q.cancelQueued("b");d.resolve();await tick();q.close();
+});

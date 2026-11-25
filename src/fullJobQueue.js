@@ -22,7 +22,10 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   let previousStatus="";
   function status(){
     if(!enabled)return {};
-    return {memory:{enabled:true,blocked,paused:pending.filter(x=>x.paused).length,
+    return {memory:{enabled:true,blocked,
+      effectiveLimit:Math.min(capacity,lastMemory?.estimatedCapacity??capacity),
+      limitedByMemory:blocked||lastMemory?.reason==="estimated_capacity"&&lastMemory.estimatedCapacity<capacity,
+      paused:pending.filter(x=>x.paused).length,
       pause_requested:[...running.values()].filter(x=>x.job.memoryPauseRequested).length,
       job_estimate_mib:memory.settings.jobMiB,
       ...lastMemory}};
@@ -34,7 +37,8 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     for(const item of pending){
       if(item.job.cancelled)continue;
       item.job.progress={...item.job.progress,
-        phase:item.paused?"memory_paused":blocked?"memory_wait":"queued",
+        phase:item.paused?"memory_paused":(blocked||
+          enabled&&lastMemory?.reason==="estimated_capacity"&&lastMemory.estimatedCapacity<capacity)?"memory_wait":"queued",
         queuePosition:++position,activeFullJobs:active,maxActiveFullJobs:capacity,
         memoryPauseCount:Number(item.job.memoryPauseCount||0)};
     }
