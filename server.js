@@ -32,7 +32,9 @@ import {
   PIPELINE_VERSION,
   saveCheckpoint,
   supersedeRegionCheckpoints,
-  saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs
+  saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs,
+  saveQueuedResearchJob,listQueuedResearchJobs,loadQueuedResearchSource,
+  takeQueuedResearchJob,clearQueuedResearchJob
 } from "./src/checkpointStore.js";
 
 initializeFileLogging();
@@ -54,8 +56,9 @@ async function savedJobCheckpoint(job,id){
   // HTTP jobs map. Only a queued source may not have a saved child yet.
   const child=await loadCheckpoint(id);
   if(child)return normalizeCheckpoint(child);
-  const parentId=String(job?.data?.sourceJobId||"");
+  const parentId=String(job?.data?.checkpointRef||job?.data?.sourceJobId||"");
   const source=job?.data?.checkpoint ||
+    (job?.queuedPersisted?loadQueuedResearchSource(job.id):null) ||
     (parentId?await loadCheckpoint(parentId):null);
   return normalizeCheckpoint(source);
 }
@@ -467,10 +470,18 @@ async function executeJob(job, apiKey) {
     }));
 
     try {
+      // Consume durable queue intent before any paid work. A crash after
+      // this boundary requires explicit resume from a checkpoint.
+      if(job.queuedPersisted){
+        const inline=takeQueuedResearchJob(job.id);
+        job.queuedPersisted=false;
+        if(inline)job.data.checkpoint=inline;
+      }
       // Load large source snapshots only after the memory gate admits the job.
       if(job.data?.checkpointRef){
         const cp=await loadCheckpoint(job.data.checkpointRef);
-        if(!cp||Number(cp.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION)
+        if(!cp||String(cp.region||"").trim()!==job.region||
+           Number(cp.pipeline_version||PIPELINE_VERSION)!==PIPELINE_VERSION)
           throw Error("MEMORY_RESUME_CHECKPOINT_UNAVAILABLE");
         job.data.checkpoint=cp;
       }
@@ -579,7 +590,13 @@ const fullQueue = createFullJobQueue({
 
 function queueJob(job, apiKey) {
   if (job.mode === "full" || job.mode === "resume" || job.mode === "saby_only") {
-    if(job.data?.checkpointRef)delete job.data.checkpoint;
+    const existing=fullQueue.conflict(job.region);
+    if(existing)return {accepted:false,existing};
+    if(!job.data?.memoryResume&&!job.queuedPersisted){
+      saveQueuedResearchJob(job);
+      job.queuedPersisted=true;
+    }
+    if(job.data?.checkpointRef||job.queuedPersisted)delete job.data.checkpoint;
     return fullQueue.enqueue(job, apiKey,{paused:job.data?.memoryResume===true});
   }
   // Diagnostic jobs use RAM too; apply admission without pretending that
@@ -591,7 +608,7 @@ function queueJob(job, apiKey) {
 
 function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
   memoryPauseCount=0,progress={}}){
-  return {id,region,mode,data,createdAt,memoryPauseCount,
+  return {id,region,mode,data,createdAt,memoryPauseCount,queuedPersisted:false,
     state:"waiting",progress,result:null,error:null,cancelled:false,
     abortController:new AbortController(),latestCheckpoint:null,latestCheckpointSummary:summary,
     async updateProgress(progress){
@@ -620,6 +637,32 @@ function restoreMemoryPausedJobs(){
     if(queued.accepted){
       jobs.set(job.id,job);
       console.info("[MEMORY_JOB_RESTORED] "+JSON.stringify({job_id:job.id,pause_count:job.memoryPauseCount}));
+    }
+  }
+}
+function restoreQueuedResearchJobs(){
+  const apiKey=String(process.env.OPENAI_API_KEY||"").trim();
+  for(const item of listQueuedResearchJobs()){
+    if(item.mode!=="saby_only"&&!apiKey)continue;
+    if(item.mode==="saby_only"&&!sabyOnlyConfigReady())continue;
+    // A durable cooperative pause takes precedence over a stale duplicate
+    // admission intent. Never launch a second paid job for the same region.
+    if(fullQueue.conflict(item.region)){
+      clearQueuedResearchJob(item.id);
+      console.warn("[QUEUED_JOB_CONFLICT] "+JSON.stringify({job_id:item.id,region:item.region}));
+      continue;
+    }
+    try{
+      const job=makeResearchJob({...item,data:{region:item.region,
+        sourceJobId:item.sourceJobId,checkpointRef:item.checkpointRef}});
+      job.queuedPersisted=true;
+      const queued=queueJob(job,apiKey);
+      if(queued.accepted){
+        jobs.set(job.id,job);
+        console.info("[QUEUED_JOB_RESTORED] "+JSON.stringify({job_id:job.id,region:job.region,mode:job.mode}));
+      }
+    }catch(error){
+      console.error("[QUEUED_JOB_RESTORE_ERROR] "+JSON.stringify({job_id:item.id,error:error?.message||String(error)}));
     }
   }
 }
@@ -958,6 +1001,10 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   const wasWaiting = job.state === "waiting";
   // A cancelled memory-paused job must not resurrect on service restart.
   if(wasWaiting&&job.data?.memoryResume)clearMemoryPausedJob(job.id);
+  if(wasWaiting&&job.queuedPersisted){
+    clearQueuedResearchJob(job.id);
+    job.queuedPersisted=false;
+  }
   job.cancelled = true;
   job.state = wasWaiting ? "cancelled" : "cancelling";
   job.error = wasWaiting ? "Остановлено пользователем" : job.error;
@@ -1106,6 +1153,8 @@ const httpServer = app.listen(port, BIND_HOST, () => {
   console.log(`SAT research web service listening on ${BIND_HOST}:${boundPort}`);
   try{restoreMemoryPausedJobs();}
   catch(error){console.error("[MEMORY_RESTORE_ERROR] "+String(error?.message||error));}
+  try{restoreQueuedResearchJobs();}
+  catch(error){console.error("[QUEUED_RESTORE_ERROR] "+String(error?.message||error));}
   // The launch smoke-test exercises HTTP and SQLite without downloading or
   // opening Chromium. Normal local launches still perform the self-test.
   if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;
