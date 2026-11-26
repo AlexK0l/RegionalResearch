@@ -182,3 +182,32 @@ test("production search uses hydration and read-only transport only in opted-in 
   assert.match(source,/sameSabyDetailId\(/);
   assert.doesNotMatch(source,/console\.\w+\([^)]*postData\(|console\.\w+\([^)]*request\.url\(/);
 });
+
+
+test("observer sees a socket opened during navigation but counts only armed query traffic",()=>{
+  const page=new EventEmitter(),ws=new EventEmitter();
+  ws.url=()=>"wss://profile.saby.ru/ws";
+  const probe=observeSabySearchTransport(page,INN,{armed:false});
+  page.emit("websocket",ws);
+  ws.emit("framesent",{payload:INN});
+  assert.equal(probe.hasExactInnEvidence(),false);
+  const request={url:()=>"https://profile.saby.ru/api",resourceType:()=>"xhr",postData:()=>INN};
+  page.emit("request",request);
+  probe.arm();
+  page.emit("response",{request:()=>request,status:()=>429});
+  assert.equal(probe.summary().http_429,0);
+  ws.emit("framesent",{payload:INN});
+  assert.equal(probe.hasExactInnEvidence(),true);
+  assert.equal(probe.summary().exact_inn_ws_frames,1);
+  assert.equal(shouldRecoverSilentSabySearch({route:"list",reason:"not_found",
+    observed:0,elapsedMs:6500,exactTransportEvidence:probe.hasExactInnEvidence()}),false);
+  probe.stop();
+  assert.equal(ws.listenerCount("framesent"),0);
+  assert.equal(page.listenerCount("request"),0);
+});
+test("silent recovery must not reload after observed first-party service blocking",()=>{
+  const base={route:"list",reason:"not_found",observed:0,elapsedMs:6500,
+    exactTransportEvidence:false,alreadyRecovered:false};
+  assert.equal(shouldRecoverSilentSabySearch(base),true);
+  assert.equal(shouldRecoverSilentSabySearch({...base,serviceBlocked:true}),false);
+});

@@ -29,10 +29,10 @@ export function inspectSabySearchDOM({inn}={}){
   const elements=document.querySelectorAll("body *");
   let explicitEmpty=false,serviceError=false;
   for(const el of elements){
+    const label=String(el.textContent||"").replace(/\s+/gu," ").trim();
+    if(label.length>115||!label||!EMPTY.test(label)&&!SERVICE_ERROR.test(label))continue;
     if(!visible(el))continue;
     const children=[...el.children||[]];
-    const label=String(el.textContent||"").replace(/\s+/gu," ").trim();
-    if(label.length>115||!label)continue;
     if(children.some(child=>{
       const t=String(child.textContent||"").replace(/\s+/gu," ").trim();
       return (EMPTY.test(t)||SERVICE_ERROR.test(t))&&visible(child);
