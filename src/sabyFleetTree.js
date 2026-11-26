@@ -13,6 +13,7 @@ import {compareSabyVerifiedFleetDetail}
   from "./sabyFleetRouteContinuity.js";
 import {isSabyTruckVehicleLabel}
   from "./sabyVehicleLabels.js";
+import {isSabyVehicleCategory} from "./sabyVehicleInventory.js";
 
 const reasons=new Set([
   "complete","invalid_setup","wrong_company","tree_missing",
@@ -58,13 +59,15 @@ export function parseSabyFleetTreeRow(raw) {
 // Strict ordered prefix by unique Saby item IDs. Repeated model-year
 // strings are distinct vehicles when their keys differ.
 export function validateSabyFleetTreeSnapshot(
-  snapshot,{expected,previousRows=[],previousGroupKey=null}={}
+  snapshot,{expected,previousRows=[],previousGroupKey=null,category="Грузовые"}={}
 ){
   if(snapshot?.status!=="observed")
     return {status:"invalid",reason:reasons.has(snapshot?.reason)?
       snapshot.reason:"tree_missing"};
   if(!Number.isSafeInteger(expected)||expected<1||expected>5000)
     return {status:"invalid",reason:"invalid_setup"};
+  if(!isSabyVehicleCategory(category)||(snapshot.category??"Грузовые")!==category)
+    return {status:"invalid",reason:"truck_category_ambiguous"};
   if(snapshot.expected!==expected)
     return {status:"invalid",reason:"truck_count_mismatch"};
   if(!sabyFleetTreeFooterKey(snapshot.groupKey))
@@ -95,15 +98,15 @@ export function validateSabyFleetTreeSnapshot(
     footerKey:snapshot.footerKey};
 }
 
-export async function readSabyFleetTree(page,{expected,discoverCount=false}={}){
+export async function readSabyFleetTree(page,{expected,discoverCount=false,category="Грузовые"}={}){
   // Discovery is explicit and never supplies an inferred zero. The
   // exact same visible drawer/category/row checks still apply.
   const discover=discoverCount===true&&expected===undefined;
-  if((!discover&&(!Number.isSafeInteger(expected)||expected<1||expected>5000))||
+  if(!isSabyVehicleCategory(category)||(!discover&&(!Number.isSafeInteger(expected)||expected<1||expected>5000))||
      sabyCardRoute(page?.url?.())!=="detail")
     return {status:"invalid",reason:"invalid_setup"};
   try {
-    return await page.evaluate(({expected,discover})=>{
+    return await page.evaluate(({expected,discover,category})=>{
       const norm=t=>String(t||"").replace(/\s+/g," ").trim();
       const visible=e=>{
         if(!e?.getBoundingClientRect)return false;
@@ -131,7 +134,7 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false}={}){
         '[data-qa="item"][item-key]:not([item-parent-key])'
       )].filter(e=>{
         const title=e.querySelector(".controls-fontsize-2xl");
-        return title&&norm(title.textContent)==="Грузовые";
+        return title&&norm(title.textContent)===category;
       });
       if(!categories.length)
         return {status:"invalid",reason:"truck_category_missing"};
@@ -174,8 +177,8 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false}={}){
         '[title="Ещё"]'
       )&&button.classList.contains("controls-BigSeparator__collapsed"));
       return {status:"observed",expected:announced,groupKey:key,
-        footerKey,rows,hasMore};
-    },{expected,discover});
+        category,footerKey,rows,hasMore};
+    },{expected,discover,category});
   }catch {
     return {status:"invalid",reason:"read_failed"};
   }
@@ -188,7 +191,7 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false}={}){
 export async function collectSabyFleetTree(page,{
   expected,originalUrl,wait=ms=>new Promise(r=>setTimeout(r,ms)),
   now=()=>Date.now(),maxClicks=20,maxMs=175000,
-  maxPolls=14,pollMs=300,read=readSabyFleetTree,initialSnapshot=null
+  maxPolls=14,pollMs=300,read=readSabyFleetTree,initialSnapshot=null,category="Грузовые"
 }={}){
   let samples=0,clicks=0,rows=[],groupKey=null,status="incomplete",
     reason="invalid_setup";
@@ -201,13 +204,13 @@ export async function collectSabyFleetTree(page,{
     vehicles:status==="complete"?
       rows.map(({model,year})=>({model,year})):null
   });
-  if(!Number.isSafeInteger(expected)||expected<1||expected>5000||
+  if(!isSabyVehicleCategory(category)||!Number.isSafeInteger(expected)||expected<1||expected>5000||
      typeof wait!=="function"||typeof now!=="function"||
      typeof read!=="function"||!page?.locator||!sameCompany()){
     reason="wrong_company";return report();
   }
   if(initialSnapshot!==null){
-    const seed=validateSabyFleetTreeSnapshot(initialSnapshot,{expected});
+    const seed=validateSabyFleetTreeSnapshot(initialSnapshot,{expected,category});
     if(seed.status!=="valid"){reason=seed.reason;return report();}
     rows=seed.rows;groupKey=seed.groupKey;
     // Do not accept even a complete seed without an independent fresh
@@ -219,9 +222,9 @@ export async function collectSabyFleetTree(page,{
   for(let round=0;round<=limit;round++){
     if(!sameCompany()){reason="wrong_company";break;}
     if(now()>=deadline){reason="time_limit";break;}
-    const raw=await read(page,{expected});samples++;
+    const raw=await read(page,{expected,category});samples++;
     const verified=validateSabyFleetTreeSnapshot(raw,{
-      expected,previousRows:rows,previousGroupKey:groupKey
+      expected,previousRows:rows,previousGroupKey:groupKey,category
     });
     if(verified.status!=="valid"){reason=verified.reason;break;}
     rows=verified.rows;groupKey=verified.groupKey;
@@ -252,9 +255,9 @@ export async function collectSabyFleetTree(page,{
       if(now()>=deadline){reason="time_limit";break;}
       await wait(Math.max(100,Math.min(900,pollMs)));
       if(!sameCompany()){reason="wrong_company";break;}
-      const update=await read(page,{expected});samples++;
+      const update=await read(page,{expected,category});samples++;
       const checked=validateSabyFleetTreeSnapshot(update,{
-        expected,previousRows:rows,previousGroupKey:groupKey
+        expected,previousRows:rows,previousGroupKey:groupKey,category
       });
       if(checked.status!=="valid"){
         invalid=checked.reason;break;
