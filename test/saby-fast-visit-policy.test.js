@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {safeSabyNavigationUrl,rememberSabyNavigationHint,storedSabyNavigationHint,
   createSabyAdaptiveDelay,restoreSabyTiming,recordSabyVisitTiming} from "../src/sabyVisitPolicy.js";
-import {quickSabyFleetFromPreview,savedSabyFinanceCardUrl,readSabyContactAncestorText} from "../src/sabyBrowser.js";
+import {quickSabyFleetFromPreview,savedSabyFinanceCardUrl,readSabyContactAncestorText,collectSabySections} from "../src/sabyBrowser.js";
 import {sabyFinancialGaps} from "../src/sabyEnrichment.js";
 const url="https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc";
 const row=()=>({"ИНН":"7707083893","Организация":"ООО Альфа","Телефон":"",
@@ -76,4 +76,94 @@ test("finance fast-skip uses exactly the same usable number policy as the full s
   for(const value of [0,"0",123456,"123456"]){
     r[field]=value;assert.equal(sabyFinancialGaps(r).revenue,false);
   }
+});
+
+function cardFixture({partialFleet=false,contactFailure=false,routeDrift=false,wrongCard=false}={}){
+  let current="https://profile.saby.ru/page/company-list-prof",contactLookups=0;
+  const calls=[];
+  const page={
+    url:()=>current,
+    async goto(target){
+      calls.push(target===url?"saved_navigation":"full_search_navigation");
+      if(target!==url)throw Error("full search fallback reached");
+      current=wrongCard?url.replace("12345678-","22345678-"):url;
+    },
+    getByText(name){
+      if(name==="Контакты"&&++contactLookups===2&&contactFailure)throw Error("detached contact widget");
+      const loc={
+        count:async()=>name==="Контакты и телефоны"?0:1,
+        nth:()=>loc,isVisible:async()=>true,
+        evaluate:async fn=>{
+          calls.push("contacts");
+          const result=fn({parentElement:{innerText:"Контакты\n+7 (495) 123-45-67\nsales@alpha.ru"}});
+          if(routeDrift)current=url.replace("12345678-","22345678-");
+          return result;
+        }
+      };
+      return loc;
+    },
+    async evaluate(_fn,args){
+      if(args?.inn){
+        calls.push("fresh_identity");
+        return {headings:["ООО Альфа"],introLines:[],scopedLabeledInn:true,detailContentPresent:true};
+      }
+      if(args?.nonVehiclePattern){
+        calls.push("fleet_preview");
+        return {status:"found",count:partialFleet?2:1,rows:[{model:"КАМАЗ 5490",year:2020}]};
+      }
+      calls.push("finance_dom");
+      return {employeeTexts:["12"],years:["2025"],revenueRows:[["1000000"]],reportScale:"руб",
+        banner:"",financeHeadings:1,reportFound:true};
+    },
+    keyboard:{press:async()=>calls.push("overlay_interaction")},
+    mouse:{click:async()=>{throw Error("quick read must not click");}},
+    locator:()=>{throw Error("quick read must not scroll or wait for finance");}
+  };
+  return {page,calls};
+}
+const quick={optimized:true,quickDetails:true,contacts:true,financials:true,trucks:true};
+test("real section collector freshly verifies saved hint, reads contact first and never opens a quick fleet overlay",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page,calls}=cardFixture({partialFleet:true});
+  const got=await collectSabySections(page,r,{timeoutMs:15000},quick);
+  assert.deepEqual(calls,["saved_navigation","fresh_identity","contacts","finance_dom","fleet_preview"]);
+  assert.deepEqual(got.contacts.phones,["74951234567"]);
+  assert.deepEqual(got.contacts.emails,["sales@alpha.ru"]);
+  assert.equal(got.financials.employees,12);
+  assert.equal(got.financials.revenue_rub,1000000);
+  assert.equal(got.trucks.status,"missing");
+  assert.equal(got.timing.saved_card,"hit");
+  assert.equal(got.timing.full_search,undefined);
+  assert.equal(r["Телефон"],"","collector itself must not write the CRM");
+});
+test("contact widget exception does not erase independent finance or crash the combined collector",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page,calls}=cardFixture({contactFailure:true});
+  const got=await collectSabySections(page,r,{timeoutMs:15000},quick);
+  assert.equal(got.contacts.status,"missing");
+  assert.equal(got.financials.employees,12);
+  assert.equal(got.trucks.status,"verified");
+  assert.deepEqual(got.errors,["contacts: unavailable"]);
+  assert.ok(!calls.includes("overlay_interaction"));
+});
+test("a changed contractor during read cannot supply quick contacts or later sections",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page,calls}=cardFixture({routeDrift:true});
+  const got=await collectSabySections(page,r,{timeoutMs:15000},quick);
+  assert.equal(got.contacts.status,"missing");
+  assert.equal(got.financials.status,"missing");
+  assert.equal(got.trucks.status,"missing");
+  assert.deepEqual(got.errors,["contacts: card_changed","financials: card_changed","trucks: card_changed"]);
+  assert.deepEqual(calls,["saved_navigation","fresh_identity","contacts"]);
+});
+test("a navigation hint that opens a different opaque card falls back to exact company search",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page,calls}=cardFixture({wrongCard:true});
+  await assert.rejects(collectSabySections(page,r,{timeoutMs:15000},quick),e=>{
+    assert.equal(e.message,"full search fallback reached");
+    assert.equal(e.sabyTiming.saved_card,"miss");
+    assert.equal(e.sabyTiming.full_search,true);
+    return true;
+  });
+  assert.deepEqual(calls,["saved_navigation","full_search_navigation"]);
 });
