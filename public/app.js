@@ -735,7 +735,7 @@ async function poll(restoring=false){
     // Saby-only already saves each company in durable SQLite. Repeatedly
     // copying its entire multi-hundred-company checkpoint to sessionStorage
     // wastes memory, serializes large JSON and adds HTTP load for no benefit.
-    if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
+    if(!config?.durableCheckpoints&&d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
       if(!d.progress?.memoryPauseRequested&&
         !["memory_paused","memory_wait","saby_memory_wait"].includes(d.progress?.phase))
         void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
