@@ -13,7 +13,7 @@ export function fullJobConcurrencyLimit(env=process.env){
     ?Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(value))):2;
 }
 export function createFullJobQueue({limit=2,execute,onError=console.error,memory=null,
-  autoPoll=true,log=console.info,
+  autoPoll=true,log=console.info,canAdmitJob=()=>true,
   collectGarbage=typeof global.gc==="function"?()=>global.gc():null}={}){
   if(typeof execute!=="function")throw TypeError("Queue executor required");
   const capacity=Math.min(MAX_CONCURRENT_RESEARCH_JOBS,Math.max(1,Math.floor(Number(limit)||2)));
@@ -51,12 +51,13 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   }
   const snapshot=()=>({active,pending:pending.length,limit:capacity,...status()});
   const conflict=region=>regions.get(normalizedRegionKey(region))||null;
+  const firstEligibleIndex=()=>pending.findIndex(item=>!item.job.cancelled&&canAdmitJob(item.job));
   function updatePositions(){
     let position=0;
     for(const item of pending){
       if(item.job.cancelled)continue;
       item.job.progress={...item.job.progress,
-        phase:item.paused?"memory_paused":(blocked||
+        phase:!canAdmitJob(item.job)?"billing_wait":item.paused?"memory_paused":(blocked||
           enabled&&lastMemory?.reason==="estimated_capacity"&&lastMemory.estimatedCapacity<capacity)?"memory_wait":"queued",
         queuePosition:++position,activeFullJobs:active,maxActiveFullJobs:capacity,
         memoryPauseCount:Number(item.job.memoryPauseCount||0)};
@@ -181,7 +182,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   }
   function admissionSample(){
     const sample=memory.inspect(active);
-    const head=pending[0],summary=head?.job.latestCheckpointSummary;
+    const head=pending[firstEligibleIndex()],summary=head?.job.latestCheckpointSummary;
     if(active===0&&head?.paused&&summary?.phase==="saby"&&
        summary.saby_browser_pending!==false&&sample.valid&&sample.canStart){
       const required=sample.reserveMiB+(memory.settings.sabyBrowserMiB??640)+
@@ -257,8 +258,9 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     if(quiesced)return;
     let allowed=inspect();
     while(active<capacity&&pending.length&&allowed){
-      const item=pending.shift();
-      if(item.job.cancelled){release(item);continue;}
+      const index=firstEligibleIndex();
+      if(index<0)break;
+      const [item]=pending.splice(index,1);
       active++;item.started=++sequence;running.set(item.job.id,item);
       if(enabled){
         nextStartAt=memory.now()+memory.settings.startSpacingMs;
@@ -275,7 +277,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
         let paused=false;
         try{
           const output=await execute(item.job,item.apiKey);
-          paused=output?.memoryPaused===true&&!item.job.cancelled;
+          paused=(output?.memoryPaused===true||output?.billingPaused===true)&&!item.job.cancelled;
         }catch(error){
           item.job.state=item.job.cancelled?"cancelled":"failed";
           item.job.error=error?.message||String(error);
@@ -289,12 +291,12 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
           if(sabyLease?.item===item)releaseSabyBrowser(sabyLease,false);
           if(paused){
             item.paused=true;item.job.state="waiting";
-            item.job.progress={...item.job.progress,phase:"memory_paused",memoryPauseRequested:false};
+            item.job.progress={...item.job.progress,phase:canAdmitJob(item.job)?"memory_paused":"billing_wait",memoryPauseRequested:false};
             pending.unshift(item);
             blocked=true;healthySince=null;
             // Give the just-unwound job time to reclaim its heap before
             // asking another region to suspend. Critical pressure overrides.
-            nextPauseAt=memory.now()+2*memory.settings.pollMs;
+            if(enabled)nextPauseAt=memory.now()+2*memory.settings.pollMs;
           }else{
             if(item.job.cancelled&&item.job.state==="waiting")item.job.state="cancelled";
             release(item);
@@ -331,7 +333,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   // No executing job, no browser lease, and no diagnostic/non-durable
   // work: the server must independently verify each durable marker.
   function idleBlockedJobs(){
-    if(!enabled||quiesced||active!==0||sabyLease||!pending.length||
+    if(!enabled||quiesced||active!==0||sabyLease||!pending.length||firstEligibleIndex()<0||
        pending.some(x=>!x.preemptible||x.job.cancelled||x.job.state!=="waiting"))return null;
     const sample=admissionSample();
     if(!sample.valid||sample.canStart||sample.reason==="estimated_capacity")return null;
