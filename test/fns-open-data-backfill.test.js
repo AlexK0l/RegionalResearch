@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 import {fileURLToPath} from "node:url";
-import {archiveNameKey,planFnsOpenData,applyFnsOpenData} from "../src/fnsOpenDataBackfill.js";
+import {archiveNameKey,planFnsOpenData,applyFnsOpenData,combineFnsOpenDataTargets} from "../src/fnsOpenDataBackfill.js";
 const inn="4706000909",otherInn="7810165652",ogrn="1024701329377";
 const name='АО "ПРИМЕР"',full='АКЦИОНЕРНОЕ ОБЩЕСТВО "ПРИМЕР"';
 const row=(id,org=name,extra={})=>({__canonical_id:id,"Организация":org,"ИНН":"","Город/район":"Кировск","Численность":"",...extra});
@@ -83,6 +87,11 @@ test("Python scanner reads documented XML, retains zero, skips individuals and w
   assert.equal(out.rsmp.hits.by_ogrn[ogrn][0].region_code,"47");
   assert.equal(out.rsmp.hits.by_name[archiveNameKey(name)].length,1);
   assert.equal(out.rsmp.hits.by_name_region[archiveNameKey(name)].length,1);
+  assert.equal(out.batch.regional_key_mode,"region_name_v1");
+  assert.ok(out.batch.overflow.by_name.includes(archiveNameKey(name)));
+  assert.equal(out.batch.hits.by_name_region["ленинградская область|"+archiveNameKey(name)][0].inn,inn);
+  assert.equal(out.batch.hits.by_name_region["вологодская область|"+archiveNameKey(name)][0].inn,otherInn);
+  assert.equal(out.batch.overflow.by_name_region.length,0);
   assert.equal(out.range.archive_mode,"http_range");
   assert.match(out.range.sha256,/^[a-f0-9]{64}$/);
   assert.ok(out.range.range_requests>1);
@@ -103,4 +112,59 @@ test("regional candidates survive nationwide name overflow and a single-source r
   assert.equal(second.snapshot.fns_open_data_sources.length,2);
   assert.equal(second.snapshot.fns_open_data_candidates.a.records[0].inn,inn);
   assert.equal(second.snapshot.final_result.direct_buyers[0]["ИНН"],"");
+});
+
+test("batch scanner deduplicates targets while preserving separate region/name overflow",()=>{
+  const first=cp([row("a",name)]),second={...cp([row("b",name)]),region:"Вологодская область"};
+  const combined=combineFnsOpenDataTargets([first,second].map(c=>planFnsOpenData(c).targets));
+  assert.equal(combined.names.length,1);
+  assert.equal(combined.regional_targets.length,2);
+  const key=archiveNameKey(name),a="ленинградская область",b="вологодская область";
+  const r1=record({ogrn,short_name:name,region_name:"Ленинградская обл.",localities:["Кировск"],as_of:"2026-11-10"});
+  const r2={...r1,inn:otherInn,region_name:"Вологодская область",region_code:"35"};
+  const shared={...archive("rsmp",{by_name_region:{[a+"|"+key]:[r1],[b+"|"+key]:[r2]}},
+    {by_name:[key],by_name_region:[b+"|"+key]}),regional_key_mode:"region_name_v1",regional_keys:[a,b].sort()};
+  const one=applyFnsOpenData(first,[shared],opts),two=applyFnsOpenData(second,[shared],opts);
+  assert.equal(one.snapshot.fns_open_data_candidates.a.records[0].inn,inn);
+  assert.equal(two.snapshot.fns_open_data_candidates.b.records[0].inn,otherInn);
+  assert.equal(one.snapshot.final_result.direct_buyers[0]["ИНН"],"");
+  assert.equal(two.snapshot.final_result.direct_buyers[0]["ИНН"],"");
+  assert.throws(()=>applyFnsOpenData(first,[{...shared,regional_keys:[b]}],opts),/BATCH_REGION_MISSING/);
+  assert.throws(()=>applyFnsOpenData(first,[{...shared,hits:{...shared.hits,by_name_region:{[a+"|"+key]:[r2]}}}],opts),/BATCH_REGION_MISMATCH/);
+  assert.throws(()=>combineFnsOpenDataTargets(Array(7).fill(combined)),/BATCH_LIMIT/);
+});
+test("batch deduplicates shared exact INNs and does not transfer an employee count between different legal names",()=>{
+  const a=cp([row("a",name,{"ИНН":inn})]);
+  const b={...cp([row("b","АО ДРУГОЙ",{"ИНН":inn})]),region:"Вологодская область"};
+  const combined=combineFnsOpenDataTargets([a,b].map(c=>planFnsOpenData(c).targets));
+  assert.deepEqual(combined.inns,[inn]);
+  const shared={...archive("sshr",{by_inn:{[inn]:[record()]}}),
+    regional_key_mode:"region_name_v1",regional_keys:["вологодская область","ленинградская область"]};
+  assert.equal(applyFnsOpenData(a,[shared],opts).stats.employees_added,1);
+  assert.equal(applyFnsOpenData(b,[shared],opts).stats.employees_added,0);
+});
+
+test("repeatable checkpoint CLI dry-run is read-only and deduplicates batch targets",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"fns-batch-plan-"));
+  try{
+    const file=path.join(dir,"checkpoints.sqlite");
+    const ids=["a0000000-0000-0000-0000-000000000001","b0000000-0000-0000-0000-000000000002"];
+    const db=new DatabaseSync(file);
+    db.exec("CREATE TABLE research_checkpoints(id TEXT PRIMARY KEY,payload TEXT NOT NULL)");
+    const payloads=[cp([row("a",name,{"ИНН":inn})]),{...cp([row("b",name,{"ИНН":inn})]),region:"Вологодская область"}].map(JSON.stringify);
+    try{ids.forEach((id,i)=>db.prepare("INSERT INTO research_checkpoints VALUES (?,?)").run(id,payloads[i]));}finally{db.close();}
+    const script=fileURLToPath(new URL("../scripts/fns-open-data-backfill.js",import.meta.url));
+    const run=spawnSync(process.execPath,[script,"--db="+file,...ids.map(id=>"--checkpoint="+id),"--year=2025"],{encoding:"utf8",timeout:30000});
+    assert.equal(run.status,0,run.stderr+" "+run.stdout);
+    const lines=run.stdout.split(/\r?\n/);
+    assert.equal(lines.filter(s=>s.startsWith("[FNS_OPEN_DATA_PLAN]")).length,2);
+    const batch=JSON.parse(lines.find(s=>s.startsWith("[FNS_OPEN_DATA_BATCH_PLAN]")).split("] ")[1]);
+    assert.equal(batch.checkpoints,2);assert.equal(batch.inns,1);
+    assert.equal(batch.one_scan_per_dataset,true);assert.equal(batch.dry_run,true);
+    const check=new DatabaseSync(file,{readOnly:true});
+    try{assert.deepEqual(check.prepare("SELECT payload FROM research_checkpoints ORDER BY id").all().map(r=>r.payload),payloads);}
+    finally{check.close();}
+    const dup=spawnSync(process.execPath,[script,"--db="+file,"--checkpoint="+ids[0],"--checkpoint="+ids[0],"--year=2025"],{encoding:"utf8",timeout:30000});
+    assert.equal(dup.status,2);assert.match(dup.stdout,/FNS_OPEN_DATA_BAD_ARGS/);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
