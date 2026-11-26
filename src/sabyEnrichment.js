@@ -402,3 +402,56 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     phonesFound:phones.length, phonesAppended:added.length, phoneConflicts:conflicts.length, emailsFound:emails.length,
     verifiedTrucks:fleet?.count ?? null};
 }
+
+
+// Recover contact evidence already collected in a previous Saby pass.
+// Check the entire commercial result before adding any number, so two
+// stored cards claiming the same number cannot win by traversal order.
+export function reconcileStoredSabyPhones(result){
+  const rows=["direct_buyers","intermediaries","leasing"].flatMap(key=>
+    Array.isArray(result?.[key])?result[key]:[]);
+  const counts=new Map(),claims=new Map(),storedByRow=new Map();
+  for(const row of rows){
+    const inn=sabyInn(row?.["ИНН"]);
+    if(inn)counts.set(inn,(counts.get(inn)||0)+1);
+    const add=phone=>{
+      if(!phone)return;
+      if(!claims.has(phone))claims.set(phone,new Set());
+      claims.get(phone).add(row);
+    };
+    for(const entry of parsePhoneEntries(row?.["Телефон"]))add(entry.phone);
+    if(!sabyStoredSectionCoverage(row).contacts)continue;
+    const stored=row.__evidence.saby;
+    const phones=[...new Set((Array.isArray(stored.phones)?stored.phones:[])
+      .map(normalizeRussianPhone).filter(Boolean))];
+    phones.forEach(add);
+    storedByRow.set(row,phones);
+  }
+  let rowsFilled=0,numbersAppended=0,conflicts=0;
+  for(const [row,phones] of storedByRow){
+    if(counts.get(sabyInn(row["ИНН"]))!==1)continue;
+    const stored=row.__evidence.saby;
+    const previous=parsePhoneEntries(row["Телефон"]);
+    const existing=new Set(previous.map(entry=>entry.phone));
+    const available=phones.filter(phone=>claims.get(phone)?.size===1);
+    const additions=available.filter(phone=>!existing.has(phone));
+    const rejected=phones.filter(phone=>claims.get(phone)?.size>1);
+    if(rejected.length){
+      stored.phone_conflicts=rejected.map(phone=>({phone,
+        reason:"competing_verified_or_existing_company_claim",source_url:stored.source_url}));
+      conflicts+=rejected.length;
+    }else delete stored.phone_conflicts;
+    if(!additions.length)continue;
+    const details=Array.isArray(stored.phone_details)?stored.phone_details:[];
+    const render=({phone,department})=>phone+(department?" ("+department+")":"");
+    const added=additions.map(phone=>{
+      const labels=[...new Set(details.filter(d=>normalizeRussianPhone(d?.phone)===phone)
+        .map(d=>explicitPhoneDepartment(d?.department)).filter(Boolean))];
+      return render({phone,department:labels.length===1?labels[0]:""});
+    });
+    row["Телефон"]=formatPhoneCell([...previous.map(render),...added]);
+    numbersAppended+=additions.length;
+    if(!previous.length)rowsFilled++;
+  }
+  return {rowsFilled,numbersAppended,conflicts};
+}
