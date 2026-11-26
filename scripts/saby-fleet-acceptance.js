@@ -8,7 +8,8 @@ import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {auditSavedFleetCoverage,buildFleetCohort,validateFleetCohort,
-  cohortResult,summarizeFleetAcceptance,compareFleetAcceptance} from "../src/sabyFleetAcceptance.js";
+  cohortResult,summarizeFleetAcceptance,compareFleetAcceptance,
+  selectVehicleCategoryProbe,summarizeVehicleCategoryProbe} from "../src/sabyFleetAcceptance.js";
 const args=process.argv.slice(2),arg=(key,fallback="")=>
   args.find(x=>x.startsWith("--"+key+"="))?.slice(key.length+3)??fallback;
 const has=key=>args.includes("--"+key);
@@ -37,7 +38,8 @@ async function main(){
   if(has("help")){
     console.log("Offline: --audit|--plan --db=/absolute/checkpoints.sqlite --checkpoint=<UUID> [--limit=12 --out=/private/cohort.json]\n"+
       "Live Linux only, service stopped and all browser jobs idle: --run --idle-confirmed --cohort=/private/cohort.json --code-root=/trusted/checkout --out=/private/report.json\n"+
-      "Offline compare: --compare --baseline=/private/old.json --candidate=/private/new.json");
+      "Offline compare: --compare --baseline=/private/old.json --candidate=/private/new.json\n"+
+      "Focused all-category probe: --run --vehicle-probe --select-inns=INN1,INN2 --idle-confirmed --cohort=/private/cohort.json --code-root=/trusted/checkout --out=/private/probe.json");
     return;
   }
   if(["audit","plan","run","compare"].filter(has).length!==1)
@@ -70,6 +72,8 @@ async function main(){
     emit("SABY_FLEET_COMPARISON",compareFleetAcceptance(load(arg("baseline")),load(arg("candidate"))));
     return;
   }
+  const probe=has("vehicle-probe");
+  if(!probe&&arg("select-inns"))throw Error("FLEET_ACCEPTANCE_BAD_PROBE_SELECTION");
   requireIdleVps();
   // The only code-root accepted here is an explicitly trusted LOCAL git
   // checkout. Never import paths or code from a cohort or remote result.
@@ -81,7 +85,8 @@ async function main(){
   // No hidden untracked module overrides in the code under test.
   if(git(root,"ls-files","--others","--exclude-standard","--","src"))
     throw Error("FLEET_ACCEPTANCE_CODE_NOT_CLEAN");
-  const bytes=fs.readFileSync(arg("cohort")),cohort=validateFleetCohort(JSON.parse(bytes.toString("utf8")));
+  const bytes=fs.readFileSync(arg("cohort")),savedCohort=validateFleetCohort(JSON.parse(bytes.toString("utf8")));
+  const cohort=probe?selectVehicleCategoryProbe(savedCohort,arg("select-inns").split(",")):savedCohort;
   const output=arg("out");
   if(!output||fs.existsSync(path.resolve(output)))throw Error("FLEET_ACCEPTANCE_OUTPUT_REQUIRED");
   if(!fs.statSync(path.dirname(path.resolve(output))).isDirectory())throw Error("FLEET_ACCEPTANCE_OUTPUT_REQUIRED");
@@ -109,7 +114,12 @@ async function main(){
     SABY_GC_EVERY:integerSetting("SABY_GC_EVERY",10,1,100),
     SABY_CIRCUIT_AFTER:integerSetting("SABY_CIRCUIT_AFTER",3,1,10)
   };
-  const policy={...settings,profile_sha256:sha(fs.realpathSync(profile)),
+  const categorySettings=probe?{
+    SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true",SABY_COMBINE_RETRY_DETAILS_ENABLED:"true"
+  }:{SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"false"};
+  // Preserve the legacy truck benchmark policy hash; the new probe is
+  // deliberately scoped separately and never fed to --compare.
+  const policy={...settings,...(probe?categorySettings:{}),profile_sha256:sha(fs.realpathSync(profile)),
     browser_channel:process.env.SABY_BROWSER_CHANNEL||"",gc_exposed:typeof global.gc==="function",
     node_version:process.version,package_lock_sha256:sha(fs.readFileSync(path.join(root,"package-lock.json")))};
   const lock=path.join(profile,".regionalresearch-acceptance-lock");
@@ -119,14 +129,22 @@ async function main(){
     const {runSabyContactFirst}=await import(pathToFileURL(path.join(root,"src/sabyContactFirst.js")).href);
     const result=cohortResult(cohort),start=performance.now();
     const outcome=await runSabyContactFirst({result,
-      env:{...process.env,...settings,SABY_PROFILE_DIR:profile},
+      env:{...process.env,...settings,...categorySettings,SABY_PROFILE_DIR:profile},
       // Do not write the production checkpoint store. This benchmark
       // measures browser+scheduler time, not the SQLite disk cost.
       persistCheckpoint:async()=>{},onProgress:async()=>{}});
-    const report=summarizeFleetAcceptance({cohort,result,outcome,
-      elapsedMs:Math.max(1,Math.round(performance.now()-start)),commit,cohortSha:sha(bytes),policy});
+    const options={cohort,result,outcome,
+      elapsedMs:Math.max(1,Math.round(performance.now()-start)),commit,
+      cohortSha:sha(probe?JSON.stringify(cohort):bytes),policy};
+    const report=probe?summarizeVehicleCategoryProbe(options):summarizeFleetAcceptance(options);
     privateWrite(output,report);
-    emit("SABY_FLEET_ACCEPTANCE_DONE",{commit,cohort_sha256:report.cohort_sha256,
+    if(probe){
+      // Keep actual model/year inventory in the private report, not journal.
+      const {rows,...aggregate}=report;
+      emit("SABY_CATEGORY_PROBE_DONE",{...aggregate,
+        rows:rows.map(({groups,...r})=>({...r,groups:groups.map(({category,count})=>({category,count}))})),
+        openai_requests:0,sqlite_writes:0});
+    }else emit("SABY_FLEET_ACCEPTANCE_DONE",{commit,cohort_sha256:report.cohort_sha256,
       elapsed_ms:report.elapsed_ms,full_sweep_completed:report.full_sweep_completed,...report.metrics,
       openai_requests:0,sqlite_writes:0});
     if(!report.full_sweep_completed)process.exitCode=2;

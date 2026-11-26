@@ -29,3 +29,20 @@ Stats fleetCategoryScope records the metric scope. The existing
 matched acceptance comparison measures trucks only; do not compare
 whole-fleet counts against it. Validate real category disclosure
 before enabling in production. No new paid searches or VPS updates.
+
+
+## Targeted live functional check
+Use the existing private matched cohort file (no new paid research, no
+new full-region plan). With the same clean checkout and exclusive stopped
+service guard as the existing benchmark, run:
+node --expose-gc --max-old-space-size=512 --env-file=/opt/regionalresearch/.env scripts/saby-fleet-acceptance.js --run --vehicle-probe --select-inns=1000012304,1000002634,1000001542 --idle-confirmed --cohort=/private/previous-cohort.json --out=/private/category-probe.json
+Exactly the three selected rows and one positive truck control from the
+same saved cohort. The selector fails if a requested company is absent;
+it does not silently substitute. The expected manual observations:
+1000012304 has two vehicles, one in each of Легковые and Коммерческие.
+The other two had no displayed fleet widget; unknown is allowed, never
+invented zero. The truck control must preserve the original exact
+model/year multiset. A changed source fact requires review. Report is
+private, model/year facts stay out of journal. Read the report rather
+than comparing incompatible truck-only vs all-category metrics.
+This targeted probe does NOT establish regional speed improvement.

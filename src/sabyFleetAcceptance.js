@@ -3,7 +3,7 @@
 // validator, and missing evidence is never treated as zero.
 import {createHash} from "node:crypto";
 import {sabyEligibleRows,sabyFleetCoverage,sabyStoredSectionCoverage,
-  sabyInn,sabyNameTokens,sabyFinancialGaps} from "./sabyEnrichment.js";
+  sabyInn,sabyNameTokens,sabyFinancialGaps,sabyStoredVehicleFleet,sabyStoredVehiclePartial} from "./sabyEnrichment.js";
 import {verifiedInnChecksum} from "./sabyMissingInnRecovery.js";
 import {identityOgrns,mergedNumberedLegalNameConflict} from "./legalIdentity.js";
 import {parsePhoneEntries} from "./phoneExport.js";
@@ -262,4 +262,56 @@ export function compareFleetAcceptance(baseline,candidate){
     contact_or_finance_loss,baseline_elapsed_ms:a.elapsed_ms,candidate_elapsed_ms:b.elapsed_ms,
     speed_change_pct,baseline:a.metrics,candidate:b.metrics,status,changes,
     note:"Matched live sample only; changed source facts require review, not automatic regression attribution. No SQLite I/O in the benchmark."};
+}
+
+
+// Focused functional probe of explicit companies already in the saved
+// matched cohort. Include one distinct positive truck control. This is
+// deliberately not a new random cohort or a speed acceptance comparison.
+export function selectVehicleCategoryProbe(cohort,inns){
+  validateFleetCohort(cohort);
+  if(!Array.isArray(inns)||inns.length<1||inns.length>5||
+     new Set(inns).size!==inns.length||inns.some(x=>sabyInn(x)!==x))
+    throw Error("FLEET_ACCEPTANCE_BAD_PROBE_SELECTION");
+  const chosen=cohort.selected.filter(e=>inns.includes(sabyInn(e.row["ИНН"])));
+  if(chosen.length!==inns.length)throw Error("FLEET_ACCEPTANCE_PROBE_COMPANY_NOT_IN_COHORT");
+  const control=cohort.selected.find(e=>e.prior.status==="positive"&&!chosen.includes(e));
+  if(!control&&!chosen.some(e=>e.prior.status==="positive"))
+    throw Error("FLEET_ACCEPTANCE_PROBE_CONTROL_REQUIRED");
+  return validateFleetCohort({...cohort,selected:control?[...chosen,control]:chosen});
+}
+export function summarizeVehicleCategoryProbe(args){
+  const base=summarizeFleetAcceptance(args);
+  const {cohort,result,outcome}=args;
+  if(outcome?.stats?.fleetCategoryScope!=="all_vehicle_categories_v1")
+    throw Error("FLEET_ACCEPTANCE_PROBE_SCOPE_NOT_ENABLED");
+  const byKey=new Map(result.direct_buyers.map(row=>[key(row),row]));
+  const rows=base.rows.map(e=>{
+    const row=byKey.get(e.key),whole=sabyStoredVehicleFleet(row),partial=whole?null:sabyStoredVehiclePartial(row);
+    return {
+      inn:sabyInn(row["ИНН"]),stratum:e.stratum,
+      status:whole?"verified":partial?"partial":"unknown",
+      count:whole?.count??null,announced_count:whole?.count??partial?.announced_count??null,
+      verified_category_vehicles:whole?.count??partial?.groups.reduce((n,g)=>n+g.count,0)??0,
+      groups:whole?.groups??partial?.groups??[],
+      categories:whole?.groups.map(({category,count})=>({category,count}))??partial?.categories??[],
+      truck_status:e.status,truck_count:e.count,
+      truck_control_match:e.prior.status==="unknown"?null:sameFleet(e.prior,e)
+    };
+  });
+  const priorControls=rows.filter(e=>e.truck_control_match!==null);
+  return {version:1,scope:"all_vehicle_categories_v1",region:base.region,
+    commit:base.commit,cohort_sha256:base.cohort_sha256,policy_sha256:base.policy_sha256,
+    measured_at:base.measured_at,elapsed_ms:base.elapsed_ms,full_sweep_completed:base.full_sweep_completed,
+    complete_fleets:rows.filter(e=>e.status==="verified").length,
+    partial_fleets:rows.filter(e=>e.status==="partial").length,
+    unknown_fleets:rows.filter(e=>e.status==="unknown").length,
+    whole_fleet_vehicles:rows.reduce((n,e)=>n+(e.count??0),0),
+    partial_category_vehicles:rows.filter(e=>e.status==="partial").reduce((n,e)=>n+e.verified_category_vehicles,0),
+    truck_controls:priorControls.length,
+    truck_control_mismatches:priorControls.filter(e=>!e.truck_control_match).length,
+    timing:{attempts:base.metrics.attempts,full_searches:base.metrics.full_searches,
+      saved_card_hits:base.metrics.saved_card_hits,fleet_ms:base.metrics.fleet_ms},
+    rows,
+    note:"Focused functional probe, not a matched all-category speed benchmark. Unknown is not zero. Partial groups may have separate observation dates."};
 }

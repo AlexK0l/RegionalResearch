@@ -7,7 +7,8 @@ import {DatabaseSync} from "node:sqlite";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {auditSavedFleetCoverage,buildFleetCohort,cohortResult,
-  summarizeFleetAcceptance,compareFleetAcceptance,validateFleetCohort} from "../src/sabyFleetAcceptance.js";
+  summarizeFleetAcceptance,compareFleetAcceptance,validateFleetCohort,
+  selectVehicleCategoryProbe,summarizeVehicleCategoryProbe} from "../src/sabyFleetAcceptance.js";
 import {applySabyEnrichment} from "../src/sabyEnrichment.js";
 const row=(inn,name)=>({"ИНН":inn,"Организация":name,"Телефон":"74951234567",
   "Электронная почта":"office@example.ru","Выручка последнего подтвержденного года":1000000,
@@ -141,4 +142,36 @@ test("offline CLI audits and plans from read-only SQLite, refuses to overwrite a
     const blocked=call("--run","--cohort="+out);
     assert.equal(blocked.status,2);assert.match(blocked.stdout,/IDLE_VPS_REQUIRED/);
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test("focused category probe selects requested subset and one known truck control, refuses fabricated rows",()=>{
+  const x=a();fleet(x,[truck]);
+  const cohort=plan(cp([x,b(),c()]));
+  const picked=selectVehicleCategoryProbe(cohort,[b()["ИНН"]]);
+  assert.equal(picked.selected.length,2);
+  assert.deepEqual(picked.selected.map(e=>e.row["ИНН"]),[b()["ИНН"],x["ИНН"]]);
+  assert.throws(()=>selectVehicleCategoryProbe(cohort,["1000012304"]),/NOT_IN_COHORT/);
+  assert.throws(()=>selectVehicleCategoryProbe(plan(cp([b()])),[b()["ИНН"]]),/CONTROL_REQUIRED/);
+});
+test("probe measures all categories separately without mistaking unknown for zero or losing truck control",()=>{
+  const x=a();fleet(x,[truck]);
+  const cohort=selectVehicleCategoryProbe(plan(cp([x,b(),c()])),[b()["ИНН"],c()["ИНН"]]);
+  const result=cohortResult(cohort),byInn=inn=>result.direct_buyers.find(r=>r["ИНН"]===inn);
+  const car=byInn(b()["ИНН"]);
+  applySabyEnrichment(car,{identity:{verified:true,inn:car["ИНН"],name:car["Организация"]},
+    source_url:"https://profile.saby.ru/page/contractor-info?id=22345678-1234-1234-1234-123456789abc",
+    vehicle_fleet:{status:"verified",count:2,groups:[
+      {category:"Легковые",count:1,vehicles:[{model:"PEUGEOT PARTNER VP",year:2023}]},
+      {category:"Коммерческие",count:1,vehicles:[{model:"PEUGEOT BOXER",year:2024}]}
+    ]}},{transport:true});
+  fleet(byInn(x["ИНН"]),[truck]);
+  const args={cohort,result,outcome:{stats:{fullSweepCompleted:true,fleetCategoryScope:"all_vehicle_categories_v1"}},
+    elapsedMs:1000,commit:"a".repeat(40),cohortSha:"c".repeat(64),policy:{}};
+  const out=summarizeVehicleCategoryProbe(args);
+  assert.equal(out.complete_fleets,1);assert.equal(out.whole_fleet_vehicles,2);
+  assert.equal(out.unknown_fleets,2);assert.equal(out.truck_controls,1);assert.equal(out.truck_control_mismatches,0);
+  assert.equal(out.rows.find(r=>r.inn===c()["ИНН"]).count,null);
+  assert.throws(()=>summarizeVehicleCategoryProbe({...args,outcome:{stats:{fullSweepCompleted:true}}}),/SCOPE_NOT_ENABLED/);
+  assert.throws(()=>compareFleetAcceptance(out,out),/BAD_REPORT/);
 });
