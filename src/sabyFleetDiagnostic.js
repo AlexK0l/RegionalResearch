@@ -130,9 +130,11 @@ export async function observeSabyFleetDOM(page) {
           s.display!=="none"&&s.visibility!=="hidden";
       };
       const clean=t=>String(t||"").replace(/\s+/g," ").trim();
-      const matched=(regex)=>[...document.querySelectorAll("body *")]
-        .filter(el=>visible(el)&&el.children.length===0&&
-          regex.test(clean(el.textContent)));
+      // One text/visibility pass for all fixed diagnostic labels; do
+      // not force layout for every unrelated node FOUR times per miss.
+      const candidates=[...document.querySelectorAll("body *")].filter(el=>
+        el.children.length===0&&/^(?:Автопарк(?: компании)?|Контакты и телефоны|Грузовые(?:\s+\d+)?)$/i.test(clean(el.textContent))&&visible(el));
+      const matched=regex=>candidates.filter(el=>regex.test(clean(el.textContent)));
       const truckLabels=matched(/^Грузовые(?:\s+\d+)?$/i);
       return {
         status:"observed",

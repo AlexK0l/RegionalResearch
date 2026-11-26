@@ -6,12 +6,13 @@ import {parsePhoneEntries} from "./phoneExport.js";
 import {contactResearchPriority} from "./researchCostPolicy.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {applySabyEnrichment,sabyEligibleRows,sabyInn,
-  sabyWorkGaps,sabyHasWork,sabyFleetCoverage,reconcileStoredSabyPhones} from "./sabyEnrichment.js";
+  sabyWorkGaps,sabyHasWork,sabyFleetCoverage,reconcileStoredSabyPhones,
+  sabyNameMatches,isSabyProfileUrl} from "./sabyEnrichment.js";
 import {collectSabySections,withSabyBrowser,SabyReview} from "./sabyBrowser.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {validSabyFinancialEvidence} from "./sabyFinancials.js";
 import {isMemoryPause} from "./memoryAdmission.js";
-import {SABY_FAST_STRATEGY,sabyVisitStrategy,rememberSabyNavigationHint,
+import {SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY,sabyVisitStrategy,rememberSabyNavigationHint,
   createSabyAdaptiveDelay,restoreSabyTiming,sabyAddTiming,recordSabyVisitTiming,
   sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor} from "./sabyVisitPolicy.js";
 
@@ -25,10 +26,15 @@ const PHASE_LABELS={
 const counters=["verified","review","phonesAdded","emailsAdded","transportsAdded",
   "vehiclesVerified","revenuesAdded","employeesAdded","partialResults","companyReviews","systemicErrors"];
 const emptyStats=()=>Object.fromEntries(counters.map(k=>[k,0]));
-function sectionNeeds(gaps,phase,optimized=false){
+function sectionNeeds(gaps,phase,optimized=false,combineRetry=false,combined={}){
   const {trucks,financials}=gaps;
   if(phase==="contacts"||phase==="contact_retry"){
     const contacts=gaps.contacts;
+    // Initial contacts pass still finishes for the entire region first.
+    // On the existing second contact visit, do the first FULL details
+    // attempt instead of another quick read and a separate card opening.
+    if(combineRetry&&phase==="contact_retry"&&contacts&&(trucks||financials))
+      return {contacts,financials,trucks,optimized:true,combinedDetails:true};
     // Only read already-mounted finance/fleet data while collecting contacts.
     // An incomplete quick read does NOT consume a full details attempt.
     if(optimized&&contacts)return {contacts,financials,trucks,optimized:true,quickDetails:true};
@@ -36,7 +42,9 @@ function sectionNeeds(gaps,phase,optimized=false){
   }
   // Retain the full previous detail and truck-retry coverage. In particular
   // no quick attempt marks a truck list or finance gap as completed.
-  return {contacts:false,trucks,financials:(phase==="details"||trucks)&&financials,
+  return {contacts:false,
+    trucks:trucks&&!(phase==="details"&&combined.trucks),
+    financials:(phase==="details"||trucks)&&financials&&!(phase==="details"&&combined.financials),
     ...(optimized?{optimized:true}: {})};
 }
 const any=sabyHasWork;
@@ -62,7 +70,16 @@ function safeState(raw,entries,limit,env,fleetScope,gaps){
       const [phase,id,...rest]=key.split(":");
       return !rest.length&&PHASES.includes(phase)&&allowed.has(id);
     });
+    const attemptedSet=new Set(attempted);
+    const combined_detail_attempts=strategy===SABY_COMBINED_RETRY_STRATEGY?
+      Object.fromEntries(ids.filter(id=>attemptedSet.has("contact_retry:"+id))
+        .flatMap(id=>{
+          const v=raw.combined_detail_attempts?.[id];
+          const trucks=v?.trucks===true,financials=v?.financials===true;
+          return trucks||financials?[[id,{trucks,financials}]]:[];
+        })):{};
     return {version:1,strategy,fleet_scope:fleetScope,timing:restoreSabyTiming(raw.timing),planned_inns:ids,attempted:[...new Set(attempted)],
+      combined_detail_attempts,
       verified_inns:[...new Set((Array.isArray(raw.verified_inns)?raw.verified_inns:[]).map(sabyInn).filter(id=>allowed.has(id)))],
       initially_complete:Math.max(0,Math.min(entries.length,Number(raw.initially_complete)||0)),
       phase_index:Math.max(0,Math.min(PHASES.length,Math.trunc(Number(raw.phase_index)||0))),
@@ -70,7 +87,8 @@ function safeState(raw,entries,limit,env,fleetScope,gaps){
   }
   const pending=entries.filter(e=>any(gaps.get(e)));
   return {version:1,strategy,fleet_scope:fleetScope,timing:restoreSabyTiming(),planned_inns:(limit?pending.slice(0,limit):pending).map(e=>sabyInn(e.row["ИНН"])),
-    attempted:[],verified_inns:[],initially_complete:entries.length-pending.length,phase_index:0,stats:emptyStats()};
+    attempted:[],verified_inns:[],combined_detail_attempts:{},
+    initially_complete:entries.length-pending.length,phase_index:0,stats:emptyStats()};
 }
 export async function runSabyContactFirst({
   result,passState=null,env=process.env,signal=null,
@@ -103,9 +121,11 @@ export async function runSabyContactFirst({
   // refresh the affected row after each visit, including partial results.
   const gaps=new Map(entries.map(entry=>[entry,sabyWorkGaps(entry)]));
   const state=safeState(passState,entries,settings.maxCompanies,env,fleetScope,gaps);
-  const optimized=state.strategy===SABY_FAST_STRATEGY;
+  const combineRetry=state.strategy===SABY_COMBINED_RETRY_STRATEGY;
+  const optimized=state.strategy===SABY_FAST_STRATEGY||combineRetry;
   const pacing=createSabyAdaptiveDelay(settings.delayMs,env);
-  const needs=(entry,phase)=>sectionNeeds(gaps.get(entry),phase,optimized);
+  const needs=(entry,phase)=>sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
+    state.combined_detail_attempts[sabyInn(entry.row["ИНН"])]||{});
   const attempted=new Set(state.attempted),verifiedInns=new Set(state.verified_inns);
   const planned=state.planned_inns.map(id=>byInn.get(id)).filter(Boolean);
   const ownerMap=phoneOwnersForResult(result);
@@ -115,7 +135,8 @@ export async function runSabyContactFirst({
   const reclaim=()=>{
     if(typeof collectGarbage==="function")try{collectGarbage();}catch{/* best effort */}
   };
-  const stateSnapshot=()=>({...state,timing:{...state.timing},attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats}});
+  const stateSnapshot=()=>({...state,timing:{...state.timing},attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats},
+    combined_detail_attempts:{...state.combined_detail_attempts}});
   const snapshot=()=>{
     const deferred=[],done=[];
     for(const entry of entries){
@@ -136,6 +157,7 @@ export async function runSabyContactFirst({
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts,
         browserRotations:rotations,browserSessionTaskLimit:sessionLimit,
         visitStrategy:state.strategy,fleetScope:state.fleet_scope,timing:{...state.timing},
+        combinedDetailVisits:Object.keys(state.combined_detail_attempts).length,
         fleetCoverage:sabyFleetCoverage(result,all,gaps),
         phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
@@ -207,6 +229,18 @@ export async function runSabyContactFirst({
           if(optimized)rememberSabyNavigationHint(row,record);
           const applied=relevant?applySabyEnrichment(row,record,{phoneOwners:ownerMap,transport}):null;
           gaps.set(entry,sabyWorkGaps(entry));
+          // A navigation/identity failure or an unentered section must
+          // not consume its separate full attempt. The browser explicitly
+          // attests which reads started on the still-verified same card.
+          if(sections.combinedDetails&&record?.identity?.verified===true&&
+             sabyInn(record.identity.inn)===inn&&sabyNameMatches(row["Организация"],record.identity.name)&&
+             isSabyProfileUrl(record.source_url)&&applied?.status!=="review"&&
+             !(record.errors||[]).some(x=>/card_changed/.test(String(x)))){
+            const attemptedDetails=record.full_detail_attempts;
+            const trucks=sections.trucks===true&&attemptedDetails?.trucks===true;
+            const financials=sections.financials===true&&attemptedDetails?.financials===true;
+            if(trucks||financials)state.combined_detail_attempts[inn]={trucks,financials};
+          }
           if(applied?.status==="ok"){
             appliedOk=true;
             if(sections.quickDetails){
@@ -248,7 +282,8 @@ export async function runSabyContactFirst({
         if(attempted.size%gcEvery===0)reclaim();
         const checkpointStart=performance.now();
         const saved=await save();
-        log("SABY_SECTION_TIMING",{phase,quick:sections.quickDetails===true,
+        log("SABY_SECTION_TIMING",{inn,phase,quick:sections.quickDetails===true,
+          combined_details:sections.combinedDetails===true,
           contacts:sections.contacts,financials:sections.financials,trucks:sections.trucks,
           ...safeTimings,checkpoint_ms:Math.round(performance.now()-checkpointStart)});
         await onProgress({...saved.stats,company:row["Организация"]});

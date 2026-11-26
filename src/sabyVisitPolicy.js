@@ -2,6 +2,7 @@
 // full-detail sweep, nor is a saved private route proof of fresh ownership.
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
 export const SABY_FAST_STRATEGY="combined_visible_v1";
+export const SABY_COMBINED_RETRY_STRATEGY="combined_retry_full_v2";
 export const SABY_LEGACY_STRATEGY="section_passes_v1";
 export const SABY_ALL_FLEETS_SCOPE="all_commercial_v1";
 export const SABY_DIRECT_FLEETS_SCOPE="direct_buyers_v1";
@@ -23,9 +24,14 @@ export function sabyVisitStrategy(env,raw){
   // The old v1 cursor already counts section attempts. Keep its scheduling
   // semantics for the remainder of that sweep, including after a restart.
   if(validSabyPassCursor(raw))
-    return raw.strategy===SABY_FAST_STRATEGY?SABY_FAST_STRATEGY:SABY_LEGACY_STRATEGY;
-  return String(env?.SABY_FAST_PASS_ENABLED??"true").toLowerCase()==="false"?
-    SABY_LEGACY_STRATEGY:SABY_FAST_STRATEGY;
+    return [SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY].includes(raw.strategy)?
+      raw.strategy:SABY_LEGACY_STRATEGY;
+  if(String(env?.SABY_FAST_PASS_ENABLED??"true").toLowerCase()==="false")
+    return SABY_LEGACY_STRATEGY;
+  // Opt in only after the matched live comparison. Existing v1 cursors
+  // remain unchanged even if the operator enables the new strategy.
+  return String(env?.SABY_COMBINE_RETRY_DETAILS_ENABLED??"false").toLowerCase()==="true"?
+    SABY_COMBINED_RETRY_STRATEGY:SABY_FAST_STRATEGY;
 }
 // Only observed first-party contractor detail URLs with a single UUID and
 // known UI navigation fields. Never retain arbitrary query credentials,
