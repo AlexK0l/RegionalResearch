@@ -107,3 +107,6 @@ previously attempted company. The existing three-host, five-attempt-per-host,
 request/time/company limits, exact name/INN proof, actual link requirement
 for cross-page ownership, robots and safe HTTP rules stay unchanged. Each
 public directory card remains isolated. No new paid search allowance.
+
+A completed phone-only retry without a number also retains its cited URLs
+as hints, without changing contact status or inflating recovered-phone counts.

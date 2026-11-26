@@ -9054,7 +9054,8 @@ ${JSON.stringify(gaps)}
       const recovered=await searchMissingPhoneWithWeb({client,row,region,deadlineAt:stage11DeadlineAt,previous:first});
       const merged=mergeRecoveredPhoneResult(first,recovered);
       if(merged!==first){
-        primaryResults.set(id,merged);phoneRetryRecovered++;
+        primaryResults.set(id,merged);
+        if(merged.phones?.length)phoneRetryRecovered++;
       }
     }catch(error){
       if(jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
