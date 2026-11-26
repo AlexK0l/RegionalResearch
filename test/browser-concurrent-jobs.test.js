@@ -53,8 +53,8 @@ test("temporary API 502 never permanently masks a healthy study",()=>{
   assert.match(source,/e\.error\.hidden=true/);
 });
 
-test("Saby-only checkpoint remains SQLite-backed without downloading full growing payload every poll",()=>{
-  assert.match(source,/if\(d\.mode!=="saby_only"&&d\.resume_available&&d\.checkpoint\)/);
+test("durable SQLite jobs skip growing checkpoint downloads; legacy backend fallback remains",()=>{
+  assert.match(source,/if\(!config\?\.durableCheckpoints&&d\.mode!=="saby_only"&&d\.resume_available&&d\.checkpoint\)/);
   assert.match(source,/void syncBrowserCheckpointFromBackend\(requestedJobId,d\.checkpoint\)/);
   assert.match(source,/sabyResume\.onclick=/);
 });
