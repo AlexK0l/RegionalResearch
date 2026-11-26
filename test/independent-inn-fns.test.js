@@ -844,3 +844,19 @@ test("official contact parser uses only scoped current executive and explicitly 
   assert.equal(parsed.contact_facts[0].value,"office@alpha.example");
   assert.equal(parsed.contact_facts[1].value,"ИВАНОВ ИВАН ИВАНОВИЧ (генеральный директор)");
 });
+
+test("only a dated current cessation section establishes completed termination, not an adverse heading",()=>{
+  const cessation="\n                         Сведения о прекращении юридического лица\n"+
+    "  18      Способ прекращения юридического лица                 Ликвидация юридического лица\n"+
+    "  19      Дата прекращения юридического лица                   10.11.2026\n";
+  const changed=extractText.replace("  17      ИНН                                                    7707083893",
+    "  17      ИНН                                                    7707083893"+cessation);
+  const parsed=extractParse(changed);
+  assert.equal(parsed.record?.active,false);
+  assert.deepEqual(parsed.cessation,{status:"ceased",termination_date:"10.11.2026",method:"Ликвидация юридического лица"});
+  for(const text of [changed.replace("10.11.2026","25.11.2026"),
+    changed.replace("Ликвидация юридического лица","Решение о предстоящем исключении юридического лица"),
+    changed.replace("Дата прекращения юридического лица","Дата регистрации"),
+    changed.replace("  19      Дата прекращения","  20      Дата прекращения")])
+    assert.equal(extractParse(text).cessation,undefined);
+});
