@@ -2,6 +2,7 @@
 // complete PDF proof. No guessed URLs, CAPTCHA bypass or per-company browser.
 import {withPublicRegistryLookup} from "./independentInnRegistryBrowser.js";
 import {isOfficialExtractProof} from "./independentInnFnsExtract.js";
+import {buildFnsLegalStatusEvidence,applyFnsLegalStatusEvidence} from "./fnsLegalStatus.js";
 import {registeredContactName,publicContactTarget} from "./publicContactParser.js";
 import {planPublicContactEnrichment,applyPublicContactFacts,publicContactOwnership,
   PUBLIC_CONTACT_REVISION} from "./publicContactEnrichment.js";
@@ -31,10 +32,12 @@ export async function lookupFnsCompanyContacts(row,lookup){
   const expected=found.records[0].record;
   const proof=await lookup.confirm(expected.ogrn,expected);
   if(!isOfficialExtractProof(proof,target.inn)||!sameIdentity(proof.record,target)||
-    proof.record.ogrn!==expected.ogrn||proof.record.kpp!==expected.kpp||!proof.record.active||
+    proof.record.ogrn!==expected.ogrn||proof.record.kpp!==expected.kpp||
     registeredContactName(proof.record.full_name)!==registeredContactName(expected.full_name)||
     registeredContactName(proof.record.short_name)!==registeredContactName(expected.short_name))
     return {reason:"fns_extract_unproven",facts:[]};
+  const legalStatus=buildFnsLegalStatusEvidence(row,proof);
+  if(!proof.record.active)return {reason:"fns_extract_unproven",facts:[],...(legalStatus?{legal_status:legalStatus}:{})};
   const facts=(Array.isArray(proof.contact_facts)?proof.contact_facts:[]).filter(f=>
     ["Электронная почта","Руководитель / ЛПР"].includes(f.field)).map(f=>({
       ...f,inn:target.inn,name:target.name,method:"fns_extract_exact_entity",
@@ -43,7 +46,8 @@ export async function lookupFnsCompanyContacts(row,lookup){
       extract_date:proof.extract.date,extract_number:proof.extract.number,
       page_count:proof.extract.page_count
     }));
-  return {reason:facts.length?"fns_contacts_verified":"fns_no_contacts",facts};
+  return {reason:facts.length?"fns_contacts_verified":"fns_no_contacts",facts,
+    ...(legalStatus?{legal_status:legalStatus}:{})};
 }
 export async function runFnsContactEnrichment({result,env=process.env,signal=null,
   priorOutcomes={},previousStats=null,retryUnavailable=false,shouldPause=()=>false,
@@ -56,6 +60,7 @@ export async function runFnsContactEnrichment({result,env=process.env,signal=nul
   const stats={revision:PUBLIC_CONTACT_REVISION,enabled,eligible:plan.eligible,scheduled:0,
     processed:Number(prev.processed||0),phone_added:0,email_added:Number(prev.email_added||0),
     leader_added:Number(prev.leader_added||0),department_added:0,conflicts:Number(prev.conflicts||0),
+    legal_status_verified:Number(prev.legal_status_verified||0),
     page_navigations:Number(prev.page_navigations||0),elapsed_ms:Number(prev.elapsed_ms||0),
     by_reason:{...prev.by_reason},pending:plan.eligible,stop_reason:"",
     openai_requests:0,saby_requests:0};
@@ -95,6 +100,7 @@ export async function runFnsContactEnrichment({result,env=process.env,signal=nul
             failures=3;
         }
         if(signal?.aborted)throw Error("JOB_CANCELLED");
+        if(observed.legal_status&&applyFnsLegalStatusEvidence(t.row,observed.legal_status))stats.legal_status_verified++;
         const gains=applyPublicContactFacts(t.row,observed.facts,{owners,target:t.target,gaps:t.gaps});
         stats.email_added+=gains.email;stats.leader_added+=gains.leader;stats.conflicts+=gains.conflicts;
         outcomes[t.id]={revision:PUBLIC_CONTACT_REVISION,signature:t.signature,

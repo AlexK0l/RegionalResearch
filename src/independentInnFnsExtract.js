@@ -22,6 +22,7 @@ const sectionNames=new Map([
   ["Сведения о лице, имеющем право без доверенности действовать от имени юридического лица","leader"]
 ].map(([a,b])=>[clean(a).toLowerCase(),b]));
 const adverseHeading=/^Сведения\s+(?:о|об)\s+(?:состоянии(?:\s+\(статусе\))?\s+юридического лица|статусе\s+юридического лица|прекращении(?:\s+деятельности)?\s+юридического лица|нахождении юридического лица в процессе|принятии решения о предстоящем исключении|принятом решении о предстоящем исключении|процессе реорганизации|ликвидации юридического лица|банкротстве юридического лица|недостоверности сведений|ограничении доступа к сведениям)/iu;
+const cessationHeading=/^Сведения о прекращении(?: деятельности)? юридического лица$/iu;
 const adverseRow=/^(?:Статус(?: юридического лица)?|Состояние юридического лица|Способ прекращения(?: деятельности)?|Дата прекращения(?: деятельности)?|Сведения о недостоверности|Признак недостоверности)/iu;
 
 function calendarDate(s){
@@ -104,7 +105,7 @@ function parseRows(text){
           /^Сведения о (?:лице, имеющем право|регистрации в качестве|записях, внесенных)/iu.test(trimmed)))){
       flush();
       if(adverseHeading.test(trimmed))adverse=true;
-      section=known||"other";
+      section=known||(cessationHeading.test(trimmed)?"cessation":"other");
       sections.push(section);
       continue;
     }
@@ -133,6 +134,18 @@ function parseRows(text){
   return {rows,sections,adverse};
 }
 
+// An adverse flag also covers bankruptcy, reorganization, unreliable
+// records and a planned exclusion. Only an explicit dated cessation in
+// the current entity's own section can establish a completed termination.
+export function validExtractCessation(fact,extractDate){
+  if(!fact||fact.status!=="ceased"||typeof fact.termination_date!=="string"||
+    typeof fact.method!=="string"||fact.method.length>350)return false;
+  const at=calendarDate(fact.termination_date),asOf=calendarDate(extractDate);
+  if(at===null||asOf===null||at>asOf)return false;
+  const method=clean(fact.method);
+  return /(?:ликвидаци|прекращени|исключени)/iu.test(method)&&
+    !/(?:предстоящ|решени[ея]\s+о|в процессе|планиру|предполага|возможн|не\s+(?:прекращ|ликвидир|исключ)|отмен|недействительн.{0,30}решени)/iu.test(method);
+}
 export function parseOfficialFnsExtract(text,{now=Date.now()}={}){
   const pages=readPages(text);
   if(!pages)return {reason:"fns_extract_pages_unproven"};
@@ -210,7 +223,15 @@ export function parseOfficialFnsExtract(text,{now=Date.now()}={}){
         excerpt:"Фамилия, имя, отчество: "+person+"; должность: "+role});
     }
   }
-  return {reason:"fns_extract_parsed",...(contactFacts.length?{contact_facts:contactFacts}:{}),record:{inn,kpp,ogrn,full_name:full,
+  const cessationRows=parsed.rows.filter(r=>r.section==="cessation");
+  let cessation=null;
+  if(adverse&&parsed.sections.filter(s=>s==="cessation").length===1&&safeRows(cessationRows)){
+    const candidate={status:"ceased",termination_date:take("cessation",/^Дата прекращения(?: деятельности)?(?: юридического лица)?$/iu),
+      method:take("cessation",/^Способ прекращения(?: деятельности)?(?: юридического лица)?$/iu)};
+    if(validExtractCessation(candidate,head.date))cessation=candidate;
+  }
+  return {reason:"fns_extract_parsed",...(contactFacts.length?{contact_facts:contactFacts}:{}),
+    ...(cessation?{cessation}:{}),record:{inn,kpp,ogrn,full_name:full,
     short_name:short,address,active:!adverse},
     metadata:{date:head.date,number:head.number,page_count:pages.page_count,
       status_basis:adverse?"current_adverse_status":"complete_extract_no_adverse_status"}};
@@ -224,6 +245,10 @@ export function isOfficialExtractProof(second,inn){
     Number.isSafeInteger(e.page_count)&&e.page_count>=1&&e.page_count<=MAX_PAGES&&
     ["complete_extract_no_adverse_status","current_adverse_status"].includes(e.status_basis)&&
     second.record?.active===(e.status_basis==="complete_extract_no_adverse_status");
+}
+
+export function isCurrentOfficialExtractProof(second,inn,now=Date.now()){
+  return isOfficialExtractProof(second,inn)&&freshDate(second.extract.date,now);
 }
 
 // The supplied page has just received a query-correlated single exact
@@ -271,6 +296,7 @@ export async function downloadOfficialFnsExtract(page,expected,{now=Date.now(),o
     if(!parsed.record)return null;
     return {kind:"fns_extract",url:fnsSourceUrl(expected.inn),record:parsed.record,
       ...(parsed.contact_facts?.length?{contact_facts:parsed.contact_facts}:{}),
+      ...(parsed.cessation?{cessation:parsed.cessation}:{}),
       extract:{...parsed.metadata,sha256:createHash("sha256").update(data).digest("hex")}};
   }finally{
     if(download)await download.delete().catch(()=>{});
