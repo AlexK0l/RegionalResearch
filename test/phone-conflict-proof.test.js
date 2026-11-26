@@ -36,3 +36,18 @@ test("canonical ID, legal INN and phone all participate in the durable key",()=>
   }
   assert.equal(restorePhoneConflictProof(proof,{rowId:"",inn:"",phone:""}),null);
 });
+
+test("an INN must never be reinterpreted as a phone in mixed requisites",()=>{
+  const sameDigits={...target,phone:"7"+target.inn};
+  const raw={...response,phone:sameDigits.phone,evidence_excerpt:"ИНН "+target.inn+", телефон не указан"};
+  assert.equal(assessPhoneConflictProof(raw,sameDigits).status,"unproven");
+  assert.equal(restorePhoneConflictProof({...raw,row_id:target.rowId,status:"confirmed"},sameDigits),null);
+});
+test("a snippet with a foreign labelled INN cannot attribute a shared number",()=>{
+  const raw={...response,evidence_excerpt:"ИНН "+target.inn+"; ООО Другая, ИНН 7707083894, телефон +7 (900) 123-45-67"};
+  assert.equal(assessPhoneConflictProof(raw,target).status,"unproven");
+});
+test("accept a separately labelled complete local number, not a bare requisites field",()=>{
+  assert.equal(assessPhoneConflictProof({...response,evidence_excerpt:"ИНН "+target.inn+"; тел.: (900) 123-45-67"},target).status,"confirmed");
+  assert.equal(assessPhoneConflictProof({...response,evidence_excerpt:"ИНН "+target.inn+"; код 9001234567; телефон не указан"},target).status,"unproven");
+});

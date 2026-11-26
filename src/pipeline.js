@@ -18,7 +18,7 @@ import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { applyPreSabyFinancialFacts, preSabyFinancialCoverage } from "./preSabyFinancials.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
-import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
+import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt, contactResumeCandidates } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, disclaimsSelectedTrailerEvidence } from "./productionFinalQuality.js";
@@ -8651,7 +8651,7 @@ ${JSON.stringify(gaps)}
   };
   await publicContactPass(resumeCheckpoint?.phase==="contacts"?"contacts":"statistics");
   const phoneOwners = buildPhoneOwnerMap(companies);
-  const googleCompanies = companies.filter(needsGoogleResearch);
+  const googleCompanies = contactResumeCandidates(companies,resumeCheckpoint,checkpointRowId,needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
   const stage11StartedAt = Date.now();
   const stage11DeadlineAt = stage11StartedAt + STAGE11_MAX_MS;
@@ -9157,36 +9157,50 @@ ${JSON.stringify(gaps)}
     }
   }
 
+  // Primary web and the optional browser fallback share the same durable
+  // conflict verdict. A cached negative/insufficient proof is not positive.
+  const resolvePhoneConflict=async(row,rowId,phone)=>{
+    const target={rowId,inn:normalizeInn(row["ИНН"]),phone};
+    const key=phoneConflictKey(rowId,target.inn,phone);
+    if(!key)return null;
+    let proof=restorePhoneConflictProof(phoneConflictProofs.get(key),target);
+    if(proof)return proof;
+    if(deadlineRemaining(stage11DeadlineAt)<=6000)return null;
+    let verification;
+    try{
+      verification=await verifyPhoneWithWebSearch({client,row,region,phone,deadlineAt:stage11DeadlineAt});
+    }catch(error){
+      if(isOpenAIBillingStop(error)||jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
+      console.error("[PHONE_CONFLICT_VERIFY_ERROR] "+JSON.stringify({
+        id:rowId,phone,error:error?.message||String(error)
+      }));
+      return null;
+    }
+    proof=assessPhoneConflictProof(verification,target);
+    if(!proof)return null;
+    phoneConflictProofs.set(key,proof);
+    if(proof.status==="confirmed")phoneVerified++;
+    await contactCheckpointBatcher.request({force:true});
+    return proof;
+  };
+  const retainPhoneConflict=(row,rowId,phone,proof)=>{
+    const evidence=row.__evidence||{};
+    const previous=Array.isArray(evidence.contact_conflict_verifications)?evidence.contact_conflict_verifications:[];
+    row.__evidence={...evidence,contact_conflict_verifications:[
+      ...previous.filter(item=>item.phone!==phone),
+      proof||{row_id:rowId,inn:normalizeInn(row["ИНН"]),phone,status:"deferred"}
+    ]};
+  };
+
   const verifiedConflictPhones = new Map();
   try {
     await mapWithConcurrency(
       conflictChecks, CONTACT_CONCURRENCY,
       async ({row,rowId,phone})=>{
         await assertNotCancelled();
-        const target={rowId,inn:normalizeInn(row["ИНН"]),phone};
-        const key=phoneConflictKey(rowId,target.inn,phone);
-        if(!key)return;
-        let proof=restorePhoneConflictProof(phoneConflictProofs.get(key),target);
-        if(!proof){
-          if(deadlineRemaining(stage11DeadlineAt)<=6000)return;
-          let verification;
-          try{
-            verification=await verifyPhoneWithWebSearch({client,row,region,phone,deadlineAt:stage11DeadlineAt});
-          }catch(error){
-            if(isOpenAIBillingStop(error)||jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
-            console.error("[PHONE_CONFLICT_VERIFY_ERROR] "+JSON.stringify({
-              id:rowId,phone,error:error?.message||String(error)
-            }));
-            return;
-          }
-          proof=assessPhoneConflictProof(verification,target);
-          if(!proof)return;
-          phoneConflictProofs.set(key,proof);
-          if(proof.status==="confirmed")phoneVerified++;
-          // Every completed verdict is durable before a new paid request.
-          await contactCheckpointBatcher.request({force:true});
-        }
-        if(proof.status==="confirmed")verifiedConflictPhones.set(key,proof);
+        const proof=await resolvePhoneConflict(row,rowId,phone);
+        const key=phoneConflictKey(rowId,normalizeInn(row["ИНН"]),phone);
+        if(key&&proof)verifiedConflictPhones.set(key,proof);
       },
       ()=>pauseRequested("contacts")
     );
@@ -9199,12 +9213,7 @@ ${JSON.stringify(gaps)}
     const target={rowId,inn:normalizeInn(row["ИНН"]),phone};
     const key=phoneConflictKey(rowId,target.inn,phone);
     const proof=verifiedConflictPhones.get(key)||restorePhoneConflictProof(phoneConflictProofs.get(key),target);
-    const evidence=row.__evidence||{};
-    const previous=Array.isArray(evidence.contact_conflict_verifications)?evidence.contact_conflict_verifications:[];
-    row.__evidence={...evidence,contact_conflict_verifications:[
-      ...previous.filter(item=>item.phone!==phone),
-      proof||{row_id:rowId,inn:target.inn,phone,status:"deferred"}
-    ]};
+    retainPhoneConflict(row,rowId,phone,proof);
     if(proof?.status!=="confirmed")continue;
     row["Телефон"]=mergePhone(row["Телефон"],phone);
     if(!phoneOwners.has(phone))phoneOwners.set(phone,[]);
@@ -9369,22 +9378,11 @@ ${JSON.stringify(gaps)}
               const belongsElsewhere = owners.some((owner) => owner !== row);
               let accept = !belongsElsewhere;
 
-              if (belongsElsewhere && deadlineRemaining(stage11DeadlineAt) > 6000) {
+              if (belongsElsewhere) {
                 phoneConflicts++;
-                try {
-                  const verification = await verifyPhoneWithWebSearch({
-                    client,
-                    row,
-                    region,
-                    phone: normalized,
-                    deadlineAt: stage11DeadlineAt
-                  });
-                  accept = Boolean(verification?.confirmed);
-                  if (accept) phoneVerified++;
-                } catch (error) {
-                  if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-                  accept = false;
-                }
+                const proof=await resolvePhoneConflict(row,rowId,normalized);
+                retainPhoneConflict(row,rowId,normalized,proof);
+                accept=proof?.status==="confirmed";
               }
 
               if (!accept) continue;
@@ -9404,7 +9402,11 @@ ${JSON.stringify(gaps)}
         }
       );
     } catch (error) {
-      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      if (isOpenAIBillingStop(error)||jobSignal?.aborted||error?.message==="JOB_CANCELLED") {
+        try{await contactCheckpointBatcher.request({force:true});}
+        catch(saveError){error.checkpointFlushFailed=true;}
+        throw error;
+      }
       browserCircuitOpen = true;
       console.error("[GOOGLE_AI_FALLBACK_STAGE_ERROR] " + JSON.stringify({
         error: error?.message || String(error)
