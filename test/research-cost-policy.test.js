@@ -199,3 +199,13 @@ test("phone-specific recovery includes primary-completed phone gaps, excludes om
   assert.deepEqual(first.phones,[]);
   assert.deepEqual(updated.phone_recovery_source_urls,["https://other.example/contacts"]);
 });
+
+test("a paid phone retry with no phone retains only source hints, not a successful contact",()=>{
+  const first={status:"not_found",phones:[],emails:[],leader:"",source_urls:["https://original.example/"]};
+  const retry={phones:[],emails:["other@carrier.example"],leader:"Another",
+    source_urls:["https://carrier.example/contacts"]};
+  const merged=mergeRecoveredPhoneResult(first,retry);
+  assert.deepEqual(merged,{...first,phone_recovery_source_urls:["https://carrier.example/contacts"]});
+  assert.equal(mergeRecoveredPhoneResult(merged,retry),merged);
+  assert.equal(first.phone_recovery_source_urls,undefined);
+});

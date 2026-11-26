@@ -92,7 +92,7 @@ export function planPublicContactEnrichment(result,{priorOutcomes={},retryUnavai
     const target=publicContactTarget(row);
     if(!target){stats.missing_identity++;continue;}
     if(counts.get(target.inn)!==1){stats.duplicate_identity++;continue;}
-    const urls=source==="html"?contactSourceCandidates(row).map(x=>x.url):[];
+    const urls=source==="html"?contactSourceCandidates(row).flatMap(x=>x.seedUrls||[x.url]):[];
     if(source==="html"&&!urls.length){stats.no_source++;continue;}
     const id=source+":"+target.inn,signature=hash([target.name,urls]);
     const old=priorOutcomes[id];

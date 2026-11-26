@@ -12,6 +12,7 @@ import { planAutonomousDiscoveryCoverage, autonomousDiscoveryPrompt, filterAuton
 import { contactOmissionRecheckLimits, planContactOmissionRechecks } from "./contactOmissionRecovery.js";
 import {needsAnyContact,knownContactLeader,publicContactEnabled,publicContactSettings,runPublicContactEnrichment,contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
+import {rememberPublicContactSourceHints} from "./publicContactParser.js";
 import { buildHistoricalRecallPlan, historicalRecallPrompt, filterHistoricalRecallFindings, auditHistoricalRecallOutcome, buildHistoricalCoverageLedger } from "./historicalRecall.js";
 import { independentBSignals, attributedCarrierTrailerB, namedCargoHaulageCustomerC, verifiedInnFromEvidence, populateCommercialActions, populateKnownEvidenceFields, safeSearchPriority, distinctSourceFacts } from "./researchQuality.js";
 import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
@@ -9053,7 +9054,8 @@ ${JSON.stringify(gaps)}
       const recovered=await searchMissingPhoneWithWeb({client,row,region,deadlineAt:stage11DeadlineAt,previous:first});
       const merged=mergeRecoveredPhoneResult(first,recovered);
       if(merged!==first){
-        primaryResults.set(id,merged);phoneRetryRecovered++;
+        primaryResults.set(id,merged);
+        if(merged.phones?.length)phoneRetryRecovered++;
       }
     }catch(error){
       if(jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
@@ -9229,6 +9231,7 @@ ${JSON.stringify(gaps)}
     const rowId = checkpointRowId(row);
     const result = primaryResults.get(rowId);
     if (!result) continue;
+    rememberPublicContactSourceHints(row,result);
     const verifiedSource = String(result.official_site || "").trim();
     if(verifiedSource&&result.source_urls?.length){
       const ev=row.__evidence||{};

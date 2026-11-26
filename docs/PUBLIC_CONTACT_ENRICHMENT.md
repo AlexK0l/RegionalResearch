@@ -90,3 +90,23 @@ Saby reported 91 added phones. Among the 252 missing-phone rows with INN,
 219 have no saved Saby evidence and 33 have it. Two collected Saby
 numbers already belong to other rows and remain withheld.
 This is a saved-data observation, not a live test or a promise of yield.
+
+## Retaining actual paid contact source URLs
+
+A valid Stage11 answer may contain a specific contact or directory page even
+when no official website or phone was returned. Save eligible cited and
+phone-recovery URLs separately as public_contact_source_hints (maximum eight).
+They are only untrusted candidate URLs, not new qualification evidence or
+confirmed contacts. A late continuation can recover these hints from an
+existing version-2 primary-results ledger by unique exact canonical ID.
+
+The public HTML pass can start from a second explicitly cited contact page
+on the same corporate host, without inventing a link. The selected URL
+signature includes this second seed, so a new same-host source can reopen a
+previously attempted company. The existing three-host, five-attempt-per-host,
+request/time/company limits, exact name/INN proof, actual link requirement
+for cross-page ownership, robots and safe HTTP rules stay unchanged. Each
+public directory card remains isolated. No new paid search allowance.
+
+A completed phone-only retry without a number also retains its cited URLs
+as hints, without changing contact status or inflating recovered-phone counts.

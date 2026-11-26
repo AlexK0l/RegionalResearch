@@ -146,13 +146,20 @@ export function planPhoneGapRecovery(rows,primaryResults,completed,attempted,idO
 export function mergeRecoveredPhoneResult(first,second) {
   if(!first||!second||!Array.isArray(second.source_urls)||!second.source_urls.some(validHttpUrl))
     return first;
+  const retrySources=[...new Set([...(first.phone_recovery_source_urls||[]),...second.source_urls]
+    .filter(validHttpUrl))].slice(0,8);
   const phones=[...new Set([...(first.phones||[]),...(second.phones||[])]
     .map(normalizeRussianPhone).filter(Boolean))];
-  if(!phones.length)return first;
+  // The already-paid retry may reveal a useful source even without a
+  // telephone. Store it separately as an unverified public-HTML hint.
+  if(!phones.length){
+    return JSON.stringify(retrySources)===JSON.stringify(first.phone_recovery_source_urls||[])
+      ?first:{...first,phone_recovery_source_urls:retrySources};
+  }
   return {...first,phones,status:"ok",
     source_urls:[...new Set([...(first.source_urls||[]),...second.source_urls])].filter(validHttpUrl),
     official_site:first.official_site||second.official_site||"",
-    phone_recovery_source_urls:second.source_urls.filter(validHttpUrl)};
+    phone_recovery_source_urls:retrySources};
 }
 
 /**
