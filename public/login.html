@@ -5,22 +5,106 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Вход — RegionalResearch</title>
+<script id="themeBootstrap">
+(() => {
+  // Keep this small pre-paint bootstrap identical on both pages. Login
+  // remains self-contained behind the existing server auth boundary.
+  const key="sat_theme_preference";
+  const valid=value=>["system","light","dark"].includes(value)?value:"system";
+  let preference="system";
+  try{preference=valid(window.localStorage.getItem(key));}catch{}
+  const media=typeof window.matchMedia==="function"?window.matchMedia("(prefers-color-scheme: dark)"):null;
+  let picker=null;
+  const apply=()=>{
+    document.documentElement.dataset.theme=preference==="system"?
+      (media?.matches?"dark":"light"):preference;
+    if(picker)picker.value=preference;
+  };
+  apply();
+  const bind=()=>{
+    picker=document.getElementById("themePreference");
+    if(!picker)return;
+    apply();
+    picker.addEventListener("change",()=>{
+      preference=valid(picker.value);
+      try{window.localStorage.setItem(key,preference);}catch{}
+      apply();
+    });
+  };
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bind,{once:true});
+  else bind();
+  if(typeof media?.addEventListener==="function")media.addEventListener("change",apply);
+  else if(typeof media?.addListener==="function")media.addListener(apply);
+  window.addEventListener("storage",event=>{
+    if(event.key!==key&&event.key!==null)return;
+    // Ignore sessionStorage and unrelated cross-tab events.
+    if(event.storageArea){
+      try{if(event.storageArea!==window.localStorage)return;}catch{return;}
+    }
+    preference=valid(event.newValue);
+    apply();
+  });
+})();
+</script>
 <style>
-  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:light}
-  *{box-sizing:border-box}
-  body{min-height:100vh;margin:0;background:#f3f6fb;color:#12253a;display:grid;place-items:center;padding:24px}
-  main{width:min(100%,420px);background:white;border:1px solid #dce4f0;border-radius:16px;padding:32px;box-shadow:0 14px 34px rgba(12,36,66,.08)}
-  h1{font-size:1.6rem;margin:0 0 12px}
-  p{color:#50647b;line-height:1.5}
-  label{display:block;font-weight:600;margin:24px 0 8px}
-  input{width:100%;border:1px solid #aab8c9;padding:12px;border-radius:8px;font:inherit}
-  button{width:100%;margin-top:18px;border:0;border-radius:8px;background:#174d84;color:white;padding:13px;font:inherit;font-weight:600;cursor:pointer}
-  button:disabled{opacity:.65}
-  #error{color:#a2192d;font-weight:600;min-height:1.5em}
+:root{
+  color-scheme:light;
+  --text:#12253a;
+  --page:#f3f6fb;
+  --surface:#ffffff;
+  --border:#dde2e9;
+  --input-border:#8995a7;
+  --subtle:#50647b;
+  --primary:#174d84;
+  --primary-text:#ffffff;
+  --focus:#526983;
+  --focus-ring:rgba(82,105,131,.20);
+  --error:#a2192d;
+  --shadow:rgba(12,36,66,.08);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --text:#e7edf6;
+  --page:#101720;
+  --surface:#131d2b;
+  --border:#3c4b5e;
+  --input-border:#667c95;
+  --subtle:#aebdd1;
+  --primary:#a9c8fa;
+  --primary-text:#10233d;
+  --focus:#a9c8fa;
+  --focus-ring:rgba(169,200,250,.25);
+  --error:#ffb8bf;
+  --shadow:rgba(0,0,0,.24);
+}
+:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{min-height:100vh;margin:0;background:var(--page);color:var(--text);display:grid;place-items:center;padding:24px}
+main{width:min(100%,420px);background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;box-shadow:0 14px 34px var(--shadow)}
+h1{font-size:1.6rem;margin:0 0 12px}
+p{color:var(--subtle);line-height:1.5}
+label{display:block;font-weight:600;margin:24px 0 8px}
+input,select{width:100%;border:1px solid var(--input-border);background:var(--surface);color:var(--text);padding:12px;border-radius:8px;font:inherit}
+input:focus,select:focus{border-color:var(--focus);outline:2px solid var(--focus);outline-offset:1px;box-shadow:0 0 0 4px var(--focus-ring)}
+button{width:100%;margin-top:18px;border:0;border-radius:8px;background:var(--primary);color:var(--primary-text);padding:13px;font:inherit;font-weight:600;cursor:pointer}
+button:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+button:disabled{opacity:.65;cursor:not-allowed}
+.theme-picker{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 24px;font-size:14px;color:var(--subtle);font-weight:600}
+.theme-picker select{width:auto;max-width:100%;min-height:44px;padding:8px 10px;cursor:pointer}
+#error{color:var(--error);font-weight:600;min-height:1.5em}
+@media(max-width:360px){body{padding:12px}main{padding:20px}}
 </style>
 </head>
 <body>
 <main>
+  <label class="theme-picker" for="themePreference">
+      <span>Тема</span>
+      <select id="themePreference">
+        <option value="system">Как в системе</option>
+        <option value="light">Светлая</option>
+        <option value="dark">Тёмная</option>
+      </select>
+    </label>
   <h1>RegionalResearch</h1>
   <p>Войдите один раз. На этом устройстве вход сохранится на 30 дней, если браузер разрешает cookies.</p>
   <form id="login">
