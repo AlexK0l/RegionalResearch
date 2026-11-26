@@ -4,7 +4,8 @@ import { normalizeRussianPhone } from "./researchCostPolicy.js";
 import { formatPhoneCell, parsePhoneEntries, explicitPhoneDepartment } from "./phoneExport.js";
 import { mergeCompanyEmail,companyEmailCell } from "./emailContact.js";
 import { validSabyFinancialEvidence } from "./sabyFinancials.js";
-import {verifiedSabyVehicleFleet} from "./sabyVehicleInventory.js";
+import {verifiedSabyVehicleFleet,verifiedSabyVehiclePartial,mergeSabyVehiclePartial,
+  sabyVehicleSnapshotAgrees} from "./sabyVehicleInventory.js";
 
 const LEGAL_WORDS = new Set([
   "ооо", "ао", "пао", "оао", "зао", "ип", "общество", "с",
@@ -150,6 +151,12 @@ export function sabyStoredVehicleFleet(row){
   if(!sabyStoredSectionCoverage(row,{transport:true}).trusted||
      stored.collection?.vehicle_fleet!=="verified"||stored.vehicle_fleet?.source!=="SABY")return null;
   return verifiedSabyVehicleFleet(stored.vehicle_fleet);
+}
+export function sabyStoredVehiclePartial(row){
+  const stored=row?.__evidence?.saby;
+  if(!sabyStoredSectionCoverage(row,{transport:true}).trusted||
+     stored.collection?.vehicle_fleet!=="partial"||stored.vehicle_fleet_partial?.source!=="SABY")return null;
+  return verifiedSabyVehiclePartial(stored.vehicle_fleet_partial);
 }
 export function sabyVehicleFleetSummary(fleet){
   return fleet.groups.map(g=>g.category+" — "+g.count+" шт.: "+fleetSummary(g)).join("; ");
@@ -335,10 +342,34 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     return trucks?sameInventory(trucks,fleet):fleet.count===0;
   };
   const freshWhole=verifiedSabyVehicleFleet(record.vehicle_fleet);
+  const freshPartial=verifiedSabyVehiclePartial(record.vehicle_fleet_partial);
   const priorWhole=carry&&existingSaby.collection?.vehicle_fleet==="verified"&&existingSaby.vehicle_fleet?.source==="SABY"?
     verifiedSabyVehicleFleet(existingSaby.vehicle_fleet):null;
+  const priorPartial=carry&&existingSaby.collection?.vehicle_fleet==="partial"&&existingSaby.vehicle_fleet_partial?.source==="SABY"?
+    verifiedSabyVehiclePartial(existingSaby.vehicle_fleet_partial):null;
   // Never combine inconsistent whole-fleet and truck-only inventories.
-  const vehicleFleet=consistent(freshWhole)?freshWhole:consistent(priorWhole)?priorWhole:null;
+  // A fresh partial with changed counts or known models reopens the gap.
+  const vehicleFleet=consistent(freshWhole)?freshWhole:
+    consistent(priorWhole)&&(!freshPartial||sabyVehicleSnapshotAgrees(priorWhole,freshPartial))?priorWhole:null;
+  const observedAt=String(record.collected_at||new Date().toISOString());
+  // A rejected full observation can still supply independent category
+  // facts. Do not promote them until the truck conflict is resolved.
+  const rejectedWhole=freshWhole&&!vehicleFleet?{
+    status:"partial",announced_count:freshWhole.count,
+    categories:freshWhole.groups.map(({category,count})=>({category,count})),
+    groups:freshWhole.groups
+  }:null;
+  const oldCategoryEvidence=priorPartial||(!vehicleFleet&&priorWhole?{
+    status:"partial",announced_count:priorWhole.count,
+    categories:priorWhole.groups.map(({category,count})=>({category,count})),
+    groups:priorWhole.groups.map(g=>({...g,observed_at:existingSaby.verified_at}))
+  }:null);
+  const partial=vehicleFleet?null:mergeSabyVehiclePartial(freshPartial||rejectedWhole,oldCategoryEvidence,observedAt);
+  // A truck-only observation that contradicts a retained truck group
+  // cannot make that old group current. Other categories remain useful.
+  if(partial&&fleet){
+    partial.groups=partial.groups.filter(g=>g.category!=="Грузовые"||sameInventory(g,fleet));
+  }
   // Revenue/headcount have their own independent Saby evidence, separate
   // from phones, fleet and A/B/C. Only carry old facts when the exact same
   // KPP or private card ID was verified on this attempt.
@@ -362,7 +393,8 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   if(fleet)collection.trucks="verified";
   if(financials)collection.financials="collected";
   if(vehicleFleet)collection.vehicle_fleet="verified";
-  else if(record.vehicle_fleet||priorWhole)collection.vehicle_fleet="review";
+  else if(partial)collection.vehicle_fleet="partial";
+  else if(record.vehicle_fleet||record.vehicle_fleet_partial||priorWhole)collection.vehicle_fleet="review";
   evidence.saby = {
     // Never retain prior section evidence from a different Saby card.
     ...(carry?existingSaby:{}),
@@ -377,9 +409,11 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     collection,
     ...(fleet ? {trucks: {...fleet, status:"verified",category:"Грузовые", source:"SABY"}} : {}),
     ...(financials ? {financials} : {}),
-    ...(vehicleFleet?{vehicle_fleet:{...vehicleFleet,source:"SABY"}}:{})
+    ...(vehicleFleet?{vehicle_fleet:{...vehicleFleet,source:"SABY"}}:{}),
+    ...(partial?{vehicle_fleet_partial:{...partial,source:"SABY"}}:{})
   };
   if(!vehicleFleet)delete evidence.saby.vehicle_fleet;
+  if(!partial)delete evidence.saby.vehicle_fleet_partial;
   evidence.source_urls = [...new Set([...(evidence.source_urls || []), record.source_url])];
   row.__evidence = evidence;
   // This exact-INN, verified Saby card contributes e-mail to the visible
@@ -458,18 +492,18 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
       }
     }
   }
-  if(transport&&vehicleFleet){
+  if(transport&&(vehicleFleet||partial)){
     const original=String(row["Наличие транспорта"]||row["TORGBOX"]||"").trim();
-    // Keep the old truck line and avoid duplicating it in the new line.
-    const groups=vehicleFleet.groups.filter(g=>g.category!=="Грузовые"||!original.includes("Saby (грузовые):"));
-    if(groups.length){
-      const summary=sabyVehicleFleetSummary({groups});
-      const base=original.split(/\r?\n/).filter(s=>!s.startsWith("Saby (автопарк):")).join("\n");
-      const cap=Math.max(0,Math.min(16000,30000-base.length));
-      const display=summary.length>cap?summary.slice(0,cap).split("; ").slice(0,-1).join("; ")+"; полный перечень в JSON исследования":summary;
-      const line="Saby (автопарк): "+display;
-      const next=[base,line].filter(Boolean).join("\n");
-      if(next!==original&&next.length<=32000){row["Наличие транспорта"]=next;transportAdded=true;}
+    const base=original.split(/\r?\n/).filter(s=>!s.startsWith("Saby (автопарк):")).join("\n");
+    const groups=(vehicleFleet||partial).groups.filter(g=>g.category!=="Грузовые"||!base.includes("Saby (грузовые):"));
+    const summary=sabyVehicleFleetSummary({groups});
+    const cap=Math.max(0,Math.min(16000,30000-base.length));
+    const display=summary.length>cap?summary.slice(0,cap).split("; ").slice(0,-1).join("; ")+"; полный перечень в JSON исследования":summary;
+    const line=groups.length?"Saby (автопарк): "+(vehicleFleet?"":"неполный перечень; ")+display:"";
+    const next=[base,line].filter(Boolean).join("\n");
+    if(next!==original&&next.length<=32000){
+      row["Наличие транспорта"]=next;
+      if(line)transportAdded=true;
     }
   }
   // Preserve the historic email line in the company note too; keep source
@@ -479,7 +513,8 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     phones.length ? "телефоны " + phones.join(", ") : "",
     emails.length ? "email " + emails.join(", ") : "",
     fleet ? "грузовые " + fleet.count + " шт." : "",
-    vehicleFleet?"автопарк всего "+vehicleFleet.count+" шт.":"",
+    vehicleFleet?"автопарк всего "+vehicleFleet.count+" шт.":
+      partial?"автопарк: подтверждены отдельные категории, полный состав не подтверждён":"",
     financials?.revenue_rub!==undefined?
       "выручка "+financials.revenue_year+" г. "+financials.revenue_rub+" ₽":"",
     financials?.employees!==undefined?

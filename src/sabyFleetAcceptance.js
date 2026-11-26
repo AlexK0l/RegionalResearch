@@ -124,6 +124,7 @@ export function buildFleetCohort(cp,{limit=12,sourceId=""}={}){
       if(row.__evidence?.saby){
         delete row.__evidence.saby.trucks;
         delete row.__evidence.saby.vehicle_fleet;
+        delete row.__evidence.saby.vehicle_fleet_partial;
         if(row.__evidence.saby.collection){
           delete row.__evidence.saby.collection.trucks;
           delete row.__evidence.saby.collection.vehicle_fleet;

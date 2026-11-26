@@ -154,5 +154,5 @@ export function extractStage13ModelInventory(row,{catalog=[],maxPerBuyer=50}={})
     catalog_models:all.filter(x=>x.verification==="catalog").length,
     unknown_models:all.filter(x=>x.verification==="openai").length,
     skipped_due_to_limit:all.slice(maxPerBuyer).map(x=>x.model_text),
-    excluded_saby_truck_list:/^Saby\s*\(грузовые\)\s*:/i.test(row?.["Наличие транспорта"]||"")};
+    excluded_saby_truck_list:/^Saby\s*\((?:грузовые|автопарк)\)\s*:/im.test(row?.["Наличие транспорта"]||"")};
 }

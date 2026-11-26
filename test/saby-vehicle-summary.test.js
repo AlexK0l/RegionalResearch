@@ -50,3 +50,23 @@ test("one drawer disclosure for incomplete category; changing company discards a
   const fail=await collectSabyVehicleInventory(page,{...opts,collectTree:async()=>{route=url.replace("12345678-","22345678-");return {status:"complete",expected:2,vehicles:[]};}});
   assert.equal(fail.fleet,null);
 });
+
+
+test("incomplete category retains independently verified nontruck group and advertised total",async()=>{
+  const a=raw();a.total=3;a.groups[1].count=2;
+  const r=await collectSabyVehicleInventory({url:()=>url,locator:()=>assert.fail("quick must not open")},{
+    originalUrl:url,quick:true,readSummary:async()=>validateSabyVehicleSummary(a)});
+  assert.equal(r.fleet,null);
+  assert.equal(r.partial.announced_count,3);
+  assert.deepEqual(r.partial.groups,[{category:"Легковые",count:1,vehicles:[{model:"PEUGEOT PARTNER VP",year:2023}]}]);
+});
+test("full category read can recover a lazily mounted exact summary, quick read never scrolls",async()=>{
+  let recover=0;
+  const opts={originalUrl:url,readSummary:async()=>null,
+    recoverSummary:async()=>{recover++;return {heading:validateSabyVehicleSummary(raw())};}};
+  const p={url:()=>url};
+  assert.equal((await collectSabyVehicleInventory(p,{...opts,quick:true})).fleet,null);
+  assert.equal(recover,0);
+  assert.equal((await collectSabyVehicleInventory(p,opts)).fleet.count,2);
+  assert.equal(recover,1);
+});

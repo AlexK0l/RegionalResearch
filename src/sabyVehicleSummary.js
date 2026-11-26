@@ -1,7 +1,8 @@
 // Exact real 2026-11-26 summary tile DOM; separate navigation total.
 // Wasaby renders invisible-tile-item-* measurement clones. Never count them.
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
-import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet} from "./sabyVehicleInventory.js";
+import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
+import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
 import {readSabyFleetTree,collectSabyFleetTree} from "./sabyFleetTree.js";
 export function scanSabyVehicleSummaryDOM(){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
@@ -66,12 +67,19 @@ export async function readSabyVehicleSummary(page,originalUrl){
 // existing scoped tree/footer protocol and one exact tile disclosure.
 export async function collectSabyVehicleInventory(page,{
   originalUrl,quick=false,wait=ms=>new Promise(r=>setTimeout(r,ms)),
-  readSummary=readSabyVehicleSummary,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,now=()=>Date.now()
+  readSummary=readSabyVehicleSummary,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,now=()=>Date.now(),
+  recoverSummary=null
 }={}){
   const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
-  const missing={status:"missing",fleet:null,trucks:null,drawerOpened:false};
+  const missing={status:"missing",fleet:null,partial:null,trucks:null,drawerOpened:false};
   if(!same())return missing;
-  const raw=await readSummary(page,originalUrl);
+  let raw=await readSummary(page,originalUrl);
+  if(!raw&&!quick&&recoverSummary&&same()){
+    // Reuse the bounded, exact scoped profile scroller. Search for the
+    // reconciled summary itself, not just a possibly early heading.
+    const recovery=await recoverSummary(page,{readHeading:()=>readSummary(page,originalUrl),sameCompany:same,wait});
+    raw=recovery?.heading||null;
+  }
   if(!same()||!raw)return missing;
   const s=structuredClone(raw);let opened=false;
   const outcome=()=>{
@@ -79,7 +87,12 @@ export async function collectSabyVehicleInventory(page,{
     const fleet=verifiedSabyVehicleFleet({status:"verified",count:s.count,groups:s.groups});
     const group=s.groups.find(g=>g.category==="Грузовые");
     const trucks=group?.vehicles?{status:"verified",count:group.count,vehicles:group.vehicles}:null;
-    return {status:fleet?"verified":"partial",fleet,trucks,drawerOpened:opened};
+    const partial=fleet?null:verifiedSabyVehiclePartial({
+      status:"partial",announced_count:s.count,
+      categories:s.groups.map(({category,count})=>({category,count})),
+      groups:s.groups.filter(g=>g.vehicles)
+    });
+    return {status:fleet?"verified":"partial",fleet,partial,trucks,drawerOpened:opened};
   };
   if(s.groups.every(g=>g.vehicles)||quick)return outcome();
   const deadline=now()+175000,pending=s.groups.filter(g=>!g.vehicles);
@@ -114,3 +127,5 @@ export async function collectSabyVehicleInventory(page,{
   }catch{/* No speculative second click. */}
   return outcome();
 }
+
+export const recoverSabyVehicleSummary=recoverSabyFleetHeading;

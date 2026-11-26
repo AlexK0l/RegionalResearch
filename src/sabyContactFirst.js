@@ -16,7 +16,7 @@ import {SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY,sabyVisitStrategy,rememb
   createSabyAdaptiveDelay,restoreSabyTiming,sabyAddTiming,recordSabyVisitTiming,
   sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor,
   sabyVehicleCategoryScope,SABY_ALL_VEHICLE_CATEGORIES} from "./sabyVisitPolicy.js";
-import {verifiedSabyVehicleFleet} from "./sabyVehicleInventory.js";
+import {verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
 
 const PHASES=["contacts","contact_retry","details","details_retry"];
 const PHASE_LABELS={
@@ -233,7 +233,8 @@ export async function runSabyContactFirst({
         }else{
           const relevant=(sections.contacts&&record?.contacts?.status==="collected")||
             (sections.trucks&&(record?.trucks?.status==="verified"||
-              (allVehicleCategories&&Boolean(verifiedSabyVehicleFleet(record?.vehicle_fleet)))))||
+              (allVehicleCategories&&Boolean(verifiedSabyVehicleFleet(record?.vehicle_fleet)||
+                verifiedSabyVehiclePartial(record?.vehicle_fleet_partial)))))||
             (sections.financials&&Boolean(validSabyFinancialEvidence(record?.financials)));
           // Save a valid navigation hint even when all requested widgets
           // were absent. The next visit still freshly verifies the card.

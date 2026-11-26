@@ -31,3 +31,60 @@ export function verifiedSabyVehicleFleet(raw){
   groups.sort((a,b)=>SABY_VEHICLE_CATEGORIES.indexOf(a.category)-SABY_VEHICLE_CATEGORIES.indexOf(b.category));
   return {status:"verified",count:sum,groups};
 }
+
+
+// A partial observation retains only complete individual groups, not a
+// guessed inventory. The advertised total is kept as source metadata.
+export function verifiedSabyVehiclePartial(raw){
+  if(raw?.status!=="partial"||!Number.isSafeInteger(raw.announced_count)||
+     raw.announced_count<1||raw.announced_count>35000||
+     !Array.isArray(raw.categories)||!raw.categories.length||raw.categories.length>7||
+     !Array.isArray(raw.groups)||raw.groups.length>7)return null;
+  const counts=new Map();let total=0;
+  for(const g of raw.categories){
+    if(!isSabyVehicleCategory(g?.category)||counts.has(g.category)||
+       !Number.isSafeInteger(g.count)||g.count<1||g.count>5000)return null;
+    counts.set(g.category,g.count);total+=g.count;
+  }
+  if(total!==raw.announced_count)return null;
+  const seen=new Set(),groups=[];
+  for(const g of raw.groups){
+    if(counts.get(g?.category)!==g?.count||seen.has(g.category))return null;
+    const validated=verifiedSabyVehicleFleet({status:"verified",count:g.count,groups:[g]});
+    if(!validated)return null;
+    seen.add(g.category);
+    groups.push({...validated.groups[0],
+      ...(typeof g.observed_at==="string"&&Number.isFinite(Date.parse(g.observed_at))?
+        {observed_at:g.observed_at}:{})});
+  }
+  const order=(a,b)=>SABY_VEHICLE_CATEGORIES.indexOf(a.category)-SABY_VEHICLE_CATEGORIES.indexOf(b.category);
+  return {status:"partial",announced_count:total,
+    categories:[...counts].map(([category,count])=>({category,count})).sort(order),
+    groups:groups.sort(order)};
+}
+
+// Do not promote observations from separate visits to a verified whole.
+// Carry a previously completed category only if the newly reconciled
+// summary still announces its exact count; label its own observation date.
+// Count changes make old categories ineligible for the current inventory.
+export function mergeSabyVehiclePartial(fresh,prior,observedAt){
+  const current=verifiedSabyVehiclePartial(fresh),old=verifiedSabyVehiclePartial(prior);
+  if(!current)return old;
+  const groups=current.categories.flatMap(g=>{
+    const live=current.groups.find(x=>x.category===g.category);
+    if(live)return [{...live,observed_at:observedAt}];
+    const saved=old?.groups.find(x=>x.category===g.category&&x.count===g.count);
+    return saved?[saved]:[];
+  });
+  return {...current,groups};
+}
+export function sabyVehicleSnapshotAgrees(whole,partial){
+  if(!whole||!partial||whole.count!==partial.announced_count||
+     whole.groups.length!==partial.categories.length)return false;
+  const multiset=g=>JSON.stringify(g.vehicles.map(v=>JSON.stringify([v.model,v.year])).sort());
+  return partial.categories.every(g=>{
+    const old=whole.groups.find(x=>x.category===g.category);
+    const live=partial.groups.find(x=>x.category===g.category);
+    return old?.count===g.count&&(!live||multiset(live)===multiset(old));
+  });
+}

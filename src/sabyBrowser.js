@@ -51,7 +51,7 @@ import {
   tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
-import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
+import {collectSabyVehicleInventory,recoverSabyVehicleSummary} from "./sabyVehicleSummary.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -1467,10 +1467,14 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     if(allVehicles){
       await read("vehicle_fleet",async()=>{
         const found=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,quick:true});
-        if(found.trucks&&sameCard())result.trucks=found.trucks;
+        if(sameCard()){
+          if(found.trucks)result.trucks=found.trucks;
+          if(found.partial)result.vehicle_fleet_partial=found.partial;
+        }
         return found.fleet||{status:"missing"};
       });
-      if(result.vehicle_fleet?.status==="verified"||result.trucks.status==="verified")return result;
+      if(result.vehicle_fleet?.status==="verified"||result.trucks.status==="verified"||
+         result.vehicle_fleet_partial)return result;
     }
     await read("trucks",async()=>{
       const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
@@ -1492,12 +1496,19 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       if(combined)detailAttempts.trucks=true;
       if(allVehicles){
-        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay});
+        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay,
+          // Reveal a lazily mounted summary on the verified card. Avoid
+          // a second generic scroll recovery in this same visit.
+          recoverSummary:recoverSabyVehicleSummary});
         if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
         if(all.fleet)result.vehicle_fleet=all.fleet;
+        if(all.partial)result.vehicle_fleet_partial=all.partial;
         if(all.trucks)result.trucks=all.trucks;
         console.info("[SABY_ALL_VEHICLE_OUTCOME] "+JSON.stringify({
-          status:all.status,count:all.fleet?.count??null,groups:all.fleet?.groups.length??0
+          status:all.status,count:all.fleet?.count??null,groups:all.fleet?.groups.length??0,
+          announced_count:all.partial?.announced_count??null,
+          partial_groups:all.partial?.groups.length??0,
+          partial_vehicles:all.partial?.groups.reduce((n,g)=>n+g.count,0)??0
         }));
         // No second blind open of a drawer. Keep the existing truck
         // fallback when neither a whole fleet nor truck data was read.

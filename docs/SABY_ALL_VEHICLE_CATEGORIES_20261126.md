@@ -15,8 +15,13 @@ DOM read; larger category inventories use the existing tree and
 footer protocol generalized to exact categories. No inferred zero,
 no conversion of passenger/vans to trucks. Full JSON stores
 whole-fleet evidence separately; existing truck evidence retained.
-Incomplete whole fleets remain unresolved; only separately verified
-truck data are saved on partial success. Nontruck summaries in
+Incomplete whole fleets remain unresolved; complete individual categories
+are saved separately with their own observation dates and carried only
+when the new reconciled count still matches. Never synthesize a verified
+whole fleet from different visits. New contradictory observations reopen
+the whole-fleet gap. Existing complete small-fleet reads avoid scrolling.
+Full reads may use the exact bounded profile scroller to reveal a lazy
+summary, whereas quick reads never scroll. Nontruck summaries in
 existing transport field and comments, no column/sheet additions.
 Stage13 deterministic transport parser excludes the new Saby summary
 just like the old truck summary. No assumed trailer points.
