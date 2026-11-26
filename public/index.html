@@ -4,7 +4,48 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Региональный поиск покупателей САТ</title>
-<link rel="stylesheet" href="/styles.css?v=20261106-eta-countdown">
+<script id="themeBootstrap">
+(() => {
+  // Keep this small pre-paint bootstrap identical on both pages. Login
+  // remains self-contained behind the existing server auth boundary.
+  const key="sat_theme_preference";
+  const valid=value=>["system","light","dark"].includes(value)?value:"system";
+  let preference="system";
+  try{preference=valid(window.localStorage.getItem(key));}catch{}
+  const media=typeof window.matchMedia==="function"?window.matchMedia("(prefers-color-scheme: dark)"):null;
+  let picker=null;
+  const apply=()=>{
+    document.documentElement.dataset.theme=preference==="system"?
+      (media?.matches?"dark":"light"):preference;
+    if(picker)picker.value=preference;
+  };
+  apply();
+  const bind=()=>{
+    picker=document.getElementById("themePreference");
+    if(!picker)return;
+    apply();
+    picker.addEventListener("change",()=>{
+      preference=valid(picker.value);
+      try{window.localStorage.setItem(key,preference);}catch{}
+      apply();
+    });
+  };
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bind,{once:true});
+  else bind();
+  if(typeof media?.addEventListener==="function")media.addEventListener("change",apply);
+  else if(typeof media?.addListener==="function")media.addListener(apply);
+  window.addEventListener("storage",event=>{
+    if(event.key!==key&&event.key!==null)return;
+    // Ignore sessionStorage and unrelated cross-tab events.
+    if(event.storageArea){
+      try{if(event.storageArea!==window.localStorage)return;}catch{return;}
+    }
+    preference=valid(event.newValue);
+    apply();
+  });
+})();
+</script>
+<link rel="stylesheet" href="/styles.css?v=20261126-dark-theme">
 </head>
 <body>
 <main class="shell">
@@ -14,6 +55,14 @@
       <h1>Региональный поиск потенциальных покупателей САТ</h1>
       <p class="lead">Система последовательно исследует выбранный регион, объединяет найденные компании, проверяет контакты и формирует итоговый XLSX.</p>
     </div>
+    <label class="theme-picker" for="themePreference">
+      <span>Тема</span>
+      <select id="themePreference">
+        <option value="system">Как в системе</option>
+        <option value="light">Светлая</option>
+        <option value="dark">Тёмная</option>
+      </select>
+    </label>
   </section>
 
   <section class="card">
@@ -39,7 +88,7 @@
       <button id="cancelBtn" class="secondary" disabled>Остановить</button>
     </div>
     <p id="serviceStatus" class="note">Проверяем готовность сервиса…</p>
-    <p class="note">UI build: 20261126-billing-durability</p>
+    <p class="note">UI build: 20261126-dark-theme</p>
     <button id="logoutBtn" class="secondary" hidden>Выйти</button>
   </section>
 
