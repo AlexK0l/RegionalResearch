@@ -450,3 +450,38 @@ test("existing optimized cursor is not reinterpreted after enabling combined ret
   assert.equal(out.passState.strategy,"combined_visible_v1");
   assert.deepEqual(out.passState.combined_detail_attempts,{});
 });
+
+
+test("all-category cursor stores nontruck fleet and needs no separate truck-only attempt",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const outcome=await runSabyContactFirst({result:db,
+    env:{...combinedEnv,SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push(sections);
+      const v=record(r,sections);
+      v.trucks={status:"missing"};
+      if(sections.allVehicleCategories)v.vehicle_fleet={status:"verified",count:2,groups:[
+        {category:"Легковые",count:1,vehicles:[{model:"PEUGEOT PARTNER VP",year:2023}]},
+        {category:"Коммерческие",count:1,vehicles:[{model:"PEUGEOT BOXER",year:2024}]}
+      ]};
+      return v;
+    }});
+  assert.equal(outcome.passState.fleet_categories,"all_vehicle_categories_v1");
+  assert.equal(calls.length,1);
+  assert.equal(outcome.stats.fleetCoverage.positive,1);
+  assert.equal(outcome.stats.fleetCoverage.vehicles,2);
+  assert.equal(outcome.stats.vehiclesVerified,2);
+  assert.deepEqual(outcome.deferredInns,[]);
+  assert.equal(db.direct_buyers[0].__evidence.saby.trucks,undefined);
+  assert.match(db.direct_buyers[0]["Наличие транспорта"],/PEUGEOT BOXER/);
+});
+test("truck-only cursor retains its old requirement when all categories enabled later",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const outcome=await runSabyContactFirst({result:db,
+    env:{...combinedEnv,SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true"},sessionRunner,
+    passState:{version:1,strategy:"combined_visible_v1",planned_inns:[innA],attempted:[],phase_index:0},
+    collectSections:async(_p,r,_s,sections)=>{calls.push(sections);return record(r,sections);}});
+  assert.equal(outcome.passState.fleet_categories,"trucks_v1");
+  assert.ok(calls.every(s=>s.allVehicleCategories!==true));
+  assert.equal(outcome.stats.fleetCoverage.positive,1);
+});

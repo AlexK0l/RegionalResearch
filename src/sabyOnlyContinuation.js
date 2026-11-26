@@ -14,7 +14,8 @@ import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {runSabyOnlyWithRecovery} from "./sabyOnlyRecovery.js";
 import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyWorkGaps,sabyHasWork} from "./sabyEnrichment.js";
-import {sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor} from "./sabyVisitPolicy.js";
+import {sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor,
+  sabyVehicleCategoryScope,SABY_ALL_VEHICLE_CATEGORIES} from "./sabyVisitPolicy.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 
 // Older completed regional studies may predate Stage12 entirely. Derive a
@@ -95,8 +96,9 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION,
   // the existing in-progress cursor's exact pending list unchanged.
   if(contactFirst&&!ongoing){
     const completed=[],pending=[];
+    const allVehicleCategories=sabyVehicleCategoryScope(env,ongoing)===SABY_ALL_VEHICLE_CATEGORIES;
     for(const entry of plan.eligible)
-      (sabyHasWork(sabyWorkGaps(entry))?pending:completed).push(sabyInn(entry.row["ИНН"]));
+      (sabyHasWork(sabyWorkGaps(entry,{allVehicleCategories}))?pending:completed).push(sabyInn(entry.row["ИНН"]));
     checkpoint.saby_completed_inns=completed;
     checkpoint.saby_deferred_inns=pending;
   }

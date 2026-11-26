@@ -5,7 +5,7 @@
 // This is a deterministic, read-only presentation pass: no OpenAI, no
 // invented claims, and no changes to scores, role, or provenance.
 import {formatEmailCell,EMAIL_COLUMN} from "./emailContact.js";
-import {sabyStoredSectionCoverage,fleetSummary} from "./sabyEnrichment.js";
+import {sabyStoredSectionCoverage,fleetSummary,sabyStoredVehicleFleet,sabyVehicleFleetSummary} from "./sabyEnrichment.js";
 const SECTION_KEYS=["direct_buyers","intermediaries","leasing"];
 const BASIS_NOTE_KEY="__basis_comment";
 const URL_RE=/https?:\/\/[^\s<>"'()[\]]+/gi;
@@ -202,6 +202,14 @@ function readableCompanyComment(row,info){
 // The raw JSON retains the complete validated list; cap only presentation
 // for unusually large fleets, and say where the full inventory is stored.
 function withFleetNote(row,comment,sheet){
+  const all=sabyStoredVehicleFleet(row);
+  if(all){
+    const prefix="Saby: подтверждённый автопарк по категориям";
+    const lines=String(comment||"").split(/\r?\n/).filter(line=>!line.startsWith(prefix));
+    const summary=sabyVehicleFleetSummary(all);
+    const display=summary.length>16000?summary.slice(0,16000).split("; ").slice(0,-1).join("; ")+"; полный перечень в JSON исследования":summary;
+    return [...lines.filter(Boolean),prefix+" — "+all.count+" шт.: "+display].join("\n");
+  }
   if(sheet==="direct_buyers"||!sabyStoredSectionCoverage(row,{transport:true}).trucks)
     return comment;
   const fleet=row.__evidence.saby.trucks;

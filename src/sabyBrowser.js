@@ -51,6 +51,7 @@ import {
   tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
+import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -1392,6 +1393,7 @@ export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
   const combined=optimized&&!quick&&sections.combinedDetails===true;
+  const allVehicles=sections?.allVehicleCategories===true&&shouldUseSabyFleetTree(settings);
   const detailAttempts={financials:false,trucks:false};
   const timing={},timed=async(key,fn)=>{
     const start=performance.now();
@@ -1434,7 +1436,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     try{
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
       if(combined&&key==="financials")detailAttempts.financials=true;
-      const value=await timed(key==="trucks"?"fleet_ms":key+"_ms",fn);
+      const value=await timed(key==="trucks"||key==="vehicle_fleet"?"fleet_ms":key+"_ms",fn);
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
       result[key]=value;
     }catch{result.errors.push(key+": unavailable");}
@@ -1462,6 +1464,14 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return finish();
   if(quick){
+    if(allVehicles){
+      await read("vehicle_fleet",async()=>{
+        const found=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,quick:true});
+        if(found.trucks&&sameCard())result.trucks=found.trucks;
+        return found.fleet||{status:"missing"};
+      });
+      if(result.vehicle_fleet?.status==="verified"||result.trucks.status==="verified")return result;
+    }
     await read("trucks",async()=>{
       const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
       if(!heading)return {status:"missing"};
@@ -1481,6 +1491,18 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       if(combined)detailAttempts.trucks=true;
+      if(allVehicles){
+        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay});
+        if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+        if(all.fleet)result.vehicle_fleet=all.fleet;
+        if(all.trucks)result.trucks=all.trucks;
+        console.info("[SABY_ALL_VEHICLE_OUTCOME] "+JSON.stringify({
+          status:all.status,count:all.fleet?.count??null,groups:all.fleet?.groups.length??0
+        }));
+        // No second blind open of a drawer. Keep the existing truck
+        // fallback when neither a whole fleet nor truck data was read.
+        if(all.fleet||all.drawerOpened||all.trucks)return;
+      }
       const trucks=await ownTrucks(page,settings,fleetProgress);
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
@@ -1518,12 +1540,12 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   // The private DOM diagnostic is intentionally still smoke-only; the
   // production rollout records review/deferred statuses but no raw DOM.
   if(settings.publicIdentityFallback===true &&
-     result.trucks.status!=="verified") {
+     result.trucks.status!=="verified"&&result.vehicle_fleet?.status!=="verified") {
     const evidence=await observeSabyFleetDOM(page);
     console.warn("[SABY_FLEET_DIAG] "+JSON.stringify(
       safeSabyFleetFailure(fleetProgress,evidence)));
   }
-  if(result.contacts.status==="missing" && result.trucks.status==="missing") {
+  if(result.contacts.status==="missing" && result.trucks.status==="missing"&&result.vehicle_fleet?.status!=="verified") {
     console.warn("[SABY_SECTION_DIAG] "+JSON.stringify(
       await safeSabySectionDiagnostic(page)));
   }

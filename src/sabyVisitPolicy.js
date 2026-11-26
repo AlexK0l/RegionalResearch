@@ -6,6 +6,13 @@ export const SABY_COMBINED_RETRY_STRATEGY="combined_retry_full_v2";
 export const SABY_LEGACY_STRATEGY="section_passes_v1";
 export const SABY_ALL_FLEETS_SCOPE="all_commercial_v1";
 export const SABY_DIRECT_FLEETS_SCOPE="direct_buyers_v1";
+export const SABY_ALL_VEHICLE_CATEGORIES="all_vehicle_categories_v1";
+export function sabyVehicleCategoryScope(env,raw){
+  if(validSabyPassCursor(raw))return raw.fleet_categories===SABY_ALL_VEHICLE_CATEGORIES?
+    SABY_ALL_VEHICLE_CATEGORIES:"trucks_v1";
+  return String(env?.SABY_ALL_VEHICLE_CATEGORIES_ENABLED??"false").toLowerCase()==="true"?
+    SABY_ALL_VEHICLE_CATEGORIES:"trucks_v1";
+}
 
 export function validSabyPassCursor(raw){
   return raw?.version===1&&Array.isArray(raw.planned_inns)&&Array.isArray(raw.attempted);

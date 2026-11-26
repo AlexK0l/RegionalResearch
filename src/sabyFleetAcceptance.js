@@ -123,7 +123,11 @@ export function buildFleetCohort(cp,{limit=12,sourceId=""}={}){
       const prior=fleet(source);
       if(row.__evidence?.saby){
         delete row.__evidence.saby.trucks;
-        if(row.__evidence.saby.collection)delete row.__evidence.saby.collection.trucks;
+        delete row.__evidence.saby.vehicle_fleet;
+        if(row.__evidence.saby.collection){
+          delete row.__evidence.saby.collection.trucks;
+          delete row.__evidence.saby.collection.vehicle_fleet;
+        }
       }
       // Remove only the comparison copy's transport cell. Keep genuine
       // identity, saved-card hints, contacts and finance input identical.

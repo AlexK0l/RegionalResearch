@@ -97,7 +97,7 @@ function parseTransport(raw){
   const parts=str(raw).split(/[\r\n;]+/).map(x=>x.trim()).filter(Boolean);
   let sabyTrucks=false;
   for(let line of parts){
-    if(/^Saby\s*\(грузовые\)\s*:/i.test(line)){sabyTrucks=true;continue;}
+    if(/^Saby\s*\((?:грузовые|автопарк)\)\s*:/i.test(line)){sabyTrucks=true;continue;}
     if(/^TORGBOX\s*:/i.test(line)){
       sabyTrucks=false;
       line=line.replace(/^TORGBOX\s*:\s*/i,"").trim();
