@@ -6,7 +6,7 @@
 // This runs only after an existing fallback rejects a single removed
 // non-UI query parameter. No company search retry, no private tab clicks,
 // no contact/fleet reads, no account writes. Never log raw DOM or URLs.
-import {sabyCardRoute} from "./sabyCard.js";
+import {sabyCardRoute,verifySabyCard} from "./sabyCard.js";
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
 import {
   recoverSabyDetailRequisitePair,diagnoseSabyPrivateRequisiteFields,
@@ -283,6 +283,28 @@ export async function verifySabyPostRouteOwnerIdentity(page,inn,name,
   }catch{
     return fail("private_snapshot_unavailable");
   }
+}
+
+// Try the SAME strict post-route proof as soon as a qualifying transition
+// has occurred. A failed early read must not consume the original final
+// recovery: callers continue the existing bounded card hydration loop.
+// A fresh assessment is mandatory; never pass the rejected old DOM state.
+export async function tryEarlySabyPostRouteProof(page,inn,name,{
+  priorFailure,selectedSearchTitle,
+  readCard=verifySabyCard,verifyPostRoute=verifySabyPostRouteOwnerIdentity
+}={}){
+  if(!eligibleSabyPostRouteProof(priorFailure))return null;
+  try{
+    const route=page.url();
+    if(sabyCardRoute(route)!=="detail")return null;
+    const assessment=await readCard(page,inn,name);
+    if(page.url()!==route)return null;
+    if(assessment?.reason!=="legal_name_not_verified"||
+       assessment?.detail?.hasScopedInn!==true)return null;
+    return await verifyPostRoute(page,inn,name,assessment,{
+      priorFailure,selectedSearchTitle
+    });
+  }catch{return null;}
 }
 
 export function safeSabyPostRouteDiagnostic(result) {
