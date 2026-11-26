@@ -6056,6 +6056,8 @@ export async function runResearchPipeline({ job, apiKey }) {
       ? (job.checkpointWritesSynchronous===true?job.data.checkpoint:cloneJson(job.data.checkpoint))
       : null;
   const executionMode = mode === "resume" ? "full" : mode;
+  const resumeAfterEnrichment=checkpointPhaseAtLeast(resumeCheckpoint,"statistics")&&
+    Boolean(resumeCheckpoint?.final_result&&resumeCheckpoint?.qualification_counts);
   const requestedStage = Number(job.data?.stage || 0);
   const testProfile = testProfileForMode(executionMode, requestedStage);
   const diagnosticMode = Boolean(testProfile);
@@ -7783,7 +7785,16 @@ ${JSON.stringify(groupBatch)}`,
     });
   });
 
-  const finalInnStats = await withFinalInnCheckpointFlush(() => resolveFinalMissingInns({
+  const finalInnStats = resumeAfterEnrichment ? {
+    completedIds:finalInnCompleted,
+    attempted:latestFinalInnProgress.attempted,recovered:latestFinalInnProgress.recovered,
+    retried:latestFinalInnProgress.retried,
+    technicalDeferred:[...finalInnTechnicalDeferred.values()],
+    primaryBudgetDeferred:latestFinalInnProgress.primaryBudgetDeferred,
+    primaryBudgetDeferredIds:latestFinalInnProgress.primaryBudgetDeferredIds,
+    retryBudgetDeferred:Number(resumeCheckpoint.final_inn_retry_budget_deferred||0),
+    retryBudgetDeferredIds:resumeCheckpoint.final_inn_retry_budget_deferred_ids||[]
+  } : await withFinalInnCheckpointFlush(() => resolveFinalMissingInns({
     client,
     finalResult,
     region,
@@ -7825,9 +7836,9 @@ ${JSON.stringify(groupBatch)}`,
   if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
 
   let innConflictGroups = duplicateInnConflictGroups(finalResult);
-  let innConflictRechecks = 0;
-  let innConflictBudgetDeferred = 0;
-  if (innConflictGroups.length) {
+  let innConflictRechecks = resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_conflict_rechecks||0):0;
+  let innConflictBudgetDeferred = resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_conflict_budget_deferred||0):0;
+  if (innConflictGroups.length&&!resumeAfterEnrichment) {
     console.log("[POST_INN_CONFLICT_PLAN] " + JSON.stringify({
       groups: innConflictGroups.length,
       inns: innConflictGroups.map((group) => group.inn)
@@ -8006,7 +8017,7 @@ ${JSON.stringify(groupBatch)}`,
   }));
 
   const finalInnRemoved = enforceFinalInnRequirement(finalResult);
-  finalInnStats.removedWithoutInn = finalInnRemoved.length;
+  finalInnStats.removedWithoutInn = finalInnRemoved.length+(resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_removed_without_inn||0):0);
 
   await persistCheckpoint("final_inn", {
     completed_stage: 9,
@@ -8121,7 +8132,7 @@ ${JSON.stringify(groupBatch)}`,
     throw Error("MEMORY_PAUSE_NOT_COMMITTED");
   };
 
-  const enrichmentPending = finalCompaniesForEnrichment.filter((row) => {
+  const enrichmentPending = resumeAfterEnrichment?[]:finalCompaniesForEnrichment.filter((row) => {
     const id = checkpointRowId(row);
     return !id || !enrichmentCompleted.has(id);
   });
@@ -8354,7 +8365,7 @@ ${JSON.stringify(gaps)}
   let abRecoveryApplied = 0;
   let abRecoveryDeferred = 0;
   let abRecoveryFailed = 0;
-  if (AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
+  if (!resumeAfterEnrichment&&AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
     const abCandidates = eligiblePriorityRecoveryRows(
       finalCompaniesForEnrichment, abRecoveredIds, checkpointRowId,
       AB_RECOVERY_MAX_BATCHES * AB_RECOVERY_BATCH_SIZE
@@ -8538,7 +8549,7 @@ ${JSON.stringify(gaps)}
   finishStep(statuses[9]);
   statuses[9].detail =
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}` +
-    (statisticsState?` · статистика: ${statisticsState.accepted}/8${statisticsState.complete?"":" (неполная)"}`:"") +
+    (statisticsState?` · статистика: ${statisticsState.numeric??statisticsState.accepted}/8 числовых · н/д: ${8-(statisticsState.numeric??statisticsState.accepted)}`:"") +
     (finalInnStats.technicalDeferred.length
       ? ` · технически отложено проверок ИНН: ${finalInnStats.technicalDeferred.length} (лимит ответа)`
       : "") +
