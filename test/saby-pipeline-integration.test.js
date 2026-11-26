@@ -160,7 +160,7 @@ test("production stage-12 boundary checkpoints, resumes without duplicates, and 
     assert.equal(second.stats.deferred,0);
     assert.deepEqual(secondVisits,["7736207543","7707083893"]);
     assert.equal(resumed.direct_buyers[0]["Телефон"],
-      "74951234567 (отдел продаж)");
+      "74951234567 (отдел продаж); 79998887766 (отдел закупок)");
     assert.match(resumed.direct_buyers[0]["Наличие транспорта"],
       /TORGBOX: Krone/);
     assert.match(resumed.direct_buyers[0]["Наличие транспорта"],
@@ -198,7 +198,7 @@ test("production stage-12 boundary checkpoints, resumes without duplicates, and 
     const excel=JSON.parse(run(python,["-c",cmd,output]).stdout.trim());
     assert.equal(excel.tabs.length,5);
     assert.equal(excel.head,"Наличие транспорта");
-    assert.equal(excel.phone,"74951234567 (отдел продаж)");
+    assert.equal(excel.phone,"74951234567 (отдел продаж); 79998887766 (отдел закупок)");
     assert.equal(excel.email,"office@example.org");
     assert.match(excel.transport,/Saby \(грузовые\):/);
     assert.match(excel.comment,/Email: beta@example\.org/);
