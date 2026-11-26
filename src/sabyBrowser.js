@@ -1531,7 +1531,9 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
           return handled(recovered)?(recovered.trucks||{status:"missing"}):null;
         };
       }
-      const trucks=await ownTrucks(page,settings,fleetProgress,afterHeading);
+      const trucks=afterHeading?
+        await ownTrucks(page,settings,fleetProgress,afterHeading):
+        await ownTrucks(page,settings,fleetProgress);
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       result.trucks=trucks;
