@@ -308,3 +308,27 @@ test("server routes Saby-only away from paid OpenAI pipeline and only accepts st
   assert.match(server,/saby_checkpoint:await latestSabyCheckpointForRegion/);
   assert.doesNotMatch(module,/from "\.\/pipeline\.js"|from "openai"/);
 });
+
+
+test("new production continuation exposes previously omitted transport even with empty legacy deferred list",()=>{
+  const cp=oldCompletedResearch();
+  cp.final_result={direct_buyers:[],intermediaries:[{
+    "ИНН":"7710140679","Организация":"ООО Посредник","Телефон":"74951234567",
+    "Электронная почта":"office@dealer.example",
+    "Выручка последнего подтвержденного года":1000000,"Численность":12
+  }],leasing:[],statistics:[]};
+  cp.saby_stats={enabled:true,verified:1,deferred:0};
+  cp.saby_completed_inns=["7710140679"];
+  cp.saby_deferred_inns=[];
+  cp.saby_pass_state={version:1,phase_index:4,planned_inns:["7710140679"],attempted:[]};
+  const original=structuredClone(cp);
+  assert.equal(validateSabyOnlySource(cp).code,"NO_SABY_PENDING");
+  const next=validateSabyOnlySource(cp,{contactFirst:true,env:{}});
+  assert.equal(next.ok,true);assert.equal(next.pending,1);
+  assert.deepEqual(next.checkpoint.saby_deferred_inns,["7710140679"]);
+  assert.deepEqual(cp,original);
+  assert.equal(validateSabyOnlySource(cp,{contactFirst:true,
+    env:{SABY_ALL_COMPANY_FLEETS_ENABLED:"false"}}).code,"NO_SABY_PENDING");
+  const ongoing={...cp,phase:"saby",saby_pass_state:{...cp.saby_pass_state,phase_index:2}};
+  assert.equal(validateSabyOnlySource(ongoing,{contactFirst:true,env:{}}).code,"NO_SABY_PENDING");
+});

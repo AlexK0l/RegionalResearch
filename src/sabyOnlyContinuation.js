@@ -13,7 +13,8 @@ import {sabyStage12Settings} from "./sabyStage12.js";
 import {sabyFleetTreeProductionEnabled} from "./sabyBrowser.js";
 import {runCheckpointedSabyStage12} from "./sabyCheckpointIntegration.js";
 import {runSabyOnlyWithRecovery} from "./sabyOnlyRecovery.js";
-import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage} from "./sabyEnrichment.js";
+import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyWorkGaps,sabyHasWork} from "./sabyEnrichment.js";
+import {sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor} from "./sabyVisitPolicy.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 
 // Older completed regional studies may predate Stage12 entirely. Derive a
@@ -42,7 +43,8 @@ function legacySabyPlan(checkpoint, plan) {
   return {completed,pending};
 }
 
-export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}={}) {
+export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION,
+  contactFirst=false,env=process.env,memoryResume=false}={}) {
   let checkpoint=normalizeCheckpoint(value);
   if(!checkpoint)return {ok:false,code:"CHECKPOINT_INVALID"};
   if(Number(checkpoint.pipeline_version||pipelineVersion)!==pipelineVersion)
@@ -69,7 +71,13 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
        .every(key=>Array.isArray(result[key])))
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
 
-  const plan=sabyEligibleRows(result,{includeFinanceGaps:checkpoint.saby_pass_state?.version===1});
+  const raw=checkpoint.saby_pass_state;
+  const ongoing=validSabyPassCursor(raw)&&(memoryResume||Number(raw.phase_index)<4)?raw:null;
+  const plan=sabyEligibleRows(result,{
+    includeFinanceGaps:contactFirst||raw?.version===1,
+    includeAll:contactFirst,
+    allCompanyFleets:contactFirst&&sabyFleetScope(env,ongoing)===SABY_ALL_FLEETS_SCOPE
+  });
   const legacy=legacySabyPlan(checkpoint,plan);
   if(legacy){
     // Only the normalized copy is amended. Original SQLite source remains
@@ -79,6 +87,18 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION}
   }else if(!Array.isArray(checkpoint.saby_completed_inns) ||
            !Array.isArray(checkpoint.saby_deferred_inns)){
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
+  }
+  // For a NEW production sweep, calculate actual gaps from the validated
+  // immutable source rows. A completed old direct-only run may still
+  // contain intermediaries/lessors never scheduled for transport, even
+  // when its old deferred array was empty. Keep legacy diagnostics and
+  // the existing in-progress cursor's exact pending list unchanged.
+  if(contactFirst&&!ongoing){
+    const completed=[],pending=[];
+    for(const entry of plan.eligible)
+      (sabyHasWork(sabyWorkGaps(entry))?pending:completed).push(sabyInn(entry.row["ИНН"]));
+    checkpoint.saby_completed_inns=completed;
+    checkpoint.saby_deferred_inns=pending;
   }
   if(checkpoint.saby_deferred_inns.length===0)
     return {ok:false,code:"NO_SABY_PENDING"};
@@ -129,7 +149,7 @@ export async function runSabyOnlyContinuation({
   contactFirst=!collectCompany&&!sessionRunner,
   acquireSabyBrowser
 }={}) {
-  const checked=validateSabyOnlySource(input);
+  const checked=validateSabyOnlySource(input,{contactFirst,env,memoryResume});
   if(!checked.ok)throw new Error(checked.code);
   if(!sabyOnlyConfigReady(env))throw new Error("SABY_BULK_NOT_ENABLED");
   if(!sourceJobId || typeof sourceJobId!=="string")
