@@ -180,7 +180,8 @@ export async function runSabyContactFirst({
         catch(e){if(isMemoryPause(e)||signal?.aborted||e?.message==="JOB_CANCELLED")throw e;error=e;}
         abort();
         const visitMs=Math.round(performance.now()-visitStart);
-        recordSabyVisitTiming(state.timing,record,visitMs);
+        let visitTiming=record?{timing:record.timing}:{timing:error?.sabyTiming};
+        recordSabyVisitTiming(state.timing,visitTiming,visitMs);
         let appliedOk=false;
         if(error){
           state.stats.review++;
@@ -223,8 +224,8 @@ export async function runSabyContactFirst({
         attempted.add(key);phaseDone++;visits++;
         // Drop the last browser record before the GC/snapshot boundary.
         const safeTimings=restoreSabyTiming();
-        recordSabyVisitTiming(safeTimings,record,visitMs);
-        record=undefined;error=undefined;
+        recordSabyVisitTiming(safeTimings,visitTiming,visitMs);
+        record=undefined;error=undefined;visitTiming=undefined;
         if(attempted.size%gcEvery===0)reclaim();
         const checkpointStart=performance.now();
         const saved=await save();

@@ -11,8 +11,8 @@ regional deadline are unchanged.
    financial data and the truck tile if requested. A quick finance read is
    a single DOM snapshot, never a lazy scroll or a guessed fiscal year.
    A quick fleet is accepted only for the same verified contractor, an
-   explicit complete count and all models (including explicit zero).
-   Partial or ambiguous previews remain missing.
+   explicit complete count and all models (including explicit zero). The same full truck validator also checks model
+   lengths and years. Partial or ambiguous previews remain missing.
 2. Contact retry: only companies still missing phone/email; the same
    opportunistic visible details can be retained. No slow fleet overlay
    or finance scroll delays regional phone coverage.
@@ -39,8 +39,9 @@ and full-search time, search/identity, requested-widget readiness, contact,
 finance and fleet reads, and SQLite checkpoint time. Session open/close,
 admission and delay are accumulated separately. Search/card and substeps
 overlap by design; do not sum them as independent time. The final
-checkpoint's own write time and failed browser calls without a returned
-record may not be fully represented. Timing from old checkpoints is absent,
+checkpoint's own write time and failures before browser telemetry is
+available may not be fully represented. Search/identity errors carry their
+safe timings as well. Timing from old checkpoints is absent,
 not zero elapsed work. Full sweep remains distinct from zero unresolved
 gaps. No new OpenAI calls, browser parallelism, workbook changes or
 historical database edits.

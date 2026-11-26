@@ -17,7 +17,7 @@ import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
-  isSabyProfileUrl } from "./sabyEnrichment.js";
+  isSabyProfileUrl,verifiedTrucks,sabyFinancialGaps } from "./sabyEnrichment.js";
 import {selectSabyInnCandidate,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
 import {scanSabyResultDOM,scanSabyLegacyDOM,
@@ -1243,7 +1243,8 @@ export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
     !Array.isArray(preview.rows)||preview.rows.length!==preview.count||
     preview.rows.some(x=>!x?.model||/(?:\.\.\.|…)\s*$/.test(x.model)))
     return {status:"missing"};
-  return {status:"verified",count:preview.count,vehicles:preview.rows};
+  const verified=verifiedTrucks({trucks:{status:"verified",count:preview.count,vehicles:preview.rows}});
+  return verified?{status:"verified",...verified}:{status:"missing"};
 }
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
@@ -1252,17 +1253,27 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     try{return await fn();}finally{timing[key]=Math.round(performance.now()-start);}
   };
   let identity;
-  if(sections){
-    const hint=savedSabyFinanceCardUrl(row);
-    if(hint){
-      identity=await timed("saved_card_ms",()=>openSavedSabyFinanceCard(page,row,settings));
-      timing.saved_card=identity?"hit":"miss";
+  try{
+    if(sections){
+      const hint=savedSabyFinanceCardUrl(row);
+      if(hint){
+        identity=await timed("saved_card_ms",()=>openSavedSabyFinanceCard(page,row,settings));
+        timing.saved_card=identity?"hit":"miss";
+      }
     }
-  }
-  if(!identity){
-    timing.full_search=true;
-    identity=await timed("search_card_ms",()=>openCompany(page,row,settings,timing));
-    if(Number.isFinite(timing.search_ms))timing.identity_ms=Math.max(0,timing.search_card_ms-timing.search_ms);
+    if(!identity){
+      timing.full_search=true;
+      try{identity=await timed("search_card_ms",()=>openCompany(page,row,settings,timing));}
+      finally{
+        if(Number.isFinite(timing.search_ms))timing.identity_ms=Math.max(0,timing.search_card_ms-timing.search_ms);
+        else timing.search_ms=timing.search_card_ms;
+      }
+    }
+  }catch(error){
+    // Expose only numeric allowlisted timing to the stage; a failed
+    // search or identity verification must also contribute to diagnostics.
+    if(error&&typeof error==="object")error.sabyTiming={...timing};
+    throw error;
   }
   const verifiedRoute=page.url();
   const sameCard=()=>page.url()===verifiedRoute&&sabyCardRoute(verifiedRoute)==="detail"||
@@ -1270,7 +1281,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   // A verified legal name and INN does not imply widgets are hydrated.
   await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
     optimized?sections:null));
-  const result={identity,source:"SABY",source_url:verifiedRoute,
+  const result={identity,source:"SABY",source_url:optimized?verifiedRoute:page.url(),
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
     financials:{status:"missing"},errors:[],timing};
@@ -1285,7 +1296,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const contactRead=()=>read("contacts",()=>ownContacts(page));
   const financeRead=()=>read("financials",()=>readSabyFinancials(page,{
     visibleOnly:quick,
-    needsRevenue:!optimized||!/^\d+$/.test(String(row["Выручка последнего подтвержденного года"]??"").trim())
+    needsRevenue:!optimized||sabyFinancialGaps(row).revenue
   }));
   // New production contact visits read contacts FIRST, then only visible
   // finance/fleet. The old collector still uses its original full order.

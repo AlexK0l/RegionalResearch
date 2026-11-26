@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {safeSabyNavigationUrl,rememberSabyNavigationHint,storedSabyNavigationHint,
   createSabyAdaptiveDelay,restoreSabyTiming,recordSabyVisitTiming} from "../src/sabyVisitPolicy.js";
 import {quickSabyFleetFromPreview,savedSabyFinanceCardUrl,readSabyContactAncestorText} from "../src/sabyBrowser.js";
+import {sabyFinancialGaps} from "../src/sabyEnrichment.js";
 const url="https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc";
 const row=()=>({"ИНН":"7707083893","Организация":"ООО Альфа","Телефон":"",
   __evidence:{source_urls:["https://alpha.example/"]}});
@@ -35,6 +36,8 @@ test("quick fleet accepts only exact same-card complete preview, including expli
   const complete={status:"found",count:2,rows:[{model:"КАМАЗ 5490",year:2020},{model:"КАМАЗ 5490",year:2020}]};
   assert.deepEqual(quickSabyFleetFromPreview(complete,url,url),{status:"verified",count:2,vehicles:complete.rows});
   assert.equal(quickSabyFleetFromPreview({...complete,count:3},url,url).status,"missing");
+  assert.equal(quickSabyFleetFromPreview({...complete,rows:[{model:"А",year:2020},{model:"КАМАЗ",year:2020}]},url,url).status,"missing");
+  assert.equal(quickSabyFleetFromPreview({...complete,rows:[{model:"КАМАЗ",year:1800},{model:"КАМАЗ",year:2020}]},url,url).status,"missing");
   assert.equal(quickSabyFleetFromPreview({...complete,rows:[{model:"КАМАЗ..."},{model:"КАМАЗ"}]},url,url).status,"missing");
   assert.equal(quickSabyFleetFromPreview(complete,url,url.replace("12345678-","22345678-")).status,"missing");
   assert.equal(quickSabyFleetFromPreview(complete,url,url+"&unknown=changed").status,"missing");
@@ -63,4 +66,14 @@ test("timing restoration keeps only finite bounded counters and no raw browser d
   assert.equal(t.visits,3);assert.equal(t.visit_ms,140);assert.equal(t.search_ms,25);
   assert.equal(t.saved_card_misses,1);assert.equal(t.full_searches,1);
   assert.equal(Object.hasOwn(t,"secret"),false);assert.equal(Object.hasOwn(t,"url"),false);
+});
+
+test("finance fast-skip uses exactly the same usable number policy as the full sweep",()=>{
+  const r=row(),field="Выручка последнего подтвержденного года";
+  for(const value of ["",null,"12 тыс",Number.MAX_SAFE_INTEGER+1,"99999999999999999999999999",-1]){
+    r[field]=value;assert.equal(sabyFinancialGaps(r).revenue,true);
+  }
+  for(const value of [0,"0",123456,"123456"]){
+    r[field]=value;assert.equal(sabyFinancialGaps(r).revenue,false);
+  }
 });
