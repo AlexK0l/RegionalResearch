@@ -14,7 +14,9 @@ import {validSabyFinancialEvidence} from "./sabyFinancials.js";
 import {isMemoryPause} from "./memoryAdmission.js";
 import {SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY,sabyVisitStrategy,rememberSabyNavigationHint,
   createSabyAdaptiveDelay,restoreSabyTiming,sabyAddTiming,recordSabyVisitTiming,
-  sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor} from "./sabyVisitPolicy.js";
+  sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor,
+  sabyVehicleCategoryScope,SABY_ALL_VEHICLE_CATEGORIES} from "./sabyVisitPolicy.js";
+import {verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
 
 const PHASES=["contacts","contact_retry","details","details_retry"];
 const PHASE_LABELS={
@@ -119,13 +121,20 @@ export async function runSabyContactFirst({
   // validating every stored model/year list on every checkpoint, progress
   // report, and later pass. Rebuild the index from durable rows on resume;
   // refresh the affected row after each visit, including partial results.
-  const gaps=new Map(entries.map(entry=>[entry,sabyWorkGaps(entry)]));
+  const fleetCategories=sabyVehicleCategoryScope(env,passState);
+  const allVehicleCategories=fleetCategories===SABY_ALL_VEHICLE_CATEGORIES;
+  const workGaps=entry=>sabyWorkGaps(entry,{allVehicleCategories});
+  const gaps=new Map(entries.map(entry=>[entry,workGaps(entry)]));
   const state=safeState(passState,entries,settings.maxCompanies,env,fleetScope,gaps);
+  state.fleet_categories=fleetCategories;
   const combineRetry=state.strategy===SABY_COMBINED_RETRY_STRATEGY;
   const optimized=state.strategy===SABY_FAST_STRATEGY||combineRetry;
   const pacing=createSabyAdaptiveDelay(settings.delayMs,env);
-  const needs=(entry,phase)=>sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
-    state.combined_detail_attempts[sabyInn(entry.row["ИНН"])]||{});
+  const needs=(entry,phase)=>{
+    const sections=sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
+      state.combined_detail_attempts[sabyInn(entry.row["ИНН"])]||{});
+    return allVehicleCategories&&sections.trucks?{...sections,allVehicleCategories:true}:sections;
+  };
   const attempted=new Set(state.attempted),verifiedInns=new Set(state.verified_inns);
   const planned=state.planned_inns.map(id=>byInn.get(id)).filter(Boolean);
   const ownerMap=phoneOwnersForResult(result);
@@ -156,7 +165,8 @@ export async function runSabyContactFirst({
         previouslyCompleted:state.initially_complete,deferred:settings.enabled?deferred.length:0,
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts,
         browserRotations:rotations,browserSessionTaskLimit:sessionLimit,
-        visitStrategy:state.strategy,fleetScope:state.fleet_scope,timing:{...state.timing},
+        visitStrategy:state.strategy,fleetScope:state.fleet_scope,
+        fleetCategoryScope:fleetCategories,timing:{...state.timing},
         combinedDetailVisits:Object.keys(state.combined_detail_attempts).length,
         fleetCoverage:sabyFleetCoverage(result,all,gaps),
         phoneCoverage:contactPhoneCoverage(result)},
@@ -222,13 +232,15 @@ export async function runSabyContactFirst({
             code:error instanceof SabyReview?error.code:"unexpected_error"});
         }else{
           const relevant=(sections.contacts&&record?.contacts?.status==="collected")||
-            (sections.trucks&&record?.trucks?.status==="verified")||
+            (sections.trucks&&(record?.trucks?.status==="verified"||
+              (allVehicleCategories&&Boolean(verifiedSabyVehicleFleet(record?.vehicle_fleet)||
+                verifiedSabyVehiclePartial(record?.vehicle_fleet_partial)))))||
             (sections.financials&&Boolean(validSabyFinancialEvidence(record?.financials)));
           // Save a valid navigation hint even when all requested widgets
           // were absent. The next visit still freshly verifies the card.
           if(optimized)rememberSabyNavigationHint(row,record);
           const applied=relevant?applySabyEnrichment(row,record,{phoneOwners:ownerMap,transport}):null;
-          gaps.set(entry,sabyWorkGaps(entry));
+          gaps.set(entry,workGaps(entry));
           // A navigation/identity failure or an unentered section must
           // not consume its separate full attempt. The browser explicitly
           // attests which reads started on the still-verified same card.
@@ -245,7 +257,8 @@ export async function runSabyContactFirst({
             appliedOk=true;
             if(sections.quickDetails){
               if(applied.revenueAdded||applied.employeesAdded)state.timing.quick_finance_filled++;
-              if(sections.trucks&&record.trucks?.status==="verified"&&applied.verifiedTrucks!==null)
+              if(sections.trucks&&(allVehicleCategories?applied.verifiedVehicles!==undefined&&!gaps.get(entry).trucks:
+                record.trucks?.status==="verified"&&applied.verifiedTrucks!==null))
                 state.timing.quick_fleet_completed++;
             }
             state.stats.verified++;
@@ -254,8 +267,12 @@ export async function runSabyContactFirst({
               ["transportsAdded","transportAdded"],["revenuesAdded","revenueAdded"],["employeesAdded","employeesAdded"]])
               if(applied[flag])state.stats[stat]++;
             // A carried, previously verified fleet is not a new observation.
-            if(sections.trucks&&record.trucks?.status==="verified"&&applied.verifiedTrucks!==null)
-              state.stats.vehiclesVerified+=applied.verifiedTrucks;
+            if(sections.trucks){
+              if(allVehicleCategories&&verifiedSabyVehicleFleet(record.vehicle_fleet)&&applied.verifiedVehicles!==undefined)
+                state.stats.vehiclesVerified+=applied.verifiedVehicles;
+              else if(!allVehicleCategories&&record.trucks?.status==="verified"&&applied.verifiedTrucks!==null)
+                state.stats.vehiclesVerified+=applied.verifiedTrucks;
+            }
             if(any(needs(entry,phase)))state.stats.partialResults++;
           }else{state.stats.review++;state.stats.companyReviews++;}
           // Separate full fleet outcomes from contact-only/quick visits.

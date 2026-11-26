@@ -38,7 +38,7 @@ import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
 import {collectSabyFleetTailBatches}
   from "./sabyFleetTailBatches.js";
-import {collectSabyFleetTree,readSabyFleetTree}
+import {collectSabyFleetTree,readSabyFleetTree,recoverSabyFleetFromOpenDrawer}
   from "./sabyFleetTree.js";
 import {openSabyVerifiedFleetTreePanel}
   from "./sabyFleetTreeOpening.js";
@@ -51,6 +51,7 @@ import {
   tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
+import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -900,7 +901,7 @@ async function sidePanelTrucks(page,expected,action="read") {
   },{expected,action,nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
 }
 
-async function ownTrucks(page, settings,progress={}) {
+async function ownTrucks(page, settings,progress={},afterHeading=null) {
   progress.phase="heading";
   const verifiedRoute=settings.publicIdentityFallback===true?page.url():null;
   const sameCompany=()=>!verifiedRoute||
@@ -924,10 +925,59 @@ async function ownTrucks(page, settings,progress={}) {
     progress.reason="fleet_heading_missing";
     return {status:"missing"};
   }
+  // All-category fallback gets a chance after the EXISTING single
+  // bounded heading recovery, rather than scrolling the whole card twice.
+  if(afterHeading){
+    assertCompany();
+    const collected=await afterHeading();
+    assertCompany();
+    if(collected)return collected;
+  }
   progress.phase="preview";
   const readPreview=()=>truckPreview(page,{allowCountOnly:shouldUseSabyFleetTree(settings)});
   assertCompany();
   let preview=await readPreview();
+  // Only an exact, already-open, same-company Wasaby drawer can
+  // bypass the preview requirement. No new speculative heading/tile
+  // click or absent-category-to-zero rule.
+  const tryOpenDrawer=async()=>{
+    if(!verifiedRoute||!shouldUseSabyFleetTree(settings))return null;
+    assertCompany();
+    const drawer=await recoverSabyFleetFromOpenDrawer(page,{
+      originalUrl:verifiedRoute,wait:delay,maxClicks:20,maxMs:175000
+    });
+    assertCompany();
+    if(drawer.reason!=="tree_missing"){
+      const {vehicles,...safeTree}=drawer;
+      progress.fleet_tree=safeTree;
+      console.info("[SABY_FLEET_OPEN_DRAWER] "+JSON.stringify(safeTree));
+      if(drawer.status==="complete"){
+        const verified=verifiedTrucks({trucks:{
+          status:"verified",count:drawer.expected,vehicles
+        }});
+        if(verified){
+          progress.expected_trucks=verified.count;
+          progress.parsed_vehicle_rows=verified.vehicles.length;
+          progress.side_panel_observed=true;
+          progress.stitch_reason="exact_count";
+          return {status:"verified",...verified};
+        }
+      }
+      // A positive-count tree was actually read but did not complete.
+      // Do not expand it twice, reopen it, or substitute a subsequent
+      // geometric preview for a contradictory/partial structural read.
+      if(Number.isSafeInteger(drawer.expected)&&drawer.expected>0){
+        progress.expected_trucks=drawer.expected;
+        progress.parsed_vehicle_rows=drawer.rows??0;
+        progress.side_panel_observed=true;
+        progress.reason="vehicle_rows_incomplete";
+        progress.phase="vehicles";
+        throw new SabyReview("Неполный подтвержденный автопарк",
+          {scope:"company"});
+      }
+    }
+    return null;
+  };
   if(preview.status==="missing") {
     // A newly mounted heading may precede the truck widget. Give it a
     // short passive chance before touching the existing heading control.
@@ -937,13 +987,36 @@ async function ownTrucks(page, settings,progress={}) {
       }
     }
     if(preview.status==="missing"){
+      const existing=await tryOpenDrawer();
+      if(existing)return existing;
       assertCompany();
-      await heading.click({timeout:4000}).catch(()=>{});
+      // A drawer that is visible but hydrating must not be toggled
+      // shut by another heading click.
+      const openTitle=verifiedRoute&&shouldUseSabyFleetTree(settings)?
+        await visibleLocator(page.locator(
+          '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
+        )):null;
+      assertCompany();
+      if(!openTitle)await heading.click({timeout:4000}).catch(()=>{});
       const until=Date.now()+9000;
+      // Poll within the ORIGINAL preview window. When the real drawer
+      // mounts, try its structural count rather than wait exclusively
+      // for the summary tile. An incomplete positive-count tree
+      // terminates this visit as review; later normal retries remain.
       while(Date.now()<until) {
         assertCompany();
         preview=await readPreview();
         if(preview.status!=="missing") break;
+        if(verifiedRoute&&shouldUseSabyFleetTree(settings)){
+          const title=await visibleLocator(page.locator(
+            '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
+          ));
+          assertCompany();
+          if(title){
+            const recovered=await tryOpenDrawer();
+            if(recovered)return recovered;
+          }
+        }
         await delay(350);
       }
     }
@@ -1328,6 +1401,7 @@ export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
   const combined=optimized&&!quick&&sections.combinedDetails===true;
+  const allVehicles=sections?.allVehicleCategories===true&&shouldUseSabyFleetTree(settings);
   const detailAttempts={financials:false,trucks:false};
   const timing={},timed=async(key,fn)=>{
     const start=performance.now();
@@ -1370,7 +1444,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     try{
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
       if(combined&&key==="financials")detailAttempts.financials=true;
-      const value=await timed(key==="trucks"?"fleet_ms":key+"_ms",fn);
+      const value=await timed(key==="trucks"||key==="vehicle_fleet"?"fleet_ms":key+"_ms",fn);
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
       result[key]=value;
     }catch{result.errors.push(key+": unavailable");}
@@ -1398,6 +1472,18 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return finish();
   if(quick){
+    if(allVehicles){
+      await read("vehicle_fleet",async()=>{
+        const found=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,quick:true});
+        if(sameCard()){
+          if(found.trucks)result.trucks=found.trucks;
+          if(found.partial)result.vehicle_fleet_partial=found.partial;
+        }
+        return found.fleet||{status:"missing"};
+      });
+      if(result.vehicle_fleet?.status==="verified"||result.trucks.status==="verified"||
+         result.vehicle_fleet_partial)return result;
+    }
     await read("trucks",async()=>{
       const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
       if(!heading)return {status:"missing"};
@@ -1417,10 +1503,42 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       if(combined)detailAttempts.trucks=true;
-      const trucks=await ownTrucks(page,settings,fleetProgress);
+      const collectAll=async()=>{
+        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay});
+        if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+        if(all.fleet)result.vehicle_fleet=all.fleet;
+        if(all.partial)result.vehicle_fleet_partial=all.partial;
+        if(all.trucks)result.trucks=all.trucks;
+        console.info("[SABY_ALL_VEHICLE_OUTCOME] "+JSON.stringify({
+          status:all.status,count:all.fleet?.count??null,groups:all.fleet?.groups.length??0,
+          announced_count:all.partial?.announced_count??null,
+          partial_groups:all.partial?.groups.length??0,
+          partial_vehicles:all.partial?.groups.reduce((n,g)=>n+g.count,0)??0
+        }));
+        return all;
+      };
+      // If all categories are accounted for, there is no truck-only
+      // fallback to perform. A partial nontruck-only summary is still
+      // useful but is not a verified complete fleet or a verified zero.
+      const handled=all=>all.fleet||all.drawerOpened||all.trucks||
+        all.partial&&!all.partial.categories.some(g=>g.category==="Грузовые");
+      let afterHeading=null;
+      if(allVehicles){
+        const all=await collectAll();
+        if(handled(all))return;
+        if(all.status==="missing")afterHeading=async()=>{
+          const recovered=await collectAll();
+          return handled(recovered)?(recovered.trucks||{status:"missing"}):null;
+        };
+      }
+      const trucks=afterHeading?
+        await ownTrucks(page,settings,fleetProgress,afterHeading):
+        await ownTrucks(page,settings,fleetProgress);
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       result.trucks=trucks;
+      if(trucks.status==="missing"&&fleetProgress.reason==="fleet_heading_missing")
+        result.errors.push("trucks: fleet_heading_missing");
     });
   } catch(error) {
     // Raw Playwright errors may contain URLs or private DOM; diagnostics
@@ -1452,12 +1570,12 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   // The private DOM diagnostic is intentionally still smoke-only; the
   // production rollout records review/deferred statuses but no raw DOM.
   if(settings.publicIdentityFallback===true &&
-     result.trucks.status!=="verified") {
+     result.trucks.status!=="verified"&&result.vehicle_fleet?.status!=="verified") {
     const evidence=await observeSabyFleetDOM(page);
     console.warn("[SABY_FLEET_DIAG] "+JSON.stringify(
       safeSabyFleetFailure(fleetProgress,evidence)));
   }
-  if(result.contacts.status==="missing" && result.trucks.status==="missing") {
+  if(result.contacts.status==="missing" && result.trucks.status==="missing"&&result.vehicle_fleet?.status!=="verified") {
     console.warn("[SABY_SECTION_DIAG] "+JSON.stringify(
       await safeSabySectionDiagnostic(page)));
   }

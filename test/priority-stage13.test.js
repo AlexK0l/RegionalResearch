@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {CATALOG,BANDS,calculatePriority13,applyPriorityStage13,EXPLANATION_FIELD}
+import {CATALOG,BANDS,calculatePriority13,applyPriorityStage13,EXPLANATION_FIELD,priority13InputHash}
   from "../src/priorityStage13.js";
 
 const empty={c:"",d:"",revenue:"",staff:""};
@@ -205,4 +205,15 @@ test("a court denying ownership cannot be treated as a positive fleet signal",()
   }
   const positive="Суд установил, что организации принадлежит полуприцеп с бортовой платформой. https://example.org/court";
   assert.equal(calc({notes:[positive]}).tier,"ordinary");
+});
+
+
+test("all-category display-only Saby inventory neither changes priority nor invalidates paid type cache",()=>{
+  const original={"Организация":"ООО Альфа","Наличие транспорта":"ТОНАР 959500 — 1 шт.\r\nSaby (грузовые): КАМАЗ 5490 — 2 шт."};
+  const extra="\nSaby (автопарк): Легковые — 1 шт.: PEUGEOT PARTNER VP (2023 г.); Коммерческие — 1 шт.: PEUGEOT BOXER (2024 г.)";
+  const updated={...original,"Наличие транспорта":original["Наличие транспорта"]+extra};
+  assert.equal(priority13InputHash(original),priority13InputHash(updated));
+  assert.deepEqual(calc({c:original["Наличие транспорта"]}),calc({c:updated["Наличие транспорта"]}));
+  assert.equal(calc({c:"Saby (автопарк): Коммерческие — 1 шт.: PEUGEOT BOXER; KRONE SD — 1 шт."}).tier,"none");
+  assert.equal(priority13InputHash({}),priority13InputHash({"Наличие транспорта":extra.trim()}));
 });

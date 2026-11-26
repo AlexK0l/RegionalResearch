@@ -450,3 +450,65 @@ test("existing optimized cursor is not reinterpreted after enabling combined ret
   assert.equal(out.passState.strategy,"combined_visible_v1");
   assert.deepEqual(out.passState.combined_detail_attempts,{});
 });
+
+
+test("all-category cursor stores nontruck fleet and needs no separate truck-only attempt",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const outcome=await runSabyContactFirst({result:db,
+    env:{...combinedEnv,SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push(sections);
+      const v=record(r,sections);
+      v.trucks={status:"missing"};
+      if(sections.allVehicleCategories)v.vehicle_fleet={status:"verified",count:2,groups:[
+        {category:"Легковые",count:1,vehicles:[{model:"PEUGEOT PARTNER VP",year:2023}]},
+        {category:"Коммерческие",count:1,vehicles:[{model:"PEUGEOT BOXER",year:2024}]}
+      ]};
+      return v;
+    }});
+  assert.equal(outcome.passState.fleet_categories,"all_vehicle_categories_v1");
+  assert.equal(calls.length,1);
+  assert.equal(outcome.stats.fleetCoverage.positive,1);
+  assert.equal(outcome.stats.fleetCoverage.vehicles,2);
+  assert.equal(outcome.stats.vehiclesVerified,2);
+  assert.deepEqual(outcome.deferredInns,[]);
+  assert.equal(db.direct_buyers[0].__evidence.saby.trucks,undefined);
+  assert.match(db.direct_buyers[0]["Наличие транспорта"],/PEUGEOT BOXER/);
+});
+test("truck-only cursor retains its old requirement when all categories enabled later",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const outcome=await runSabyContactFirst({result:db,
+    env:{...combinedEnv,SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true"},sessionRunner,
+    passState:{version:1,strategy:"combined_visible_v1",planned_inns:[innA],attempted:[],phase_index:0},
+    collectSections:async(_p,r,_s,sections)=>{calls.push(sections);return record(r,sections);}});
+  assert.equal(outcome.passState.fleet_categories,"trucks_v1");
+  assert.ok(calls.every(s=>s.allVehicleCategories!==true));
+  assert.equal(outcome.stats.fleetCoverage.positive,1);
+});
+
+
+test("partial nontruck categories persist across full retries and never synthesize complete fleet",async()=>{
+  const db=result([row(innA,"Альфа")]);let visit=0;
+  const outcome=await runSabyContactFirst({result:db,
+    env:{...combinedEnv,SABY_ALL_VEHICLE_CATEGORIES_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      const v=record(r,sections);
+      v.trucks={status:"missing"};
+      if(sections.allVehicleCategories){
+        const groups=[{category:"Легковые",count:1,vehicles:[{model:"PEUGEOT PARTNER VP",year:2023}]},
+          {category:"Коммерческие",count:1,vehicles:[{model:"PEUGEOT BOXER",year:2024}]}];
+        v.vehicle_fleet_partial={status:"partial",announced_count:2,categories:groups.map(({category,count})=>({category,count})),
+          groups:[groups[Math.min(visit++,1)]]};
+      }
+      return v;
+    }});
+  const saved=db.direct_buyers[0].__evidence.saby;
+  assert.equal(saved.collection.vehicle_fleet,"partial");
+  assert.equal(saved.vehicle_fleet,undefined);
+  assert.equal(saved.vehicle_fleet_partial.groups.length,2);
+  assert.equal(outcome.stats.fleetCoverage.unknown,1);
+  assert.equal(outcome.stats.fleetCoverage.vehicles,0);
+  assert.deepEqual(outcome.deferredInns,[innA]);
+  assert.match(db.direct_buyers[0]["Наличие транспорта"],/неполный перечень/);
+  assert.match(db.direct_buyers[0]["Наличие транспорта"],/PEUGEOT BOXER/);
+});
