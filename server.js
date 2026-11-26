@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { runResearchPipeline } from "./src/pipeline.js";
+import {isOpenAIBillingStop,OpenAIBillingPauseError} from "./src/openaiBillingGuard.js";
 import {validateSabyOnlySource,sabyOnlyConfigReady,
   runSabyOnlyContinuation} from "./src/sabyOnlyContinuation.js";
 import { buildAuditWorkbookBuffer, safeFileName } from "./src/xlsx.js";
@@ -36,7 +37,8 @@ import {
   saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs,
   saveQueuedResearchJob,listQueuedResearchJobs,loadQueuedResearchSource,
   takeQueuedResearchJob,clearQueuedResearchJob,
-  shrinkCheckpointMemory,claimIdleMemoryRecycle
+  shrinkCheckpointMemory,claimIdleMemoryRecycle,
+  getOpenAIBillingHold,setOpenAIBillingHold,clearOpenAIBillingHold
 } from "./src/checkpointStore.js";
 
 initializeFileLogging();
@@ -47,6 +49,22 @@ app.set("trust proxy", "loopback");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 10000);
 const jobs = new Map();
+let billingHoldAt=0;
+try{billingHoldAt=getOpenAIBillingHold();}
+catch(error){billingHoldAt=Date.now();console.error("[OPENAI_BILLING_STORE_UNAVAILABLE]",error?.message||String(error));}
+function markBillingHold(){
+  if(billingHoldAt)return;
+  billingHoldAt=Date.now();
+  try{billingHoldAt=setOpenAIBillingHold(billingHoldAt);}
+  catch(error){console.error("[OPENAI_BILLING_HOLD_PERSIST_ERROR]",error?.message||String(error));}
+  console.warn("[OPENAI_BILLING_HOLD] "+JSON.stringify({since_ms:billingHoldAt}));
+}
+function canAdmitResearchJob(job){
+  if(!billingHoldAt||job.mode==="saby_only")return true;
+  const summary=job.latestCheckpointSummary;
+  return !summary?.billing_paused&&["full","resume"].includes(job.mode)&&
+    summary?.stage11_completed===true&&["contacts","saby","priority","completed"].includes(summary.phase);
+}
 const idleRecycleSettings=idleMemoryRecycleSettings();
 // INVOCATION_ID is assigned by systemd. Never exit a developer's
 // interactive process or ordinary non-supervised local launch.
@@ -221,8 +239,10 @@ app.get("/health", async (_req, res) => {
   });
 });
 
-app.get("/api/config", (_req, res) => {
-  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled });
+app.get("/api/config", async (_req, res) => {
+  const store = await checkpointBackendStatus().catch(() => null);
+  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled,
+    durableCheckpoints: Boolean(store?.backend === "sqlite" && store.ready && !store.ephemeral_storage) });
 });
 
 // One region can have a finalized full-research checkpoint plus newer
@@ -552,6 +572,28 @@ async function executeJob(job, apiKey) {
       }
       job.state = "completed";
     } catch (error) {
+      if(isOpenAIBillingStop(error)&&!job.cancelled){
+        markBillingHold();
+        if(["full","resume"].includes(job.mode)&&!error.checkpointFlushFailed){
+          try{
+            // Same durable resume marker as a memory pause; the account
+            // latch independently prevents admission until explicit release.
+            job.latestCheckpointSummary={...job.latestCheckpointSummary,billing_paused:true};
+            saveMemoryPausedJob(job);
+            job.data.memoryResume=true;
+            job.data.checkpointRef=job.id;
+            if(!job.data.sourceJobId)job.data.sourceJobId=job.id;
+            job.result=null;job.error=null;job.state="waiting";
+            job.progress={...job.progress,phase:"billing_wait",memoryPauseRequested:false};
+            console.info("[OPENAI_BILLING_JOB_PAUSED] "+JSON.stringify({job_id:job.id,phase:job.latestCheckpointSummary?.phase}));
+            return {billingPaused:true};
+          }catch(persistError){
+            job.state="failed";
+            job.error="Не удалось надёжно сохранить паузу OpenAI: "+persistError.message;
+            return;
+          }
+        }
+      }
       if(isMemoryPause(error)&&job.memoryPauseRequested&&!job.cancelled){
         try{
           job.memoryPauseCount=Number(job.memoryPauseCount||0)+1;
@@ -603,6 +645,7 @@ async function executeJob(job, apiKey) {
 const fullQueue = createFullJobQueue({
   limit: MAX_ACTIVE_FULL_JOBS,
   execute: executeJob,
+  canAdmitJob:canAdmitResearchJob,
   memory:memoryAdmission,
   collectGarbage:typeof global.gc==="function"?()=>{
     // SQLite's disposable page cache can otherwise remain resident after
@@ -625,7 +668,7 @@ function queueJob(job, apiKey) {
   }
   // Diagnostic jobs use RAM too; apply admission without pretending that
   // they have a resumable production checkpoint or reserving their region.
-  if(memoryAdmission.settings.enabled)return fullQueue.enqueue(job,apiKey,{reserveRegion:false});
+  if(memoryAdmission.settings.enabled||billingHoldAt)return fullQueue.enqueue(job,apiKey,{reserveRegion:false});
   queueMicrotask(() => executeJob(job, apiKey));
   return { accepted: true };
 }
@@ -636,6 +679,8 @@ function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
     state:"waiting",progress,result:null,error:null,cancelled:false,
     checkpointWritesSynchronous:true,
     abortController:new AbortController(),latestCheckpoint:null,latestCheckpointSummary:summary,
+    beforeOpenAIRequest:()=>{if(billingHoldAt)throw new OpenAIBillingPauseError();},
+    onOpenAIBillingStop:markBillingHold,
     async updateProgress(progress){
       this.progress={...progress,memoryPauseRequested:!!this.memoryPauseRequested,
         memoryPauseCount:this.memoryPauseCount};
@@ -651,7 +696,6 @@ function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
   };
 }
 function restoreMemoryPausedJobs(){
-  if(!memoryAdmission.settings.enabled)return;
   const apiKey=String(process.env.OPENAI_API_KEY||"").trim();
   for(const item of listMemoryPausedJobs()){
     if(item.mode!=="saby_only"&&!apiKey)continue;
@@ -874,12 +918,25 @@ app.get("/api/runtime/memory",(_req,res)=>{
   res.json({memory:processMemorySnapshot(),queue:fullQueue.snapshot()});
 });
 
+// Explicit user action after funding the account. Never probe the paid
+// API in the background. Every subsequent request is still guarded.
+app.post("/api/billing/resume", (_req,res)=>{
+  try{
+    clearOpenAIBillingHold();
+    billingHoldAt=0;
+    console.info("[OPENAI_BILLING_HOLD_RELEASED]");
+    fullQueue.poll();
+    res.json({ok:true});
+  }catch(error){res.status(503).json({error:"Не удалось снять паузу OpenAI"});}
+});
+
 app.get("/api/jobs", (_req, res) => {
   const now = Date.now();
   const history = historicalStageDurations(jobs.values());
   res.setHeader("Cache-Control", "no-store");
   res.json({
     queue: fullQueue.snapshot(),
+    billing:{blocked:Boolean(billingHoldAt),since_ms:billingHoldAt||null},
     memory:processMemorySnapshot(),
     jobs: [...jobs.values()]
       .sort((a,b)=>b.createdAt-a.createdAt)

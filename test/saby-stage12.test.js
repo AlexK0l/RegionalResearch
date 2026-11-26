@@ -50,7 +50,8 @@ test("verified Saby trucks are NOT trailers; existing TORGBOX and A/B/C grades s
   assert.equal(x.status,"ok");
   assert.equal(x.transportAdded,true);
   assert.equal(x.phoneAdded,false);
-  assert.equal(row["Телефон"],"79001234567");
+  assert.equal(x.phonesAppended,1);
+  assert.equal(row["Телефон"],"79001234567; 79991234567");
   assert.match(row["Наличие транспорта"],/TORGBOX: Krone — 1 шт./);
   assert.match(row["Наличие транспорта"],/Saby \(грузовые\): КамАЗ 5490 \(2020 г\.\) — 2 шт/);
   assert.equal(row["Основание"],"C — грузопоток");

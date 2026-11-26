@@ -28,7 +28,15 @@ function buildIndex(finalResult) {
     const id = String(row?.__canonical_id || "").trim();
     const inn = normalizedInn(row?.["ИНН"]);
     const name = normalizedLegalName(row?.["Организация"]);
-    if (id) { if (!byCanon.has(id)) byCanon.set(id, []); byCanon.get(id).push(row); }
+    // Only an explicit merge lineage can cover a staged alias with no
+    // original INN. A mere name match still does not prove identity.
+    const ids = new Set([id, ...(Array.isArray(row?.__merged_canonical_ids)
+      ? row.__merged_canonical_ids.map(value => String(value || "").trim()) : [])]);
+    for (const sourceId of ids) {
+      if (!sourceId) continue;
+      if (!byCanon.has(sourceId)) byCanon.set(sourceId, []);
+      byCanon.get(sourceId).push(row);
+    }
     if (inn) { if (!byInn.has(inn)) byInn.set(inn, []); byInn.get(inn).push(row); }
     if (name) { if (!byName.has(name)) byName.set(name, []); byName.get(name).push(row); }
   }
@@ -38,12 +46,14 @@ function sameEntityInIndex(row, index) {
   const cid = String(row?.__canonical_id || "").trim();
   const name = normalizedLegalName(row?.["Организация"]);
   const inn = normalizedInn(row?.["ИНН"]);
-  if (cid && (index.byCanon.get(cid) || []).some((candidate) => {
-    const finalInn = normalizedInn(candidate["ИНН"]);
-    // Even an inherited canonical ID must not disguise two different
-    // confirmed INNs. Such collisions remain visible in the review queue.
+  const lineage = cid ? index.byCanon.get(cid) || [] : [];
+  if (lineage.length) {
+    // Ambiguous ownership or a conflicting INN must remain visible. A
+    // historical merge ID is not authority to erase a distinct legal person.
+    if (lineage.length !== 1) return false;
+    const finalInn = normalizedInn(lineage[0]["ИНН"]);
     return !inn || !finalInn || inn === finalInn;
-  })) return true;
+  }
   // A shared INN with a completely different legal name is NOT sufficient
   // proof of alias identity: keep it for manual inspection.
   if (inn && (index.byInn.get(inn) || []).some((candidate) =>

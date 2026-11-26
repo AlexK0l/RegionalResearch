@@ -3,6 +3,7 @@
 // A lease agreement naming the company as LESSOR is not proof it operates a
 // semitrailer to carry its own cargo.
 import {companyEmailCell,EMAIL_COLUMN} from "./emailContact.js";
+import {reconcileStoredSabyPhones} from "./sabyEnrichment.js";
 
 const str=x=>String(x??"");
 const normalized=x=>str(x).normalize("NFKC").toLocaleUpperCase("ru-RU")
@@ -150,5 +151,6 @@ export function stage13PopulateExplicitEmails(result){
 export function finalizeStage13CommercialOutput(result){
   const roles=stage13RouteCommercialRoles(result);
   const emails=stage13PopulateExplicitEmails(result);
-  return {roles,emails,paid_calls:0,saby_calls:0};
+  const storedPhones=reconcileStoredSabyPhones(result);
+  return {roles,emails,storedPhones,paid_calls:0,saby_calls:0};
 }

@@ -21,8 +21,8 @@ export function fullWebLimits(env = process.env) {
     total: boundedInt(env.OPENAI_FULL_WEB_MAX_CALLS, 1850, 100),
     discovery: boundedInt(env.OPENAI_FULL_WEB_DISCOVERY_MAX_CALLS, 1050, 50),
     identity: boundedInt(env.OPENAI_FULL_WEB_IDENTITY_MAX_CALLS, 600, 50),
-    enrichment: boundedInt(env.OPENAI_FULL_WEB_ENRICHMENT_MAX_CALLS, 190, 0),
-    contacts: boundedInt(env.OPENAI_FULL_WEB_CONTACTS_MAX_CALLS, 270, 0),
+    enrichment: boundedInt(env.OPENAI_FULL_WEB_ENRICHMENT_MAX_CALLS, 120, 0),
+    contacts: boundedInt(env.OPENAI_FULL_WEB_CONTACTS_MAX_CALLS, 340, 0),
     statistics: boundedInt(env.OPENAI_FULL_WEB_STATISTICS_MAX_CALLS, 12, 0),
     other: boundedInt(env.OPENAI_FULL_WEB_OTHER_MAX_CALLS, 70, 0)
   };
@@ -52,7 +52,7 @@ export function costEnvLimitUsd(env = process.env) {
 // mandatory discovery/identity checks. It is a conservative, configurable
 // soft reservation, not a guarantee about actual OpenAI billing.
 export function protectedContactAllowance(env = process.env) {
-  const webCalls = boundedInt(env.OPENAI_CONTACTS_PROTECTED_WEB_CALLS, 75, 0, 270);
+  const webCalls = boundedInt(env.OPENAI_CONTACTS_PROTECTED_WEB_CALLS, 145, 0, 340);
   const rawUsd = Number(env.OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD ?? 1.2);
   const estimatedUsd = Number.isFinite(rawUsd) ?
     Math.max(0, Math.min(5, rawUsd)) : 1.2;

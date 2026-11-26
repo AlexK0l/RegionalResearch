@@ -471,6 +471,22 @@ export function shrinkCheckpointMemory(){
   ensureDb().exec("PRAGMA shrink_memory;");
 }
 
+// Durable shared latch: a service restart is not evidence of new credits.
+export function getOpenAIBillingHold(){
+  return Number(ensureDb().prepare(
+    "SELECT last_at_ms FROM runtime_maintenance WHERE name='openai_billing_hold'"
+  ).get()?.last_at_ms||0);
+}
+export function setOpenAIBillingHold(now=Date.now()){
+  if(!Number.isSafeInteger(now)||now<=0)throw Error("OPENAI_BILLING_BAD_CLOCK");
+  ensureDb().prepare(
+    "INSERT OR IGNORE INTO runtime_maintenance(name,last_at_ms) VALUES('openai_billing_hold',?)"
+  ).run(now);
+  return getOpenAIBillingHold();
+}
+export function clearOpenAIBillingHold(){
+  ensureDb().prepare("DELETE FROM runtime_maintenance WHERE name='openai_billing_hold'").run();
+}
 // The cooldown survives process exit and prevents reboot loops even when
 // the real bottleneck is outside Node. No payloads or secrets are loaded.
 export function claimIdleMemoryRecycle(now,cooldownMs){

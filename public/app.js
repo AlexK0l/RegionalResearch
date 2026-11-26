@@ -22,6 +22,7 @@ const e={
   etaCountdown:document.querySelector("#etaCountdown"),
   etaHint:document.querySelector("#etaHint"),
   refreshJobs:document.querySelector("#refreshJobsBtn"),
+  billingResume:document.querySelector("#billingResumeBtn"),
   resume:document.querySelector("#resumeBtn"),
   sabyResume:document.querySelector("#sabyResumeBtn"),
   checkpoint:document.querySelector("#checkpointBtn"),
@@ -445,6 +446,7 @@ function jobStateText(job){
   const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
     completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",
     cancelling:"Останавливается"};
+  if(job.phase==="billing_wait")return "Пауза OpenAI · пополните баланс";
   if(job.phase==="memory_paused")return "Пауза по ОЗУ · автовозобновление";
   if(job.phase==="memory_wait")return "Ожидает свободную ОЗУ";
   if(job.memoryPauseRequested)return "Сохраняем данные перед паузой";
@@ -464,6 +466,8 @@ function renderJobs(payload){
   e.jobsSummary.textContent="Активно: "+active+" / "+Number(q.limit||2)+
     (waiting?" · в очереди: "+waiting:"")+
     " · сохранённые исследования доступны из SQLite после перезапуска";
+  if(e.billingResume)e.billingResume.hidden=!payload?.billing?.blocked;
+  if(payload?.billing?.blocked)e.jobsSummary.textContent+=" · платные запросы приостановлены: баланс OpenAI";
   const memory=payload?.memory||{};
   const nodeMiB=Number(memory.node_rss_mib);
   const allMiB=Number(memory.cgroup_total_mib);
@@ -625,6 +629,7 @@ function setProgress(p){
 
   const labels={
     queued:"В очереди",
+    billing_wait:"Пауза: баланс OpenAI исчерпан",
     memory_wait:"Ожидание оперативной памяти",
     memory_paused:"Исследование на паузе по памяти",
     starting:"Подготовка",
@@ -644,6 +649,9 @@ function setProgress(p){
   if(p.memoryPauseRequested){
     e.statusTitle.textContent="Сохранение перед паузой по памяти";
     e.statusText.textContent="Завершаем текущий безопасный пакет, сохраняем результат в SQLite.";
+    e.contactBox.hidden=true;
+  }else if(p.phase==="billing_wait"){
+    e.statusText.textContent="Прогресс сохранён. После пополнения баланса нажмите кнопку продолжения платных исследований.";
     e.contactBox.hidden=true;
   }else if(p.phase==="memory_paused"||p.phase==="memory_wait"){
     e.statusText.textContent=p.phase==="memory_paused"?
@@ -735,7 +743,7 @@ async function poll(restoring=false){
     // Saby-only already saves each company in durable SQLite. Repeatedly
     // copying its entire multi-hundred-company checkpoint to sessionStorage
     // wastes memory, serializes large JSON and adds HTTP load for no benefit.
-    if(d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
+    if(!config?.durableCheckpoints&&d.mode!=="saby_only"&&d.resume_available&&d.checkpoint){
       if(!d.progress?.memoryPauseRequested&&
         !["memory_paused","memory_wait","saby_memory_wait"].includes(d.progress?.phase))
         void syncBrowserCheckpointFromBackend(requestedJobId,d.checkpoint);
@@ -1152,6 +1160,13 @@ e.regionResume.onclick=startRegionResume;
 e.regionSaby.onclick=()=>void startSabyOnly(regionSabyCheckpoint?.id,e.regionSaby);
 e.savedXlsx.onclick=()=>void downloadSaved("xlsx");
 e.savedJson.onclick=()=>void downloadSaved("json");
+if(e.billingResume)e.billingResume.onclick=async()=>{
+  if(!window.confirm("Баланс OpenAI API пополнен? Продолжить платные исследования?"))return;
+  e.billingResume.disabled=true;
+  try{await api("/api/billing/resume",{method:"POST"});await refreshJobs();}
+  catch(error){e.error.hidden=false;e.error.textContent=String(error?.message||error);}
+  finally{e.billingResume.disabled=false;}
+};
 e.start.onclick=start;
 e.resume.onclick=resumeFromCheckpoint;
 e.sabyResume.onclick=()=>void startSabyOnly(currentJobId,e.sabyResume);
