@@ -954,6 +954,18 @@ async function ownTrucks(page, settings,progress={}) {
           return {status:"verified",...verified};
         }
       }
+      // A positive-count tree was actually read but did not complete.
+      // Do not expand it twice, reopen it, or substitute a subsequent
+      // geometric preview for a contradictory/partial structural read.
+      if(Number.isSafeInteger(drawer.expected)&&drawer.expected>0){
+        progress.expected_trucks=drawer.expected;
+        progress.parsed_vehicle_rows=drawer.rows??0;
+        progress.side_panel_observed=true;
+        progress.reason="vehicle_rows_incomplete";
+        progress.phase="vehicles";
+        throw new SabyReview("Неполный подтвержденный автопарк",
+          {scope:"company"});
+      }
     }
     return null;
   };
@@ -980,14 +992,13 @@ async function ownTrucks(page, settings,progress={}) {
       const until=Date.now()+9000;
       // Poll within the ORIGINAL preview window. When the real drawer
       // mounts, try its structural count rather than wait exclusively
-      // for the summary tile. Do not repeatedly expand an incomplete
-      // observed tree: at most one positive-count collection per visit.
-      let triedTree=false;
+      // for the summary tile. An incomplete positive-count tree
+      // terminates this visit as review; later normal retries remain.
       while(Date.now()<until) {
         assertCompany();
         preview=await readPreview();
         if(preview.status!=="missing") break;
-        if(!triedTree&&verifiedRoute&&shouldUseSabyFleetTree(settings)){
+        if(verifiedRoute&&shouldUseSabyFleetTree(settings)){
           const title=await visibleLocator(page.locator(
             '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
           ));
@@ -995,7 +1006,6 @@ async function ownTrucks(page, settings,progress={}) {
           if(title){
             const recovered=await tryOpenDrawer();
             if(recovered)return recovered;
-            triedTree=Number.isSafeInteger(progress.fleet_tree?.expected)&&progress.fleet_tree.expected>0;
           }
         }
         await delay(350);
