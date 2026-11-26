@@ -175,7 +175,8 @@ test("production search uses hydration and read-only transport only in opted-in 
   assert.match(source,/const publicFallback=settings\.publicIdentityFallback===true;/);
   assert.match(source,/if\(!publicFallback\)return;/);
   assert.match(source,/await settleSearch\(\);/);
-  assert.match(source,/observeSabySearchTransport\(page,inn\)/);
+  assert.match(source,/observeSabySearchTransport\(page,inn,\{armed:false\}\)/);
+  assert.match(source,/transport\?\.arm\(\);/);
   assert.match(source,/shouldRecoverSilentSabySearch\(/);
   assert.match(source,/action:"reload_and_submit_once"/);
   assert.match(source,/transportRecoveryUsed=true/);

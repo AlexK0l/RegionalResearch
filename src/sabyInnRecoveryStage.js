@@ -25,8 +25,14 @@ export async function runSabyInnRecoveryStage({
   if(priorStats?.finished===true)return priorStats;
   const abort=()=>{if(signal?.aborted)throw Error("JOB_CANCELLED");};
   abort();
-  let outcomes={...priorOutcomes},stats={scheduled:0,processed:0,added:0,review:0,
-    pending:0,finished:false,stop_reason:""};
+  const counter=value=>Number.isSafeInteger(value)&&value>=0?value:0;
+  const prior={processed:counter(priorStats?.processed),added:counter(priorStats?.added),
+    review:counter(priorStats?.review)};
+  let outcomes={...priorOutcomes},stats={scheduled:prior.processed,processed:prior.processed,
+    added:prior.added,review:prior.review,pending:0,finished:false,stop_reason:""};
+  const cumulative=run=>({...run,scheduled:prior.processed+run.scheduled,
+    processed:prior.processed+run.processed,added:prior.added+run.added,
+    review:prior.review+run.review,finished:false});
   let callbackError;
   const save=async()=>{
     // Persist the actual newly eligible INNs, not a stale Stage11 queue.
@@ -54,7 +60,7 @@ export async function runSabyInnRecoveryStage({
     stats.finished=true;stats.stop_reason="registry_source_not_ready";
     await save();return stats;
   }
-  stats.scheduled=plan.scheduled;stats.pending=plan.pending;
+  stats.scheduled=prior.processed+plan.scheduled;stats.pending=plan.pending;
   if(!plan.scheduled){stats.finished=true;await save();return stats;}
   // No standalone/unadmitted Chromium inside the running regional worker.
   if(typeof acquireSabyBrowser!=="function"){
@@ -79,11 +85,11 @@ export async function runSabyInnRecoveryStage({
         checkpoint:snapshot,provider:"fns",lookup,signal,
         onCheckpoint:async cp=>{
           outcomes={...cp.independent_inn_backfill_outcomes};
-          stats={...cp.independent_inn_backfill_stats,finished:false};
+          stats=cumulative(cp.independent_inn_backfill_stats);
           await save();
         }
       });
-      stats={...out.stats,finished:false};
+      stats=cumulative(out.stats);
     },{provider:"fns",confirmationMode:"extract",maxPages});
   }catch(error){
     if(callbackError||isMemoryPause(error)||signal?.aborted||error?.message==="JOB_CANCELLED")throw callbackError||error;

@@ -447,7 +447,8 @@ async function openCompany(page, row, settings, timing=null) {
         const lastRead=await candidates();
         if(isListRoute()){
           lastSelected=lastRead;selection=lastRead.reason;
-          rows=lastRead.row?[lastRead.row]:[];
+          rows=lastRead.row&&!["ambiguous","ambiguous_exact","result_window_full",
+            "primary_window_full"].includes(lastRead.reason)?[lastRead.row]:[];
           classification=classifySabySearchZeroState(sampleA,sampleB,{
             onListRoute:true,beforeSearch
           });

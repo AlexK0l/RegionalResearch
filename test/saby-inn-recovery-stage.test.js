@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {runSabyInnRecoveryStage} from "../src/sabyInnRecoveryStage.js";
 import {runCheckpointedSabyStage12} from "../src/sabyCheckpointIntegration.js";
+import {parseFnsSearchResult,fnsSourceUrl} from "../src/independentInnFns.js";
 import {MemoryPauseError,isMemoryPause} from "../src/memoryAdmission.js";
 const env={SABY_STAGE12_ENABLED:"true",SABY_INN_RECOVERY_ENABLED:"true",
   SABY_DELAY_MS:"250",SABY_MAX_COMPANIES:"0",SABY_FAST_PASS_ENABLED:"true",
@@ -72,4 +73,69 @@ test("a completed registry review is checkpointed once and resumes without dupli
     priorOutcomes:saved.at(-1).independent_inn_backfill_outcomes,
     priorStats:saved.at(-1).saby_inn_recovery_stats,lookupRunner:never})).processed,1);
   assert.deepEqual(events,["acquire","release"]);
+});
+
+
+test("official extract recovery adds the exact INN before the Saby plan and closes its browser first",async()=>{
+  const result=makeResult(),events=[],saved=[];
+  const inn="4706000909",ogrn="1024701329377",kpp="470601001";
+  const raw={k:"ul",i:inn,o:ogrn,p:kpp,n:'АКЦИОНЕРНОЕ ОБЩЕСТВО "ПРИМЕР"',
+    c:'АО "ПРИМЕР"',a:"187300, ОБЛАСТЬ ЛЕНИНГРАДСКАЯ, Г.КИРОВСК, УЛ. ЖЕЛЕЗНОДОРОЖНАЯ, Д.59",
+    tot:"1",pg:"1"};
+  // Fixture mirrors the real strict FNS PDF-backed recovery tests.
+  // The preflight is injected so no real network or Chromium is used.
+  const search=parseFnsSearchResult({rows:[raw]},
+    {query:raw.c,completeNameSearch:true});
+  const proof={kind:"fns_extract",url:fnsSourceUrl(inn),
+    record:{...search.records[0].record,active:true},
+    extract:{date:"24.11.2026",number:"ЮЭ9965-26-254581820",page_count:17,
+      status_basis:"complete_extract_no_adverse_status",sha256:"b".repeat(64)}};
+  const out=await runSabyInnRecoveryStage({result,region,env,
+    acquireSabyBrowser:async()=>{events.push("acquire");return ()=>events.push("release");},
+    lookupRunner:async task=>{
+      events.push("open");
+      try{await task({search:async()=>search,confirm:async id=>{
+        assert.equal(id,ogrn);return proof;
+      }});}finally{events.push("close");}
+    },canary:async()=>({verified:true}),
+    persistCheckpoint:async(phase,p)=>saved.push(structuredClone({phase,...p}))});
+  assert.equal(out.added,1);
+  assert.equal(result.direct_buyers[0]["ИНН"],inn);
+  assert.equal(result.direct_buyers[0].__evidence.identity_verification.method,"fns_official_extract");
+  assert.deepEqual(saved.at(-1).saby_deferred_inns,[inn]);
+  assert.deepEqual(events,["acquire","open","close","release"]);
+  let visited=0;
+  const sweep=await runCheckpointedSabyStage12({result,region,env,contactFirst:true,
+    innRecoveryPriorStats:saved.at(-1).saby_inn_recovery_stats,
+    innRecoveryPriorOutcomes:saved.at(-1).independent_inn_backfill_outcomes,
+    innRecoveryLookupRunner:never,
+    sessionRunner:async task=>task({page:{},settings:{}}),
+    acquireSabyBrowser:async()=>{events.push("saby_acquire");return ()=>events.push("saby_release");},
+    collectSections:async(_p,row,_s,sections)=>{
+      visited++;
+      assert.equal(row["ИНН"],inn);assert.equal(sections.trucks,true);
+      return {identity:{verified:true,inn,name:row["Организация"],kpp},
+        source_url:"https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc",
+        collected_at:"2026-11-26T12:00:00Z",
+        contacts:{status:"collected",phones:["74951234567"],emails:["office@example.ru"]},
+        trucks:{status:"verified",count:1,vehicles:[{model:"КАМАЗ 5490",year:2020}]},
+        financials:{status:"collected",revenue_rub:1000000,revenue_year:2025,employees:12}};
+    }
+  });
+  assert.equal(visited,1);
+  assert.equal(sweep.stats.fleetCoverage.positive,1);
+  assert.deepEqual(sweep.deferredInns,[]);
+  assert.deepEqual(events,["acquire","open","close","release","saby_acquire","saby_release"]);
+});
+test("cancellation during registry lookup does not apply the subsequent proof",async()=>{
+  const result=makeResult(),abort=new AbortController(),events=[];
+  await assert.rejects(runSabyInnRecoveryStage({result,region,env,signal:abort.signal,
+    acquireSabyBrowser:async()=>()=>events.push("release"),
+    lookupRunner:async task=>task({search:async()=>{
+      abort.abort();return {state:"unconfirmed",records:[]};
+    },confirm:never}),
+    canary:async()=>({verified:true})
+  }),/JOB_CANCELLED/);
+  assert.equal(result.direct_buyers[0]["ИНН"],"");
+  assert.deepEqual(events,["release"]);
 });
