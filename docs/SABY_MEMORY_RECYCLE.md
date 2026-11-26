@@ -44,3 +44,8 @@ MEMORY_PAUSE_REQUEST, MEMORY_JOB_PAUSED/RESTORED/RESUMED,
 MEMORY_IDLE_RECYCLE (requested/refused), MEMORY_ADMISSION and JOB_MEMORY.
 An exhausted or genuinely undersized host can still need intervention; the
 idle recycler is bounded recovery, not a claim of an OOM-proof service.
+
+The combined visible-data pass reduces rotations indirectly by reducing the
+number of actual card visits. It keeps the 25-task browser cap and every-task
+SQLite commit. Do not increase the rotation limit on the 2 GiB VPS just to
+improve wall time. See [Saby fast visit policy](SABY_FAST_VISIT_POLICY.md).

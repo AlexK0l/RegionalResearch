@@ -267,7 +267,7 @@ async function revealLazySabyFinance(page,inspect){
 
 // Re-read only the already-verified card. A bounded in-card scroll is allowed
 // when Saby has not yet mounted the bottom finance section; no new search.
-export async function readSabyFinancials(page){
+export async function readSabyFinancials(page,{visibleOnly=false,needsRevenue=true}={}){
   const inspect=()=>page.evaluate(() => {
     const text=el=>(el?.textContent||"").replace(/\s+/gu," ").trim();
     const visible=el=>Boolean(el&&el.isConnected&&el.getClientRects().length);
@@ -356,6 +356,10 @@ export async function readSabyFinancials(page){
   // The employee badge is often above the lazy finance section; preserve
   // this verified observation while Saby unmounts it during scroll.
   const initialEmployees=result.employees;
+  // Opportunistic read on the contact card: one DOM snapshot, no passive
+  // waits, clicks, lazy mounting or finance diagnostic. Any missing fact
+  // remains a gap for the original full-details pass.
+  if(visibleOnly||(!needsRevenue&&initialEmployees!==null))return result;
   // Saby is a SPA: the year grid can hydrate after the already visible
   // employees badge. Small bounded DOM retries do NOT revisit the company.
   for(let attempt=0;attempt<2&&!result.revenue_rub&&

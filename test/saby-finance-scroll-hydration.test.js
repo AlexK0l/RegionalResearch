@@ -239,3 +239,23 @@ test("two consecutive finance scroll failures remain safely missing, never inven
     assert.doesNotMatch(diag[0],/company-list-prof|4718000935|440\.1/);
   }finally{console.warn=original;}
 });
+
+test("fast finance read does not wait, scroll, guess a revenue or hide the full lazy read",async()=>{
+  const {page,metrics}=lazyFinanceCard();
+  const quick=await readSabyFinancials(page,{visibleOnly:true});
+  assert.deepEqual(quick,{status:"collected",revenue_rub:null,revenue_year:null,employees:119});
+  assert.equal(metrics().reads,1);
+  assert.equal(metrics().waits,0);
+  assert.deepEqual(metrics().scrollPositions,[]);
+  const full=await readSabyFinancials(page);
+  assert.equal(full.revenue_rub,440100000);
+  assert.equal(full.employees,119);
+});
+test("when revenue is already known and staff is visible skip the unrelated finance scroll",async()=>{
+  const {page,metrics}=lazyFinanceCard();
+  const read=await readSabyFinancials(page,{needsRevenue:false});
+  assert.equal(read.employees,119);
+  assert.equal(metrics().reads,1);
+  assert.equal(metrics().waits,0);
+  assert.deepEqual(metrics().scrollPositions,[]);
+});
