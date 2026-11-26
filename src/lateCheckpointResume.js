@@ -7,6 +7,7 @@ import {sabyStage12Settings} from "./sabyStage12.js";
 import {girboStageEnabled} from "./girBoStage.js";
 import {publicContactEnabled,runPublicContactEnrichment,contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {fnsContactEnabled,runFnsContactEnrichment} from "./publicContactFns.js";
+import {restorePublicContactSourceHints} from "./publicContactParser.js";
 import {classifyStage13UnknownModels} from "./priorityStage13AI.js";
 import {applyPriorityStage13} from "./priorityStage13.js";
 import {finalizeStage13CommercialOutput} from "./priorityStage13Finalize.js";
@@ -170,6 +171,8 @@ export async function runLateCheckpointResume({
   // Completed Stage11 snapshots do not re-enter paid contact work. On a
   // new version they may still use the independent public sources.
   if(source.phase!=="priority"&&(publicContactEnabled(env)||fnsContactEnabled(env))){
+    if(publicContactEnabled(env)&&Number(source.contact_stats?.version||0)>=2)
+      restorePublicContactSourceHints(result,source.contact_primary_results);
     await persistCheckpoint("saby",{stage11_completed:true,public_contact_post_saby_ready:true,final_result:result,
       saby_stats:saby.stats,saby_completed_inns:saby.completedInns,
       saby_deferred_inns:saby.deferredInns,saby_attempted_inns:saby.attemptedInns});

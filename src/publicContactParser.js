@@ -175,33 +175,76 @@ export function contactDirectoryCard(url){
   }catch{return false;}
 }
 const excludedHost=/^(?:.*\.)?(?:saby\.ru|sbis\.ru|nalog\.gov\.ru|nalog\.ru|yandex\.(?:ru|com)|ya\.ru|2gis\.ru|google\.(?:ru|com)|vk\.com|ok\.ru|t\.me|telegram\.me|youtube\.com|avito\.ru|zakupki\.gov\.ru|kad\.arbitr\.ru|fedresurs\.ru|wikipedia\.org|hh\.ru|rusprofile\.ru|list-org\.com|checko\.ru|tbank\.ru)$/i;
+function safeContactSeed(value,explicit=false){
+  const url=contactPublicUrl(value);
+  if(!url)return null;
+  const host=contactHost(url),directory=contactDirectoryCard(url);
+  if(excludedHost.test(host)&&!directory)return null;
+  const root=new URL(url).pathname==="/";
+  const contact=contactPageLink({url,text:""});
+  if(!explicit&&!root&&!contact&&!directory)return null;
+  return {url,host,directory,explicit,score:directory?3:explicit?6:contact?5:4};
+}
+// The paid contact answer is a discovery hint, not proof. Keep useful
+// exact source URLs even if the answer contains no phone or official site.
+// Never append these URLs to the commercial qualification source list.
+export function rememberPublicContactSourceHints(row,answer){
+  if(!row||!answer||!Array.isArray(answer.source_urls)||!answer.source_urls.length)return false;
+  const e=row.__evidence||{};
+  const urls=Array.isArray(e.public_contact_source_hints)?e.public_contact_source_hints:[];
+  const newlyCited=[...(Array.isArray(answer.phone_recovery_source_urls)?answer.phone_recovery_source_urls:[]),
+    ...answer.source_urls];
+  const next=[...new Set([...newlyCited.slice(0,12),...urls.slice(0,8)]
+    .map(url=>safeContactSeed(url)?.url).filter(Boolean))].slice(0,8);
+  if(!next.length||JSON.stringify(next)===JSON.stringify(urls))return false;
+  row.__evidence={...e,public_contact_source_hints:next};
+  return true;
+}
+// Older incomplete checkpoints may still have the paid primary ledger.
+// Use only a unique exact canonical ID; the public parser must independently
+// establish the legal identity. Do not guess row IDs or copy historical data.
+export function restorePublicContactSourceHints(result,answers){
+  if(!answers||typeof answers!=="object"||Array.isArray(answers))return 0;
+  const rows=["direct_buyers","intermediaries","leasing"].flatMap(section=>
+    Array.isArray(result?.[section])?result[section]:[]);
+  const ids=new Map();
+  for(const row of rows){
+    const id=String(row?.__canonical_id||"").trim();
+    if(id)ids.set(id,(ids.get(id)||0)+1);
+  }
+  let updated=0;
+  for(const row of rows){
+    const id=String(row?.__canonical_id||"").trim();
+    if(id&&ids.get(id)===1&&Object.hasOwn(answers,id)&&rememberPublicContactSourceHints(row,answers[id]))updated++;
+  }
+  return updated;
+}
 export function contactSourceCandidates(row){
   const e=row?.__evidence||{},raw=[];
-  const push=(value,explicit=false)=>{
-    const url=contactPublicUrl(value);
-    if(!url)return;
-    const host=contactHost(url),directory=contactDirectoryCard(url);
-    if(excludedHost.test(host)&&!directory)return;
-    const u=new URL(url);
-    const root=u.pathname==="/";
-    const contact=contactPageLink({url,text:""});
-    // Do not start crawling an arbitrary article, tender or media site.
-    if(!explicit&&!root&&!contact&&!directory)return;
-    raw.push({url,host,directory,explicit,score:directory?3:explicit?6:contact?5:4});
+  const push=(value,explicit=false,fresh=false)=>{
+    const seed=safeContactSeed(value,explicit);
+    if(seed)raw.push({...seed,fresh});
   };
   push(e.official_site,true);
   push(e.contact_verification?.source_url,true);
   for(const url of Array.isArray(e.public_contact_site_hints)?e.public_contact_site_hints.slice(0,5):[])push(url,true);
+  for(const url of Array.isArray(e.public_contact_source_hints)?e.public_contact_source_hints.slice(0,8):[])push(url,false,true);
   const comment=String(row?.__comment||"").match(/^Сайт\/источник:\s*(https?:\/\/[^\s]+)\s*$/im);
   if(comment)push(comment[1],false);
   for(const url of Array.isArray(e.source_urls)?e.source_urls.slice(0,60):[])push(url);
-  raw.sort((a,b)=>b.score-a.score);
+  raw.sort((a,b)=>b.score-a.score||Number(b.fresh)-Number(a.fresh));
   const seen=new Set(),out=[];
   for(const item of raw){
-    // One entry per company host, but exact directory cards stay separate
-    // from own-site crawls. The address is never derived from the INN.
     if(seen.has(item.host))continue;
-    seen.add(item.host);out.push(item);
+    seen.add(item.host);
+    // Up to two observed corporate URLs per host, including a newly cited
+    // contact/requisites URL which need not be reachable from the first seed.
+    // Directory cards are NEVER combined to prove the identity of a different
+    // card; a directory candidate remains one exact card.
+    const extra=!item.directory?raw.find(x=>x.host===item.host&&x.url!==item.url&&
+      !x.directory&&x.fresh):null;
+    const {fresh,...candidate}=item;
+    out.push(extra?{...candidate,seedUrls:[item.url,extra.url]}:candidate);
     if(out.length===3)break;
   }
   return out;
@@ -343,7 +386,7 @@ export async function lookupPublicCompanyContacts(row,client){
     if(client.exhausted)break;
     const pages=[],seen=new Set();
     const readPage=async(url)=>{
-      if(seen.has(url)||client.exhausted||pages.length>=5)return;
+      if(seen.has(url)||client.exhausted||seen.size>=5)return;
       seen.add(url);
       try{
         const response=await client.fetch(url);
@@ -354,11 +397,11 @@ export async function lookupPublicCompanyContacts(row,client){
       }catch(error){errors++;countError(error?.code);}
     };
     if(seenHosts.has(source.host))continue;seenHosts.add(source.host);
-    await readPage(source.url);
+    for(const url of source.seedUrls||[source.url])await readPage(url);
     if(!source.directory&&pages.length&&!client.exhausted){
-      // Prefer actual contact and requisites hyperlinks. Do not guess
-      // paths or fan out across the web; bound all reads to five pages.
-      const links=pages[0].links.filter(contactPageLink).sort((a,b)=>{
+      // Prefer actual contact and requisites hyperlinks from observed seeds.
+      // Do not guess paths; retain the existing five-attempt bound per host.
+      const links=pages.flatMap(page=>page.links.filter(contactPageLink)).sort((a,b)=>{
         const rank=x=>/контакт|contact|реквизит|rekvizit/i.test(x.text+" "+x.url)?1:0;
         return rank(b)-rank(a);
       });

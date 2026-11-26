@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {contactPublicUrl,isPublicContactIPv4,resolvePublicContactAddress,
   robotsAllows,createPublicContactHttp} from "../src/publicContactHttp.js";
 import {registeredContactName,parsePublicContactPage,extractVerifiedPublicContacts,
-  contactSourceCandidates,lookupPublicCompanyContacts} from "../src/publicContactParser.js";
+  contactSourceCandidates,lookupPublicCompanyContacts,rememberPublicContactSourceHints,
+  restorePublicContactSourceHints} from "../src/publicContactParser.js";
 import {needsAnyContact,knownContactLeader,planPublicContactEnrichment,
   runPublicContactEnrichment,applyPublicContactFacts,publicContactOwnership,contactPhoneCoverage} from "../src/publicContactEnrichment.js";
 import {lookupFnsCompanyContacts,runFnsContactEnrichment} from "../src/publicContactFns.js";
@@ -232,4 +233,61 @@ test("telephone label and a separate visible number in a table cell are valid, m
     '<tr><td>Факс</td><td>74959999999</td></tr></table>',contact);
   const facts=extractVerifiedPublicContacts([page],company()).facts;
   assert.deepEqual(facts.filter(f=>f.field==="Телефон").map(f=>f.value),["74951234567"]);
+});
+
+test("paid contact URLs survive without an official-site answer and remain unverified hints",()=>{
+  const row=company({__evidence:{source_urls:["https://old-alpha.example/"],notes:["original"]}});
+  const card="https://rusprofile.ru/id/12345",newContact="https://alpha.example/contacts";
+  assert.equal(rememberPublicContactSourceHints(row,{source_urls:[card,newContact,
+    "https://rusprofile.ru/","https://alpha.example/articles/news",
+    "https://alpha.example/contacts?token=secret","http://127.0.0.1/contacts"],
+    phone_recovery_source_urls:[newContact]}),true);
+  assert.deepEqual(row.__evidence.public_contact_source_hints,[newContact,card]);
+  assert.deepEqual(row.__evidence.source_urls,["https://old-alpha.example/"]);
+  assert.deepEqual(row.__evidence.notes,["original"]);
+  assert.equal(row["Телефон"],"");
+  assert.equal(rememberPublicContactSourceHints(row,{source_urls:[newContact,card]}),false);
+  assert.ok(contactSourceCandidates(row).some(x=>x.url===card&&x.directory));
+});
+test("a new cited same-host contact reopens a company without guessing URLs",async()=>{
+  const row=company({__evidence:{official_site:base,source_urls:[base]}});
+  const r=result([row]),initial=planPublicContactEnrichment(r).selected[0];
+  const old={[initial.id]:{revision:1,signature:initial.signature,reason:"verified_no_contacts"}};
+  assert.equal(planPublicContactEnrichment(r,{priorOutcomes:old}).eligible,0);
+  rememberPublicContactSourceHints(row,{source_urls:[contact]});
+  assert.equal(planPublicContactEnrichment(r,{priorOutcomes:old}).eligible,1);
+  assert.deepEqual(contactSourceCandidates(row)[0].seedUrls,[base,contact]);
+  const calls=[];
+  const client={get exhausted(){return false;},async fetch(url){
+    calls.push(url);
+    if(url===base)return {status:404,url,html:""};
+    return {status:200,url,html:url===contact?contactHtml:identityHtml};
+  }};
+  const observed=await lookupPublicCompanyContacts(row,client);
+  assert.deepEqual(calls,[base,contact,identity]);
+  assert.ok(observed.facts.some(f=>f.field==="Телефон"&&f.value==="74951234567"));
+});
+test("cited URLs alone cannot confer cross-page identity or mix directory cards",async()=>{
+  const row=company({__evidence:{official_site:base,source_urls:[base]}});
+  rememberPublicContactSourceHints(row,{source_urls:[contact]});
+  const client={get exhausted(){return false;},async fetch(url){
+    const html=url===base?identityHtml.replace('<a href="/contacts">Контакты</a>',""):
+      contactHtml.replace('<a href="/requisites">Реквизиты</a>',"");
+    return {status:200,url,html};
+  }};
+  assert.equal((await lookupPublicCompanyContacts(row,client)).facts.length,0);
+  const directoryRow=company({__evidence:{source_urls:["https://rusprofile.ru/id/123"]}});
+  rememberPublicContactSourceHints(directoryRow,{source_urls:["https://rusprofile.ru/id/456"]});
+  const cards=contactSourceCandidates(directoryRow);
+  assert.equal(cards.length,1);
+  assert.equal(cards[0].seedUrls,undefined);
+});
+test("late restore accepts only unique exact canonical identifiers",()=>{
+  const a=company(),b=company({__canonical_id:"b"}),dup=company({__canonical_id:"b"}),unknown=company({__canonical_id:""});
+  const r=result([a,b,dup,unknown]),answers={a:{source_urls:[identity]},b:{source_urls:[contact]},
+    unknown:{source_urls:[identity]}};
+  assert.equal(restorePublicContactSourceHints(r,answers),1);
+  assert.deepEqual(a.__evidence.public_contact_source_hints,[identity]);
+  for(const row of [b,dup,unknown])assert.equal(row.__evidence.public_contact_source_hints,undefined);
+  assert.equal(restorePublicContactSourceHints(r,answers),0);
 });
