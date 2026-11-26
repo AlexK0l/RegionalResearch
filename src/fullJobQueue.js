@@ -256,6 +256,9 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   }
   function pump(){
     if(quiesced)return;
+    for(let i=pending.length-1;i>=0;i--){
+      if(pending[i].job.cancelled){const [item]=pending.splice(i,1);release(item);}
+    }
     let allowed=inspect();
     while(active<capacity&&pending.length&&allowed){
       const index=firstEligibleIndex();
