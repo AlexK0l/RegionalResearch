@@ -226,7 +226,10 @@ const qtyPoints=q=>q<=1?0:q<=3?4:q<=5?7:10;
 export function priority13InputHash(row){
   return createHash("sha256").update(JSON.stringify([
     str(row?.["Организация"]),
-    str(row?.["Наличие транспорта"]||""),
+    // The new display-only all-category Saby line is deliberately excluded
+    // from both scoring and AI model inventory. Appending it must not
+    // invalidate previous paid model classifications or change priorities.
+    str(row?.["Наличие транспорта"]||"").replace(/(?:^|\r?\n)Saby\s*\(автопарк\)\s*:[^\r\n]*/gi,"").trim(),
     str(row?.["Основание"]),
     str(row?.["Техника/сегмент"]),
     str(row?.__a_evidence),
