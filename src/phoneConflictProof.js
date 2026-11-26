@@ -25,8 +25,9 @@ export function assessPhoneConflictProof(raw,{rowId,inn,phone}={}){
   return {...base,status:"confirmed",source_url:source,evidence_excerpt:excerpt};
 }
 export function restorePhoneConflictProof(raw,target){
-  if(!raw||raw.row_id!==target.rowId||
-    phoneConflictKey(raw.row_id,raw.inn,raw.phone)!==phoneConflictKey(target.rowId,target.inn,target.phone))return null;
+  const key=phoneConflictKey(target?.rowId,target?.inn,target?.phone);
+  if(!key||!raw||raw.row_id!==target.rowId||
+    phoneConflictKey(raw.row_id,raw.inn,raw.phone)!==key)return null;
   if(raw.status==="confirmed"){
     const checked=assessPhoneConflictProof({...raw,confirmed:true},target);
     return checked?.status==="confirmed"?checked:null;
