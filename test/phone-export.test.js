@@ -77,7 +77,7 @@ test("Saby stage 12 writes multiple distinct phones but not their source",()=>{
   assert.doesNotMatch(row["Телефон"],/Saby|example|https?:/i);
 });
 
-test("known numbers are never replaced, even when Saby has a new one",()=>{
+test("known numbers and labels are retained when Saby adds a new number",()=>{
   const row={"Организация":"ООО Тест","ИНН":"7707083893",
     "Телефон":"79112223344 (отдел снабжения)"};
   const record={identity:{verified:true,inn:"7707083893",name:"ООО Тест"},
@@ -85,7 +85,8 @@ test("known numbers are never replaced, even when Saby has a new one",()=>{
     contacts:{status:"collected",phones:["79991112233"],emails:[]}};
   const outcome=applySabyEnrichment(row,record);
   assert.equal(outcome.phoneAdded,false);
-  assert.equal(row["Телефон"],"79112223344 (отдел снабжения)");
+  assert.equal(outcome.phonesAppended,1);
+  assert.equal(row["Телефон"],"79112223344 (отдел снабжения); 79991112233");
 });
 
 test("XLSX fallback enforces phone-only values on all three commercial sheets",()=>{
