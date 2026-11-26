@@ -94,8 +94,12 @@ async function main(){
   for(const plan of plans){
     // A changing/removed source must not be silently applied to the old
     // plan. Other explicitly selected parents can still produce children.
-    const loaded=loadSource(file,plan.sourceId);
-    if(loaded.fingerprint!==plan.fingerprint){
+    let loaded;
+    try{loaded=loadSource(file,plan.sourceId);}
+    catch(error){
+      if(error?.message!=="FNS_OPEN_DATA_CHECKPOINT_NOT_FOUND")throw error;
+    }
+    if(!loaded||loaded.fingerprint!==plan.fingerprint){
       skipped++;
       metric("FNS_OPEN_DATA_PARENT_CHANGED",{parent_checkpoint:plan.sourceId});
       continue;

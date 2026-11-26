@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 import {fileURLToPath} from "node:url";
 import {archiveNameKey,planFnsOpenData,applyFnsOpenData,combineFnsOpenDataTargets} from "../src/fnsOpenDataBackfill.js";
 const inn="4706000909",otherInn="7810165652",ogrn="1024701329377";
@@ -138,4 +142,29 @@ test("batch deduplicates shared exact INNs and does not transfer an employee cou
     regional_key_mode:"region_name_v1",regional_keys:["вологодская область","ленинградская область"]};
   assert.equal(applyFnsOpenData(a,[shared],opts).stats.employees_added,1);
   assert.equal(applyFnsOpenData(b,[shared],opts).stats.employees_added,0);
+});
+
+test("repeatable checkpoint CLI dry-run is read-only and deduplicates batch targets",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"fns-batch-plan-"));
+  try{
+    const file=path.join(dir,"checkpoints.sqlite");
+    const ids=["a0000000-0000-0000-0000-000000000001","b0000000-0000-0000-0000-000000000002"];
+    const db=new DatabaseSync(file);
+    db.exec("CREATE TABLE research_checkpoints(id TEXT PRIMARY KEY,payload TEXT NOT NULL)");
+    const payloads=[cp([row("a",name,{"ИНН":inn})]),{...cp([row("b",name,{"ИНН":inn})]),region:"Вологодская область"}].map(JSON.stringify);
+    try{ids.forEach((id,i)=>db.prepare("INSERT INTO research_checkpoints VALUES (?,?)").run(id,payloads[i]));}finally{db.close();}
+    const script=fileURLToPath(new URL("../scripts/fns-open-data-backfill.js",import.meta.url));
+    const run=spawnSync(process.execPath,[script,"--db="+file,...ids.map(id=>"--checkpoint="+id),"--year=2025"],{encoding:"utf8",timeout:30000});
+    assert.equal(run.status,0,run.stderr+" "+run.stdout);
+    const lines=run.stdout.split(/\r?\n/);
+    assert.equal(lines.filter(s=>s.startsWith("[FNS_OPEN_DATA_PLAN]")).length,2);
+    const batch=JSON.parse(lines.find(s=>s.startsWith("[FNS_OPEN_DATA_BATCH_PLAN]")).split("] ")[1]);
+    assert.equal(batch.checkpoints,2);assert.equal(batch.inns,1);
+    assert.equal(batch.one_scan_per_dataset,true);assert.equal(batch.dry_run,true);
+    const check=new DatabaseSync(file,{readOnly:true});
+    try{assert.deepEqual(check.prepare("SELECT payload FROM research_checkpoints ORDER BY id").all().map(r=>r.payload),payloads);}
+    finally{check.close();}
+    const dup=spawnSync(process.execPath,[script,"--db="+file,"--checkpoint="+ids[0],"--checkpoint="+ids[0],"--year=2025"],{encoding:"utf8",timeout:30000});
+    assert.equal(dup.status,2);assert.match(dup.stdout,/FNS_OPEN_DATA_BAD_ARGS/);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
