@@ -3,6 +3,7 @@ import path from "node:path";
 import OpenAI from "openai";
 import {createDiscoveryCallLedger,fatalDiscoveryError} from "./discoveryCallLedger.js";
 import {isOpenAIBillingStop,guardOpenAIResponses} from "./openaiBillingGuard.js";
+import {runRegionalStatistics,regionalStatisticsPrompt,regionalStatisticsCoverage} from "./regionalStatistics.js";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey, numberedLegalNameConflict } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
@@ -6055,6 +6056,8 @@ export async function runResearchPipeline({ job, apiKey }) {
       ? (job.checkpointWritesSynchronous===true?job.data.checkpoint:cloneJson(job.data.checkpoint))
       : null;
   const executionMode = mode === "resume" ? "full" : mode;
+  const resumeAfterEnrichment=checkpointPhaseAtLeast(resumeCheckpoint,"statistics")&&
+    Boolean(resumeCheckpoint?.final_result&&resumeCheckpoint?.qualification_counts);
   const requestedStage = Number(job.data?.stage || 0);
   const testProfile = testProfileForMode(executionMode, requestedStage);
   const diagnosticMode = Boolean(testProfile);
@@ -7782,7 +7785,16 @@ ${JSON.stringify(groupBatch)}`,
     });
   });
 
-  const finalInnStats = await withFinalInnCheckpointFlush(() => resolveFinalMissingInns({
+  const finalInnStats = resumeAfterEnrichment ? {
+    completedIds:finalInnCompleted,
+    attempted:latestFinalInnProgress.attempted,recovered:latestFinalInnProgress.recovered,
+    retried:latestFinalInnProgress.retried,
+    technicalDeferred:[...finalInnTechnicalDeferred.values()],
+    primaryBudgetDeferred:latestFinalInnProgress.primaryBudgetDeferred,
+    primaryBudgetDeferredIds:latestFinalInnProgress.primaryBudgetDeferredIds,
+    retryBudgetDeferred:Number(resumeCheckpoint.final_inn_retry_budget_deferred||0),
+    retryBudgetDeferredIds:resumeCheckpoint.final_inn_retry_budget_deferred_ids||[]
+  } : await withFinalInnCheckpointFlush(() => resolveFinalMissingInns({
     client,
     finalResult,
     region,
@@ -7824,9 +7836,9 @@ ${JSON.stringify(groupBatch)}`,
   if (preservedStatistics.length) finalResult.statistics = preservedStatistics;
 
   let innConflictGroups = duplicateInnConflictGroups(finalResult);
-  let innConflictRechecks = 0;
-  let innConflictBudgetDeferred = 0;
-  if (innConflictGroups.length) {
+  let innConflictRechecks = resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_conflict_rechecks||0):0;
+  let innConflictBudgetDeferred = resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_conflict_budget_deferred||0):0;
+  if (innConflictGroups.length&&!resumeAfterEnrichment) {
     console.log("[POST_INN_CONFLICT_PLAN] " + JSON.stringify({
       groups: innConflictGroups.length,
       inns: innConflictGroups.map((group) => group.inn)
@@ -8005,7 +8017,7 @@ ${JSON.stringify(groupBatch)}`,
   }));
 
   const finalInnRemoved = enforceFinalInnRequirement(finalResult);
-  finalInnStats.removedWithoutInn = finalInnRemoved.length;
+  finalInnStats.removedWithoutInn = finalInnRemoved.length+(resumeAfterEnrichment?Number(resumeCheckpoint.final_inn_removed_without_inn||0):0);
 
   await persistCheckpoint("final_inn", {
     completed_stage: 9,
@@ -8080,32 +8092,10 @@ ${JSON.stringify(groupBatch)}`,
 
   for (const row of finalCompaniesForEnrichment) mergeResearchComment(row);
 
-  const statisticsPromise =
-    resumeCheckpoint &&
-    (checkpointPhaseAtLeast(resumeCheckpoint, "statistics")||resumeCheckpoint?.statistics_completed===true) &&
-    Array.isArray(resumeCheckpoint?.final_result?.statistics)
-      ? Promise.resolve(cloneJson(resumeCheckpoint.final_result.statistics))
-      : askJson(client, {
-          input:
-            statisticsContract() +
-            `\n\nРЕГИОН: ${region}\nСобери только 8 обязательных показателей статистики по региону.`,
-          model: TARGETED_SEARCH_MODEL,
-          maxOutputTokens: STATISTICS_MAX_OUTPUT_TOKENS,
-          webSearch: true,
-          maxToolCalls: 3,
-          diagnosticLabel: "regional statistics",
-          timeoutMs: Math.min(45000, Math.max(8000, deadlineRemaining(stage10DeadlineAt) - 3000))
-        })
-          .then((result) => Array.isArray(result?.statistics) ? result.statistics : [])
-          .catch((error) => {
-            if (jobSignal?.aborted) throw error;
-            console.error("[STATISTICS_ERROR] " + JSON.stringify({
-              error: error?.message || String(error)
-            }));
-            return [];
-          });
-
-  let statisticsCompletedForPause=resumeCheckpoint?.statistics_completed===true;
+  // Keep statistics independent of the enrichment deadline. Do not leave
+  // a paid promise running after the job releases its queue slot.
+  let statisticsState=resumeCheckpoint?.statistics_state||null;
+  let statisticsCompletedForPause=regionalStatisticsCoverage(finalResult.statistics).complete;
   const enrichmentCheckpointBatcher = createCheckpointBatcher(async () => {
     await persistCheckpoint("enrichment", {
       completed_stage: 9,
@@ -8128,16 +8118,11 @@ ${JSON.stringify(groupBatch)}`,
       enrichment_errors: enrichmentErrors,
       enrichment_deadline_skipped: enrichmentDeadlineSkipped,
       enrichment_budget_deferred: enrichmentBudgetDeferred,
-      statistics_completed:statisticsCompletedForPause
+      statistics_completed:statisticsCompletedForPause,
+      statistics_state:statisticsState
     });
   });
   const saveDrainedEnrichment=async()=>{
-    // Concurrent statistics must settle before the checkpoint is flushed.
-    const statistics=await statisticsPromise.catch(()=>null);
-    if(Array.isArray(statistics)&&statistics.length){
-      finalResult.statistics=statistics;
-      statisticsCompletedForPause=true;
-    }
     await enrichmentCheckpointBatcher.request({force:true});
   };
   const pauseDrainedEnrichment=async()=>{
@@ -8147,7 +8132,7 @@ ${JSON.stringify(groupBatch)}`,
     throw Error("MEMORY_PAUSE_NOT_COMMITTED");
   };
 
-  const enrichmentPending = finalCompaniesForEnrichment.filter((row) => {
+  const enrichmentPending = resumeAfterEnrichment?[]:finalCompaniesForEnrichment.filter((row) => {
     const id = checkpointRowId(row);
     return !id || !enrichmentCompleted.has(id);
   });
@@ -8380,7 +8365,7 @@ ${JSON.stringify(gaps)}
   let abRecoveryApplied = 0;
   let abRecoveryDeferred = 0;
   let abRecoveryFailed = 0;
-  if (AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
+  if (!resumeAfterEnrichment&&AB_RECOVERY_ENABLED && AB_RECOVERY_MAX_BATCHES > 0) {
     const abCandidates = eligiblePriorityRecoveryRows(
       finalCompaniesForEnrichment, abRecoveredIds, checkpointRowId,
       AB_RECOVERY_MAX_BATCHES * AB_RECOVERY_BATCH_SIZE
@@ -8464,6 +8449,14 @@ ${JSON.stringify(gaps)}
         }));
       } catch (error) {
         if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+        if(isOpenAIBillingStop(error)){
+          try{
+            await persistCheckpoint("enrichment",{
+              final_result:finalResult,ab_recovery_completed_ids:[...abRecoveredIds]
+            },false,true);
+          }catch(saveError){error.checkpointFlushFailed=true;}
+          throw error;
+        }
         abRecoveryFailed++;
         abRecoveryDeferred += batch.length;
         console.warn("[AB_GAP_RECOVERY_ERROR] " + JSON.stringify({
@@ -8496,7 +8489,36 @@ ${JSON.stringify(gaps)}
 
   statuses[9].detail = "региональная статистика";
   await progress({ phase: "dedupe", step: 10, percent: 89 });
-  finalResult.statistics = await statisticsPromise;
+  // A late Stage11 continuation must not start Stage10 requests. New or
+  // interrupted Stage10 runs can independently recover only missing metrics.
+  if(!checkpointPhaseAtLeast(resumeCheckpoint,"contacts")){
+    const statistics=await runRegionalStatistics({
+      initialRows:finalResult.statistics,initialState:statisticsState,
+      assertNotCancelled,isBudgetStop:isWebBudgetStop,
+      maxAttempts:executionMode==="full"?2:1,
+      request:(items,{attempt})=>askJson(client,{
+        input:regionalStatisticsPrompt(items)+"\n\nРЕГИОН: "+region,
+        model:TARGETED_SEARCH_MODEL,
+        maxOutputTokens:STATISTICS_MAX_OUTPUT_TOKENS,
+        webSearch:true,maxToolCalls:attempt===1?3:2,
+        diagnosticLabel:"regional statistics | attempt "+attempt,
+        timeoutMs:45000,allowJsonRepair:false
+      }),
+      onCheckpoint:async({rows,state})=>{
+        finalResult.statistics=rows;
+        statisticsState=state;
+        statisticsCompletedForPause=state.complete;
+        await persistCheckpoint("statistics",{
+          completed_stage:9,final_result:finalResult,
+          statistics_completed:state.complete,statistics_state:state
+        },true,state.status==="billing_paused");
+      }
+    });
+    finalResult.statistics=statistics.rows;
+    statisticsState=statistics.state;
+    statisticsCompletedForPause=statistics.state.complete;
+    console.info("[REGIONAL_STATISTICS] "+JSON.stringify(statisticsState));
+  }
 
   await persistCheckpoint("statistics", {
     completed_stage: 9,
@@ -8519,12 +8541,15 @@ ${JSON.stringify(gaps)}
     enrichment_errors: enrichmentErrors,
     enrichment_deadline_skipped: enrichmentDeadlineSkipped,
     enrichment_budget_deferred: enrichmentBudgetDeferred,
+    statistics_completed:statisticsCompletedForPause,
+    statistics_state:statisticsState,
     stage10_duration_ms: Date.now() - stage10StartedAt
   });
 
   finishStep(statuses[9]);
   statuses[9].detail =
     `выполнен · ${rowCount(finalResult)} организаций · identity-кластеров: ${identityResolution.clusters} · точечных поисков: ${targetedSearches}` +
+    (statisticsState?` · статистика: ${statisticsState.numeric??statisticsState.accepted}/8 числовых · н/д: ${8-(statisticsState.numeric??statisticsState.accepted)}`:"") +
     (finalInnStats.technicalDeferred.length
       ? ` · технически отложено проверок ИНН: ${finalInnStats.technicalDeferred.length} (лимит ответа)`
       : "") +
