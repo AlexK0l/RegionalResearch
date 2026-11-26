@@ -7,7 +7,7 @@ import {MemoryPauseError,isMemoryPause} from "../src/memoryAdmission.js";
 import {lookupPublicCompanyContacts} from "../src/publicContactParser.js";
 import {sabyStoredSectionCoverage} from "../src/sabyEnrichment.js";
 
-const env={SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"0",
+const env={SABY_STAGE12_ENABLED:"true",SABY_MAX_COMPANIES:"0",SABY_FAST_PASS_ENABLED:"false",
   SABY_DELAY_MS:"250",STAGE12_MAX_MS:"60000",SABY_ONLY_MAX_MS:"60000",
   GIRBO_STAGE_ENABLED:"false",STAGE13_AI_ENABLED:"false",
   STAGE13_AI_SABY_ONLY_ENABLED:"false",SABY_FLEET_TREE_PRODUCTION_ENABLED:"true",
@@ -216,4 +216,92 @@ test("storage failure at a planned rotation is not misclassified as a browser fa
       if(closed&&patch.saby_stats.browserRotations===1)throw Error("disk write failed");
     }}),/disk write failed/);
   assert.equal(launches,1);
+});
+
+test("optimized first visit completes mounted contacts, finance and small complete fleets without reopening",async()=>{
+  const db=result(),calls=[],saved=[];
+  const out=await runSabyContactFirst({result:db,env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});
+      return {...record(r,sections),timing:{full_search:true,search_ms:11,identity_ms:8,contacts_ms:5,financials_ms:4,fleet_ms:3}};
+    },persistCheckpoint:async(_phase,patch)=>saved.push(structuredClone(patch))});
+  assert.deepEqual(calls.map(c=>[c.inn,c.contacts,c.financials,c.trucks,c.quickDetails]),[
+    [innA,true,true,true,true],[innB,true,true,true,true]]);
+  assert.equal(out.stats.totalAttempts,2);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.deepEqual(out.deferredInns,[]);
+  assert.equal(out.stats.timing.quick_fleet_completed,2);
+  assert.equal(out.stats.timing.quick_finance_filled,2);
+  assert.equal(out.stats.timing.full_searches,2);
+  assert.equal(out.stats.timing.search_ms,22);
+  assert.ok(db.direct_buyers.every(r=>r.__evidence.saby_navigation_hint));
+  assert.equal(saved.at(-1).saby_pass_state.strategy,"combined_visible_v1");
+});
+test("incomplete quick details are never counted as a full fleet or finance attempt",async()=>{
+  const db=result(),calls=[];
+  const out=await runSabyContactFirst({result:db,env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});
+      const value=record(r,sections);
+      if(sections.quickDetails){
+        value.trucks={status:"missing"};
+        value.financials={status:"collected",employees:12};
+        if(r["ИНН"]===innA&&calls.length===1)value.contacts={status:"missing",phones:[],emails:[]};
+      }
+      return value;
+    }});
+  assert.deepEqual(calls.map(c=>[c.inn,c.contacts,c.quickDetails===true]),[
+    [innA,true,true],[innB,true,true],[innA,true,true],[innA,false,false],[innB,false,false]]);
+  assert.ok(calls.slice(3).every(c=>c.trucks&&c.financials));
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.deepEqual(out.deferredInns,[]);
+  assert.equal(out.stats.phonesAdded,2);
+  assert.equal(out.stats.timing.quick_fleet_completed,0);
+});
+test("optimized sweep includes companies already having contacts and retains full details retries",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета","B");
+  a["Телефон"]="74951234567";a["Электронная почта"]="sales@alpha.ru";
+  const calls=[];
+  const out=await runSabyContactFirst({result:result([a,b]),env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});
+      const value=record(r,sections);
+      if(r["ИНН"]===innA&&calls.filter(c=>c.inn===innA).length===1)value.trucks={status:"review"};
+      return value;
+    }});
+  assert.deepEqual(calls.map(c=>[c.inn,c.contacts,c.trucks]),[[innB,true,true],[innA,false,true],[innA,false,true]]);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.equal(out.stats.totalAttempts,3);
+  assert.deepEqual(out.deferredInns,[]);
+});
+test("legacy in-progress cursor keeps its scheduling semantics after the fast upgrade",async()=>{
+  const db=result(),calls=[],first=record(db.direct_buyers[0],{contacts:true});
+  const {applySabyEnrichment}=await import("../src/sabyEnrichment.js");
+  applySabyEnrichment(db.direct_buyers[0],first);
+  const out=await runSabyContactFirst({result:db,env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    passState:{version:1,planned_inns:[innA,innB],attempted:["contacts:"+innA],phase_index:0,
+      verified_inns:[innA],stats:{phonesAdded:1}},
+    collectSections:async(_p,r,_s,sections)=>{calls.push([r["ИНН"],sections.contacts,sections.financials,sections.trucks]);return record(r,sections);}});
+  assert.deepEqual(calls,[[innB,true,false,false],[innA,false,true,true],[innB,false,true,true]]);
+  assert.equal(out.passState.strategy,"section_passes_v1");
+  assert.equal(out.stats.fullSweepCompleted,true);
+});
+test("a fast attempt with no usable facts saves its verified route and resumes the exact cursor",async()=>{
+  const db=result([row(innA,"Альфа")]);let saved;
+  await assert.rejects(runSabyContactFirst({result:db,env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r)=>({...record(r,{}),timing:{full_search:true,search_ms:10}}),
+    persistCheckpoint:async(_phase,p)=>{saved=structuredClone(p);if(p.saby_pass_state.attempted.length===1)throw new MemoryPauseError();}}),isMemoryPause);
+  const r=saved.final_result.direct_buyers[0];
+  assert.ok(r.__evidence.saby_navigation_hint);
+  assert.equal(r.__evidence.saby,undefined);
+  assert.equal(r["Телефон"],"");
+  const calls=[];
+  const out=await runSabyContactFirst({result:saved.final_result,passState:saved.saby_pass_state,
+    env:{...env,SABY_FAST_PASS_ENABLED:"false"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{calls.push(sections);return record(r,sections);}});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].quickDetails,true);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.equal(out.stats.timing.visits,2);
+  assert.equal(out.stats.timing.search_ms,10);
 });

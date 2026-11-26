@@ -46,7 +46,7 @@ export function isSabyProfileUrl(value) {
   } catch { return false; }
 }
 
-function verifiedTrucks(record) {
+export function verifiedTrucks(record) {
   const fleet = record?.trucks;
   if (fleet?.status !== "verified" || !Number.isSafeInteger(fleet.count) ||
       fleet.count < 0 || fleet.count > 5000 || !Array.isArray(fleet.vehicles) ||
@@ -131,12 +131,16 @@ function hasKnownPhone(value) {
   return parsePhoneEntries(value).length > 0;
 }
 
-export function sabyMissingFinancials(row) {
+export function sabyFinancialGaps(row) {
   const known=value=>(typeof value==="number"||
     typeof value==="string"&&/^\d+$/.test(value.trim()))&&
     Number.isSafeInteger(Number(value))&&Number(value)>=0;
-  return !known(row?.["Выручка последнего подтвержденного года"])||
-    !known(row?.["Численность"]);
+  return {revenue:!known(row?.["Выручка последнего подтвержденного года"]),
+    employees:!known(row?.["Численность"])};
+}
+export function sabyMissingFinancials(row) {
+  const gaps=sabyFinancialGaps(row);
+  return gaps.revenue||gaps.employees;
 }
 export function sabyEligibleRows(result,{includeFinanceGaps=false,includeAll=false}={}) {
   const groups = [

@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { readSabyFinancials } from "./sabyFinancials.js";
+import {storedSabyNavigationHint} from "./sabyVisitPolicy.js";
 import {submitSabyCompanySearch,waitForSabySearchHydration}
   from "./sabySearch.js";
 import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
@@ -16,7 +17,7 @@ import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
 import { authenticateSaby, sabyCredentials } from "./sabyAuth.js";
 import { recoverSabyMissingSections } from "./sabyRecovery.js";
 import { sabyInn, sabyNameMatches, sabySearchResultMatches,
-  isSabyProfileUrl } from "./sabyEnrichment.js";
+  isSabyProfileUrl,verifiedTrucks,sabyFinancialGaps } from "./sabyEnrichment.js";
 import {selectSabyInnCandidate,verifySabyPublicNameFallback,
   safeSabyAliasDiagnostic,SABY_BRANCH_MARKER_SOURCE} from "./sabyPublicIdentityFallback.js";
 import {scanSabyResultDOM,scanSabyLegacyDOM,
@@ -182,12 +183,25 @@ async function detailSections(page) {
   };
 }
 
-async function waitForDetailSections(page, timeoutMs=7000) {
+async function waitForDetailSections(page, timeoutMs=7000, requested=null) {
   const until=Date.now()+Math.max(0,Math.min(timeoutMs,10000));
-  let found=await detailSections(page);
-  while(!found.contacts&&!found.trucks&&Date.now()<until) {
+  // The quick detail reads are opportunistic. They must not make the
+  // contact pass wait for finance or open a slow fleet overlay.
+  const read=async()=>{
+    if(!requested)return detailSections(page);
+    if(requested.contacts)
+      return {contacts:Boolean(await visibleLocator(page.getByText("Контакты",{exact:true})))};
+    if(requested.trucks)
+      return {trucks:Boolean(await visibleLocator(page.getByText("Автопарк компании",{exact:true})))};
+    // Finance-only task: do not wait for an unrelated contact/fleet widget.
+    return {financials:Boolean(await visibleLocator(page.locator(
+      '[data-qa="ContractorCard_Employees"],[data-qa="analytics-finanalysis"],[data-qa="contractorCard-CardRatingBanner__Revenue"]'
+    )))};
+  };
+  let found=await read();
+  while(!Object.values(found).some(Boolean)&&Date.now()<until) {
     await delay(450);
-    found=await detailSections(page);
+    found=await read();
   }
   return found;
 }
@@ -249,7 +263,8 @@ export async function findResultRows(page, inn, {
   return consolidateSabyResultRows(scanned,inn);
 }
 
-async function openCompany(page, row, settings) {
+async function openCompany(page, row, settings, timing=null) {
+  const searchStarted=performance.now();
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия",{scope:"company"});
@@ -496,6 +511,7 @@ async function openCompany(page, row, settings) {
   const r=rows[0].rect;
   const listingUrl=page.url();
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
+  if(timing)timing.search_ms=Math.round(performance.now()-searchStarted);
   const startCard=Date.now();
   const cardUntil=startCard+Math.min(18000,settings.timeoutMs);
   let last={ok:false,reason:"not_detail_page",detail:{route:"list"}};
@@ -600,17 +616,36 @@ async function openCompany(page, row, settings) {
     {scope:"company",code:reviewCode});
 }
 
+// Same bounded ancestor rule as the legacy locator loop, but one
+// synchronous DOM read instead of up to six Playwright round trips.
+export function readSabyContactAncestorText(heading){
+  let node=heading,text="";
+  for(let i=0;i<6;i++){
+    node=node?.parentElement;
+    if(!node)break;
+    const value=String(node.innerText||"");
+    if(value.length>1800)break;
+    text=value;
+    if(/\+7|(?:^|\s)8\s*\(|[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}/i.test(text))break;
+  }
+  return text;
+}
 async function ownContacts(page) {
   const heading=await visibleLocator(page.getByText("Контакты",{exact:true}));
   if (!heading) return {phones:[],emails:[],status:"missing"};
-  let node=heading;
   let text="";
-  for(let i=0;i<6;i++){
-    node=node.locator("xpath=..");
-    const value=await node.innerText({timeout:4000}).catch(()=>"");
-    if (value.length>1800) break;
-    text=value;
-    if (/\+7|(?:^|\s)8\s*\(|[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}/i.test(text)) break;
+  try{text=await heading.evaluate(readSabyContactAncestorText,undefined,{timeout:4000});}
+  catch{
+    // Wasaby can detach the heading between queries; preserve the
+    // existing bounded locator fallback, never read the unscoped body.
+    let node=heading;
+    for(let i=0;i<6;i++){
+      node=node.locator("xpath=..");
+      const value=await node.innerText({timeout:4000}).catch(()=>"");
+      if(value.length>1800)break;
+      text=value;
+      if(/\+7|(?:^|\s)8\s*\(|[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}/i.test(text))break;
+    }
   }
   text=text.split(/Контакты связанных компаний/i,1)[0];
   const phoneDetails=extractSabyPhoneDetails(text);
@@ -1199,33 +1234,96 @@ async function ownTrucks(page, settings,progress={}) {
   return {status:"verified",count:preview.count,vehicles:rows};
 }
 
+// A quick fleet can be accepted only on the exact same verified card,
+// and only under the full collector's exact count/model requirements.
+// No click, scroll, wait for more rows, or estimate from a partial tile.
+export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
+  if(!compareSabyVerifiedFleetDetail(originalUrl,currentUrl).ok||
+    preview?.status!=="found"||!Number.isSafeInteger(preview.count)||preview.count<0||preview.count>5000||
+    !Array.isArray(preview.rows)||preview.rows.length!==preview.count||
+    preview.rows.some(x=>!x?.model||/(?:\.\.\.|…)\s*$/.test(x.model)))
+    return {status:"missing"};
+  const verified=verifiedTrucks({trucks:{status:"verified",count:preview.count,vehicles:preview.rows}});
+  return verified?{status:"verified",...verified}:{status:"missing"};
+}
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
-  const identity=sections?(await openSavedSabyFinanceCard(page,row,settings)||
-    await openCompany(page,row,settings)):await openCompany(page,row,settings);
-  // A verified legal name and INN does not imply detail widgets are hydrated.
-  await waitForDetailSections(page, Math.min(7000,settings.timeoutMs||45000));
-  const result={identity,source:"SABY",source_url:page.url(),
+  const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
+  const timing={},timed=async(key,fn)=>{
+    const start=performance.now();
+    try{return await fn();}finally{timing[key]=Math.round(performance.now()-start);}
+  };
+  let identity;
+  try{
+    if(sections){
+      const hint=savedSabyFinanceCardUrl(row);
+      if(hint){
+        identity=await timed("saved_card_ms",()=>openSavedSabyFinanceCard(page,row,settings));
+        timing.saved_card=identity?"hit":"miss";
+      }
+    }
+    if(!identity){
+      timing.full_search=true;
+      try{identity=await timed("search_card_ms",()=>openCompany(page,row,settings,timing));}
+      finally{
+        if(Number.isFinite(timing.search_ms))timing.identity_ms=Math.max(0,timing.search_card_ms-timing.search_ms);
+        else timing.search_ms=timing.search_card_ms;
+      }
+    }
+  }catch(error){
+    // Expose only numeric allowlisted timing to the stage; a failed
+    // search or identity verification must also contribute to diagnostics.
+    if(error&&typeof error==="object")error.sabyTiming={...timing};
+    throw error;
+  }
+  const verifiedRoute=page.url();
+  const sameCard=()=>page.url()===verifiedRoute&&sabyCardRoute(verifiedRoute)==="detail"||
+    compareSabyVerifiedFleetDetail(verifiedRoute,page.url()).ok;
+  // A verified legal name and INN does not imply widgets are hydrated.
+  await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
+    optimized?sections:null));
+  const result={identity,source:"SABY",source_url:optimized?verifiedRoute:page.url(),
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
-    financials:{status:"missing"},errors:[]};
-  // Financial indicators live on the already-verified company card. Read
-  // them before opening contacts or the fleet overlay so this is one visit,
-  // not a new request, and the widgets remain company scoped.
-  if(!sections||sections.financials){
-    try { result.financials=await readSabyFinancials(page); }
-    catch { result.errors.push("financials: unavailable"); }
-  }
-  if(!sections||sections.contacts){
-    try { result.contacts=await ownContacts(page); }
-    catch { result.errors.push("contacts: "+error.message); }
-  }
-  // Do not even open the fleet overlay during the phone-first pass.
+    financials:{status:"missing"},errors:[],timing};
+  const read=async(key,fn)=>{
+    try{
+      if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
+      const value=await timed(key==="trucks"?"fleet_ms":key+"_ms",fn);
+      if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
+      result[key]=value;
+    }catch{result.errors.push(key+": unavailable");}
+  };
+  const contactRead=()=>read("contacts",()=>ownContacts(page));
+  const financeRead=()=>read("financials",()=>readSabyFinancials(page,{
+    visibleOnly:quick,
+    needsRevenue:!optimized||sabyFinancialGaps(row).revenue
+  }));
+  // New production contact visits read contacts FIRST, then only visible
+  // finance/fleet. The old collector still uses its original full order.
+  if(optimized&&sections.contacts)await contactRead();
+  if(!sections||sections.financials)await financeRead();
+  if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return result;
+  if(quick){
+    await read("trucks",async()=>{
+      const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
+      if(!heading)return {status:"missing"};
+      const preview=await truckPreview(page);
+      return quickSabyFleetFromPreview(preview,verifiedRoute,page.url());
+    });
+    return result;
+  }
+  if(optimized&&!sameCard()){result.errors.push("trucks: card_changed");return result;}
   const fleetProgress={phase:"overlay"};
   try {
-    await closeContactOverlay(page);
-    fleetProgress.phase="heading";
-    result.trucks=await ownTrucks(page,settings,fleetProgress);
+    await timed("fleet_ms",async()=>{
+      await closeContactOverlay(page);
+      fleetProgress.phase="heading";
+      if(optimized&&!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      const trucks=await ownTrucks(page,settings,fleetProgress);
+      if(optimized&&!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      result.trucks=trucks;
+    });
   } catch(error) {
     // Raw Playwright errors may contain URLs or private DOM; diagnostics
     // always use the fixed allowlisted code and never print the exception.
@@ -1285,6 +1383,8 @@ export function sameSabyDetailId(before,after){
 // verified by the earlier Stage12 run. It is a navigation hint only; never
 // accept its ownership without fresh, on-page strict INN/name verification.
 export function savedSabyFinanceCardUrl(row){
+  const hinted=storedSabyNavigationHint(row);
+  if(hinted)return hinted;
   const saved=row?.__evidence?.saby;
   const inn=sabyInn(row?.["ИНН"]);
   if(!inn||sabyInn(saved?.inn)!==inn||
@@ -1295,7 +1395,7 @@ export function savedSabyFinanceCardUrl(row){
     const id=String(target.searchParams.get("id")||"");
     if(target.protocol!=="https:"||target.hostname!=="profile.saby.ru"||
        target.username||target.password||target.port||
-       target.pathname!=="/page/contractor-info"||
+       target.pathname!=="/page/contractor-info"||target.searchParams.getAll("id").length!==1||
        !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
       return null;
     return target.href;
