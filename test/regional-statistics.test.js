@@ -69,7 +69,7 @@ test("invalid source, period, number and ambiguous label cannot masquerade as co
     row(REGIONAL_STATISTICS[0],"2026.11.26"),
     row(REGIONAL_STATISTICS[1],12,{"Период / дата актуальности":""}),
     row(REGIONAL_STATISTICS[2],12,{"Источник":"поиск"}),
-    row(REGIONAL_STATISTICS[3],10,{"Показатель":"дорожные и деревообрабатывающие компании"}),
+    row(REGIONAL_STATISTICS[3],10,{"Показатель":"дорожные ремонтно-строительные и деревообрабатывающие компании"}),
     row(REGIONAL_STATISTICS[4],12),
     row(REGIONAL_STATISTICS[4],13)
   ]);
