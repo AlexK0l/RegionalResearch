@@ -59,6 +59,21 @@ function bucket(row){
   return "fleet_missing";
 }
 const buckets=["no_trusted_card","fleet_missing","fleet_review","positive_control","zero_control"];
+const hex64=s=>typeof s==="string"&&/^[a-f0-9]{64}$/.test(s);
+function validFleetSummary(row){
+  if(row?.status==="unknown")
+    return row.count===null&&row.inventory_sha256===null&&row.known_years===null;
+  return ["positive","zero"].includes(row?.status)&&int(row.count)!==null&&row.count<=5000&&
+    (row.status==="positive"?row.count>0:row.count===0)&&hex64(row.inventory_sha256)&&
+    int(row.known_years)!==null&&row.known_years<=row.count;
+}
+const sameFleet=(a,b)=>a?.status===b?.status&&a?.count===b?.count&&
+  a?.inventory_sha256===b?.inventory_sha256&&a?.known_years===b?.known_years;
+function validPrior(row){
+  return validFleetSummary(row?.prior)&&
+    (row.stratum==="positive_control"?row.prior.status==="positive":
+      row.stratum==="zero_control"?row.prior.status==="zero":row.prior.status==="unknown");
+}
 export function auditSavedFleetCoverage(cp){
   const result=completedResult(cp);
   const plan=sabyEligibleRows(result,{includeAll:true,includeFinanceGaps:true,allCompanyFleets:true});
@@ -130,7 +145,7 @@ export function validateFleetCohort(cohort){
   for(const e of cohort.selected){
     const row=e?.row,inn=sabyInn(row?.["ИНН"]);
     if(!row||!safeRow(row)||e.key!==key(row)||keys.has(e.key)||inns.has(inn)||
-      !buckets.includes(e.stratum)||fleet(row).status!=="unknown")
+      !buckets.includes(e.stratum)||!validPrior(e)||fleet(row).status!=="unknown")
       throw Error("FLEET_ACCEPTANCE_BAD_COHORT");
     keys.add(e.key);inns.add(inn);
   }
@@ -153,7 +168,7 @@ export function summarizeFleetAcceptance({cohort,result,outcome,elapsedMs,commit
   const rows=cohort.selected.map(e=>{
     const row=byKey.get(e.key);
     if(!row)throw Error("FLEET_ACCEPTANCE_CHANGED_COHORT");
-    return {key:e.key,stratum:e.stratum,...fleet(row),...contacts(row)};
+    return {key:e.key,stratum:e.stratum,prior:structuredClone(e.prior),...fleet(row),...contacts(row)};
   });
   const positive=rows.filter(r=>r.status==="positive").length,zero=rows.filter(r=>r.status==="zero").length;
   const stats=outcome?.stats||{},timing=stats.timing||{};
@@ -174,7 +189,6 @@ export function summarizeFleetAcceptance({cohort,result,outcome,elapsedMs,commit
       positive_fleets_per_hour:Math.round(positive*3600000/elapsedMs*100)/100},
     rows};
 }
-const hex64=s=>typeof s==="string"&&/^[a-f0-9]{64}$/.test(s);
 function checkedReport(r){
   if(r?.version!==1||!hex64(r.cohort_sha256)||!hex64(r.policy_sha256)||
     !/^[a-f0-9]{40}$/.test(r.commit||"")||!str(r.region)||
@@ -184,12 +198,8 @@ function checkedReport(r){
     throw Error("FLEET_ACCEPTANCE_BAD_REPORT");
   const seen=new Set();
   for(const row of r.rows){
-    const validFleet=row?.status==="unknown"?
-      row.count===null&&row.inventory_sha256===null&&row.known_years===null:
-      ["positive","zero"].includes(row?.status)&&int(row.count)!==null&&row.count<=5000&&
-      (row.status==="positive"?row.count>0:row.count===0)&&hex64(row.inventory_sha256)&&
-      int(row.known_years)!==null&&row.known_years<=row.count;
-    if(!hex64(row?.key)||seen.has(row.key)||!buckets.includes(row.stratum)||!validFleet||
+    if(!hex64(row?.key)||seen.has(row.key)||!buckets.includes(row.stratum)||
+      !validFleetSummary(row)||!validPrior(row)||
       !Array.isArray(row.phone_sha256)||!row.phone_sha256.every(hex64)||
       !Array.isArray(row.email_sha256)||!row.email_sha256.every(hex64)||
       (row.revenue!==null&&int(row.revenue)===null)||(row.employees!==null&&int(row.employees)===null))
@@ -204,13 +214,24 @@ export function compareFleetAcceptance(baseline,candidate){
     a.region!==b.region||a.rows.length!==b.rows.length)
     throw Error("FLEET_ACCEPTANCE_UNMATCHED_RUNS");
   const byKey=new Map(b.rows.map(r=>[r.key,r]));
-  let gained=0,lost=0,inventory_changed=0,contact_or_finance_loss=0;
+  let gained=0,gained_positive=0,gained_zero=0,lost=0,inventory_changed=0,
+    contact_or_finance_loss=0,baseline_control_mismatch=0,candidate_control_mismatch=0;
   const changes=[];
   for(const x of a.rows){
     const y=byKey.get(x.key);
-    if(!y||x.stratum!==y.stratum)throw Error("FLEET_ACCEPTANCE_UNMATCHED_RUNS");
+    if(!y||x.stratum!==y.stratum||!sameFleet(x.prior,y.prior))
+      throw Error("FLEET_ACCEPTANCE_UNMATCHED_RUNS");
     const flags=[];
-    if(x.status==="unknown"&&y.status!=="unknown"){gained++;flags.push("new_verified_fleet");}
+    // Controls must really be reread. Two failures on the same known
+    // fleet must not make a zero-yield faster run an acceptance success.
+    if(x.prior.status!=="unknown"){
+      if(!sameFleet(x.prior,x)){baseline_control_mismatch++;flags.push("baseline_control_changed");}
+      if(!sameFleet(y.prior,y)){candidate_control_mismatch++;flags.push("candidate_control_changed_requires_review");}
+    }
+    if(x.status==="unknown"&&y.status!=="unknown"){
+      gained++;if(y.status==="positive")gained_positive++;else gained_zero++;
+      flags.push("new_verified_fleet");
+    }
     if(x.status!=="unknown"&&y.status==="unknown"){lost++;flags.push("lost_verified_fleet");}
     if(x.status!=="unknown"&&y.status!=="unknown"&&
       (x.count!==y.count||x.inventory_sha256!==y.inventory_sha256)){
@@ -226,11 +247,13 @@ export function compareFleetAcceptance(baseline,candidate){
   const speed_change_pct=Math.round((a.elapsed_ms-b.elapsed_ms)/a.elapsed_ms*10000)/100;
   // Never accept a shorter interrupted sweep or a smaller fleet as a gain.
   const complete=a.full_sweep_completed&&b.full_sweep_completed;
-  const no_loss=lost===0&&inventory_changed===0&&contact_or_finance_loss===0;
+  const no_loss=lost===0&&inventory_changed===0&&contact_or_finance_loss===0&&candidate_control_mismatch===0;
   const status=!complete?"incomplete_comparison":!no_loss?"coverage_or_fact_review_required":
     speed_change_pct<=0?"speed_not_improved":gained>0?"both_improved":"faster_equal_verified_coverage";
   return {region:a.region,baseline_commit:a.commit,candidate_commit:b.commit,matched:a.rows.length,
-    complete,gained_verified_fleets:gained,lost_verified_fleets:lost,inventory_changed,
+    complete,gained_verified_fleets:gained,gained_positive_fleets:gained_positive,
+    gained_zero_fleets:gained_zero,lost_verified_fleets:lost,inventory_changed,
+    baseline_control_mismatch,candidate_control_mismatch,
     contact_or_finance_loss,baseline_elapsed_ms:a.elapsed_ms,candidate_elapsed_ms:b.elapsed_ms,
     speed_change_pct,baseline:a.metrics,candidate:b.metrics,status,changes,
     note:"Matched live sample only; changed source facts require review, not automatic regression attribution. No SQLite I/O in the benchmark."};

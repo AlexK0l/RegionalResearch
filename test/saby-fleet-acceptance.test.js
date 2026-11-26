@@ -1,5 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
+import {spawnSync} from "node:child_process";
+import {fileURLToPath} from "node:url";
 import {auditSavedFleetCoverage,buildFleetCohort,cohortResult,
   summarizeFleetAcceptance,compareFleetAcceptance,validateFleetCohort} from "../src/sabyFleetAcceptance.js";
 import {applySabyEnrichment} from "../src/sabyEnrichment.js";
@@ -96,4 +102,43 @@ test("a faster fleet test cannot conceal lost contact or finance facts",()=>{
   const r=compareFleetAcceptance(summarize(cohort,old),summarize(cohort,next,{elapsedMs:2000}));
   assert.equal(r.status,"coverage_or_fact_review_required");
   assert.equal(r.contact_or_finance_loss,1);
+});
+
+test("two failed rereads of a previously verified positive control cannot pass the acceptance gate",()=>{
+  const x=a();fleet(x,[truck,truck]);
+  const cohort=plan(cp([x])),old=cohortResult(cohort),next=cohortResult(cohort);
+  const r=compareFleetAcceptance(summarize(cohort,old),summarize(cohort,next,{elapsedMs:2000}));
+  assert.equal(r.status,"coverage_or_fact_review_required");
+  assert.equal(r.baseline_control_mismatch,1);assert.equal(r.candidate_control_mismatch,1);
+  fleet(next.direct_buyers[0],[truck,truck]);
+  const fixed=compareFleetAcceptance(summarize(cohort,old),summarize(cohort,next,{elapsedMs:2000}));
+  assert.equal(fixed.status,"both_improved");
+  assert.equal(fixed.gained_positive_fleets,1);assert.equal(fixed.candidate_control_mismatch,0);
+});
+test("offline CLI audits and plans from read-only SQLite, refuses to overwrite and needs explicit idle run",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"rr-fleet-acceptance-"));
+  try{
+    const dbFile=path.join(dir,"checkpoints.sqlite"),out=path.join(dir,"cohort.json");
+    const id="12345678-1234-1234-1234-123456789abc";
+    const db=new DatabaseSync(dbFile);
+    db.exec("CREATE TABLE research_checkpoints(id TEXT,phase TEXT,status TEXT,payload TEXT)");
+    db.prepare("INSERT INTO research_checkpoints VALUES(?,?,?,?)").run(id,"completed","completed",JSON.stringify(cp([a(),b()])));
+    db.close();
+    const before=fs.readFileSync(dbFile);
+    const script=fileURLToPath(new URL("../scripts/saby-fleet-acceptance.js",import.meta.url));
+    const call=(...args)=>spawnSync(process.execPath,[script,...args],{encoding:"utf8",timeout:15000,windowsHide:true});
+    const args=["--db="+dbFile,"--checkpoint="+id];
+    const audit=call("--audit",...args);
+    assert.equal(audit.status,0,audit.stdout+audit.stderr);
+    assert.match(audit.stdout,/\[SABY_SAVED_FLEET_AUDIT\]/);
+    const first=call("--plan",...args,"--out="+out,"--limit=1");
+    assert.equal(first.status,0,first.stdout+first.stderr);
+    const bytes=fs.readFileSync(out);
+    assert.equal(JSON.parse(bytes.toString()).selected.length,1);
+    assert.notEqual(call("--plan",...args,"--out="+out).status,0);
+    assert.deepEqual(fs.readFileSync(out),bytes);
+    assert.deepEqual(fs.readFileSync(dbFile),before);
+    const blocked=call("--run","--cohort="+out);
+    assert.equal(blocked.status,2);assert.match(blocked.stdout,/IDLE_VPS_REQUIRED/);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

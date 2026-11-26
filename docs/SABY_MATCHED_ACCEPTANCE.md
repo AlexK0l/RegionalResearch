@@ -55,9 +55,12 @@ Restore the normal service after the two sequential diagnostic runs.
 
     node scripts/saby-fleet-acceptance.js --compare --baseline=/private/old-report.json --candidate=/private/new-report.json
 
-Requires exact same cohort bytes, settings digest, region and identity
-keys; checks each company's full model/year multiset (including identical
-vehicles), count and contact/finance facts. A changed inventory is flagged
+Requires exact same cohort bytes, settings digest (including Node version,
+package-lock hash), region and identity keys; checks each company's full
+model/year multiset (including identical vehicles), count and contact/finance
+facts. Compare positive/zero controls with their previously verified saved
+inventories as well, so two failed rereads of a known fleet cannot pass.
+Report gained positive and confirmed-zero fleets separately. A changed inventory is flagged
 for review, not automatically attributed to the algorithm, because the
 live source may change between runs. Reports counts of gains/losses,
 elapsed time, attempts, full searches, fleet/search timings, and complete

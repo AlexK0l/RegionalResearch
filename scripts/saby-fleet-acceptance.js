@@ -27,9 +27,10 @@ function git(root,...command){
 function requireIdleVps(){
   if(process.platform!=="linux"||!has("idle-confirmed"))
     throw Error("FLEET_ACCEPTANCE_IDLE_VPS_REQUIRED");
-  const check=spawnSync("systemctl",["show","regionalresearch","-p","ActiveState","--value"],
+  const check=spawnSync("systemctl",["show","regionalresearch","-p","LoadState","-p","ActiveState"],
     {encoding:"utf8",timeout:10000});
-  if(check.status!==0||check.stdout.trim()!=="inactive")
+  const fields=String(check.stdout||"").trim().split(/\r?\n/);
+  if(check.status!==0||!fields.includes("LoadState=loaded")||!fields.includes("ActiveState=inactive"))
     throw Error("FLEET_ACCEPTANCE_SERVICE_NOT_STOPPED");
 }
 async function main(){
@@ -109,7 +110,8 @@ async function main(){
     SABY_CIRCUIT_AFTER:integerSetting("SABY_CIRCUIT_AFTER",3,1,10)
   };
   const policy={...settings,profile_sha256:sha(fs.realpathSync(profile)),
-    browser_channel:process.env.SABY_BROWSER_CHANNEL||"",gc_exposed:typeof global.gc==="function"};
+    browser_channel:process.env.SABY_BROWSER_CHANNEL||"",gc_exposed:typeof global.gc==="function",
+    node_version:process.version,package_lock_sha256:sha(fs.readFileSync(path.join(root,"package-lock.json")))};
   const lock=path.join(profile,".regionalresearch-acceptance-lock");
   fs.mkdirSync(lock,{mode:0o700});
   try{
