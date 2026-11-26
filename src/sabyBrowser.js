@@ -51,7 +51,7 @@ import {
   tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
-import {collectSabyVehicleInventory,recoverSabyVehicleSummary} from "./sabyVehicleSummary.js";
+import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -901,7 +901,7 @@ async function sidePanelTrucks(page,expected,action="read") {
   },{expected,action,nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
 }
 
-async function ownTrucks(page, settings,progress={}) {
+async function ownTrucks(page, settings,progress={},afterHeading=null) {
   progress.phase="heading";
   const verifiedRoute=settings.publicIdentityFallback===true?page.url():null;
   const sameCompany=()=>!verifiedRoute||
@@ -924,6 +924,14 @@ async function ownTrucks(page, settings,progress={}) {
   if(!heading) {
     progress.reason="fleet_heading_missing";
     return {status:"missing"};
+  }
+  // All-category fallback gets a chance after the EXISTING single
+  // bounded heading recovery, rather than scrolling the whole card twice.
+  if(afterHeading){
+    assertCompany();
+    const collected=await afterHeading();
+    assertCompany();
+    if(collected)return collected;
   }
   progress.phase="preview";
   const readPreview=()=>truckPreview(page,{allowCountOnly:shouldUseSabyFleetTree(settings)});
@@ -1495,11 +1503,8 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       if(combined)detailAttempts.trucks=true;
-      if(allVehicles){
-        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay,
-          // Reveal a lazily mounted summary on the verified card. Avoid
-          // a second generic scroll recovery in this same visit.
-          recoverSummary:recoverSabyVehicleSummary});
+      const collectAll=async()=>{
+        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay});
         if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
         if(all.fleet)result.vehicle_fleet=all.fleet;
         if(all.partial)result.vehicle_fleet_partial=all.partial;
@@ -1510,11 +1515,23 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
           partial_groups:all.partial?.groups.length??0,
           partial_vehicles:all.partial?.groups.reduce((n,g)=>n+g.count,0)??0
         }));
-        // No second blind open of a drawer. Keep the existing truck
-        // fallback when neither a whole fleet nor truck data was read.
-        if(all.fleet||all.drawerOpened||all.trucks)return;
+        return all;
+      };
+      // If all categories are accounted for, there is no truck-only
+      // fallback to perform. A partial nontruck-only summary is still
+      // useful but is not a verified complete fleet or a verified zero.
+      const handled=all=>all.fleet||all.drawerOpened||all.trucks||
+        all.partial&&!all.partial.categories.some(g=>g.category==="Грузовые");
+      let afterHeading=null;
+      if(allVehicles){
+        const all=await collectAll();
+        if(handled(all))return;
+        if(all.status==="missing")afterHeading=async()=>{
+          const recovered=await collectAll();
+          return handled(recovered)?(recovered.trucks||{status:"missing"}):null;
+        };
       }
-      const trucks=await ownTrucks(page,settings,fleetProgress);
+      const trucks=await ownTrucks(page,settings,fleetProgress,afterHeading);
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       result.trucks=trucks;

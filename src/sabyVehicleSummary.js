@@ -2,7 +2,6 @@
 // Wasaby renders invisible-tile-item-* measurement clones. Never count them.
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
 import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
-import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
 import {readSabyFleetTree,collectSabyFleetTree} from "./sabyFleetTree.js";
 export function scanSabyVehicleSummaryDOM(){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
@@ -127,5 +126,3 @@ export async function collectSabyVehicleInventory(page,{
   }catch{/* No speculative second click. */}
   return outcome();
 }
-
-export const recoverSabyVehicleSummary=recoverSabyFleetHeading;

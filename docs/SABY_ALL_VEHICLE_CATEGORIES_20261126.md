@@ -20,8 +20,9 @@ are saved separately with their own observation dates and carried only
 when the new reconciled count still matches. Never synthesize a verified
 whole fleet from different visits. New contradictory observations reopen
 the whole-fleet gap. Existing complete small-fleet reads avoid scrolling.
-Full reads may use the exact bounded profile scroller to reveal a lazy
-summary, whereas quick reads never scroll. Nontruck summaries in
+Full reads reuse the original exact bounded heading recovery to reveal
+a lazy summary; the all-category fallback never scrolls the card a second
+time. Quick reads never scroll. Nontruck summaries in
 existing transport field and comments, no column/sheet additions.
 Stage13 deterministic transport parser excludes the new Saby summary
 just like the old truck summary. No assumed trailer points.
