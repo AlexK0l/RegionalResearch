@@ -38,7 +38,7 @@ import {probeSabyFleetTailClick}
   from "./sabyFleetTailInteraction.js";
 import {collectSabyFleetTailBatches}
   from "./sabyFleetTailBatches.js";
-import {collectSabyFleetTree,readSabyFleetTree}
+import {collectSabyFleetTree,readSabyFleetTree,recoverSabyFleetFromOpenDrawer}
   from "./sabyFleetTree.js";
 import {openSabyVerifiedFleetTreePanel}
   from "./sabyFleetTreeOpening.js";
@@ -928,6 +928,35 @@ async function ownTrucks(page, settings,progress={}) {
   const readPreview=()=>truckPreview(page,{allowCountOnly:shouldUseSabyFleetTree(settings)});
   assertCompany();
   let preview=await readPreview();
+  // Only an exact, already-open, same-company Wasaby drawer can
+  // bypass the preview requirement. No new speculative heading/tile
+  // click or absent-category-to-zero rule.
+  const tryOpenDrawer=async()=>{
+    if(!verifiedRoute||!shouldUseSabyFleetTree(settings))return null;
+    assertCompany();
+    const drawer=await recoverSabyFleetFromOpenDrawer(page,{
+      originalUrl:verifiedRoute,wait:delay,maxClicks:20,maxMs:175000
+    });
+    assertCompany();
+    if(drawer.reason!=="tree_missing"){
+      const {vehicles,...safeTree}=drawer;
+      progress.fleet_tree=safeTree;
+      console.info("[SABY_FLEET_OPEN_DRAWER] "+JSON.stringify(safeTree));
+      if(drawer.status==="complete"){
+        const verified=verifiedTrucks({trucks:{
+          status:"verified",count:drawer.expected,vehicles
+        }});
+        if(verified){
+          progress.expected_trucks=verified.count;
+          progress.parsed_vehicle_rows=verified.vehicles.length;
+          progress.side_panel_observed=true;
+          progress.stitch_reason="exact_count";
+          return {status:"verified",...verified};
+        }
+      }
+    }
+    return null;
+  };
   if(preview.status==="missing") {
     // A newly mounted heading may precede the truck widget. Give it a
     // short passive chance before touching the existing heading control.
@@ -937,13 +966,38 @@ async function ownTrucks(page, settings,progress={}) {
       }
     }
     if(preview.status==="missing"){
+      const existing=await tryOpenDrawer();
+      if(existing)return existing;
       assertCompany();
-      await heading.click({timeout:4000}).catch(()=>{});
+      // A drawer that is visible but hydrating must not be toggled
+      // shut by another heading click.
+      const openTitle=verifiedRoute&&shouldUseSabyFleetTree(settings)?
+        await visibleLocator(page.locator(
+          '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
+        )):null;
+      assertCompany();
+      if(!openTitle)await heading.click({timeout:4000}).catch(()=>{});
       const until=Date.now()+9000;
+      // Poll within the ORIGINAL preview window. When the real drawer
+      // mounts, try its structural count rather than wait exclusively
+      // for the summary tile. Do not repeatedly expand an incomplete
+      // observed tree: at most one positive-count collection per visit.
+      let triedTree=false;
       while(Date.now()<until) {
         assertCompany();
         preview=await readPreview();
         if(preview.status!=="missing") break;
+        if(!triedTree&&verifiedRoute&&shouldUseSabyFleetTree(settings)){
+          const title=await visibleLocator(page.locator(
+            '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
+          ));
+          assertCompany();
+          if(title){
+            const recovered=await tryOpenDrawer();
+            if(recovered)return recovered;
+            triedTree=Number.isSafeInteger(progress.fleet_tree?.expected)&&progress.fleet_tree.expected>0;
+          }
+        }
         await delay(350);
       }
     }
@@ -1421,6 +1475,8 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       result.trucks=trucks;
+      if(trucks.status==="missing"&&fleetProgress.reason==="fleet_heading_missing")
+        result.errors.push("trucks: fleet_heading_missing");
     });
   } catch(error) {
     // Raw Playwright errors may contain URLs or private DOM; diagnostics

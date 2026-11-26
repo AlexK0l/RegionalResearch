@@ -120,3 +120,21 @@ test("a positive unique count tile with excess labels can open only the full tre
     if(oldWidth===undefined)delete globalThis.innerWidth;else globalThis.innerWidth=oldWidth;
   }
 });
+
+
+test("one remount of the exact fleet scroll wrapper preserves bounded recovery",async()=>{
+  const x=fixture({mountAt:500});
+  const original=x.page.locator.bind(x.page);
+  let failed=false,reselected=0;
+  x.page.locator=s=>{
+    reselected++;
+    const locator=original(s),evaluate=locator.evaluate.bind(locator);
+    return {...locator,evaluate:async(fn,arg,options)=>{
+      if(typeof arg==="number"&&arg===.25&&!failed){failed=true;throw Error("detached");}
+      return evaluate(fn,arg,options);
+    }};
+  };
+  const r=await recoverSabyFleetHeading(x.page,x);
+  assert.equal(r.status,"revealed");assert.equal(r.scrollSteps,3);
+  assert.equal(reselected,2);assert.equal(x.selectors[0],x.selectors[1]);
+});

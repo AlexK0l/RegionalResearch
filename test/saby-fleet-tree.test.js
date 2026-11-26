@@ -282,3 +282,65 @@ test("semantic collector requires explicit smoke or gated production selection; 
   assert.match(src,/Unchanged Stage12 behavior for nonexperimental runs/);
   assert.match(src,/settings\.publicIdentityFallback===true/);
 });
+
+
+test("open drawer discovery must be explicit and still require same first-party verified route",async()=>{
+  let evaluations=0;
+  const page={url:()=>firstParty,evaluate:async(_fn,args)=>{
+    evaluations++;assert.equal(args.discover,true);assert.equal(args.expected,undefined);
+    return raw(2,{expected:2,hasMore:false});
+  }};
+  assert.equal((await readSabyFleetTree(page,{})).reason,"invalid_setup");
+  assert.equal(evaluations,0);
+  const observed=await readSabyFleetTree(page,{discoverCount:true});
+  assert.equal(observed.expected,2);
+  assert.equal(evaluations,1);
+});
+
+test("open drawer fallback discovers exact count, validates again and expands only that category",async()=>{
+  const {recoverSabyFleetFromOpenDrawer}=await import("../src/sabyFleetTree.js");
+  const m=fakeBrowser({counts:[2,4],expected:4});
+  let discovered=0;
+  const read=async(p,options)=>{
+    if(options.discoverCount){discovered++;return raw(2,{expected:4});}
+    return m.read(p,options);
+  };
+  const out=await recoverSabyFleetFromOpenDrawer(m.page,{originalUrl:firstParty,read,wait:async()=>{}});
+  assert.equal(discovered,1);assert.equal(out.status,"complete");
+  assert.equal(out.expected,4);assert.equal(out.vehicles.length,4);assert.equal(m.clicks,1);
+});
+
+test("open drawer fallback never treats absent or ambiguous trucks as confirmed zero",async()=>{
+  const {recoverSabyFleetFromOpenDrawer}=await import("../src/sabyFleetTree.js");
+  for(const snapshot of [{status:"invalid",reason:"truck_category_missing"},
+    {status:"invalid",reason:"truck_category_ambiguous"},raw(0,{expected:0}),
+    raw(1,{expected:6000})]){
+    const result=await recoverSabyFleetFromOpenDrawer({url:()=>firstParty},{
+      originalUrl:firstParty,read:async()=>snapshot,
+      collect:async()=>assert.fail("invalid snapshot cannot collect")
+    });
+    assert.equal(result.status,"incomplete");assert.equal(result.vehicles,null);
+  }
+});
+
+test("discovered complete drawer still requires fresh matching count and ordered rows",async()=>{
+  const {recoverSabyFleetFromOpenDrawer}=await import("../src/sabyFleetTree.js");
+  for(const changed of [raw(2,{expected:3}),raw(2,{expected:2,category:"-7"}),
+    {...raw(2,{expected:2}),rows:[{key:"replacement",label:"КАМАЗ 5490"},raw(2).rows[1]]}]){
+    let reads=0;
+    const out=await recoverSabyFleetFromOpenDrawer({url:()=>firstParty,
+      locator:()=>assert.fail("no click on changed tree")},{
+      originalUrl:firstParty,read:async()=>++reads===1?raw(2,{expected:2}):changed
+    });
+    assert.equal(out.status,"incomplete");assert.equal(out.vehicles,null);assert.equal(reads,2);
+  }
+});
+test("route changes during drawer discovery prohibit all further reads and clicks",async()=>{
+  const {recoverSabyFleetFromOpenDrawer}=await import("../src/sabyFleetTree.js");
+  let route=firstParty;
+  const result=await recoverSabyFleetFromOpenDrawer({url:()=>route},{
+    originalUrl:firstParty,read:async()=>{route=otherCompany;return raw(1,{expected:1});},
+    collect:async()=>assert.fail("changed company")
+  });
+  assert.equal(result.reason,"wrong_company");assert.equal(result.vehicles,null);
+});

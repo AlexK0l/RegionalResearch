@@ -13,7 +13,7 @@ const PROFILE_SCROLL='[data-qa="contractorCard-dialog-Stack"] '+
 export async function recoverSabyFleetHeading(page,{
   readHeading,sameCompany,wait=ms=>sleep(ms)
 }={}){
-  let scroller,original,scrollSteps=0,found=false;
+  let scroller,original,scrollSteps=0,found=false,reacquired=false;
   const outcome=(status,heading=null)=>({status,heading,scrollSteps});
   const safe=()=>sameCompany?.()===true;
   const read=async()=>{
@@ -49,9 +49,21 @@ export async function recoverSabyFleetHeading(page,{
       if(await scroller.count()!==1||!await scroller.isVisible())
         return outcome("scroller_unavailable");
       if(!safe())return outcome("card_changed");
-      await scroller.evaluate((el,part)=>{
+      const move=target=>target.evaluate((el,part)=>{
         el.scrollTop=Math.round(Math.max(0,el.scrollHeight-el.clientHeight)*part);
       },fraction,{timeout:1800});
+      try{await move(scroller);}
+      catch{
+        if(reacquired||!safe())return outcome(safe()?"recovery_unavailable":"card_changed");
+        reacquired=true;
+        await wait(400);
+        if(!safe())return outcome("card_changed");
+        const mounted=page.locator(PROFILE_SCROLL);
+        if(await mounted.count()!==1||!await mounted.isVisible()||!safe())
+          return outcome("scroller_unavailable");
+        scroller=mounted;
+        await move(scroller);
+      }
       scrollSteps++;
       if(!safe())return outcome("card_changed");
       await wait(450);
