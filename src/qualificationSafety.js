@@ -256,7 +256,10 @@ export function rejectUnsafeAEvidence(record, note) {
   // event evidence, a request to verify the fleet, or a catalogue with no
   // actual service event. Do not veto other independent positive notes.
   const deniedEvent = /(?:нет|отсутству[ею]т)\s+(?:прямых\s+)?(?:свидетельств|доказательств|подтвержден[а-я]*|сведений)\s+(?:о\s+)?(?:закупк|эксплуатац|владени|приобретени|ремонт|конкретн.{0,20}парк)|(?:наличие|эксплуатация|принадлежность).{0,110}(?:прицеп|полуприцеп|тягач).{0,65}(?:требует проверки|нужно проверить|не установлена)|(?:юридическ.{0,20}лицо|владелец|собственник).{0,85}(?:техник|парк|прицеп|полуприцеп).{0,60}не установлен|(?:подтверждени[яй]|доказательств).{0,45}конкретн.{0,25}(?:парк|ремонт|сделк).{0,45}недостаточно|(?:конкретн.{0,45}(?:выполненн.{0,15}ремонт|заказ[- ]наряд|клиент|выполненн.{0,15}работ)).{0,50}(?:нет|не опубликован|не подтвержден|не найден)/u;
-  if (deniedEvent.test(s)) return "explicitly_unconfirmed_trailer_or_service_event";
+  // Do not let a negative statement about a specific trip reach back
+  // across a clause boundary into independent registered ownership.
+  if (s.split(/;\s*|\.\s+|\s+(?:но|однако)\s+/u).some(clause=>deniedEvent.test(clause)))
+    return "explicitly_unconfirmed_trailer_or_service_event";
   const insolvencyDisposal = BANKRUPTCY_DISPOSAL_A.test(s) ||
     (/(?:банкротств|конкурсн.{0,20}производств|ликвидационн.{0,25}торг)/.test(s) &&
      /(?:продаж|реализац|отчужд|торг)/.test(s));
