@@ -221,8 +221,10 @@ app.get("/health", async (_req, res) => {
   });
 });
 
-app.get("/api/config", (_req, res) => {
-  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled });
+app.get("/api/config", async (_req, res) => {
+  const store = await checkpointBackendStatus().catch(() => null);
+  res.json({ steps: STEPS, pipelineVersion: PIPELINE_VERSION, webSessionAuth: browserAuth.enabled,
+    durableCheckpoints: Boolean(store?.backend === "sqlite" && store.ready && !store.ephemeral_storage) });
 });
 
 // One region can have a finalized full-research checkpoint plus newer
