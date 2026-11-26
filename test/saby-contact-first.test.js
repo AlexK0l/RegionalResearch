@@ -305,3 +305,70 @@ test("a fast attempt with no usable facts saves its verified route and resumes t
   assert.equal(out.stats.timing.visits,2);
   assert.equal(out.stats.timing.search_ms,10);
 });
+
+
+test("fresh full sweep collects all three commercial groups even with existing contacts and finances",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета"),c=row("7710140679","Гамма");
+  const db={direct_buyers:[a],intermediaries:[b],leasing:[c],statistics:[]};
+  for(const r of [a,b,c]){
+    r["Телефон"]="74951234567";r["Электронная почта"]="sales@alpha.ru";
+    r["Выручка последнего подтвержденного года"]=1000000;r["Численность"]=12;
+  }
+  const visits=[];
+  const out=await runSabyContactFirst({result:db,env:{...env,SABY_FAST_PASS_ENABLED:"true"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      visits.push([r["ИНН"],sections.contacts,sections.trucks]);
+      const got=record(r,sections);
+      if(r===c)got.trucks={status:"verified",count:0,vehicles:[]};
+      return got;
+    }});
+  assert.equal(visits.length,3);
+  assert.ok(visits.every(v=>!v[1]&&v[2]));
+  assert.equal(out.passState.fleet_scope,"all_commercial_v1");
+  assert.equal(out.stats.fleetCoverage.positive,2);
+  assert.equal(out.stats.fleetCoverage.zero,1);
+  assert.equal(out.stats.fleetCoverage.unknown,0);
+  assert.equal(out.stats.fleetCoverage.by_sheet.intermediaries.positive,1);
+  assert.equal(out.stats.fleetCoverage.by_sheet.leasing.zero,1);
+  assert.equal(out.stats.fleetCoverage.vehicles,2);
+  assert.deepEqual(out.deferredInns,[]);
+  assert.match(b["Наличие транспорта"],/КАМАЗ 5490/);
+  assert.equal(c.__evidence.saby.trucks.count,0);
+});
+
+test("old cursor retains direct-only scope and new all-group cursor pins scope across env changes",async()=>{
+  const b=row(innB,"Бета");
+  b["Телефон"]="74951234568";b["Электронная почта"]="sales@beta.ru";
+  b["Выручка последнего подтвержденного года"]=1000000;b["Численность"]=12;
+  const db={direct_buyers:[],intermediaries:[b],leasing:[],statistics:[]};
+  const old=await runSabyContactFirst({result:db,env,sessionRunner,
+    passState:{version:1,planned_inns:[innB],attempted:[],phase_index:2},
+    collectSections:()=>assert.fail("legacy scope must not invent new work")});
+  assert.equal(old.passState.fleet_scope,"direct_buyers_v1");
+  assert.equal(old.stats.fleetCoverage.target,0);
+  let saved;
+  await assert.rejects(runSabyContactFirst({result:db,env,sessionRunner,
+    acquireSabyBrowser:async()=>{throw new MemoryPauseError();},
+    persistCheckpoint:async(_phase,p)=>{saved=structuredClone(p);}}),isMemoryPause);
+  assert.equal(saved.saby_pass_state.fleet_scope,"all_commercial_v1");
+  let visits=0;
+  const resumed=await runSabyContactFirst({result:saved.final_result,
+    passState:saved.saby_pass_state,env:{...env,SABY_ALL_COMPANY_FLEETS_ENABLED:"false"},sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      visits++;assert.equal(sections.trucks,true);return record(r,sections);
+    }});
+  assert.equal(visits,1);
+  assert.equal(resumed.passState.fleet_scope,"all_commercial_v1");
+  assert.equal(resumed.stats.fleetCoverage.positive,1);
+});
+
+test("fresh scope opt-out does not add historical intermediary fleet work",async()=>{
+  const b=row(innB,"Бета");
+  Object.assign(b,{"Телефон":"74951234568","Электронная почта":"sales@beta.ru",
+    "Выручка последнего подтвержденного года":1000000,"Численность":12});
+  const out=await runSabyContactFirst({result:{direct_buyers:[],intermediaries:[b],leasing:[]},
+    env:{...env,SABY_ALL_COMPANY_FLEETS_ENABLED:"false"},
+    sessionRunner:()=>assert.fail("no unresolved sections")});
+  assert.equal(out.passState.fleet_scope,"direct_buyers_v1");
+  assert.equal(out.stats.fleetCoverage.target,0);
+});

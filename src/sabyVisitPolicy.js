@@ -3,10 +3,26 @@
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
 export const SABY_FAST_STRATEGY="combined_visible_v1";
 export const SABY_LEGACY_STRATEGY="section_passes_v1";
+export const SABY_ALL_FLEETS_SCOPE="all_commercial_v1";
+export const SABY_DIRECT_FLEETS_SCOPE="direct_buyers_v1";
+
+export function validSabyPassCursor(raw){
+  return raw?.version===1&&Array.isArray(raw.planned_inns)&&Array.isArray(raw.attempted);
+}
+// Pin the set of required fleet sections when the sweep is planned.
+// Upgrading a running old sweep never silently reinterprets an attempted
+// intermediary/lease task as a completed fleet task.
+export function sabyFleetScope(env,raw){
+  if(validSabyPassCursor(raw))
+    return raw.fleet_scope===SABY_ALL_FLEETS_SCOPE?
+      SABY_ALL_FLEETS_SCOPE:SABY_DIRECT_FLEETS_SCOPE;
+  return String(env?.SABY_ALL_COMPANY_FLEETS_ENABLED??"true").toLowerCase()==="false"?
+    SABY_DIRECT_FLEETS_SCOPE:SABY_ALL_FLEETS_SCOPE;
+}
 export function sabyVisitStrategy(env,raw){
   // The old v1 cursor already counts section attempts. Keep its scheduling
   // semantics for the remainder of that sweep, including after a restart.
-  if(raw?.version===1&&Array.isArray(raw.planned_inns)&&Array.isArray(raw.attempted))
+  if(validSabyPassCursor(raw))
     return raw.strategy===SABY_FAST_STRATEGY?SABY_FAST_STRATEGY:SABY_LEGACY_STRATEGY;
   return String(env?.SABY_FAST_PASS_ENABLED??"true").toLowerCase()==="false"?
     SABY_LEGACY_STRATEGY:SABY_FAST_STRATEGY;

@@ -142,11 +142,28 @@ export function sabyMissingFinancials(row) {
   const gaps=sabyFinancialGaps(row);
   return gaps.revenue||gaps.employees;
 }
-export function sabyEligibleRows(result,{includeFinanceGaps=false,includeAll=false}={}) {
+// Single shared gap calculation for fresh plans, resumable passes and
+// coverage reporting. A missing widget is never a confirmed zero fleet.
+export function sabyWorkGaps(entry) {
+  const {row,transport}=entry;
+  const coverage=sabyStoredSectionCoverage(row,{transport});
+  return {
+    contacts:!hasKnownPhone(row["Телефон"])||!companyEmailCell(row),
+    financials:sabyMissingFinancials(row),
+    trucks:transport&&!coverage.trucks,
+    fleetCount:transport&&coverage.trucks?row.__evidence.saby.trucks.count:null
+  };
+}
+export function sabyHasWork(gaps){
+  return Boolean(gaps?.contacts||gaps?.financials||gaps?.trucks);
+}
+
+export function sabyEligibleRows(result,{includeFinanceGaps=false,includeAll=false,
+  allCompanyFleets=false}={}) {
   const groups = [
     ...(result?.direct_buyers || []).map(row => ({row, transport:true})),
-    ...(result?.intermediaries || []).map(row => ({row, transport:false})),
-    ...(result?.leasing || []).map(row => ({row, transport:false}))
+    ...(result?.intermediaries || []).map(row => ({row, transport:allCompanyFleets})),
+    ...(result?.leasing || []).map(row => ({row, transport:allCompanyFleets}))
   ];
   const counts = new Map();
   for (const {row} of groups) {
@@ -176,6 +193,36 @@ export function sabyEligibleRows(result,{includeFinanceGaps=false,includeAll=fal
     return score(b)-score(a);
   });
   return {eligible, duplicates, invalid};
+}
+
+// Aggregate the exact verified fleet status once per eligible row. Rows
+// excluded for identity ambiguity count as blocked, not zero vehicles.
+// No list of raw INNs, vehicles or URLs is written to the stats object.
+export function sabyFleetCoverage(result,plan,gaps){
+  const sheetByRow=new Map();
+  for(const sheet of ["direct_buyers","intermediaries","leasing"]){
+    for(const row of result?.[sheet]||[])sheetByRow.set(row,sheet);
+  }
+  const blank=()=>({target:0,eligible:0,invalid:0,duplicate:0,
+    positive:0,zero:0,unknown:0,vehicles:0});
+  const total=blank(),by_sheet=Object.fromEntries(
+    ["direct_buyers","intermediaries","leasing"].map(key=>[key,blank()]));
+  const add=(entry,category)=>{
+    if(!entry.transport)return;
+    const bins=[total,by_sheet[sheetByRow.get(entry.row)]].filter(Boolean);
+    const count=category==="eligible"?
+      (gaps?.get(entry)??sabyWorkGaps(entry)).fleetCount:null;
+    for(const bin of bins){
+      bin.target++;bin[category]++;
+      if(count===null)bin.unknown++;
+      else if(count===0)bin.zero++;
+      else {bin.positive++;bin.vehicles+=count;}
+    }
+  };
+  for(const entry of plan.eligible)add(entry,"eligible");
+  for(const entry of plan.invalid)add(entry,"invalid");
+  for(const entry of plan.duplicates)add(entry,"duplicate");
+  return {...total,by_sheet};
 }
 
 function sourceValid(record, row) {

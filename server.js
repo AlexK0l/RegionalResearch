@@ -265,7 +265,7 @@ async function latestSabyCheckpointForRegion(region) {
     .sort((a,b)=>Date.parse(b.updated_at||"")-Date.parse(a.updated_at||""))[0];
   if (!latest) return null;
   const snapshot=await loadCheckpoint(latest.id);
-  const validated=validateSabyOnlySource(snapshot);
+  const validated=validateSabyOnlySource(snapshot,{contactFirst:true});
   return validated.ok
     ? {...latest,...checkpointSummary(validated.checkpoint),
         id:latest.id,available:true,
@@ -783,7 +783,7 @@ app.post("/api/jobs", async (req, res) => {
     if (!persisted) return res.status(404).json({
       code:"CHECKPOINT_NOT_FOUND",error:"Checkpoint не найден в SQLite"
     });
-    const checked=validateSabyOnlySource(persisted);
+    const checked=validateSabyOnlySource(persisted,{contactFirst:true});
     if (!checked.ok) return res.status(409).json({
       code:checked.code,
       error:"Этот checkpoint не готов для продолжения только Saby"
