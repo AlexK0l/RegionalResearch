@@ -35,7 +35,7 @@ const hasSource=value=>String(value??"").match(/https?:\/\/[^\s<>"']+/g)?.some(r
   catch{return false;}
 })===true;
 const knownNumber=value=>typeof value==="number"?Number.isFinite(value)&&value>=0:
-  /^\d+(?:[ ,.\u00a0\u202f]\d+)*$/u.test(String(value??"").trim());
+  typeof value==="string"&&/^(?:\d+|\d{1,3}(?:[ \u00a0\u202f]\d{3})+)(?:[.,]\d+)?$/u.test(value.trim());
 function validRow(row){
   if(!row||typeof row!=="object"||row.__statistics_unresolved===true)return false;
   const value=row["Значение"],method=String(row["Методика / примечание"]??"").trim();
@@ -50,6 +50,7 @@ function canonicalRow(row,item){
 }
 function ingest(rows,accepted,allowed,diagnostics){
   for(const row of Array.isArray(rows)?rows:[]){
+    if(row?.__statistics_unresolved===true)continue;
     const id=regionalStatisticId(row?.["Показатель"]);
     if(!id||!allowed.has(id)||!validRow(row)){
       diagnostics.rejected++;
@@ -67,8 +68,9 @@ function ingest(rows,accepted,allowed,diagnostics){
 export function regionalStatisticsCoverage(rows){
   const accepted=new Map(),diagnostics={rejected:0,duplicate_conflicts:0};
   ingest(rows,accepted,new Set(REGIONAL_STATISTICS.map(x=>x.id)),diagnostics);
+  const numeric=[...accepted.values()].filter(row=>knownNumber(row["Значение"])).length;
   return {complete:accepted.size===REGIONAL_STATISTICS.length,
-    accepted:accepted.size,missing:REGIONAL_STATISTICS.filter(x=>!accepted.has(x.id)).map(x=>x.id),
+    accepted:accepted.size,numeric,explicit_unavailable:accepted.size-numeric,missing:REGIONAL_STATISTICS.filter(x=>!accepted.has(x.id)).map(x=>x.id),
     ...diagnostics};
 }
 export function regionalStatisticsPrompt(items){
@@ -98,7 +100,9 @@ export async function runRegionalStatistics({
   const missing=()=>REGIONAL_STATISTICS.filter(x=>!accepted.has(x.id));
   const snapshot=()=>{
     const unresolved=missing();
-    const state={version:1,attempts,accepted:accepted.size,missing:unresolved.map(x=>x.id),
+    const numeric=[...accepted.values()].filter(row=>knownNumber(row["Значение"])).length;
+    const state={version:1,attempts,accepted:accepted.size,numeric,
+      explicit_unavailable:accepted.size-numeric,missing:unresolved.map(x=>x.id),
       complete:unresolved.length===0,status:unresolved.length===0?"complete":status,
       last_error:lastError,...diagnostics};
     const rows=REGIONAL_STATISTICS.map(item=>accepted.get(item.id)||{
