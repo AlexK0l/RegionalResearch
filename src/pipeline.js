@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import {createDiscoveryCallLedger,fatalDiscoveryError} from "./discoveryCallLedger.js";
+import {isOpenAIBillingStop,guardOpenAIResponses} from "./openaiBillingGuard.js";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey, numberedLegalNameConflict } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
@@ -1373,7 +1375,8 @@ async function runEntityCensusAndGapSearch({
   region,
   parts,
   researchScopes,
-  assertNotCancelled
+  assertNotCancelled,
+  query = (_key, request) => request()
 }) {
   const existing = emptyResearchResult();
   for (const part of parts) appendResearchResult(existing, part, "pre-census");
@@ -1384,13 +1387,13 @@ async function runEntityCensusAndGapSearch({
   for (let index = 0; index < ENTITY_CENSUS_BUCKETS.length; index++) {
     await assertNotCancelled();
     const bucket = ENTITY_CENSUS_BUCKETS[index];
-    const result = normalize(await askResearch(
+    const result = normalize(await query("census:" + bucket.key, () => askResearch(
       client,
       entityCensusPrompt({ region, bucket, alreadyFound: known }),
       RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
       `entity census | ${bucket.key} | ${index + 1}/${ENTITY_CENSUS_BUCKETS.length}`,
       3
-    ));
+    )));
     appendResearchResult(additions, result, `census-${bucket.key}`);
     mergeKnownOrganizationNames(known, result);
     console.log("[ENTITY_CENSUS_RESULT] " + JSON.stringify({
@@ -1418,7 +1421,7 @@ async function runEntityCensusAndGapSearch({
     await assertNotCancelled();
     const bucket = gapBuckets[index];
     const geo = coverage.undercovered_geography[index % Math.max(1, coverage.undercovered_geography.length)]?.scope || "";
-    const result = normalize(await askResearch(
+    const result = normalize(await query("gap:" + bucket.key, () => askResearch(
       client,
       entityCensusPrompt({
         region,
@@ -1429,7 +1432,7 @@ async function runEntityCensusAndGapSearch({
       RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
       `coverage gap | ${bucket.key} | ${index + 1}/${gapBuckets.length}`,
       3
-    ));
+    )));
     appendResearchResult(additions, result, `coverage-gap-${bucket.key}`);
     appendResearchResult(combined, result, `coverage-gap-${bucket.key}`);
     mergeKnownOrganizationNames(known, result);
@@ -1562,7 +1565,8 @@ async function runResearchMicroBatch({
   branches,
   scopes,
   extraContext = "",
-  alreadyFound = []
+  alreadyFound = [],
+  queryScope = (_scopeIndex, request) => request()
 }) {
   const selectedScopes = discoveryScopesForBranch(stageIndex, branchIndex, scopes);
   const merged = emptyResearchResult();
@@ -1600,7 +1604,7 @@ async function runResearchMicroBatch({
       : "";
 
     try {
-      const value = await askResearch(
+      const value = await queryScope(scopeIndex, () => askResearch(
         client,
         compactDiscoveryPrompt({
           region,
@@ -1613,7 +1617,7 @@ async function runResearchMicroBatch({
         }),
         RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
         `этап ${stageIndex + 1} | ветка ${branchIndex + 1}/${branches.length} | ${branch} | ${scope}`
-      );
+      ));
 
       const normalized = normalize(value);
       const yieldStats = discoveryYieldStats(normalized, beforeKnown);
@@ -1688,7 +1692,7 @@ async function runResearchMicroBatch({
         }
       }
     } catch (error) {
-      if (isWebBudgetStop(error)) throw error;
+      if (isWebBudgetStop(error) || isOpenAIBillingStop(error) || fatalDiscoveryError(error)) throw error;
       if (!firstError) firstError = error;
     }
   }
@@ -4887,16 +4891,6 @@ function isWebBudgetStop(error) {
   return error?.code === "WEB_BUDGET_STOP" || error?.name === "WebBudgetStopError";
 }
 
-function isOpenAIBillingStop(error) {
-  const message = String(error?.message || error || "").toLowerCase();
-  return (
-    message.includes("no credits remaining") ||
-    message.includes("insufficient_quota") ||
-    message.includes("billing") && message.includes("credit") ||
-    message.includes("quota") && message.includes("exceeded")
-  );
-}
-
 function diagnosticRowCount(data) {
   return (
     (Array.isArray(data?.direct_buyers) ? data.direct_buyers.length : 0) +
@@ -5150,12 +5144,12 @@ async function askJson(client, {
             repairRequest,
             requestOptions
           );
+          repairUsage = repairedResponse?.usage || null;
+          recordTokenUsage(client, repairUsage);
           if (!repairedResponse.status || repairedResponse.status === "completed") {
             parsed = parseJson(repairedResponse.output_text || "");
             repaired = true;
             parseError = "";
-            repairUsage = repairedResponse?.usage || null;
-            recordTokenUsage(client, repairUsage);
             console.log("[OPENAI_JSON_REPAIR] " + JSON.stringify({
               query,
               model,
@@ -5168,6 +5162,7 @@ async function askJson(client, {
             }));
           }
         } catch (repairError) {
+          if (isOpenAIBillingStop(repairError)) throw repairError;
           console.error("[OPENAI_JSON_REPAIR] " + JSON.stringify({
             query,
             model,
@@ -6048,6 +6043,7 @@ export async function runResearchPipeline({ job, apiKey }) {
   if (!apiKey) throw new Error("OpenAI API key is required");
 
   const client = new OpenAI({ apiKey });
+  guardOpenAIResponses(client, {beforeRequest:job.beforeOpenAIRequest,onBillingStop:job.onOpenAIBillingStop});
   client.__tokenUsage = emptyTokenUsage();
   client.__webUsage = { total: 0, by_scope: {} };
   const jobSignal = job.abortController?.signal;
@@ -6130,7 +6126,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     (!resumeCheckpoint||Number(PIPELINE_PHASE_ORDER[phase]??-1)>=
       Number(PIPELINE_PHASE_ORDER[resumeCheckpoint.phase]??-1)));
   const memorySafePoint=async()=>{await job.memorySafePoint?.();};
-  const persistCheckpoint = async (phase, patch = {}, memorySafe=false) => {
+  const persistCheckpoint = async (phase, patch = {}, memorySafe=false, skipSafePoint=false) => {
     // A resumed Stage11/12 snapshot is newer than Stage10. Replaying an
     // older deterministic step must never downgrade the only durable source
     // back to final_inn/enrichment/statistics before it can advance.
@@ -6173,7 +6169,7 @@ export async function runResearchPipeline({ job, apiKey }) {
     }));
     // Only quiescent, committed boundaries may unwind this job. Do not
     // throw out of checkpoint callbacks of concurrent paid workers.
-    if(executionMode==="full"&&(memorySafe||
+    if(!skipSafePoint&&executionMode==="full"&&(memorySafe||
       ["starting","pre_identity","identity","final_batches","dedupe","qualification","statistics","saby","priority"].includes(phase)||
       (phase==="contacts"&&patch.stage11_completed===true)))
       await memorySafePoint();
@@ -6199,12 +6195,13 @@ export async function runResearchPipeline({ job, apiKey }) {
       }
     });
 
+  try {
   await progress({ phase: "starting", percent: 0 });
   // The Stage11 finalization marker (or later durable Saby/Stage13 state)
   // is authoritative: do not re-enter the paid identity/enrichment/contact
   // stages, and never downgrade this source to a Stage10 checkpoint.
   if(resumeCheckpoint && canResumeFromCompletedContacts(resumeCheckpoint)){
-    return runLateCheckpointResume({
+    return await runLateCheckpointResume({
       checkpoint:resumeCheckpoint,
       sourceJobId:String(job.data?.sourceJobId||""),
       client,env:process.env,signal:jobSignal,
@@ -6364,6 +6361,11 @@ export async function runResearchPipeline({ job, apiKey }) {
     }));
   }
 
+  if(executionMode==="full"&&!checkpointPhaseAtLeast(resumeCheckpoint,"pre_identity")&&
+      !Array.isArray(resumeCheckpoint?.research_scopes)) {
+    await persistCheckpoint("discovery",{completed_stage:completedDiscoveryStage,parts,research_scopes:researchScopes});
+  }
+
   const pendingResearchStageIndexes = !replayMode
     ? researchStageIndexes.filter((index) => index >= completedDiscoveryStage)
     : [];
@@ -6378,6 +6380,29 @@ export async function runResearchPipeline({ job, apiKey }) {
     const resumePartialBranch = resumePartialStage ? Math.max(0,
       Number(resumeCheckpoint?.discovery_partial_branch || 0)) : 0;
     const combined = resumePartialStage && parts[i] ? cloneJson(parts[i]) : emptyResearchResult();
+    const branchDiagnostics = resumePartialStage &&
+      Array.isArray(resumeCheckpoint?.discovery_partial_branch_diagnostics)
+        ? cloneJson(resumeCheckpoint.discovery_partial_branch_diagnostics)
+        : [];
+    let committedBranch = resumePartialBranch;
+    let archiveDone = i !== 6 || !COURT_VECTOR_STORE_ID ||
+      (resumePartialStage && resumeCheckpoint.discovery_partial_archive_done !== false);
+    // parts[i] contains only the completed archive/branch prefix; any
+    // in-flight branch or recovery is reconstructed from complete responses.
+    if (executionMode === "full") parts[i] = cloneJson(combined);
+    const initialCalls = resumePartialStage ? resumeCheckpoint.discovery_partial_calls : {};
+    const persistPartial = async () => {
+      if (executionMode !== "full") return;
+      await persistCheckpoint("discovery", {
+        completed_stage: i, discovery_partial_stage: i+1,
+        discovery_partial_branch: committedBranch,
+        discovery_partial_branch_diagnostics: branchDiagnostics,
+        discovery_partial_archive_done: archiveDone,
+        discovery_partial_calls: discoveryLedger.snapshot(),
+        parts, research_scopes: researchScopes
+      }, true);
+    };
+    const discoveryLedger = createDiscoveryCallLedger(initialCalls, persistPartial);
 
     const compactCourtArchiveContext =
       i === 6 && !COURT_VECTOR_STORE_ID && compactCourtArchive.length
@@ -6387,7 +6412,7 @@ ${JSON.stringify(compactCourtArchive)}
 Этот резервный индекс ограничен и отбирает по географии СУДА, а не по месту регистрации организации. Он не охватывает гарантированно все дела компаний региона; не объявляй его полным архивным поиском. Совпадение суда с регионом не доказывает регистрацию фирмы. Не добавляй организацию только из-за присутствия в этом списке. Используй кандидатов для поиска конкретного дела через web_search/официальный судебный источник и независимо подтверждай региональную, юридическую и транспортную релевантность.`
         : "";
 
-    if (i === 6 && COURT_VECTOR_STORE_ID && !resumePartialStage) {
+    if (!archiveDone) {
       const archiveThemes = [
         "превышение массы и осевой нагрузки, автоматический весогабаритный контроль, ущерб дорогам, статья 12.21.1 КоАП",
         "тягачи, полуприцепы и прицепы, VIN, госномера, собственник, перевозчик, фактический эксплуатант",
@@ -6401,13 +6426,13 @@ ${JSON.stringify(compactCourtArchive)}
         await progress({ phase: "research", step: i + 1, percent: i * 9 });
 
         const archiveOutput = normalize(
-          await askCourtArchive(
+          await discoveryLedger.run("archive:" + archivePass, () => askCourtArchive(
             client,
             prompts[i] +
               contract(false) +
               "\n\n" +
               courtArchiveInstruction(archiveThemes[archivePass], region, alreadyFound)
-          )
+          ))
         );
         console.log("[DISCOVERY_ARCHIVE_RESULT] " + JSON.stringify({
           stage: i + 1,
@@ -6423,6 +6448,10 @@ ${JSON.stringify(compactCourtArchive)}
         }));
         appendResearchResult(combined, archiveOutput, `archive-${archivePass + 1}`);
       }
+      archiveDone = true;
+      if (executionMode === "full") parts[i] = cloneJson(combined);
+      discoveryLedger.clear();
+      await persistPartial();
     }
 
     const allBranches = STAGE_SEARCH_BRANCHES[i] || [];
@@ -6431,10 +6460,7 @@ ${JSON.stringify(compactCourtArchive)}
       ? selectedIndexes.map((index) => allBranches[index]).filter(Boolean)
       : allBranches;
     let stageBudgetStopped = false;
-    const branchDiagnostics = resumePartialStage &&
-      Array.isArray(resumeCheckpoint?.discovery_partial_branch_diagnostics)
-        ? cloneJson(resumeCheckpoint.discovery_partial_branch_diagnostics)
-        : [];
+
     for (let branchIndex = Math.min(resumePartialBranch, branches.length); branchIndex < branches.length; branchIndex++) {
       await assertNotCancelled();
       const before = uniqueResearchCount(combined);
@@ -6467,30 +6493,16 @@ ${JSON.stringify(compactCourtArchive)}
           branches,
           scopes: researchScopes,
           extraContext,
-          alreadyFound
+          alreadyFound,
+          queryScope: (scopeIndex, request) => discoveryLedger.run("primary:"+branchIndex+":"+scopeIndex, request)
         });
       } catch (error) {
         if (!isWebBudgetStop(error)) throw error;
         if (executionMode === "full") {
-          parts[i] = combined;
           statuses[i].detail = "лимит бюджета — исследование не завершено; результаты сохранены";
-          await persistCheckpoint("discovery", {
-            completed_stage: i,
-            discovery_partial_stage: i + 1,
-            discovery_partial_branch: branchIndex,
-            discovery_partial_branch_diagnostics: branchDiagnostics,
-            parts,
-            research_scopes: researchScopes,
-            discovery_budget_stop: {
-              scope: error.scope, used: error.used,
-              limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
-            }
-          });
-          console.error("[DISCOVERY_BUDGET_CHECKPOINT_SAVED] " + JSON.stringify({
-            stage: i + 1, branch: branchIndex + 1,
-            saved_unique: uniqueResearchCount(combined)
-          }));
-          throw error; // Never claim a full nine-stage discovery is complete.
+          // The completed prefix and each completed scope are already saved.
+          // Never append a partially replayed branch to that prefix.
+          throw error;
         }
         stageBudgetStopped = true;
         statuses[i].detail =
@@ -6552,14 +6564,11 @@ ${JSON.stringify(compactCourtArchive)}
         step: i + 1,
         percent: i * 9 + Math.floor(((branchIndex + 1) / Math.max(1, branches.length)) * 8)
       });
-      if(executionMode==="full"&&pauseRequested("discovery")){
-        parts[i]=combined;
-        await persistCheckpoint("discovery",{
-          completed_stage:i,discovery_partial_stage:i+1,
-          discovery_partial_branch:branchIndex+1,
-          discovery_partial_branch_diagnostics:branchDiagnostics,
-          parts,research_scopes:researchScopes
-        },true);
+      if(executionMode==="full"){
+        committedBranch=branchIndex+1;
+        parts[i]=cloneJson(combined);
+        discoveryLedger.clear();
+        await persistPartial();
       }
     }
 
@@ -6733,7 +6742,7 @@ ${JSON.stringify(compactCourtArchive)}
 
         try {
           const value = normalize(
-            await askResearch(
+            await discoveryLedger.run("recovery:"+recoveryIndex+":"+scopeIndex, () => askResearch(
               client,
               compactRecoveryPrompt({
                 region,
@@ -6749,7 +6758,7 @@ ${JSON.stringify(compactCourtArchive)}
               RESEARCH_MICRO_MAX_OUTPUT_TOKENS,
               `этап ${i + 1} | recovery ${recoveryIndex + 1} | ветка ${recoveryBranch.branchIndex + 1} | ${theme} | ${scope}`,
               3
-            )
+            ))
           );
 
           const scopeYield = discoveryYieldStats(value, knownBeforeScope);
@@ -6840,22 +6849,7 @@ ${JSON.stringify(compactCourtArchive)}
             }
           }
         } catch (error) {
-          if (isWebBudgetStop(error) && executionMode === "full") {
-            parts[i] = combined;
-            await persistCheckpoint("discovery", {
-              completed_stage: i,
-              discovery_partial_stage: i + 1,
-              discovery_partial_branch: branches.length,
-              discovery_partial_branch_diagnostics: branchDiagnostics,
-              parts,
-              research_scopes: researchScopes,
-              discovery_budget_stop: {
-                scope: error.scope, used: error.used,
-                limit: error.limit, estimated_cost_usd: estimatedApiCostUsd(client)
-              }
-            });
-          }
-          if (isWebBudgetStop(error)) throw error;
+          if (isWebBudgetStop(error) || isOpenAIBillingStop(error) || fatalDiscoveryError(error)) throw error;
           console.error("[DISCOVERY_RECOVERY_SCOPE_ERROR] " + JSON.stringify({
             stage: i + 1,
             recovery: recoveryIndex + 1,
@@ -6926,6 +6920,9 @@ ${JSON.stringify(compactCourtArchive)}
     await progress({ phase: "research", step: i + 1, percent: (i + 1) * 9 });
     await persistCheckpoint("discovery", {
       completed_stage: i + 1,
+      discovery_partial_stage:0, discovery_partial_branch:0,
+      discovery_partial_branch_diagnostics:[], discovery_partial_calls:{},
+      discovery_partial_archive_done:true,
       parts,
       research_scopes: researchScopes,
       web_usage_total: webUsageSnapshot(client)
@@ -7320,7 +7317,7 @@ ${JSON.stringify(compactCourtArchive)}
           }));
           break;
         }
-        if (job.cancelled || jobSignal?.aborted) throw error;
+        if (isOpenAIBillingStop(error) || job.cancelled || jobSignal?.aborted) throw error;
         // Do not convert transient API errors into an unverified company.
         historicalRecall.next_batch = batchIndex + 1;
         historicalRecall.errors = Number(historicalRecall.errors || 0) + 1;
@@ -7354,12 +7351,17 @@ ${JSON.stringify(compactCourtArchive)}
     await assertNotCancelled();
     statuses[8].detail = "entity census · проверка полноты отраслей и географии";
     await progress({ phase: "research", step: 9, percent: 81 });
+    const censusLedger=createDiscoveryCallLedger(resumeCheckpoint?.census_partial_calls,async()=>{
+      await persistCheckpoint("discovery",{completed_stage:9,parts,research_scopes:researchScopes,
+        census_partial_calls:censusLedger.snapshot()},true);
+    });
     const census = await runEntityCensusAndGapSearch({
       client,
       region,
       parts,
       researchScopes,
-      assertNotCancelled
+      assertNotCancelled,
+      query:(key,request)=>censusLedger.run(key,request)
     });
     if (!parts[8]) parts[8] = emptyResearchResult();
     appendResearchResult(parts[8], census.additions, "entity-census");
@@ -7368,6 +7370,7 @@ ${JSON.stringify(compactCourtArchive)}
       parts,
       research_scopes: researchScopes,
       census_completed: true,
+      census_partial_calls:{},
       coverage_snapshot: census.coverage,
       coverage_gap_buckets: census.gapBuckets,
       web_usage_total: webUsageSnapshot(client)
@@ -7467,7 +7470,7 @@ ${JSON.stringify(compactCourtArchive)}
           autonomousCoverage.deferred_reason = "existing_web_budget";
           break;
         }
-        if (job.cancelled || jobSignal?.aborted) throw error;
+        if (isOpenAIBillingStop(error) || job.cancelled || jobSignal?.aborted) throw error;
         autonomousCoverage.errors = Number(autonomousCoverage.errors || 0) + 1;
         console.warn("[AUTONOMOUS_DISCOVERY_ERROR] " + JSON.stringify({
           sector: pass.key, error: error?.message || String(error)
@@ -9643,6 +9646,20 @@ ${JSON.stringify(gaps)}
     saby: sabyStats,
     priority:priorityStats
   };
+  } catch (error) {
+    // Preserve actual reported API usage even when an optional request or
+    // fatal billing error exits between checkpoint intervals. Do not change
+    // phase or invent a successful result for an incomplete call.
+    if(executionMode==="full" && error?.name!=="MemoryPauseError" &&
+        error?.code!=="DISCOVERY_CHECKPOINT_WRITE_FAILED") {
+      try { await persistCheckpoint(checkpointState.phase,{},false,true); }
+      catch(saveError){
+        error.checkpointFlushFailed=true;
+        console.error("[FINAL_ERROR_CHECKPOINT_FLUSH_FAILED]",saveError?.message||String(saveError));
+      }
+    }
+    throw error;
+  }
 }
 
 export {
