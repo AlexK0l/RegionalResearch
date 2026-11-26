@@ -117,3 +117,56 @@ test("scanner distinguishes a missing widget from an ambiguous hidden widget",()
     if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
   }
 });
+
+test("a mounted summary accepts the observed generic navigation row only with independent exact total",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  const node=(text="",attrs={},children={})=>({textContent:text,getAttribute:k=>attrs[k]??null,
+    querySelectorAll:s=>children[s]||[],getBoundingClientRect:()=>({width:100,height:25})});
+  const a=raw();
+  const list=node("",{}, {':scope > [data-qa="item"][item-key]':a.groups.map(g=>node("",{"item-key":g.key},{
+    ".contractorCard-transport__tileContainer":[node("",{},{
+      '[data-qa="contractorCard-transport_header"]':[node(g.category)],
+      '[data-qa="contractorCard-transport_counter"]':[node(String(g.count))],
+      '[data-qa="contractorCard-transport_title"]':g.labels.map(x=>node(x,{title:x}))
+    })]
+  }))});
+  const widget=node("",{},{
+    '[data-qa="contractorCard-transport__header"]':[node("Автопарк компании")],
+    '[data-qa="items-container"].controls-TileView':[list]
+  });
+  const nav=title=>node("",{},{
+    '.contractor-Dialog-Accordion__title':[node("Автопарк компании")],
+    '.contractor-Dialog-Accordion__counter .controls-DecoratorNumber':[node("2",{title})]
+  });
+  const setDoc=items=>{globalThis.document=node("",{},{
+    '[data-qa="contractorCard-transport"]':[widget],
+    '[data-qa="row"] [data-qa="cell"] .contractor-Dialog-Accordion__item':items
+  });};
+  try{
+    globalThis.getComputedStyle=()=>({display:"flex",visibility:"visible",opacity:"1"});
+    setDoc([nav("2 всего")]);assert.deepEqual(scanSabyVehicleSummaryDOM(),a);
+    setDoc([nav("2")]);assert.equal(scanSabyVehicleSummaryDOM().reason,"total_title_mismatch");
+    setDoc([nav("2 всего"),nav("2 всего")]);assert.equal(scanSabyVehicleSummaryDOM().reason,"navigation_not_unique");
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
+});
+test("full navigation recovery uses exact existing tree collector and never clicks a missing summary tile",async()=>{
+  const p={url:()=>url,locator:s=>({count:async()=>{assert.match(s,/caption/);return 1;},isVisible:async()=>true})};
+  let recoveries=0,trees=0;
+  const options={originalUrl:url,openNavigation:true,readSummary:async()=>null,
+    recoverNavigation:async()=>{recoveries++;return {navigationAttempted:true,drawerOpened:true,
+      summary:{count:2,groups:raw().groups.map((g,i)=>({key:"-"+(i+1),category:g.category,count:1,vehicles:null}))}};},
+    readTree:async(_p,{category,expected})=>({status:"observed",expected,category,
+      groupKey:category==="Легковые"?"-1":"-2",rows:[{key:"1",label:"MODEL, 2023"}]}),
+    collectTree:async(_p,{expected})=>{trees++;return {status:"complete",expected,vehicles:[{model:"MODEL",year:2023}]};}
+  };
+  const r=await collectSabyVehicleInventory(p,options);
+  assert.equal(r.fleet.count,2);assert.equal(r.navigationAttempted,true);assert.equal(trees,2);
+  const q=await collectSabyVehicleInventory(p,{...options,quick:true});
+  assert.equal(q.fleet,null);assert.equal(recoveries,1);
+  const wrong=await collectSabyVehicleInventory(p,{...options,readTree:async(_p,{category,expected})=>
+    ({status:"observed",expected,category,groupKey:"-99",rows:[{key:"1",label:"MODEL"}]})});
+  assert.equal(wrong.fleet,null);assert.equal(trees,2);
+});

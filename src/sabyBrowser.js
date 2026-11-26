@@ -997,7 +997,8 @@ async function ownTrucks(page, settings,progress={},afterHeading=null) {
           '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
         )):null;
       assertCompany();
-      if(!openTitle)await heading.click({timeout:4000}).catch(()=>{});
+      if(!openTitle&&!progress.category_navigation_attempted)
+        await heading.click({timeout:4000}).catch(()=>{});
       const until=Date.now()+9000;
       // Poll within the ORIGINAL preview window. When the real drawer
       // mounts, try its structural count rather than wait exclusively
@@ -1505,11 +1506,13 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if(combined)detailAttempts.trucks=true;
       const collectAll=async(pollAfterHeading=false)=>{
         const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay,pollAfterHeading,
+          openNavigation:pollAfterHeading,
           onDiagnostic:diagnostic=>console.info("[SABY_VEHICLE_SUMMARY_DIAG] "+JSON.stringify({
             inn:identity.inn,phase:pollAfterHeading?"after_heading":"initial",...diagnostic
           }))
         });
         if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+        if(all.navigationAttempted)fleetProgress.category_navigation_attempted=true;
         if(all.fleet)result.vehicle_fleet=all.fleet;
         if(all.partial)result.vehicle_fleet_partial=all.partial;
         if(all.trucks)result.trucks=all.trucks;

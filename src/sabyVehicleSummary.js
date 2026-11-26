@@ -3,6 +3,7 @@
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
 import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
 import {readSabyFleetTree,collectSabyFleetTree} from "./sabyFleetTree.js";
+import {recoverSabyVehicleNavigation} from "./sabyVehicleNavigation.js";
 export function scanSabyVehicleSummaryDOM(){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
   const visible=e=>{
@@ -31,8 +32,17 @@ export function scanSabyVehicleSummaryDOM(){
   const header=one(widget,headerSelector);
   if(!header)return failure("missing","widget_header_not_unique",widget,headerSelector);
   if(clean(header.textContent)!=="Автопарк компании")return failure("missing","widget_heading_mismatch");
-  const nav=one(document,navSelector);
-  if(!nav)return failure("review","navigation_not_unique",document,navSelector);
+  // VPS has the same exact visible accordion title in a generic row,
+  // without the transport-specific row markers. Keep the unique title
+  // and independent total proof; do not rely on the virtual row geometry.
+  const precise=[...document.querySelectorAll(navSelector)].filter(visible);
+  const generic='[data-qa="row"] [data-qa="cell"] .contractor-Dialog-Accordion__item';
+  const matches=[...document.querySelectorAll(generic)].filter(e=>visible(e)&&
+    [...e.querySelectorAll(navTitleSelector)].some(h=>visible(h)&&clean(h.textContent)==="Автопарк компании"));
+  if(precise.length>1||matches.length>1||(precise.length===1&&matches.length===1&&precise[0]!==matches[0]))
+    return failure("review","navigation_not_unique",document,generic);
+  const nav=precise[0]||matches[0];
+  if(!nav)return failure("review","navigation_not_unique",document,generic);
   const navTitle=one(nav,navTitleSelector);
   if(!navTitle)return failure("review","navigation_title_not_unique",nav,navTitleSelector);
   if(clean(navTitle.textContent)!=="Автопарк компании")return failure("review","navigation_heading_mismatch");
@@ -127,11 +137,12 @@ export async function readSabyVehicleSummary(page,originalUrl,{onDiagnostic}={})
 export async function collectSabyVehicleInventory(page,{
   originalUrl,quick=false,wait=ms=>new Promise(r=>setTimeout(r,ms)),
   readSummary=readSabyVehicleSummary,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,now=()=>Date.now(),
-  recoverSummary=null,pollAfterHeading=false,onDiagnostic
+  recoverSummary=null,pollAfterHeading=false,openNavigation=false,
+  recoverNavigation=recoverSabyVehicleNavigation,onDiagnostic
 }={}){
   const guard=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.());
   const same=()=>guard().ok===true;
-  const missing={status:"missing",fleet:null,partial:null,trucks:null,drawerOpened:false};
+  const missing={status:"missing",fleet:null,partial:null,trucks:null,drawerOpened:false,navigationAttempted:false};
   const initial=guard();
   if(!initial.ok){notify(onDiagnostic,routeDiagnostic(initial,"route_guard_before"));return missing;}
   const read=()=>readSummary(page,originalUrl,{onDiagnostic});
@@ -152,8 +163,17 @@ export async function collectSabyVehicleInventory(page,{
     const recovery=await recoverSummary(page,{readHeading:read,sameCompany:same,wait});
     raw=recovery?.heading||null;
   }
+  let opened=false;
+  if(!raw&&!quick&&openNavigation&&same()){
+    const recovery=await recoverNavigation(page,{
+      originalUrl,wait,onDiagnostic,readSummary:()=>readSummary(page,originalUrl)
+    });
+    missing.navigationAttempted=recovery?.navigationAttempted===true;
+    raw=recovery?.summary||null;
+    opened=recovery?.drawerOpened===true;
+  }
   if(!same()||!raw)return missing;
-  const s=structuredClone(raw);let opened=false;
+  const s=structuredClone(raw);
   const outcome=()=>{
     if(!same())return missing;
     const fleet=verifiedSabyVehicleFleet({status:"verified",count:s.count,groups:s.groups});
@@ -164,7 +184,8 @@ export async function collectSabyVehicleInventory(page,{
       categories:s.groups.map(({category,count})=>({category,count})),
       groups:s.groups.filter(g=>g.vehicles)
     });
-    return {status:fleet?"verified":"partial",fleet,partial,trucks,drawerOpened:opened};
+    return {status:fleet?"verified":"partial",fleet,partial,trucks,drawerOpened:opened,
+      navigationAttempted:missing.navigationAttempted};
   };
   if(s.groups.every(g=>g.vehicles)||quick)return outcome();
   const deadline=now()+175000,pending=s.groups.filter(g=>!g.vehicles);
@@ -172,7 +193,11 @@ export async function collectSabyVehicleInventory(page,{
     const caption=page.locator('.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]');
     const n=await caption.count();
     if(n>1||!same())return outcome();
-    opened=n===1&&await caption.isVisible();
+    const visibleDrawer=n===1&&await caption.isVisible();
+    // For an index acquired from the open drawer, losing the caption
+    // is a failed read, not permission to click a stale summary tile.
+    if(opened&&!visibleDrawer)return outcome();
+    opened=visibleDrawer;
     if(!opened){
       const live=await read();
       if(!live||signature(live)!==signature(s)||live.count!==s.count||!same())return outcome();
@@ -187,7 +212,12 @@ export async function collectSabyVehicleInventory(page,{
         if(!same())return missing;
         const x=await readTree(page,{expected:g.count,category:g.category});
         if(!same())return missing;
-        if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){seed=x;break;}
+        if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){
+          // For navigation-discovered categories, the actual tree group
+          // must remain the same structural group from the index.
+          if(/^-/u.test(g.key)&&x.groupKey!==g.key)break;
+          seed=x;break;
+        }
         if(!["tree_missing","truck_category_missing","read_failed"].includes(x?.reason)&&x?.status!=="observed")break;
         if(i<19)await wait(400);
       }
