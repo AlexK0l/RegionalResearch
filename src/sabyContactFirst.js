@@ -191,7 +191,8 @@ export async function runSabyContactFirst({
             state.stats.systemicErrors++;consecutive++;
           }
           // Do not log raw browser errors or private page contents.
-          log("SABY_SECTION_REVIEW",{inn,phase,scope:consecutive?"systemic":"company"});
+          log("SABY_SECTION_REVIEW",{inn,phase,scope:consecutive?"systemic":"company",
+            code:error instanceof SabyReview?error.code:"unexpected_error"});
         }else{
           const relevant=(sections.contacts&&record?.contacts?.status==="collected")||
             (sections.trucks&&record?.trucks?.status==="verified")||
@@ -217,6 +218,18 @@ export async function runSabyContactFirst({
               state.stats.vehiclesVerified+=applied.verifiedTrucks;
             if(any(needs(entry,phase)))state.stats.partialResults++;
           }else{state.stats.review++;state.stats.companyReviews++;}
+          // Separate full fleet outcomes from contact-only/quick visits.
+          // Emit fixed categories, not raw Playwright errors or page data.
+          if(sections.trucks&&!sections.quickDetails){
+            const coverage=sabyStoredSectionCoverage(row,{transport});
+            const status=coverage.trucks?"verified":
+              ["missing","review"].includes(record?.trucks?.status)?record.trucks.status:"unknown";
+            const code=(record?.errors||[]).map(String).find(x=>
+              /^trucks: (?:fleet_heading_missing|truck_preview_missing|truck_preview_ambiguous|truck_count_invalid|vehicle_rows_incomplete|contact_overlay_not_closed|fleet_interaction_failed|card_changed)$/.test(x));
+            log("SABY_FLEET_OUTCOME",{inn,phase,status,
+              reason:coverage.trucks?"verified":code?code.slice(8):
+                status==="missing"?"section_missing":applied?.status==="review"?"identity_mismatch":"unresolved"});
+          }
           consecutive=0;
         }
         // Persist even an unsuccessful attempted task, but keep its data

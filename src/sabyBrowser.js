@@ -47,8 +47,10 @@ import {SABY_NON_VEHICLE_LABEL_PATTERN}
 import {captureSabyFleetPanelScreenshot}
   from "./sabyFleetPanelSnapshot.js";
 import {
-  verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic
+  verifySabyPostRouteOwnerIdentity,safeSabyPostRouteDiagnostic,
+  tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
+import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -555,6 +557,20 @@ async function openCompany(page, row, settings, timing=null) {
         console.info("[SABY_CARD] registered_alias_verified");
         return checked.identity;
       }
+      // The old path waited out the entire card deadline even if the
+      // new private route already had its stable independently verified
+      // owner. Only the EXISTING strict proof can finish early.
+      const early=await tryEarlySabyPostRouteProof(page,inn,name,{
+        priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+      });
+      if(early){
+        console.info("[SABY_POST_ROUTE_EARLY_DIAG] "+
+          JSON.stringify(safeSabyPostRouteDiagnostic(early)));
+        if(early.ok){
+          console.info("[SABY_CARD] post_route_registered_identity_verified_early");
+          return early.identity;
+        }
+      }
     }
 
     // Some Saby layouts do not handle clicks near the row's top edge.
@@ -684,16 +700,15 @@ async function closeContactOverlay(page) {
   }
 }
 
-async function truckPreview(page) {
-  return page.evaluate(({nonVehiclePattern}) => {
+export function scanSabyTruckPreview({nonVehiclePattern,allowCountOnly=false}) {
     const excluded=new RegExp(nonVehiclePattern,"iu");
     const clean=s=>String(s||"").replace(/\s+/g," ").trim();
     const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
       return r.width>0&&r.height>0&&s.display!=="none"&&s.visibility!=="hidden";};
     const isTruck=t=>/^Грузовые(?:\s+\d+)?$/i.test(clean(t));
     const leaves=[...document.querySelectorAll("body *")]
-      .filter(e=>vis(e)&&isTruck(e.textContent)&&
-        ![...e.children].some(c=>isTruck(c.textContent)));
+      .filter(e=>isTruck(e.textContent)&&
+        ![...e.children].some(c=>isTruck(c.textContent))&&vis(e));
     const tiles=[];
     for(const head of leaves) {
       let node=head,tile=null,count=null;
@@ -705,7 +720,7 @@ async function truckPreview(page) {
       }
       if(!tile||tile.getBoundingClientRect().left>innerWidth*.68)continue;
       const r=tile.getBoundingClientRect();
-      const raw=[...tile.querySelectorAll("*")].filter(e=>vis(e)&&e.children.length===0)
+      const raw=[...tile.querySelectorAll("*")].filter(e=>e.children.length===0&&vis(e))
         .map(e=>clean(e.textContent)).filter(Boolean);
       const rows=[];
       for(let i=0;i<raw.length;i++) {
@@ -725,14 +740,24 @@ async function truckPreview(page) {
           rows.push({model,year});
         }
       }
-      if(rows.length>count)continue;
-      tiles.push({count,rows,rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
+      // A structurally unique positive truck-count tile can still open
+      // the verified Wasaby tree even if its text leaves include extra
+      // labels. Never treat those leaves as vehicles or assert zero.
+      // The quick/legacy paths retain their previous rejection.
+      if(rows.length>count&&(!allowCountOnly||count<=0))continue;
+      tiles.push({count,rows:rows.length>count?[]:rows,
+        rect:{x:r.x,y:r.y,w:r.width,h:r.height}});
     }
     const unique=tiles.filter((x,i)=>!tiles.some((y,j)=>j<i &&
       x.count===y.count && Math.abs(x.rect.x-y.rect.x)<3 && Math.abs(x.rect.y-y.rect.y)<3));
     return unique.length===1?{status:"found",...unique[0]}:
       {status:unique.length?"ambiguous":"missing"};
-  },{nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN});
+}
+
+async function truckPreview(page,{allowCountOnly=false}={}) {
+  return page.evaluate(scanSabyTruckPreview,{
+    nonVehiclePattern:SABY_NON_VEHICLE_LABEL_PATTERN,allowCountOnly
+  });
 }
 
 async function sidePanelTrucks(page,expected,action="read") {
@@ -853,22 +878,53 @@ async function sidePanelTrucks(page,expected,action="read") {
 
 async function ownTrucks(page, settings,progress={}) {
   progress.phase="heading";
-  const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
+  const verifiedRoute=settings.publicIdentityFallback===true?page.url():null;
+  const sameCompany=()=>!verifiedRoute||
+    compareSabyVerifiedFleetDetail(verifiedRoute,page.url()).ok;
+  const assertCompany=()=>{
+    if(!sameCompany())throw new SabyReview("Saby: карточка изменилась",
+      {scope:"company",code:"card_changed"});
+  };
+  assertCompany();
+  const readHeading=()=>visibleLocator(page.getByText("Автопарк компании",{exact:true}));
+  let heading=await readHeading();
+  if(!heading&&verifiedRoute){
+    const recovery=await recoverSabyFleetHeading(page,{readHeading,sameCompany});
+    console.info("[SABY_FLEET_HEADING_RECOVERY] "+JSON.stringify({
+      status:recovery.status,scroll_steps:recovery.scrollSteps
+    }));
+    assertCompany();
+    heading=recovery.heading;
+  }
   if(!heading) {
     progress.reason="fleet_heading_missing";
     return {status:"missing"};
   }
   progress.phase="preview";
-  let preview=await truckPreview(page);
+  const readPreview=()=>truckPreview(page,{allowCountOnly:shouldUseSabyFleetTree(settings)});
+  assertCompany();
+  let preview=await readPreview();
   if(preview.status==="missing") {
-    await heading.click({timeout:4000}).catch(()=>{});
-    const until=Date.now()+9000;
-    while(Date.now()<until) {
-      preview=await truckPreview(page);
-      if(preview.status!=="missing") break;
-      await delay(350);
+    // A newly mounted heading may precede the truck widget. Give it a
+    // short passive chance before touching the existing heading control.
+    if(verifiedRoute){
+      for(let i=0;i<2&&preview.status==="missing";i++){
+        await delay(350);assertCompany();preview=await readPreview();
+      }
+    }
+    if(preview.status==="missing"){
+      assertCompany();
+      await heading.click({timeout:4000}).catch(()=>{});
+      const until=Date.now()+9000;
+      while(Date.now()<until) {
+        assertCompany();
+        preview=await readPreview();
+        if(preview.status!=="missing") break;
+        await delay(350);
+      }
     }
   }
+  assertCompany();
   progress.preview_status=preview.status;
   if(preview.status!=="found"){
     progress.reason=preview.status==="ambiguous"?
@@ -887,8 +943,7 @@ async function ownTrucks(page, settings,progress={}) {
   // Record the independently verified contractor's route, before any
   // fleet UI clicks. Even UI-only route changes must preserve the same
   // opaque company ID and every non-UI query value.
-  const fleetOriginalRoute=settings.publicIdentityFallback===true?
-    page.url():null;
+  const fleetOriginalRoute=verifiedRoute;
   const stillSameFleetCompany=()=>{
     if(!fleetOriginalRoute)return true;
     const checked=compareSabyVerifiedFleetDetail(
@@ -965,7 +1020,7 @@ async function ownTrucks(page, settings,progress={}) {
         },
         readPreview:async()=>{
           if(!stillSameFleetCompany())return {status:"missing"};
-          return truckPreview(page);
+          return readPreview();
         },
         clickPreview:async live=>{
           if(!stillSameFleetCompany())return false;
@@ -1319,9 +1374,13 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     await timed("fleet_ms",async()=>{
       await closeContactOverlay(page);
       fleetProgress.phase="heading";
-      if(optimized&&!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      // A full fleet read must remain tied to the card verified before
+      // finance/contact scrolling, including old in-progress cursors.
+      if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
+        throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       const trucks=await ownTrucks(page,settings,fleetProgress);
-      if(optimized&&!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
+        throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       result.trucks=trucks;
     });
   } catch(error) {

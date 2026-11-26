@@ -27,7 +27,8 @@ export function plausibleSabySearchName(text,inn) {
  */
 export function scanSabyLegacyDOM({inn,branchSource}) {
   const norm=s=>String(s||"").replace(/\s+/g," ").trim();
-  const matchesInn=s=>new RegExp("(^|\\D)"+inn+"(?!\\d)").test(s);
+  const exactInn=new RegExp("(^|\\D)"+inn+"(?!\\d)");
+  const matchesInn=s=>exactInn.test(s);
   const branchPattern=new RegExp(branchSource,"iu");
   const visible=e=>{
     const rect=e.getBoundingClientRect(),style=getComputedStyle(e);
@@ -37,9 +38,12 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
   const legal=/(?:^|\W)(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)(?:\W|$)/i;
   const relevant=[];
   for(const element of document.querySelectorAll("body *")){
-    if(!visible(element)||!matchesInn(norm(element.textContent)))continue;
+    // Reject nonmatching text and nested fragments before forcing layout.
+    // Keep the identical name, geometry, branch and candidate rules.
+    if(!matchesInn(norm(element.textContent)))continue;
     if([...element.children].some(child=>matchesInn(norm(child.textContent))))
       continue;
+    if(!visible(element))continue;
     let node=element;
     for(let depth=0;node&&depth<9;depth++,node=node.parentElement) {
       if(!visible(node))continue;
@@ -70,7 +74,8 @@ export function scanSabyResultDOM({
   inn,includeInnOnly=false,includeBranches=false,branchSource
 }) {
   const norm=s=>String(s||"").replace(/\s+/g," ").trim();
-  const matchesInn=s=>new RegExp("(?:^|\\D)"+inn+"(?!\\d)").test(s);
+  const exactInn=new RegExp("(?:^|\\D)"+inn+"(?!\\d)");
+  const matchesInn=s=>exactInn.test(s);
   const branchPattern=new RegExp(branchSource,"iu");
   const eligibleFirstLine=raw=>{
     const prefix=String(raw||"").split(inn,1)[0];
@@ -92,8 +97,9 @@ export function scanSabyResultDOM({
   let leafHits=0,rawCapped=false;
   const leaves=document.querySelectorAll("body *");
   for(const leaf of leaves) {
-    if(!visible(leaf)||!matchesInn(norm(leaf.textContent)))continue;
+    if(!matchesInn(norm(leaf.textContent)))continue;
     if([...leaf.children].some(child=>matchesInn(norm(child.textContent))))continue;
+    if(!visible(leaf))continue;
     leafHits++;
     let node=leaf;
     for(let depth=0;node&&depth<12;depth++,node=node.parentElement) {

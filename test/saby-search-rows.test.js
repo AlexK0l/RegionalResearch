@@ -184,3 +184,38 @@ test("ordinary production Stage12 still uses preexisting strict DOM scanner",asy
   assert.equal(optin.length,1);
   assert.equal(optin.meta.distinctCards,1);
 });
+
+
+test("large search DOM rejects irrelevant text before geometry and style reads",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  let irrelevantGeometry=0,irrelevantStyle=0;
+  const leaf={textContent:"ИНН "+inn,innerText:"ИНН "+inn,children:[],
+    getBoundingClientRect:()=>({x:20,y:120,width:160,height:20})};
+  const parent={textContent:"ДСК Автобан, АО\nИНН "+inn,
+    innerText:"ДСК Автобан, АО\nИНН "+inn,children:[leaf],
+    getBoundingClientRect:()=>({x:10,y:100,width:400,height:80})};
+  leaf.parentElement=parent;
+  const noise=Array.from({length:1500},(_,i)=>({
+    irrelevant:true,textContent:"Unrelated widget "+i,children:[],
+    getBoundingClientRect(){irrelevantGeometry++;return {width:100,height:30};}
+  }));
+  try{
+    globalThis.document={querySelectorAll:()=>[...noise,leaf,parent]};
+    globalThis.getComputedStyle=el=>{
+      if(el.irrelevant)irrelevantStyle++;
+      return {visibility:"visible",display:"block"};
+    };
+    const found=scanSabyResultDOM({inn,includeInnOnly:true,includeBranches:true,
+      branchSource:SABY_BRANCH_MARKER_SOURCE});
+    assert.equal(found.rows.length,1);
+    assert.equal(found.rows[0].text,parent.innerText);
+    assert.equal(irrelevantGeometry,0);
+    assert.equal(irrelevantStyle,0);
+    scanSabyLegacyDOM({inn,branchSource:SABY_BRANCH_MARKER_SOURCE});
+    assert.equal(irrelevantGeometry,0);
+    assert.equal(irrelevantStyle,0);
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
+});
