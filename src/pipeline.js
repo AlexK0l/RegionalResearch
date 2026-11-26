@@ -8131,13 +8131,18 @@ ${JSON.stringify(groupBatch)}`,
       statistics_completed:statisticsCompletedForPause
     });
   });
+  const saveDrainedEnrichment=async()=>{
+    // Concurrent statistics must settle before the checkpoint is flushed.
+    const statistics=await statisticsPromise.catch(()=>null);
+    if(Array.isArray(statistics)&&statistics.length){
+      finalResult.statistics=statistics;
+      statisticsCompletedForPause=true;
+    }
+    await enrichmentCheckpointBatcher.request({force:true});
+  };
   const pauseDrainedEnrichment=async()=>{
     if(!pauseRequested("enrichment"))return;
-    // The regional-statistics request runs concurrently with enrichment.
-    // Drain and preserve it too, otherwise a resume would pay for it again.
-    finalResult.statistics=await statisticsPromise;
-    statisticsCompletedForPause=true;
-    await enrichmentCheckpointBatcher.request({force:true});
+    await saveDrainedEnrichment();
     await memorySafePoint();
     throw Error("MEMORY_PAUSE_NOT_COMMITTED");
   };
@@ -8169,7 +8174,7 @@ ${JSON.stringify(groupBatch)}`,
   console.log("[ENRICHMENT_PRIORITY_RESERVE] " + JSON.stringify({
     reserved_ms: abRecoveryReserveMs, deadline_ms: STAGE10_MAX_MS
   }));
-  await mapWithConcurrency(
+  try { await mapWithConcurrency(
     enrichmentGroups,
     ENRICHMENT_CONCURRENCY,
     async (batch) => {
@@ -8183,6 +8188,7 @@ ${JSON.stringify(groupBatch)}`,
       let batchAttempted = false;
       let batchBudgetStopped = false;
       let batchFallbackRemaining = ENRICHMENT_MAX_FALLBACKS_PER_BATCH;
+      let billingError=null;
       if (targets.length > 1 && deadlineRemaining(enrichmentStandardDeadlineAt) > 9000) {
         batchAttempted = true;
         try {
@@ -8213,6 +8219,7 @@ ${JSON.stringify(groupBatch)}`,
           }));
         } catch (error) {
           if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          if(isOpenAIBillingStop(error))throw error;
           batchBudgetStopped = isWebBudgetStop(error);
           console.warn("[ENRICHMENT_BATCH_FALLBACK] " + JSON.stringify({
             size: targets.length,
@@ -8245,7 +8252,7 @@ ${JSON.stringify(groupBatch)}`,
           continue;
         }
 
-        if (batchBudgetStopped) {
+        if (batchBudgetStopped && !groupedResults.has(rowId)) {
           // Budget exhaustion is NOT negative evidence. Preserve the row in
           // the checkpoint's pending enrichment set for a controlled resume.
           enrichmentBudgetDeferred++;
@@ -8320,7 +8327,11 @@ ${JSON.stringify(gaps)}
           if (rowId) enrichmentCompleted.add(rowId);
         } catch (error) {
           if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-          if (isWebBudgetStop(error)) enrichmentBudgetDeferred++;
+          if(isOpenAIBillingStop(error)){
+            billingError=error;
+            batchBudgetStopped=true;
+            enrichmentBudgetDeferred++;
+          }else if (isWebBudgetStop(error)) enrichmentBudgetDeferred++;
           else enrichmentErrors++;
           console.error("[ENRICHMENT_ERROR] " + JSON.stringify({
             id: rowId,
@@ -8337,9 +8348,14 @@ ${JSON.stringify(gaps)}
         }
         await enrichmentCheckpointBatcher.request();
       }
+      if(billingError)throw billingError;
     },
     ()=>pauseRequested("enrichment")
-  );
+  ); } catch(error) {
+    try { await saveDrainedEnrichment(); }
+    catch(saveError){error.checkpointFlushFailed=true;throw error;}
+    throw error;
+  }
   await pauseDrainedEnrichment();
   console.log("[ENRICHMENT_EFFICIENCY] " + JSON.stringify({
     planned_companies: enrichmentPending.length,
@@ -8757,7 +8773,8 @@ ${JSON.stringify(gaps)}
     max_phone_retries: CONTACT_BATCH_SETTINGS.phoneRetries
   }));
 
-  const runContactGroups=groups=>mapWithConcurrency(
+  const runContactGroups=async groups=>{
+    try { await mapWithConcurrency(
     groups,
     Math.min(CONTACT_CONCURRENCY, 6),
     async (batch) => {
@@ -8765,6 +8782,7 @@ ${JSON.stringify(gaps)}
       let answers = new Map();
       let budgetStop = false;
       let batchError = "";
+      let billingError=null;
       if (deadlineRemaining(stage11DeadlineAt) > 8000) {
         try {
           if (batch.length === 1) {
@@ -8788,6 +8806,7 @@ ${JSON.stringify(gaps)}
           }
         } catch (error) {
           if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+          if(isOpenAIBillingStop(error))throw error;
           budgetStop = isWebBudgetStop(error);
           batchError = String(error?.message || error);
           console.log("[CONTACT_BATCH_UNAVAILABLE] " + JSON.stringify({
@@ -8816,6 +8835,7 @@ ${JSON.stringify(gaps)}
             });
           } catch (error) {
             if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+            if(isOpenAIBillingStop(error)){billingError=error;budgetStop=true;}
             if (isWebBudgetStop(error)) budgetStop = true;
             batchError = String(error?.message || error);
           }
@@ -8863,9 +8883,15 @@ ${JSON.stringify(gaps)}
         }
         await contactCheckpointBatcher.request();
       }
+      if(billingError)throw billingError;
     },
     ()=>pauseRequested("contacts")
-  );
+  ); } catch(error) {
+      try { await contactCheckpointBatcher.request({force:true}); }
+      catch(saveError){error.checkpointFlushFailed=true;throw error;}
+      throw error;
+    }
+  };
   await runContactGroups(phoneGroups);
   if(pauseRequested("contacts")){
     await contactCheckpointBatcher.request({force:true});
@@ -8948,6 +8974,11 @@ ${JSON.stringify(gaps)}
       }));
     } catch (error) {
       if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      if(isOpenAIBillingStop(error)){
+        try{await contactCheckpointBatcher.request({force:true});}
+        catch(saveError){error.checkpointFlushFailed=true;}
+        throw error;
+      }
       omissionRecheckBudgetStopped = isWebBudgetStop(error);
       console.warn("[CONTACT_OMISSION_RECHECK_ERROR] " + JSON.stringify({
         error: error?.message || String(error),
@@ -8994,6 +9025,12 @@ ${JSON.stringify(gaps)}
       }
     }catch(error){
       if(jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
+      if(isOpenAIBillingStop(error)){
+        phoneRetryIds.delete(id);phoneRetryBudget.remaining++;
+        try{await contactCheckpointBatcher.request({force:true});}
+        catch(saveError){error.checkpointFlushFailed=true;}
+        throw error;
+      }
       console.warn("[CONTACT_PHONE_RECOVERY_DEFER] "+JSON.stringify({
         id,budget_stop:isWebBudgetStop(error)}));
       if(isWebBudgetStop(error)){
