@@ -1503,8 +1503,12 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
       if(combined)detailAttempts.trucks=true;
-      const collectAll=async()=>{
-        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay});
+      const collectAll=async(pollAfterHeading=false)=>{
+        const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay,pollAfterHeading,
+          onDiagnostic:diagnostic=>console.info("[SABY_VEHICLE_SUMMARY_DIAG] "+JSON.stringify({
+            inn:identity.inn,phase:pollAfterHeading?"after_heading":"initial",...diagnostic
+          }))
+        });
         if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
         if(all.fleet)result.vehicle_fleet=all.fleet;
         if(all.partial)result.vehicle_fleet_partial=all.partial;
@@ -1527,7 +1531,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
         const all=await collectAll();
         if(handled(all))return;
         if(all.status==="missing")afterHeading=async()=>{
-          const recovered=await collectAll();
+          const recovered=await collectAll(true);
           return handled(recovered)?(recovered.trucks||{status:"missing"}):null;
         };
       }
