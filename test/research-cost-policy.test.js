@@ -12,7 +12,8 @@ test("default cost plan preserves discovery while capping optional phases", () =
   assert.equal(plan.total, 1850);
   assert.equal(plan.discovery, 1050);
   assert.ok(plan.identity >= 500);
-  assert.ok(plan.contacts < 350);
+  assert.equal(plan.contacts, 340);
+  assert.equal(plan.enrichment, 120);
   assert.equal(costEnvLimitUsd({}), 25);
   assert.equal(costEnvLimitUsd({ OPENAI_MAX_RESEARCH_COST_USD: "27.5" }), 27.5);
   assert.equal(fullWebLimits({ OPENAI_FULL_WEB_MAX_CALLS: "1234" }).total, 1234);
@@ -155,7 +156,7 @@ test("contact priority never treats invalid telephone as a completed phone", () 
 
 test("protected contacts share is conditional and does not enlarge the global cap", () => {
   assert.deepEqual(protectedContactAllowance({}),
-    { webCalls: 75, estimatedUsd: 1.2 });
+    { webCalls: 145, estimatedUsd: 1.2 });
   assert.deepEqual(protectedContactAllowance({
     OPENAI_CONTACTS_PROTECTED_WEB_CALLS: "0",
     OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD: "0"
@@ -163,7 +164,7 @@ test("protected contacts share is conditional and does not enlarge the global ca
   assert.deepEqual(protectedContactAllowance({
     OPENAI_CONTACTS_PROTECTED_WEB_CALLS: "500",
     OPENAI_CONTACTS_PROTECTED_ESTIMATED_USD: "10"
-  }), { webCalls: 270, estimatedUsd: 5 });
+  }), { webCalls: 340, estimatedUsd: 5 });
   assert.equal(fullWebLimits({}).total, 1850);
 });
 
