@@ -22,6 +22,7 @@ export function createDiscoveryCallLedger(initial={},persist=async()=>{}){
       try{await persist();}
       catch(error){
         if(error?.name==="MemoryPauseError")throw error;
+        delete values[key];
         const failure=new Error("DISCOVERY_CHECKPOINT_WRITE_FAILED",{cause:error});
         failure.code="DISCOVERY_CHECKPOINT_WRITE_FAILED";
         throw failure;
