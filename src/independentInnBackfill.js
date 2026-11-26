@@ -10,6 +10,7 @@ import {isVbrCompanyUrl} from "./sabyIndependentVbrBridge.js";
 import {isFnsSourceUrl,fnsRegionLabelMatches} from "./independentInnFns.js";
 import {isOfficialExtractProof} from "./independentInnFnsExtract.js";
 import {identityOgrns,normalizedOgrn} from "./legalIdentity.js";
+import {isMemoryPause} from "./memoryAdmission.js";
 
 const clean=v=>String(v??"").normalize("NFKC").replace(/\s+/gu," ").trim();
 const key=v=>clean(v).toLowerCase().replace(/ё/g,"е")
@@ -419,33 +420,52 @@ export async function checkFnsRegistryCanary(checkpoint,lookup){
   return {verified:false,reason:lastReason};
 }
 
+// The standalone CLI still creates an immutable child. Production Stage12
+// already owns a distinct mutable result/checkpoint, so reuse the exact
+// same candidate, conflict and official-extract checks without fabricating
+// a parent/child lineage or cloning every completed inventory on each row.
 export async function runIndependentInnBackfill({
   checkpoint,sourceId,childId,limit=1,targetId="",provider="vbr",lookup,onCheckpoint,
-  onProgress=()=>{}
+  onProgress=()=>{},signal=null
 }){
-  if(typeof lookup?.search!=="function"||typeof lookup?.confirm!=="function"||
-    typeof onCheckpoint!=="function"||
-    !sourceId||!childId||sourceId===childId)
+  if(typeof onCheckpoint!=="function"||!sourceId||!childId||sourceId===childId)
     throw Error("REGISTRY_INN_INVALID_RUN");
   const parent=structuredClone(checkpoint);
+  const now=new Date().toISOString();
+  const out=await recoverIndependentInns({
+    checkpoint:{...parent,created_at:now,updated_at:now,
+      independent_inn_backfill_source_job_id:sourceId,
+      independent_inn_backfill_root_job_id:parent.independent_inn_backfill_root_job_id||sourceId},
+    limit,targetId,provider,lookup,signal,onProgress,
+    onCheckpoint:cp=>onCheckpoint(structuredClone(cp))
+  });
+  return {...out,childId};
+}
+
+export async function recoverIndependentInns({
+  checkpoint:parent,limit=10000,targetId="",provider="fns",lookup,onCheckpoint,
+  onProgress=()=>{},signal=null
+}){
+  if(typeof lookup?.search!=="function"||typeof lookup?.confirm!=="function"||
+    typeof onCheckpoint!=="function")throw Error("REGISTRY_INN_INVALID_RUN");
+  const abort=()=>{if(signal?.aborted)throw Error("JOB_CANCELLED");};
+  abort();
   const plan=planIndependentInnBackfill(parent,{limit,targetId,provider});
   const all=entries(parent);
   const owners=new Set(all.map(e=>sabyInn(e.row["ИНН"])).filter(Boolean));
   const outcomes={...(parent.independent_inn_backfill_outcomes||{})};
   const stats={scheduled:plan.scheduled,processed:0,added:0,review:0,
     pending:plan.pending,stop_reason:""};
-  const now=new Date().toISOString();
-  const snapshot={...parent,created_at:now,updated_at:now,
-    independent_inn_backfill_source_job_id:sourceId,
-    independent_inn_backfill_root_job_id:parent.independent_inn_backfill_root_job_id||sourceId,
-    independent_inn_backfill_outcomes:outcomes,independent_inn_backfill_stats:stats};
+  const snapshot={...parent,independent_inn_backfill_outcomes:outcomes,
+    independent_inn_backfill_stats:stats};
   const save=async()=>{
     snapshot.updated_at=new Date().toISOString();
     stats.pending=plan.pending-stats.processed;
-    await onCheckpoint(structuredClone(snapshot));
+    await onCheckpoint(snapshot);
   };
   await save();
   for(const target of plan.selected){
+    abort();
     const id=target.original_canonical_id,row=plan.byId.get(id);
     let result;
     if(unsafeName(target.organization))result={status:"review",reason:"source_legal_name_unresolved"};
@@ -484,6 +504,7 @@ export async function runIndependentInnBackfill({
           if(issues.length)result={...result,confirmation_issues:issues};
         }
       }catch(error){
+        if(isMemoryPause(error)||signal?.aborted||error?.message==="JOB_CANCELLED")throw error;
         stats.stop_reason=["navigation_budget","registry_http_unavailable",
           "registry_route_untrusted","registry_browser_unavailable","registry_confirmation_unavailable",
           "registry_search_unresponsive","fns_invalid_query","fns_form_unavailable",
@@ -499,6 +520,7 @@ export async function runIndependentInnBackfill({
         break;
       }
     }
+    abort();
     if(result.status==="verified"){
       // The second check happens immediately before the only CRM write.
       // Never overwrite an existing value or introduce a duplicate INN.
@@ -532,5 +554,5 @@ export async function runIndependentInnBackfill({
     await save();
     await onProgress({...stats});
   }
-  return {snapshot,stats:{...stats},childId};
+  return {snapshot,stats:{...stats}};
 }

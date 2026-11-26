@@ -146,6 +146,12 @@ export async function runLateCheckpointResume({
       completedInns:saby.completedInns,
       attemptedInns:saby.attemptedInns,
       env,signal,startedAt,girboPriorOutcomes:source.girbo_backfill_outcomes||{},
+      region:source.region,innRecoveryPriorOutcomes:source.independent_inn_backfill_outcomes||{},
+      innRecoveryPriorStats:source.saby_inn_recovery_stats||null,
+      onInnRecoveryProgress:async stats=>{
+        statuses[11].detail="ЕГРЮЛ: восстановление ИНН · "+stats.processed+" / "+stats.scheduled+" · найдено "+stats.added;
+        await progress({phase:"saby",step:12,percent:96,statuses,innRecoveryStats:stats});
+      },
       recoverBrowserSession:true,acquireSabyBrowser,
       contactFirst:true,passState:source.saby_pass_state,
       onGirboProgress:async stats=>{

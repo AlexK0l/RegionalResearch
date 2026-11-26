@@ -24,7 +24,7 @@ export function exactSabyInnTransportToken(text,inn){
     .test(String(text||""));
 }
 
-export function observeSabySearchTransport(page,inn){
+export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}={}){
   if(!VALID_INN.test(String(inn||"")))throw Error("SABY_TRANSPORT_INN_INVALID");
   ACTIVE.get(page)?.stop();
   const counts={
@@ -35,9 +35,9 @@ export function observeSabySearchTransport(page,inn){
     http_401:0,http_403:0,http_429:0,http_5xx:0
   };
   const pending=new Set(),socketOff=[];
-  let stopped=false;
+  let stopped=false,armed=initiallyArmed===true;
   const requestSeen=request=>{
-    if(stopped)return;
+    if(stopped||!armed)return;
     try{
       if(!firstPartySabySearchTransport(request.url()))return;
       const kind=String(request.resourceType()||"").toLowerCase();
@@ -72,7 +72,7 @@ export function observeSabySearchTransport(page,inn){
     try{
       if(!firstPartySabySearchTransport(socket.url()))return;
       const onFrame=frame=>{
-        if(typeof frame?.payload==="string"&&
+        if(!stopped&&armed&&typeof frame?.payload==="string"&&
           exactSabyInnTransportToken(frame.payload,inn))
           counts.exact_inn_ws_frames++;
       };
@@ -81,6 +81,15 @@ export function observeSabySearchTransport(page,inn){
     }catch{}
   };
   const self={
+    // Subscribe BEFORE navigation/hydration so a long-lived Wasaby
+    // WebSocket is not missed. Only count traffic AFTER the exact search
+    // is about to be submitted; discard unrelated hydration requests.
+    arm(){
+      if(stopped)return;
+      for(const key of Object.keys(counts))counts[key]=0;
+      pending.clear();
+      armed=true;
+    },
     summary:()=>({...counts}),
     hasExactInnEvidence:()=>
       counts.exact_inn_async_requests>0||counts.exact_inn_ws_frames>0,
@@ -114,9 +123,9 @@ export function observeSabySearchTransport(page,inn){
 // must never trigger a speculative resubmission.
 export function shouldRecoverSilentSabySearch({
   route="",reason="",observed=0,elapsedMs=0,
-  alreadyRecovered=false,exactTransportEvidence=null
+  alreadyRecovered=false,exactTransportEvidence=null,serviceBlocked=false
 }={}){
   return route==="list"&&reason==="not_found"&&observed===0&&
     elapsedMs>=6500&&alreadyRecovered===false&&
-    exactTransportEvidence===false;
+    serviceBlocked===false&&exactTransportEvidence===false;
 }

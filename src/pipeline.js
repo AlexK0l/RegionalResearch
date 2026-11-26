@@ -9575,6 +9575,12 @@ ${JSON.stringify(gaps)}
     signal:jobSignal,
     startedAt:stage12StartedAt,
     girboPriorOutcomes:resumeCheckpoint?.girbo_backfill_outcomes||{},
+    region,innRecoveryPriorOutcomes:resumeCheckpoint?.independent_inn_backfill_outcomes||{},
+    innRecoveryPriorStats:resumeCheckpoint?.saby_inn_recovery_stats||null,
+    onInnRecoveryProgress:async stats=>{
+      statuses[11].detail="ЕГРЮЛ: восстановление ИНН · "+stats.processed+" / "+stats.scheduled+" · найдено "+stats.added;
+      await progress({phase:"saby",step:12,percent:96,innRecoveryStats:stats});
+    },
     persistCheckpoint,
     acquireSabyBrowser:job.acquireSabyBrowser,
     contactFirst:true,passState:resumeCheckpoint?.saby_pass_state,

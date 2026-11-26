@@ -9,6 +9,8 @@ import { sabyEligibleRows, sabyInn, sabyStoredSectionCoverage } from "./sabyEnri
 import { runSabyOnlyWithRecovery } from "./sabyOnlyRecovery.js";
 import {girboStageEnabled,runGirBoStage} from "./girBoStage.js";
 import {runSabyContactFirst} from "./sabyContactFirst.js";
+import {runSabyInnRecoveryStage,sabyInnRecoveryEnabled} from "./sabyInnRecoveryStage.js";
+import {validSabyPassCursor} from "./sabyVisitPolicy.js";
 // Browser reconnects can call this adapter again with the same result.
 // Only a distinct resumed job may retry a still-pending finance queue.
 const financeRuns=new WeakMap();
@@ -32,12 +34,25 @@ export async function runCheckpointedSabyStage12({
   recoverBrowserSession = false,
   recoveryWait = undefined,
   girboPriorOutcomes = {},
-  girboLookupFactory = undefined
+  girboLookupFactory = undefined,
+  region="",innRecoveryPriorOutcomes={},innRecoveryPriorStats=null,
+  innRecoveryLookupRunner=undefined,onInnRecoveryProgress=async()=>{}
 } = {}) {
   if (!result || !Array.isArray(result.direct_buyers) ||
       !Array.isArray(result.intermediaries) ||
       !Array.isArray(result.leasing)) {
     throw new TypeError("Stage 12 requires finalized commercial research result");
+  }
+  // This optional, paid-free step precedes the frozen Saby INN queue.
+  // Old in-progress cursors must never be expanded behind their back.
+  if(contactFirst&&region&&sabyStage12Settings(env).enabled&&
+     sabyInnRecoveryEnabled(env)&&!validSabyPassCursor(passState)){
+    await runSabyInnRecoveryStage({
+      result,region,env,signal,acquireSabyBrowser,persistCheckpoint,
+      priorOutcomes:innRecoveryPriorOutcomes,priorStats:innRecoveryPriorStats,
+      onProgress:onInnRecoveryProgress,
+      ...(innRecoveryLookupRunner?{lookupRunner:innRecoveryLookupRunner}:{})
+    });
   }
   if(girboStageEnabled(env)){
     const financeStartedAt=Date.now();

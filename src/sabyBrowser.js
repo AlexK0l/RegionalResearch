@@ -270,13 +270,17 @@ async function openCompany(page, row, settings, timing=null) {
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия",{scope:"company"});
+  // Install the observer before the navigation that may open a durable
+  // WebSocket. Arm it only immediately before submitting this exact INN.
+  const publicFallback=settings.publicIdentityFallback===true;
+  let transport=publicFallback?observeSabySearchTransport(page,inn,{armed:false}):null;
+  try{
   // Wait for navigation commit, NOT every subresource/SPA script. The
   // authenticated list's input is verified and polled below independently.
   // This avoids a 45s DOMContentLoaded timeout during slow Wasaby hydration.
   await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
   if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
     throw new SabyReview("Saby: список организаций не подтверждён");
-  const publicFallback=settings.publicIdentityFallback===true;
   const isListRoute=()=>sabyCardRoute(page.url())==="list";
   const searchOptions={
     timeoutMs:Math.min(15000,settings.timeoutMs),
@@ -313,7 +317,7 @@ async function openCompany(page, row, settings, timing=null) {
   // Sample AFTER hydration and BEFORE entering the exact INN.
   let beforeSearch=publicFallback?
     await readSabySearchState(page,inn).catch(()=>null):null;
-  let transport=publicFallback?observeSabySearchTransport(page,inn):null;
+  transport?.arm();
   const submitted=await submitSabyCompanySearch(page,inn,searchOptions);
   if(!submitted.ok){
     transport?.stop();
@@ -385,7 +389,9 @@ async function openCompany(page, row, settings, timing=null) {
       observed:Number(selected.observed||0),
       elapsedMs:Date.now()-submissionAt,
       alreadyRecovered:transportRecoveryUsed,
-      exactTransportEvidence:transport?.hasExactInnEvidence()
+      exactTransportEvidence:transport?.hasExactInnEvidence(),
+      serviceBlocked:Boolean(transport&&[401,403,429].some(code=>
+        transport.summary()["http_"+code]>0))
     })){
       // No exact-INN request was observed after 6.5s despite safe
       // fill/Enter and zero result cards. This is consistent with a
@@ -398,6 +404,7 @@ async function openCompany(page, row, settings, timing=null) {
         ...(transport?.summary()||{})
       }));
       transport?.stop();
+      transport=observeSabySearchTransport(page,inn,{armed:false});
       try{
         await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
         if(!isListRoute()||!isSabyProfileUrl(page.url()))
@@ -405,7 +412,7 @@ async function openCompany(page, row, settings, timing=null) {
             {code:"search_input_failed"});
         await settleSearch();
         beforeSearch=await readSabySearchState(page,inn).catch(()=>null);
-        transport=observeSabySearchTransport(page,inn);
+        transport.arm();
         const second=await submitSabyCompanySearch(page,inn,searchOptions);
         if(!second.ok)
           throw new SabyReview("Saby: повторный безопасный ввод не завершён",
@@ -425,6 +432,33 @@ async function openCompany(page, row, settings, timing=null) {
     }
     await delay(450);
   }
+  // The two final zero-state reads already allow another 500ms of
+  // hydration. Re-scan the original exact-INN candidates after that
+  // wait, so a late valid result is not discarded as an uncertain zero.
+  let finalZero=null;
+  if(publicFallback&&rows.length!==1&&selection==="not_found"&&
+     Number(lastSelected?.observed)===0&&isListRoute()){
+    let sampleA=null,sampleB=null,classification="probe_error";
+    try{
+      sampleA=await readSabySearchState(page,inn);
+      await delay(500);
+      if(isListRoute()){
+        sampleB=await readSabySearchState(page,inn);
+        const lastRead=await candidates();
+        if(isListRoute()){
+          lastSelected=lastRead;selection=lastRead.reason;
+          rows=lastRead.row&&!["ambiguous","ambiguous_exact","result_window_full",
+            "primary_window_full"].includes(lastRead.reason)?[lastRead.row]:[];
+          classification=classifySabySearchZeroState(sampleA,sampleB,{
+            onListRoute:true,beforeSearch
+          });
+        }
+      }
+    }catch{/* Preserve the original fail-closed fallback. */}
+    finalZero={sampleA,sampleB,classification};
+    if(rows.length===1)
+      console.info("[SABY_SEARCH_LATE_RESULT] "+JSON.stringify({status:"candidate_requires_card_verification"}));
+  }
   if(rows.length!==1){
     if(publicFallback){
       const observed=transport?.summary()||{};
@@ -440,18 +474,7 @@ async function openCompany(page, row, settings, timing=null) {
     // unhydrated/blocked list. Check two bounded, visible DOM samples.
     if(publicFallback&&selection==="not_found"&&
        Number(lastSelected?.observed)===0){
-      let classification="uncertain",sampleA=null,sampleB=null;
-      try{
-        sampleA=await readSabySearchState(page,inn);
-        await delay(500);
-        sampleB=await readSabySearchState(page,inn);
-        classification=classifySabySearchZeroState(sampleA,sampleB,{
-          onListRoute:sabyCardRoute(page.url())==="list",
-          beforeSearch
-        });
-      }catch{
-        classification="probe_error";
-      }
+      const {classification="probe_error",sampleA=null,sampleB=null}=finalZero||{};
       console.warn("[SABY_SEARCH_ZERO_DIAG] "+JSON.stringify({
         state:classification,
         input_exact:sampleB?.inputExact===true,
@@ -630,6 +653,7 @@ async function openCompany(page, row, settings, timing=null) {
   });
   throw new SabyReview("Saby: карточка не подтверждена: "+last.reason,
     {scope:"company",code:reviewCode});
+  }finally{transport?.stop();}
 }
 
 // Same bounded ancestor rule as the legacy locator loop, but one
