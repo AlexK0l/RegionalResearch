@@ -15,6 +15,25 @@ with tempfile.TemporaryDirectory() as tmp:
         with zipfile.ZipFile(p,"w",zipfile.ZIP_DEFLATED) as z:
             z.writestr("fixture.xml",xml.encode("utf8"))
         out[kind]=m.scan_archive(p,kind,release,2025,targets)
+    # Two regions share a legal name; national overflow must never erase
+    # the second region's local hit. Use real-checksum synthetic identifiers.
+    second_ogrn="102350000000"
+    second_ogrn+=str(int(second_ogrn)%11%10)
+    multi_xml=rsmp.replace('КолДок="2"','КолДок="3"').replace("</Файл>",
+        '<Документ ВидСубМСП="1" ДатаСост="10.11.2026" ССЧР="8"><ОргВклМСП ИННЮЛ="7810165652" ОГРН="'+second_ogrn+
+        '" НаимОрг="АО ПРИМЕР" НаимОргСокр="АО ПРИМЕР"/><СведМН КодРегион="35"><Регион Наим="Вологодская" Тип="обл."/><Город Наим="Вологда"/></СведМН></Документ></Файл>')
+    p=Path(tmp)/"batch.zip"
+    with zipfile.ZipFile(p,"w") as z:
+        z.writestr("batch.xml",multi_xml.encode("utf8"))
+    saved_max=m.MAX_HITS
+    try:
+        m.MAX_HITS=1
+        out["batch"]=m.scan_archive(p,"rsmp",date(2026,11,10),2025,{
+            "inns":targets["inns"],"ogrns":targets["ogrns"],"names":targets["names"],
+            "regional_targets":[{"region":"Ленинградская область","names":targets["names"]},
+                                {"region":"Вологодская область","names":targets["names"]}]})
+    finally:
+        m.MAX_HITS=saved_max
     p=Path(tmp)/"bad.zip"
     with zipfile.ZipFile(p,"w") as z:
         z.writestr("bad.xml",'<!DOCTYPE x [<!ENTITY a "b">]>'+sshr)

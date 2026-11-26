@@ -398,6 +398,21 @@ def scan_archive(path,kind,release,year,targets):
     ogrns=set(targets["ogrns"])
     names={name_key(n) for n in targets["names"]}-{""}
     region=region_key(targets.get("region",""))
+    multi="regional_targets" in targets
+    regional={}
+    if multi:
+        items=targets["regional_targets"]
+        if not isinstance(items,list) or not 1<=len(items)<=6:
+            raise ValueError("FNS_OPEN_DATA_BATCH_LIMIT")
+        for item in items:
+            rk=region_key(item["region"])
+            if not rk or rk in regional or len(rk)>250:
+                raise ValueError("FNS_OPEN_DATA_BATCH_TARGET_INVALID")
+            regional[rk]={name_key(n) for n in item["names"]}-{""}
+            if not regional[rk]<=names:
+                raise ValueError("FNS_OPEN_DATA_BATCH_TARGET_INVALID")
+        if len(inns)+len(ogrns)+len(names)+sum(map(len,regional.values()))>4000:
+            raise ValueError("FNS_OPEN_DATA_BATCH_LIMIT")
     hits={k:{} for k in ("by_inn","by_ogrn","by_name","by_name_region")}
     overflow={k:set() for k in hits}
     signatures={k:{} for k in hits}
@@ -463,10 +478,12 @@ def scan_archive(path,kind,release,year,targets):
                                         keep("by_ogrn",row["ogrn"],row)
                                     for k in {name_key(row["full_name"]),name_key(row["short_name"])}&names:
                                         keep("by_name",k,row)
-                                        if region and region_key(row["region_name"])==region:
-                                            # A common name may have 24 national hits before
-                                            # the first local company. Keep regional hits
-                                            # independently so that overflow cannot hide them.
+                                        rk=region_key(row["region_name"])
+                                        # In batch mode, preserve an independent capped
+                                        # bucket per requested name AND legal region.
+                                        if multi and k in regional.get(rk,()):
+                                            keep("by_name_region",rk+"|"+k,row)
+                                        elif not multi and region and rk==region:
                                             keep("by_name_region",k,row)
                                 root.remove(el)
                                 el.clear()
@@ -490,7 +507,10 @@ def scan_archive(path,kind,release,year,targets):
                 stats["xml_members"]+=1
     if stats["legal_records"]==0:
         raise ValueError("FNS_NO_USABLE_LEGAL_RECORDS")
-    return {"stats":stats,"hits":hits,"overflow":{k:sorted(v) for k,v in overflow.items()}}
+    result={"stats":stats,"hits":hits,"overflow":{k:sorted(v) for k,v in overflow.items()}}
+    if multi:
+        result.update(regional_key_mode="region_name_v1",regional_keys=sorted(regional))
+    return result
 
 def main():
     c=json.load(sys.stdin)

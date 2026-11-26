@@ -96,3 +96,29 @@ child remains the resume point. Synthetic fixtures verify identical full
 hash/scan after interruptions, smaller ranges, persistent-failure bounds,
 and immediate rejection of changed representation or throttling. Actual
 recovery of the remaining large FNS ZIP still requires a live run.
+
+### One scan for several saved regions (batch mode)
+
+Pass repeated `--checkpoint=<UUID>` options (up to six distinct parents)
+to the same command. Use only stable saved results, not active research
+snapshots. Default remains a read-only plan. With explicit `--run`, each
+specified release is downloaded/range-read and scanned **once** for the union
+of requested INNs, OGRNs and names. The combined target set is capped at
+4,000 keys (including regional pairs); split larger batches. Each region/name
+pair has its own 24-hit cap so a national or different-region overflow cannot
+hide a local result. No nationwide database, retained ZIP or new provider.
+The existing archive/hash/schema/disk/HTTP/range safeguards remain.
+
+Each parent is reread and fingerprint-checked before applying; if its
+payload changed, it is skipped explicitly. A successful parent receives
+its own immutable child under a new UUID. The original identity/finance
+proof rules and candidate-only behavior apply independently to each parent,
+even when the same INN appears in different regions. Only compact plans are
+retained while scanning, and each parent payload is loaded separately.
+Source errors do not erase previously saved children. No service restart
+or automatic scan inside a research job. Run the explicit batch procedure
+only when the VPS has sufficient idle resources.
+
+Example (first plan with real saved UUIDs, then add release URL and --run):
+
+    node scripts/fns-open-data-backfill.js --db=/opt/regionalresearch/data/checkpoints.sqlite --checkpoint=<UUID1> --checkpoint=<UUID2> --year=2025

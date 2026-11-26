@@ -86,6 +86,49 @@ function bucket(a,group,key){
 }
 const regionKey=s=>[...new Set(token(s).split(" ").filter(x=>x&&!["г","город"].includes(x))
   .map(x=>({обл:"область",респ:"республика",окр:"округ",авт:"автономный"}[x]||x)))].sort().join(" ");
+// All batch targets are bounded and deduplicated. Regional name buckets
+// remain independent even when the same name overflows nationally.
+export const FNS_BATCH_MAX_CHECKPOINTS=6;
+export function combineFnsOpenDataTargets(targets){
+  if(!Array.isArray(targets)||!targets.length||targets.length>FNS_BATCH_MAX_CHECKPOINTS)
+    throw Error("FNS_OPEN_DATA_BATCH_LIMIT");
+  const inns=new Set(),ogrns=new Set(),names=new Map(),regional=new Map();
+  for(const target of targets){
+    const region=regionKey(target?.region);
+    if(!region||region.length>250||!["inns","ogrns","names"].every(k=>Array.isArray(target[k])))
+      throw Error("FNS_OPEN_DATA_BATCH_TARGET_INVALID");
+    if(!regional.has(region))regional.set(region,new Map());
+    for(const inn of target.inns){if(!validInn(inn))throw Error("FNS_OPEN_DATA_BATCH_TARGET_INVALID");inns.add(inn);}
+    for(const ogrn of target.ogrns){
+      if(!/^\d{13}$/.test(ogrn)||normalizedOgrn(ogrn)!==ogrn)throw Error("FNS_OPEN_DATA_BATCH_TARGET_INVALID");
+      ogrns.add(ogrn);
+    }
+    for(const raw of target.names){
+      const key=archiveNameKey(raw);
+      if(!key||typeof raw!=="string"||raw.length>1000)throw Error("FNS_OPEN_DATA_BATCH_TARGET_INVALID");
+      if(!names.has(key))names.set(key,raw);
+      if(!regional.get(region).has(key))regional.get(region).set(key,raw);
+    }
+  }
+  const pairs=[...regional.values()].reduce((n,m)=>n+m.size,0);
+  if(inns.size+ogrns.size+names.size+pairs>4000)
+    throw Error("FNS_OPEN_DATA_BATCH_LIMIT");
+  return {inns:[...inns],ogrns:[...ogrns],names:[...names.values()],
+    regional_targets:[...regional.entries()].map(([region,entries])=>({region,names:[...entries.values()]}))};
+}
+function regionalBucket(a,region,key){
+  if(a.regional_key_mode==="region_name_v1"){
+    const normalized=regionKey(region),groupKey=normalized+"|"+key;
+    if(!Array.isArray(a.regional_keys)||!a.regional_keys.includes(normalized))
+      throw Error("FNS_OPEN_DATA_BATCH_REGION_MISSING");
+    const b=bucket(a,"by_name_region",groupKey);
+    if(b.rows.some(r=>regionKey(r.region_name)!==normalized))
+      throw Error("FNS_OPEN_DATA_BATCH_REGION_MISMATCH");
+    return b;
+  }
+  if(a.regional_key_mode!==undefined)throw Error("FNS_OPEN_DATA_SCAN_INVALID");
+  return bucket(a,"by_name_region",key);
+}
 const cityKey=s=>token(s).replace(/^(?:город|г|поселок|пос|пгт|п|село|с|деревня|д)\s+/u,"");
 const proof=(r,s)=>({source:"FNS_OPEN_DATA",dataset:s.kind,source_url:s.url,release:s.release,
   report_year:s.report_year,as_of:r.as_of,archive_sha256:s.sha256,member:r.member,document_id:r.document_id});
@@ -144,7 +187,7 @@ export function applyFnsOpenData(cp,archives,{sourceId,childId,now=new Date().to
     if(older.length&&old?.overflow)overflow=true;
     for(const a of archives){
       for(const b of [...ogrns.map(o=>bucket(a,"by_ogrn",o)),
-        bucket(a,"by_name_region",key),bucket(a,"by_name",key)]){
+        regionalBucket(a,snapshot.region,key),bucket(a,"by_name",key)]){
         overflow||=b.overflow;
         for(const r of b.rows){
           if(!exactName(row,r)||occupied.has(r.inn)||(ogrns.length&&r.ogrn&&r.ogrn!==ogrns[0]))continue;
