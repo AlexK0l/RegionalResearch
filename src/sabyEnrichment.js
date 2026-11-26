@@ -328,23 +328,40 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
     employeesAdded=true;
   }
 
-  let phoneAdded = false;
-  if (!hasKnownPhone(row["Телефон"])) {
-    const available = phones.filter(phone => {
-      const owners = phoneOwners.get(phone);
-      return !owners || [...owners].every(owner => owner === row);
-    }).slice(0,12);
-    if (available.length) {
-      row["Телефон"] = formatPhoneCell(available.map(phone => {
-        const label=departments.get(phone);
-        return phone+(label?" ("+label+")":"");
-      }));
-      phoneAdded = Boolean(row["Телефон"]);
-      for (const phone of available) {
-        if (!phoneOwners.has(phone)) phoneOwners.set(phone, new Set());
-        phoneOwners.get(phone).add(row);
-      }
+  // Preserve existing contacts; supplement them with every independently
+  // verified Saby number not assigned to a different company. Keep rejected
+  // numbers in evidence rather than silently discarding or transferring them.
+  const previousEntries = parsePhoneEntries(row["Телефон"]);
+  const existingPhones = new Set(previousEntries.map(entry => entry.phone));
+  const conflicts = phones.filter(phone => {
+    const owners = phoneOwners.get(phone);
+    return owners && [...owners].some(owner => owner !== row);
+  });
+  const available = phones.filter(phone => !conflicts.includes(phone));
+  const added = available.filter(phone => !existingPhones.has(phone));
+  const combinedPhones = formatPhoneCell([
+    ...previousEntries.map(({phone, department}) =>
+      phone + (department ? " (" + department + ")" : "")),
+    ...available.map(phone => {
+      const label = departments.get(phone);
+      return phone + (label ? " (" + label + ")" : "");
+    })
+  ]);
+  const phoneAdded = previousEntries.length === 0 && added.length > 0;
+  if (available.length) {
+    row["Телефон"] = combinedPhones;
+    for (const phone of added) {
+      if (!phoneOwners.has(phone)) phoneOwners.set(phone, new Set());
+      phoneOwners.get(phone).add(row);
     }
+  }
+  if (conflicts.length) {
+    evidence.saby.phone_conflicts = conflicts.map(phone => ({
+      phone, reason: "already_assigned_to_other_company",
+      source_url: record.source_url
+    }));
+  } else {
+    delete evidence.saby.phone_conflicts;
   }
 
   let transportAdded = false;
@@ -382,6 +399,6 @@ export function applySabyEnrichment(row, record, { phoneOwners = new Map(), tran
   }
   return {status:"ok", phoneAdded, emailAdded, transportAdded,
     revenueAdded,employeesAdded,
-    phonesFound:phones.length, emailsFound:emails.length,
+    phonesFound:phones.length, phonesAppended:added.length, phoneConflicts:conflicts.length, emailsFound:emails.length,
     verifiedTrucks:fleet?.count ?? null};
 }
