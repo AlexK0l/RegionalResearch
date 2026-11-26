@@ -110,3 +110,18 @@ public directory card remains isolated. No new paid search allowance.
 
 A completed phone-only retry without a number also retains its cited URLs
 as hints, without changing contact status or inflating recovered-phone counts.
+
+### Read-only production coverage audit
+
+`node scripts/audit-contact-coverage.js --db=/opt/regionalresearch/data/checkpoints.sqlite --recent=8`
+
+Prints aggregate counts from existing completed checkpoints only: actual
+phone coverage, valid-identity gaps, shared numbers, recognized saved
+source evidence and recorded stage snapshots. No raw phone, organization
+or credential is emitted. A saved source/excerpt is structural support,
+not live source verification. Missing historical stage counters stay null.
+For a fair before/after comparison in the same region, use
+`--checkpoint=<new-UUID> --baseline=<old-UUID>`; only exact unique legal
+INN and matching legal name pairs contribute to gains/losses, and unmatched
+rows remain explicit. Does not launch any research, browser or paid call,
+modify SQLite or require the old region to be processed again.
