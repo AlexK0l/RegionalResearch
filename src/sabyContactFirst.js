@@ -6,7 +6,7 @@ import {parsePhoneEntries} from "./phoneExport.js";
 import {companyEmailCell} from "./emailContact.js";
 import {contactResearchPriority} from "./researchCostPolicy.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
-import {applySabyEnrichment,sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyMissingFinancials} from "./sabyEnrichment.js";
+import {applySabyEnrichment,sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyMissingFinancials,reconcileStoredSabyPhones} from "./sabyEnrichment.js";
 import {collectSabySections,withSabyBrowser,SabyReview} from "./sabyBrowser.js";
 import {sabyStage12Settings} from "./sabyStage12.js";
 import {validSabyFinancialEvidence} from "./sabyFinancials.js";
@@ -83,6 +83,9 @@ export async function runSabyContactFirst({
   const sessionLimit=boundedPositive(env.SABY_BROWSER_RECYCLE_EVERY,25,200);
   const gcEvery=boundedPositive(env.SABY_GC_EVERY,10,100);
   maxRestarts=Math.max(0,Math.min(2,Math.trunc(Number(maxRestarts)||0)));
+  const restoredPhones=reconcileStoredSabyPhones(result);
+  if(restoredPhones.numbersAppended||restoredPhones.conflicts)
+    console.info("[SABY_STORED_PHONE_RECONCILIATION] "+JSON.stringify(restoredPhones));
   const all=sabyEligibleRows(result,{includeAll:true,includeFinanceGaps:true});
   // Stable INN mapping includes rows whose gaps are filled during the run.
   const entries=all.eligible,byInn=new Map(entries.map(e=>[sabyInn(e.row["ИНН"]),e]));
