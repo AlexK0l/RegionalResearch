@@ -68,6 +68,9 @@ export async function verifySabyCard(page,inn,expectedName) {
       if(!text)continue;
       scopedExactInn||=exact.test(text);
       scopedLabeledInn||=labeled.test(text);
+      // Both existential proofs are now true. Additional card blocks
+      // cannot change either flag; avoid expensive innerText reads.
+      if(scopedExactInn&&scopedLabeledInn)break;
     }
     const headerElements=[...document.querySelectorAll(
       'h1,h2,h3,[role="heading"],[class*="companyName" i],' +

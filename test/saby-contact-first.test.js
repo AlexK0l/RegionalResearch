@@ -372,3 +372,81 @@ test("fresh scope opt-out does not add historical intermediary fleet work",async
   assert.equal(out.passState.fleet_scope,"direct_buyers_v1");
   assert.equal(out.stats.fleetCoverage.target,0);
 });
+
+
+const combinedEnv={...env,SABY_FAST_PASS_ENABLED:"true",SABY_COMBINE_RETRY_DETAILS_ENABLED:"true"};
+test("combine retry saves one visit without losing first full or second full fleet attempt",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const out=await runSabyContactFirst({result:db,env:combinedEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({...sections});
+      const v=record(r,sections,{emptyContacts:true});
+      if(sections.quickDetails){v.trucks={status:"missing"};v.financials={status:"missing"};}
+      if(sections.combinedDetails){
+        v.trucks={status:"review"};v.financials={status:"missing"};
+        v.full_detail_attempts={trucks:true,financials:true};
+      }
+      return v;
+    }});
+  assert.equal(out.passState.strategy,"combined_retry_full_v2");
+  assert.equal(calls.length,3);
+  assert.equal(calls[0].quickDetails,true);
+  assert.equal(calls[1].contacts,true);assert.equal(calls[1].combinedDetails,true);
+  assert.equal(calls[2].contacts,false);assert.equal(calls[2].trucks,true);
+  assert.equal(calls[2].financials,true);
+  assert.equal(out.stats.totalAttempts,3);
+  assert.equal(out.stats.fleetCoverage.positive,1);
+  assert.deepEqual(out.passState.combined_detail_attempts[innA],{trucks:true,financials:true});
+  assert.ok(!out.passState.attempted.includes("details:"+innA));
+});
+test("an unentered fleet read does not consume its full details attempt",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const out=await runSabyContactFirst({result:db,env:combinedEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({...sections});
+      const v=record(r,sections,{emptyContacts:true});
+      if(sections.quickDetails||sections.combinedDetails)v.trucks={status:"missing"};
+      if(sections.quickDetails)v.financials={status:"missing"};
+      if(sections.combinedDetails)v.full_detail_attempts={trucks:false,financials:true};
+      return v;
+    }});
+  assert.equal(calls.length,3);
+  assert.equal(calls[2].trucks,true);
+  assert.equal(out.stats.fleetCoverage.positive,1);
+  assert.ok(out.passState.attempted.includes("details:"+innA));
+});
+test("durable combined marker survives memory pause and does not invent unvisited section work",async()=>{
+  const db=result([row(innA,"Альфа")]);let saved;
+  const collect=async(_p,r,_s,sections)=>{
+    const v=record(r,sections,{emptyContacts:true});
+    if(sections.quickDetails||sections.combinedDetails){v.trucks={status:"review"};v.financials={status:"missing"};}
+    if(sections.combinedDetails)v.full_detail_attempts={trucks:true,financials:true};
+    return v;
+  };
+  await assert.rejects(runSabyContactFirst({result:db,env:combinedEnv,sessionRunner,
+    collectSections:collect,persistCheckpoint:async(_phase,p)=>{
+      saved=structuredClone(p);
+      if(p.saby_pass_state.attempted.includes("contact_retry:"+innA))throw new MemoryPauseError();
+    }}),isMemoryPause);
+  const calls=[];
+  const resumed=await runSabyContactFirst({result:saved.final_result,passState:saved.saby_pass_state,
+    env:{...combinedEnv,SABY_COMBINE_RETRY_DETAILS_ENABLED:"false"},sessionRunner,
+    collectSections:async(...args)=>{calls.push(args[3]);return collect(...args);}});
+  assert.equal(calls.length,1);assert.equal(calls[0].trucks,true);
+  assert.equal(resumed.passState.strategy,"combined_retry_full_v2");
+  assert.ok(resumed.passState.attempted.includes("details_retry:"+innA));
+  assert.equal(resumed.stats.totalAttempts,3);
+  assert.equal(resumed.stats.fleetCoverage.positive,1);
+});
+test("existing optimized cursor is not reinterpreted after enabling combined retry",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const out=await runSabyContactFirst({result:db,env:combinedEnv,sessionRunner,
+    passState:{version:1,strategy:"combined_visible_v1",planned_inns:[innA],attempted:["contacts:"+innA],phase_index:1},
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push(sections);
+      return record(r,sections);
+    }});
+  assert.equal(calls[0].quickDetails,true);
+  assert.equal(out.passState.strategy,"combined_visible_v1");
+  assert.deepEqual(out.passState.combined_detail_attempts,{});
+});

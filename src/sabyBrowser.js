@@ -1327,9 +1327,11 @@ export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
 }
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
+  const combined=optimized&&!quick&&sections.combinedDetails===true;
+  const detailAttempts={financials:false,trucks:false};
   const timing={},timed=async(key,fn)=>{
     const start=performance.now();
-    try{return await fn();}finally{timing[key]=Math.round(performance.now()-start);}
+    try{return await fn();}finally{timing[key]=(timing[key]||0)+Math.round(performance.now()-start);}
   };
   let identity;
   try{
@@ -1367,6 +1369,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const read=async(key,fn)=>{
     try{
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
+      if(combined&&key==="financials")detailAttempts.financials=true;
       const value=await timed(key==="trucks"?"fleet_ms":key+"_ms",fn);
       if(optimized&&!sameCard()){result.errors.push(key+": card_changed");return;}
       result[key]=value;
@@ -1379,10 +1382,21 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   }));
   // New production contact visits read contacts FIRST, then only visible
   // finance/fleet. The old collector still uses its original full order.
+  const finish=()=>{
+    if(combined&&sameCard()&&!result.errors.some(x=>/card_changed/.test(x)))
+      result.full_detail_attempts={...detailAttempts};
+    return result;
+  };
   if(optimized&&sections.contacts)await contactRead();
+  // Preserve the full details visit's independent hydration allowance.
+  // A successful contact widget does not prove the fleet is ready.
+  // The shared navigation/identity work is removed, not the fleet wait.
+  if(combined&&(sections.trucks||sections.financials)&&sameCard())
+    await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
+      {contacts:false,trucks:sections.trucks,financials:sections.financials}));
   if(!sections||sections.financials)await financeRead();
   if(!optimized&&(!sections||sections.contacts))await contactRead();
-  if(sections&&!sections.trucks)return result;
+  if(sections&&!sections.trucks)return finish();
   if(quick){
     await read("trucks",async()=>{
       const heading=await visibleLocator(page.getByText("Автопарк компании",{exact:true}));
@@ -1402,6 +1416,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       // finance/contact scrolling, including old in-progress cursors.
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      if(combined)detailAttempts.trucks=true;
       const trucks=await ownTrucks(page,settings,fleetProgress);
       if((optimized||settings.publicIdentityFallback===true)&&!sameCard())
         throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
@@ -1410,6 +1425,8 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   } catch(error) {
     // Raw Playwright errors may contain URLs or private DOM; diagnostics
     // always use the fixed allowlisted code and never print the exception.
+    if(error instanceof SabyReview&&error.code==="card_changed")
+      fleetProgress.reason="card_changed";
     fleetProgress.reason ||=fleetProgress.phase==="overlay"?
       "contact_overlay_not_closed":"fleet_interaction_failed";
     result.errors.push("trucks: "+fleetProgress.reason);
@@ -1444,7 +1461,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     console.warn("[SABY_SECTION_DIAG] "+JSON.stringify(
       await safeSabySectionDiagnostic(page)));
   }
-  return result;
+  return finish();
 }
 
 // Finance scroll can remount DOM or move non-UI query parameters.

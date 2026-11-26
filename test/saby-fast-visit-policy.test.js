@@ -167,3 +167,24 @@ test("a navigation hint that opens a different opaque card falls back to exact c
   });
   assert.deepEqual(calls,["saved_navigation","full_search_navigation"]);
 });
+
+
+test("full combined contact retry reads contacts first, then actual full fleet and finance on same card",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page,calls}=cardFixture();
+  const got=await collectSabySections(page,r,{timeoutMs:15000},
+    {contacts:true,financials:true,trucks:true,optimized:true,combinedDetails:true});
+  assert.deepEqual(got.full_detail_attempts,{financials:true,trucks:true});
+  assert.equal(got.trucks.status,"verified");
+  assert.equal(got.contacts.status,"collected");
+  assert.ok(calls.indexOf("contacts")<calls.indexOf("finance_dom"));
+  assert.equal(calls.filter(x=>x==="saved_navigation").length,1);
+});
+test("card change during combined retry cannot credit either full section attempt",async()=>{
+  const r=row();rememberSabyNavigationHint(r,record());
+  const {page}=cardFixture({routeDrift:true});
+  const got=await collectSabySections(page,r,{timeoutMs:15000},
+    {contacts:true,financials:true,trucks:true,optimized:true,combinedDetails:true});
+  assert.equal(got.full_detail_attempts,undefined);
+  assert.equal(got.trucks.status,"missing");
+});
