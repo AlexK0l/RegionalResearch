@@ -33,3 +33,18 @@ export function recordContactAttempt(id, researched, completedIds, unsearchedIds
   unsearchedIds.add(key);
   return false;
 }
+
+// A saved primary answer may already have populated all visible fields
+// before conflict verification/commit. Keep it eligible on resume without
+// requesting the same paid primary answer again.
+export function contactResumeCandidates(rows,checkpoint,idOf,needsContact){
+  const version=Number(checkpoint?.contact_stats?.version||0);
+  const primary=version>=2&&checkpoint?.contact_primary_results&&typeof checkpoint.contact_primary_results==="object"
+    ?new Set(Object.keys(checkpoint.contact_primary_results)):new Set();
+  const completed=new Set(version>=2&&Array.isArray(checkpoint?.contact_completed_ids)
+    ?checkpoint.contact_completed_ids.map(String):[]);
+  return (rows||[]).filter(row=>{
+    const id=String(idOf(row)||"");
+    return needsContact(row)||(id&&primary.has(id)&&!completed.has(id));
+  });
+}

@@ -46,3 +46,12 @@ test("no phantom deferred identifiers after a company is removed from the CRM", 
     contact_unsearched_ids: ["missing", "c2"]
   }, ["a", "c2"], new Set(["c2"]))], []);
 });
+
+test("resume retains a filled but uncommitted primary contact answer without paid replay",async()=>{
+  const {contactResumeCandidates,pendingContactRows}=await import("../src/checkpointContinuation.js");
+  const rows=[{id:"filled",missing:false},{id:"completed",missing:false},{id:"new",missing:true},{id:"untouched",missing:false}];
+  const checkpoint={contact_stats:{version:2},contact_primary_results:{filled:{status:"ok"},completed:{status:"ok"}},contact_completed_ids:["completed"]};
+  const eligible=contactResumeCandidates(rows,checkpoint,row=>row.id,row=>row.missing);
+  assert.deepEqual(eligible.map(row=>row.id),["filled","new"]);
+  assert.deepEqual(pendingContactRows(eligible,new Set(checkpoint.contact_completed_ids),checkpoint.contact_primary_results,row=>row.id).map(row=>row.id),["new"]);
+});

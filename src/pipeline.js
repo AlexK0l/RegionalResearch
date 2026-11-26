@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import {createDiscoveryCallLedger,fatalDiscoveryError} from "./discoveryCallLedger.js";
 import {isOpenAIBillingStop,guardOpenAIResponses} from "./openaiBillingGuard.js";
 import {runRegionalStatistics,regionalStatisticsPrompt,regionalStatisticsCoverage} from "./regionalStatistics.js";
+import {phoneConflictKey,assessPhoneConflictProof,restorePhoneConflictProof} from "./phoneConflictProof.js";
 import { confirmedInnAliasDecision, identityOgrns, legalEvidenceConflict, unresolvedNameCompatible, legalNameKey, numberedLegalNameConflict } from "./legalIdentity.js";
 import { loadRecentCompletedResearch } from "./checkpointStore.js";
 import { preserveCitedDiscoveryBasis, normalizeDiscoverySourceUrls } from "./discoveryEvidence.js";
@@ -17,7 +18,7 @@ import { attachInlineNoteProvenance } from "./evidenceProvenance.js";
 import { decideEnrichmentAction } from "./enrichmentPolicy.js";
 import { applyPreSabyFinancialFacts, preSabyFinancialCoverage } from "./preSabyFinancials.js";
 import { priorityRecoveryGaps, eligiblePriorityRecoveryRows, applyPriorityRecoveryItem } from "./priorityGapRecovery.js";
-import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt } from "./checkpointContinuation.js";
+import { restoredDeferredContactIds, pendingContactRows, recordContactAttempt, contactResumeCandidates } from "./checkpointContinuation.js";
 import { commercialEligibility, classifyCommercialEntity, statusProofFromFinalInn, rejectUnsafeAEvidence, rankSafeAEvidence } from "./qualificationSafety.js";
 import { stagedRetentionReview } from "./stagedRetention.js";
 import { finalizeProductionResearch, selectedADirectBuyerIsOnlyInference, disclaimsSelectedTrailerEvidence } from "./productionFinalQuality.js";
@@ -802,9 +803,12 @@ const PHONE_VERIFY_SCHEMA = {
   properties: {
     confirmed: { type: "boolean" },
     phone: { type: "string" },
+    inn: { type: "string" },
+    source_url: { type: "string" },
+    evidence_excerpt: { type: "string" },
     note: { type: "string" }
   },
-  required: ["confirmed", "phone", "note"]
+  required: ["confirmed", "phone", "inn", "source_url", "evidence_excerpt", "note"]
 };
 
 const FINAL_BATCH_DELTA_SCHEMA = {
@@ -5427,7 +5431,7 @@ async function verifyPhoneWithWebSearch({
 }) {
   const inn = normalizeInn(row?.["ИНН"]);
   if (!inn || deadlineRemaining(deadlineAt) <= 5000) {
-    return { confirmed: false, phone, note: "Недостаточно времени или нет подтверждённого ИНН для конфликтной проверки." };
+    return null;
   }
   const timeoutMs = Math.min(
     CONTACT_SEARCH_TIMEOUT_MS,
@@ -5441,11 +5445,12 @@ async function verifyPhoneWithWebSearch({
 ТЕЛЕФОН: ${phone}
 
 Выполни web_search запрос строго по смыслу: "${phone} ${inn}".
-confirmed=true только если найденные сведения явно связывают этот телефон именно с этим юрлицом/ИНН.
+confirmed=true только если конкретная HTTPS-страница явно связывает этот полный телефон именно с этим юрлицом/ИНН.
+Верни исходные inn и phone без изменения, source_url и дословную evidence_excerpt из этой страницы, содержащую ИНН и полный номер. Если такой выдержки нет, confirmed=false, source_url="", evidence_excerpt="" и краткая причина. Не изобретай цитаты.
 Одноимённые, соседние и связанные компании не подходят. Не угадывай.
 Верни только JSON по схеме.`,
     model: TARGETED_SEARCH_MODEL,
-    maxOutputTokens: 900,
+    maxOutputTokens: Math.min(OPENAI_MAX_OUTPUT_TOKENS,1600),
     webSearch: true,
     responseSchema: PHONE_VERIFY_SCHEMA,
     schemaName: "phone_owner_verification",
@@ -8646,7 +8651,7 @@ ${JSON.stringify(gaps)}
   };
   await publicContactPass(resumeCheckpoint?.phase==="contacts"?"contacts":"statistics");
   const phoneOwners = buildPhoneOwnerMap(companies);
-  const googleCompanies = companies.filter(needsGoogleResearch);
+  const googleCompanies = contactResumeCandidates(companies,resumeCheckpoint,checkpointRowId,needsGoogleResearch);
   const skippedGoogle = companies.length - googleCompanies.length;
   const stage11StartedAt = Date.now();
   const stage11DeadlineAt = stage11StartedAt + STAGE11_MAX_MS;
@@ -8690,6 +8695,7 @@ ${JSON.stringify(gaps)}
       ? Object.entries(resumeCheckpoint.contact_primary_results)
       : []
   );
+  const phoneConflictProofs=new Map(Object.entries(resumeCheckpoint?.contact_conflict_verifications||{}));
   const contactOutcomes = new Map();
   const resumedOk = contactCheckpointVersion >= 2 ? Number(resumedContactStats.ok || 0) : 0;
   const resumedUnavailable = contactCheckpointVersion >= 2 ? Number(resumedContactStats.unavailable || 0) : 0;
@@ -8755,6 +8761,7 @@ ${JSON.stringify(gaps)}
       contact_completed_ids: [...contactCompleted],
       contact_primary_results: Object.fromEntries(primaryResults),
       contact_phone_retry_ids:[...phoneRetryIds],
+      contact_conflict_verifications:Object.fromEntries(phoneConflictProofs),
       contact_unsearched_ids: [...contactUnsearched],
       contact_stats: stats,
       stage10_duration_ms: Date.now() - stage10StartedAt,
@@ -9150,41 +9157,72 @@ ${JSON.stringify(gaps)}
     }
   }
 
-  const verifiedConflictPhones = new Set();
-  await mapWithConcurrency(
-    conflictChecks,
-    CONTACT_CONCURRENCY,
-    async ({ row, rowId, phone }) => {
-      await assertNotCancelled();
-      if (deadlineRemaining(stage11DeadlineAt) <= 6000) return;
-      try {
-        const verification = await verifyPhoneWithWebSearch({
-          client,
-          row,
-          region,
-          phone,
-          deadlineAt: stage11DeadlineAt
-        });
-        if (verification?.confirmed) {
-          verifiedConflictPhones.add(`${rowId}|${phone}`);
-          phoneVerified++;
-        }
-      } catch (error) {
-        if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-        console.error("[PHONE_CONFLICT_VERIFY_ERROR] " + JSON.stringify({
-          id: rowId,
-          phone,
-          error: error?.message || String(error)
-        }));
-      }
+  // Primary web and the optional browser fallback share the same durable
+  // conflict verdict. A cached negative/insufficient proof is not positive.
+  const resolvePhoneConflict=async(row,rowId,phone)=>{
+    const target={rowId,inn:normalizeInn(row["ИНН"]),phone};
+    const key=phoneConflictKey(rowId,target.inn,phone);
+    if(!key)return null;
+    let proof=restorePhoneConflictProof(phoneConflictProofs.get(key),target);
+    if(proof)return proof;
+    if(deadlineRemaining(stage11DeadlineAt)<=6000)return null;
+    let verification;
+    try{
+      verification=await verifyPhoneWithWebSearch({client,row,region,phone,deadlineAt:stage11DeadlineAt});
+    }catch(error){
+      if(isOpenAIBillingStop(error)||jobSignal?.aborted||error?.message==="JOB_CANCELLED")throw error;
+      console.error("[PHONE_CONFLICT_VERIFY_ERROR] "+JSON.stringify({
+        id:rowId,phone,error:error?.message||String(error)
+      }));
+      return null;
     }
-  );
+    proof=assessPhoneConflictProof(verification,target);
+    if(!proof)return null;
+    phoneConflictProofs.set(key,proof);
+    if(proof.status==="confirmed")phoneVerified++;
+    await contactCheckpointBatcher.request({force:true});
+    return proof;
+  };
+  const retainPhoneConflict=(row,rowId,phone,proof)=>{
+    const evidence=row.__evidence||{};
+    const previous=Array.isArray(evidence.contact_conflict_verifications)?evidence.contact_conflict_verifications:[];
+    row.__evidence={...evidence,contact_conflict_verifications:[
+      ...previous.filter(item=>item.phone!==phone),
+      proof||{row_id:rowId,inn:normalizeInn(row["ИНН"]),phone,status:"deferred"}
+    ]};
+  };
 
-  for (const { row, rowId, phone } of conflictChecks) {
-    if (!verifiedConflictPhones.has(`${rowId}|${phone}`)) continue;
-    row["Телефон"] = mergePhone(row["Телефон"], phone);
-    if (!phoneOwners.has(phone)) phoneOwners.set(phone, []);
-    if (!phoneOwners.get(phone).includes(row)) phoneOwners.get(phone).push(row);
+  const verifiedConflictPhones = new Map();
+  try {
+    await mapWithConcurrency(
+      conflictChecks, CONTACT_CONCURRENCY,
+      async ({row,rowId,phone})=>{
+        await assertNotCancelled();
+        const proof=await resolvePhoneConflict(row,rowId,phone);
+        const key=phoneConflictKey(rowId,normalizeInn(row["ИНН"]),phone);
+        if(key&&proof)verifiedConflictPhones.set(key,proof);
+      },
+      ()=>pauseRequested("contacts")
+    );
+  }catch(error){
+    try{await contactCheckpointBatcher.request({force:true});}
+    catch(saveError){error.checkpointFlushFailed=true;}
+    throw error;
+  }
+  for(const {row,rowId,phone} of conflictChecks){
+    const target={rowId,inn:normalizeInn(row["ИНН"]),phone};
+    const key=phoneConflictKey(rowId,target.inn,phone);
+    const proof=verifiedConflictPhones.get(key)||restorePhoneConflictProof(phoneConflictProofs.get(key),target);
+    retainPhoneConflict(row,rowId,phone,proof);
+    if(proof?.status!=="confirmed")continue;
+    row["Телефон"]=mergePhone(row["Телефон"],phone);
+    if(!phoneOwners.has(phone))phoneOwners.set(phone,[]);
+    if(!phoneOwners.get(phone).includes(row))phoneOwners.get(phone).push(row);
+  }
+  await contactCheckpointBatcher.request({force:true});
+  if(pauseRequested("contacts")){
+    await memorySafePoint();
+    throw Error("MEMORY_PAUSE_NOT_COMMITTED");
   }
 
   for (const row of primaryRowsToApply) {
@@ -9340,22 +9378,11 @@ ${JSON.stringify(gaps)}
               const belongsElsewhere = owners.some((owner) => owner !== row);
               let accept = !belongsElsewhere;
 
-              if (belongsElsewhere && deadlineRemaining(stage11DeadlineAt) > 6000) {
+              if (belongsElsewhere) {
                 phoneConflicts++;
-                try {
-                  const verification = await verifyPhoneWithWebSearch({
-                    client,
-                    row,
-                    region,
-                    phone: normalized,
-                    deadlineAt: stage11DeadlineAt
-                  });
-                  accept = Boolean(verification?.confirmed);
-                  if (accept) phoneVerified++;
-                } catch (error) {
-                  if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
-                  accept = false;
-                }
+                const proof=await resolvePhoneConflict(row,rowId,normalized);
+                retainPhoneConflict(row,rowId,normalized,proof);
+                accept=proof?.status==="confirmed";
               }
 
               if (!accept) continue;
@@ -9375,7 +9402,11 @@ ${JSON.stringify(gaps)}
         }
       );
     } catch (error) {
-      if (jobSignal?.aborted || error?.message === "JOB_CANCELLED") throw error;
+      if (isOpenAIBillingStop(error)||jobSignal?.aborted||error?.message==="JOB_CANCELLED") {
+        try{await contactCheckpointBatcher.request({force:true});}
+        catch(saveError){error.checkpointFlushFailed=true;}
+        throw error;
+      }
       browserCircuitOpen = true;
       console.error("[GOOGLE_AI_FALLBACK_STAGE_ERROR] " + JSON.stringify({
         error: error?.message || String(error)
