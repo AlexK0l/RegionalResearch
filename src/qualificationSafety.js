@@ -48,10 +48,28 @@ export function classifyCommercialEntity(row) {
   return "commercial";
 }
 
+function exactIdentifier(text, id) {
+  return /^(?:\d{9}|\d{10}|\d{12}|\d{13}|\d{15})$/.test(id) &&
+    new RegExp("(?<!\\d)"+id+"(?!\\d)","u").test(text);
+}
+
+// A search snippet may mention a proposed liquidation, an active company
+// in a negative sentence, or a different entity. None proves cessation.
+// This is a conservative structural gate, not an independent registry fetch.
+function unambiguousCessationExcerpt(raw, inn) {
+  const text=normalized(raw);
+  if(!exactIdentifier(text,inn))return false;
+  const ids=[...String(raw||"").matchAll(/(?<![\p{L}\p{N}_])(?:инн|inn)\s*[:№#=]?\s*(\d{12}|\d{10})(?!\d)/giu)];
+  if(ids.some(m=>m[1]!==inn))return false;
+  const uncertain=/(?:не\s+(?:(?:был[аои]?|является)\s+)?(?:ликвидирован|прекращен|исключен)|(?:деятельност|статус).{0,45}не\s+(?:был[аои]?\s+)?(?:ликвидирован|прекращен|исключен)|(?:сведен|данн).{0,80}(?:прекращен|ликвидаци|исключени).{0,60}(?:нет|отсутств|не\s+(?:найден|выявлен|установлен|подтвержден))|(?:нет|отсутств).{0,65}(?:сведен|данн).{0,70}(?:прекращен|ликвидаци|исключени)|(?:предстоящ|предполагаем|планируем|возможн|планирует|намерен|может\s+быть|подлежит|в\s+процессе|решени[ея]\s+о).{0,85}(?:ликвид|прекращен|исключен)|(?:отмен|признан.{0,20}недействительн).{0,65}(?:ликвид|прекращен|исключен)|(?:ликвид|прекращен|исключен).{0,45}(?:филиал|представительств|правопредшественник)|(?:статус|состояние).{0,25}действующ)/u;
+  if(uncertain.test(text))return false;
+  return /(?:ликвидирован[аои]?|деятельност.{0,40}прекращен[аои]?|прекращен[аои]?.{0,40}деятельност|исключен[аои]?.{0,40}егрюл)/u.test(text);
+}
+
 function specificOfficialRegistryUrl(raw, inn, ogrn) {
   try {
     const url = new URL(String(raw || ""));
-    if (url.protocol !== "https:") return false;
+    if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
     const host = url.hostname.toLowerCase().replace(/^www\./, "");
     if (host !== "egrul.nalog.ru" && host !== "service.nalog.ru" &&
         host !== "pb.nalog.ru" && host !== "nalog.gov.ru" &&
@@ -59,8 +77,8 @@ function specificOfficialRegistryUrl(raw, inn, ogrn) {
     const path = decodeURIComponent(url.pathname + url.search);
     // An EGRUL home page or search page is not an entity-specific citation.
     if (!path || path === "/" || /^\/index(?:\.html)?\/?$/i.test(path)) return false;
-    return path.includes(inn) || (ogrn && path.includes(ogrn)) ||
-      /^\/download\//i.test(url.pathname);
+    return exactIdentifier(path, inn) || (ogrn && exactIdentifier(path, ogrn)) ||
+      /^\/download\/[a-z0-9_-]+(?:\.pdf)?$/i.test(url.pathname);
   } catch { return false; }
 }
 
@@ -68,15 +86,13 @@ export function acceptedLegalStatusProof(row) {
   const proof = row?.__evidence?.legal_status_verification;
   if (!proof || typeof proof !== "object") return null;
   const inn = digits(row?.["ИНН"]);
-  if (!inn || inn !== digits(proof.inn)) return null;
+  if (!/^(?:\d{10}|\d{12})$/.test(inn) || inn !== digits(proof.inn)) return null;
   const status = String(proof.status || "").toLowerCase();
   if (status !== "liquidated" && status !== "ceased") return null;
   const ogrn = digits(proof.ogrn);
   const knownOgrn = digits(row?.["ОГРН"] || row?.__evidence?.identity_verification?.ogrn);
   if (knownOgrn && ogrn && knownOgrn !== ogrn) return null;
-  const excerpt = normalized(proof.evidence_excerpt);
-  if (!excerpt.includes(inn) ||
-      !/(ликвидирован|деятельност.{0,40}прекращен|прекращен.{0,40}деятельност|исключен.{0,40}егрюл)/.test(excerpt)) return null;
+  if (!unambiguousCessationExcerpt(proof.evidence_excerpt, inn)) return null;
   if (!specificOfficialRegistryUrl(proof.source_url, inn, ogrn)) return null;
   return {
     kind: "ceased", reason: "По записи ЕГРЮЛ с тем же ИНН деятельность юрлица прекращена.",
