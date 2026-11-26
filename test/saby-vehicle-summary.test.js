@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory} from "../src/sabyVehicleSummary.js";
+import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory,readSabyVehicleSummary} from "../src/sabyVehicleSummary.js";
 import {validateSabyFleetTreeSnapshot} from "../src/sabyFleetTree.js";
 const url="https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc";
 const raw=()=>({status:"observed",total:2,groups:[{key:"1",category:"Легковые",count:1,labels:["PEUGEOT PARTNER VP, 2023"]},{key:"2",category:"Коммерческие",count:1,labels:["PEUGEOT BOXER, 2024"]}]});
@@ -69,4 +69,104 @@ test("full category read can recover a lazily mounted exact summary, quick read 
   assert.equal(recover,0);
   assert.equal((await collectSabyVehicleInventory(p,opts)).fleet.count,2);
   assert.equal(recover,1);
+});
+
+test("live summary diagnostics distinguish structure, reconciliation and route without private DOM data",async()=>{
+  const diag=[];
+  const opts={onDiagnostic:d=>diag.push(d)};
+  const page={url:()=>url,evaluate:async()=>({status:"review",reason:"navigation_not_unique",node_count:2,visible_count:0,secret:"PRIVATE"})};
+  assert.equal(await readSabyVehicleSummary(page,url,opts),null);
+  assert.deepEqual(diag.pop(),{reason:"navigation_not_unique",node_count:2,visible_count:0});
+  page.evaluate=async()=>({...raw(),total:3});
+  assert.equal(await readSabyVehicleSummary(page,url,opts),null);
+  assert.deepEqual(diag.pop(),{reason:"category_total_mismatch",announced_count:3,category_sum:2,groups:2});
+  page.evaluate=async()=>{throw Error("PRIVATE");};
+  assert.equal(await readSabyVehicleSummary(page,url,opts),null);
+  assert.deepEqual(diag.pop(),{reason:"summary_evaluate_failed"});
+  page.url=()=>url.replace("12345678-","22345678-");
+  assert.equal(await readSabyVehicleSummary(page,url,opts),null);
+  assert.deepEqual(diag.pop(),{reason:"route_guard_before",route_reason:"company_card_id_changed"});
+});
+test("a ready heading can precede summary hydration, bounded passive retry keeps all proof gates",async()=>{
+  let reads=0,waits=0;
+  const p={url:()=>url,locator:()=>assert.fail("no click or scroll")};
+  const options={originalUrl:url,pollAfterHeading:true,wait:async ms=>{assert.equal(ms,350);waits++;},
+    readSummary:async()=>++reads>=3?validateSabyVehicleSummary(raw()):null};
+  assert.equal((await collectSabyVehicleInventory(p,options)).fleet.count,2);
+  assert.equal(waits,2);assert.equal(reads,3);
+  reads=waits=0;
+  assert.equal((await collectSabyVehicleInventory(p,{...options,quick:true})).fleet,null);
+  assert.equal(waits,0);assert.equal(reads,1);
+  reads=waits=0;
+  const missing=await collectSabyVehicleInventory(p,{...options,readSummary:async()=>{reads++;return null;}});
+  assert.equal(missing.fleet,null);assert.equal(waits,3);assert.equal(reads,4);
+  let current=url;reads=0;
+  const changed=await collectSabyVehicleInventory({url:()=>current},{...options,
+    readSummary:async()=>{reads++;return null;},wait:async()=>{current=url.replace("12345678-","22345678-");}});
+  assert.equal(changed.fleet,null);assert.equal(reads,1);
+});
+test("scanner distinguishes a missing widget from an ambiguous hidden widget",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  try{
+    const invisible={getBoundingClientRect:()=>({width:0,height:0})};
+    globalThis.document={querySelectorAll:()=>[invisible,invisible]};
+    globalThis.getComputedStyle=()=>({display:"none",visibility:"hidden",opacity:"0"});
+    assert.deepEqual(scanSabyVehicleSummaryDOM(),{status:"missing",reason:"widget_not_unique",node_count:2,visible_count:0});
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
+});
+
+test("a mounted summary accepts the observed generic navigation row only with independent exact total",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  const node=(text="",attrs={},children={})=>({textContent:text,getAttribute:k=>attrs[k]??null,
+    querySelectorAll:s=>children[s]||[],getBoundingClientRect:()=>({width:100,height:25})});
+  const a=raw();
+  const list=node("",{}, {':scope > [data-qa="item"][item-key]':a.groups.map(g=>node("",{"item-key":g.key},{
+    ".contractorCard-transport__tileContainer":[node("",{},{
+      '[data-qa="contractorCard-transport_header"]':[node(g.category)],
+      '[data-qa="contractorCard-transport_counter"]':[node(String(g.count))],
+      '[data-qa="contractorCard-transport_title"]':g.labels.map(x=>node(x,{title:x}))
+    })]
+  }))});
+  const widget=node("",{},{
+    '[data-qa="contractorCard-transport__header"]':[node("Автопарк компании")],
+    '[data-qa="items-container"].controls-TileView':[list]
+  });
+  const nav=title=>node("",{},{
+    '.contractor-Dialog-Accordion__title':[node("Автопарк компании")],
+    '.contractor-Dialog-Accordion__counter .controls-DecoratorNumber':[node("2",{title})]
+  });
+  const setDoc=items=>{globalThis.document=node("",{},{
+    '[data-qa="contractorCard-transport"]':[widget],
+    '[data-qa="row"] [data-qa="cell"] .contractor-Dialog-Accordion__item':items
+  });};
+  try{
+    globalThis.getComputedStyle=()=>({display:"flex",visibility:"visible",opacity:"1"});
+    setDoc([nav("2 всего")]);assert.deepEqual(scanSabyVehicleSummaryDOM(),a);
+    setDoc([nav("2")]);assert.equal(scanSabyVehicleSummaryDOM().reason,"total_title_mismatch");
+    setDoc([nav("2 всего"),nav("2 всего")]);assert.equal(scanSabyVehicleSummaryDOM().reason,"navigation_not_unique");
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
+});
+test("full navigation recovery uses exact existing tree collector and never clicks a missing summary tile",async()=>{
+  const p={url:()=>url,locator:s=>({count:async()=>{assert.match(s,/caption/);return 1;},isVisible:async()=>true})};
+  let recoveries=0,trees=0;
+  const options={originalUrl:url,openNavigation:true,readSummary:async()=>null,
+    recoverNavigation:async()=>{recoveries++;return {navigationAttempted:true,drawerOpened:true,
+      summary:{count:2,groups:raw().groups.map((g,i)=>({key:"-"+(i+1),category:g.category,count:1,vehicles:null}))}};},
+    readTree:async(_p,{category,expected})=>({status:"observed",expected,category,
+      groupKey:category==="Легковые"?"-1":"-2",rows:[{key:"1",label:"MODEL, 2023"}]}),
+    collectTree:async(_p,{expected})=>{trees++;return {status:"complete",expected,vehicles:[{model:"MODEL",year:2023}]};}
+  };
+  const r=await collectSabyVehicleInventory(p,options);
+  assert.equal(r.fleet.count,2);assert.equal(r.navigationAttempted,true);assert.equal(trees,2);
+  const q=await collectSabyVehicleInventory(p,{...options,quick:true});
+  assert.equal(q.fleet,null);assert.equal(recoveries,1);
+  const wrong=await collectSabyVehicleInventory(p,{...options,readTree:async(_p,{category,expected})=>
+    ({status:"observed",expected,category,groupKey:"-99",rows:[{key:"1",label:"MODEL"}]})});
+  assert.equal(wrong.fleet,null);assert.equal(trees,2);
 });
