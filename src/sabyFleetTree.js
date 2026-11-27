@@ -23,7 +23,7 @@ const reasons=new Set([
   "invalid_model","invalid_row_count","row_prefix_changed",
   "footer_missing","footer_ambiguous","footer_not_collapsed",
   "button_missing","click_failed","no_growth","click_limit",
-  "time_limit","read_failed"
+  "time_limit","read_failed","category_collapsed","category_state_conflict"
 ]);
 const limited=(n,max)=>Number.isSafeInteger(n)&&n>=0?
   Math.min(n,max):null;
@@ -76,6 +76,8 @@ export function validateSabyFleetTreeSnapshot(
     return {status:"invalid",reason:"invalid_group_key"};
   if(!Array.isArray(snapshot.rows)||snapshot.rows.length>expected)
     return {status:"invalid",reason:"invalid_row_count"};
+  if(snapshot.expanderState==="collapsed"&&(snapshot.rows.length||snapshot.hasMore===true))
+    return {status:"invalid",reason:"category_state_conflict"};
   const ids=new Set(),rows=[];
   for(const raw of snapshot.rows){
     const row=parseSabyFleetTreeRow(raw);
@@ -179,12 +181,85 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false,categ
       const hasMore=Boolean(button&&button.querySelector(
         '[title="Ещё"]'
       )&&button.classList.contains("controls-BigSeparator__collapsed"));
+      // Both state classes were confirmed on the same live Saby
+      // transportCard:All drawer, before and after a manual collapse.
+      // Absence of rows alone is NOT evidence that a group is collapsed.
+      let expanderState="unknown";
+      if(panel.closest('[templateforlog="ContractorCard/Cards/transportCard:All"]')&&
+         group.classList.contains("controls-Tree__item")&&
+         group.querySelectorAll(".controls-fontsize-2xl").length===1){
+        const expanders=[...group.querySelectorAll('[data-qa="item-expander"]')];
+        if(expanders.length===1){
+          const el=expanders[0],cls=el.classList,r=el.getBoundingClientRect(),css=getComputedStyle(el);
+          const collapsed=cls.contains("controls-TreeGrid__row-expander_collapsed")&&
+            cls.contains("controls-TreeGrid__row-expander_hiddenNode_default_collapsed");
+          const expanded=cls.contains("controls-TreeGrid__row-expander_expanded")&&
+            cls.contains("controls-TreeGrid__row-expander_hiddenNode_default_expanded");
+          const contradictory=collapsed&&(
+            cls.contains("controls-TreeGrid__row-expander_expanded")||
+            cls.contains("controls-TreeGrid__row-expander_hiddenNode_default_expanded"))||
+            expanded&&(cls.contains("controls-TreeGrid__row-expander_collapsed")||
+            cls.contains("controls-TreeGrid__row-expander_hiddenNode_default_collapsed"));
+          if(r.width>0&&r.height>0&&css.display!=="none"&&css.visibility==="visible"&&
+             css.opacity!=="0"&&collapsed!==expanded&&!contradictory)
+            expanderState=collapsed?"collapsed":"expanded";
+        }
+      }
       return {status:"observed",expected:announced,groupKey:key,
-        category,footerKey,rows,hasMore};
+        category,footerKey,rows,hasMore,expanderState};
     },{expected,discover,category});
   }catch {
     return {status:"invalid",reason:"read_failed"};
   }
+}
+
+// Set a category state using ONLY the live observed expander selector.
+// Navigation and count/category proof are independently rechecked before
+// every action. Unknown/ambiguous layouts do not authorize any click.
+// A caller must treat "clicked" as an action, never as proof of new rows.
+export async function setSabyFleetCategoryExpanded(page,{
+  originalUrl,category,expected,groupKey,expanded,read=readSabyFleetTree,
+  timeoutMs=2500
+}={}){
+  const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
+  if(!same())return "wrong_company";
+  if(!isSabyVehicleCategory(category)||!Number.isSafeInteger(expected)||expected<1||expected>5000||
+     !sabyFleetTreeFooterKey(groupKey)||typeof expanded!=="boolean"||
+     typeof read!=="function"||typeof page?.locator!=="function")return "unavailable";
+  const wanted=expanded?"expanded":"collapsed",from=expanded?"collapsed":"expanded";
+  try{
+    const snapshot=await read(page,{expected,category});
+    if(!same())return "wrong_company";
+    if(snapshot?.status!=="observed"||snapshot.category!==category||
+       snapshot.expected!==expected||snapshot.groupKey!==groupKey||
+       !Array.isArray(snapshot.rows)||snapshot.rows.length>expected||
+       (snapshot.expanderState==="collapsed"&&(snapshot.rows.length||snapshot.hasMore===true)))
+      return "unavailable";
+    if(snapshot.expanderState===wanted)return "already";
+    if(snapshot.expanderState!==from)return "unavailable";
+    const panel=page.locator('[templateforlog="ContractorCard/Cards/transportCard:All"] '+
+      '.controls-StackTemplate-content:has(.controls-StackTemplate__caption [title="Автопарк"])')
+      .filter({visible:true});
+    if(await panel.count()!==1)return "unavailable";
+    const list=panel.locator(".controls-ListViewV");
+    if(await list.count()!==1)return "unavailable";
+    const categoryText=new RegExp("^\\s*"+category+"\\s*$","u");
+    const countText=new RegExp("^\\s*"+String(expected).split("").join("\\s*")+"\\s*$","u");
+    const group=list.locator('[data-qa="item"][item-key="'+groupKey+'"].controls-Tree__item:not([item-parent-key])')
+      .filter({has:page.locator(".controls-fontsize-2xl").filter({hasText:categoryText})})
+      .filter({has:page.locator(".controls-DecoratorNumber").filter({hasText:countText})});
+    if(await group.count()!==1)return "unavailable";
+    const target=group.locator('[data-qa="item-expander"].controls-TreeGrid__row-expander_'+from+
+      '.controls-TreeGrid__row-expander_hiddenNode_default_'+from+
+      ':not(.controls-TreeGrid__row-expander_'+wanted+')'+
+      ':not(.controls-TreeGrid__row-expander_hiddenNode_default_'+wanted+')');
+    if(await target.count()!==1||!await target.isVisible())return "unavailable";
+    if(!same())return "wrong_company";
+    // The state-specific locator cannot toggle a control that already
+    // transitioned to the desired state. No force/coordinates/JS click.
+    await target.click({timeout:Math.max(1,Math.min(2500,timeoutMs))});
+    return same()?"clicked":"wrong_company";
+  }catch{return same()?"click_failed":"wrong_company";}
 }
 
 /**

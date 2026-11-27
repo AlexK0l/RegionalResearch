@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {
   sabyFleetTreeFooterKey,parseSabyFleetTreeRow,
   validateSabyFleetTreeSnapshot,safeSabyFleetTreeReport,
-  collectSabyFleetTree,readSabyFleetTree
+  collectSabyFleetTree,readSabyFleetTree,setSabyFleetCategoryExpanded
 } from "../src/sabyFleetTree.js";
 import {safeSabyFleetFailure} from "../src/sabyFleetDiagnostic.js";
 
@@ -366,4 +366,32 @@ test("transient remount never authorizes a changed prefix or another company's r
   assert.equal(r.reason,"row_prefix_changed");
   assert.equal(r.vehicles,null);
   assert.equal(m.clicks,1);
+});
+
+test("real collapsed/expanded classes gate one fresh category-specific expander action",async()=>{
+  let state="collapsed",clicks=0,route=firstParty,selectorLog=[];
+  const loc={filter:()=>loc,locator:s=>{selectorLog.push(s);return loc;},
+    count:async()=>1,isVisible:async()=>true,click:async()=>{clicks++;state="expanded";}};
+  const page={url:()=>route,locator:s=>{selectorLog.push(s);return loc;}};
+  const read=async()=>({...raw(0,{expected:76,hasMore:false,category:"-3"}),
+    category:"Грузовые",expanderState:state});
+  const args={originalUrl:firstParty,category:"Грузовые",expected:76,groupKey:"-3",expanded:true,read};
+  assert.equal(await setSabyFleetCategoryExpanded(page,args),"clicked");
+  assert.equal(clicks,1);
+  assert.ok(selectorLog.some(s=>s.includes('templateforlog="ContractorCard/Cards/transportCard:All"')));
+  assert.ok(selectorLog.some(s=>s.includes('item-key="-3"')));
+  assert.ok(selectorLog.some(s=>s.includes('[data-qa="item-expander"].controls-TreeGrid__row-expander_collapsed')));
+  assert.equal(await setSabyFleetCategoryExpanded(page,args),"already");
+  assert.equal(clicks,1);
+  state="unknown";assert.equal(await setSabyFleetCategoryExpanded(page,args),"unavailable");
+  state="collapsed";
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,expected:75}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,groupKey:"-5"}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,category:"Легковые"}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,read:async()=>({...await read(),rows:makeRows(1)})}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,read:async()=>{route=otherCompany;return read();}}),"wrong_company");
+  assert.equal(clicks,1);
+});
+test("collapsed header with contradictory loaded rows is not a valid data seed",()=>{
+  assert.equal(validateSabyFleetTreeSnapshot({...raw(1),expanderState:"collapsed"},{expected:220}).reason,"category_state_conflict");
 });
