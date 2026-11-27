@@ -4,9 +4,10 @@ import {EventEmitter} from "node:events";
 import fs from "node:fs";
 import {
   firstPartySabySearchTransport,exactSabyInnTransportToken,
-  observeSabySearchTransport,shouldRecoverSilentSabySearch
+  observeSabySearchTransport,shouldRecoverSilentSabySearch,
+  trackSabySessionSockets,hasSabySessionSocketTracker
 } from "../src/sabySearchTransport.js";
-import {waitForSabySearchHydration} from "../src/sabySearch.js";
+import {waitForSabySearchHydration,submitSabyCompanySearch} from "../src/sabySearch.js";
 
 const INN="4718000935";
 
@@ -211,4 +212,65 @@ test("silent recovery must not reload after observed first-party service blockin
     exactTransportEvidence:false,alreadyRecovered:false};
   assert.equal(shouldRecoverSilentSabySearch(base),true);
   assert.equal(shouldRecoverSilentSabySearch({...base,serviceBlocked:true}),false);
+});
+
+test("fused hydration and submission preserve the settle, fresh lookup and bounded action retry",async()=>{
+  const events=[];
+  const stale={fill:async()=>{throw Error("stale input must never be used");}};
+  const fresh={fill:async(inn)=>events.push(["fill",inn]),press:async(key)=>events.push(["press",key])};
+  const timing=[];
+  const state=await waitForSabySearchHydration({},{
+    isListRoute:()=>true,settleMs:100,
+    findSearch:async(_p,{timeoutMs})=>{events.push(["find",timeoutMs]);return {field:stale};},
+    wait:async ms=>events.push(["settle",ms]),
+    deferReacquireToSubmission:true,onTiming:(k,v)=>timing.push([k,v])
+  });
+  assert.deepEqual(state,{ok:true,reacquireTimeoutMs:3000});
+  events.push(["baseline"]);
+  const result=await submitSabyCompanySearch({},INN,{
+    isListRoute:()=>true,firstFindTimeoutMs:state.reacquireTimeoutMs,
+    findSearch:async(_p,{timeoutMs})=>{events.push(["find",timeoutMs]);return {field:fresh,method:"search_selector"};},
+    onTiming:(k,v)=>timing.push([k,v])
+  });
+  assert.equal(result.ok,true);
+  assert.deepEqual(events,[["find",7000],["settle",1200],["baseline"],
+    ["find",3000],["fill",INN],["press","Enter"]]);
+  assert.deepEqual(timing.map(x=>x[0]),["initial_field_ms","field_settle_ms",
+    "field_find_ms","field_fill_ms","field_press_ms"]);
+  let onList=true;
+  const redirected=await submitSabyCompanySearch({},INN,{
+    isListRoute:()=>onList,
+    findSearch:async()=>{onList=false;return {field:{fill:async()=>assert.fail("unsafe fill")}};}
+  });
+  assert.equal(redirected.reason,"route_changed");
+  const noField=await submitSabyCompanySearch({},INN,{isListRoute:()=>true,
+    firstFindTimeoutMs:3000,findSearch:async(_p,{timeoutMs})=>{
+      assert.equal(timeoutMs,3000);return {field:null,reason:"not_rendered"};
+    }});
+  assert.equal(noField.ok,false);
+});
+test("warm history search observes a pre-existing first-party socket across independent INNs",()=>{
+  const page=new EventEmitter(),ws=new EventEmitter(),foreign=new EventEmitter();
+  ws.url=()=>"wss://profile.saby.ru/ws";
+  foreign.url=()=>"wss://example.test/ws";
+  const stop=trackSabySessionSockets(page);
+  assert.equal(hasSabySessionSocketTracker(page),true);
+  page.emit("websocket",ws);page.emit("websocket",foreign);
+  const first=observeSabySearchTransport(page,INN,{armed:false});
+  ws.emit("framesent",{payload:INN});assert.equal(first.hasExactInnEvidence(),false);
+  first.arm();ws.emit("framesent",{payload:INN});assert.equal(first.summary().exact_inn_ws_frames,1);
+  first.stop();
+  const other=observeSabySearchTransport(page,"7707083893");
+  page.emit("websocket",ws); // never double-subscribe
+  ws.emit("framesent",{payload:INN});assert.equal(other.hasExactInnEvidence(),false);
+  foreign.emit("framesent",{payload:"7707083893"});assert.equal(other.hasExactInnEvidence(),false);
+  ws.emit("framesent",{payload:"7707083893"});assert.equal(other.summary().exact_inn_ws_frames,1);
+  other.stop();ws.emit("close");
+  const third=observeSabySearchTransport(page,INN);
+  ws.emit("framesent",{payload:INN});assert.equal(third.hasExactInnEvidence(),false);
+  third.stop();stop();
+  assert.equal(hasSabySessionSocketTracker(page),false);
+  assert.equal(page.listenerCount("websocket"),0);
+  assert.equal(ws.listenerCount("framesent"),0);
+  assert.equal(ws.listenerCount("close"),0);
 });

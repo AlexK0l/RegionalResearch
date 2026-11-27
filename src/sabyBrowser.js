@@ -8,8 +8,11 @@ import { readSabyFinancials } from "./sabyFinancials.js";
 import {storedSabyNavigationHint,safeSabyNavigationUrl} from "./sabyVisitPolicy.js";
 import {submitSabyCompanySearch,waitForSabySearchHydration}
   from "./sabySearch.js";
-import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
+import {observeSabySearchTransport,shouldRecoverSilentSabySearch,
+  trackSabySessionSockets,hasSabySessionSocketTracker}
   from "./sabySearchTransport.js";
+import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
+  forgetSabyCatalogOrigin} from "./sabyCatalogNavigation.js";
 import {readSabySearchState,classifySabySearchZeroState,
   isUnconfirmedSabyZeroResult} from "./sabySearchState.js";
 import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
@@ -70,7 +73,7 @@ export class SabyReview extends Error {
   }
 }
 
-const BASE = "https://profile.saby.ru/page/company-list-prof";
+const BASE = SABY_CATALOG_URL;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const bound = (v, min, max, fallback) => Number.isFinite(Number(v)) ?
   Math.max(min, Math.min(max, Math.floor(Number(v)))) : fallback;
@@ -111,6 +114,9 @@ export function sabyBrowserSettings(env = process.env) {
     channel: String(env.SABY_BROWSER_CHANNEL || "").trim(),
     timeoutMs: bound(env.SABY_COMPANY_TIMEOUT_MS, 15000, 90000, 45000),
     delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500),
+    // Experimental: never assume a history return retains a usable list.
+    // Off until measured on the real site with matching identity coverage.
+    reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED||"false").toLowerCase()==="true",
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
     publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
@@ -143,7 +149,7 @@ export async function withSabyBrowser(task, {env = process.env, autoLogin = true
   const predecessor = sessionQueue;
   sessionQueue = new Promise(resolve => { release = resolve; });
   await predecessor;
-  let context;
+  let context,stopSocketTracker;
   try {
     const settings = sabyBrowserSettings(env);
     if(process.env.REGIONALRESEARCH_SHUTDOWN_REQUESTED==="true")throw Error("SERVICE_SHUTDOWN_BROWSER_BLOCKED");
@@ -155,12 +161,14 @@ export async function withSabyBrowser(task, {env = process.env, autoLogin = true
       timeout:30000
     });
     const page = context.pages()[0] || await context.newPage();
+    if(settings.reuseCatalogHistory)stopSocketTracker=trackSabySessionSockets(page);
     page.setDefaultTimeout(6000);
     if (autoLogin && settings.login && settings.password) {
       await authenticateSaby(page, settings);
     }
     return await task({page, context, settings});
   } finally {
+    stopSocketTracker?.();
     if (context) await context.close().catch(() => {});
     release();
   }
@@ -275,7 +283,13 @@ async function openCompany(page, row, settings, timing=null) {
   const components={catalog_ms:0,hydration_ms:0,baseline_ms:0,submit_ms:0,
     candidate_scan_ms:0,candidate_scans:0,search_poll_wait_ms:0,
     card_scan_ms:0,card_scans:0,alias_ms:0,post_route_ms:0,
-    card_poll_wait_ms:0};
+    card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
+    field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
+    catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0};
+  const addTiming=(key,value)=>{
+    if(Object.hasOwn(components,key)&&Number.isFinite(value)&&value>=0)
+      components[key]+=value;
+  };
   const measure=async(key,fn)=>{
     const started=performance.now();
     try{return await fn();}
@@ -292,14 +306,20 @@ async function openCompany(page, row, settings, timing=null) {
   // Wait for navigation commit, NOT every subresource/SPA script. The
   // authenticated list's input is verified and polled below independently.
   // This avoids a 45s DOMContentLoaded timeout during slow Wasaby hydration.
-  await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
+  let catalog=await measure("catalog_ms",()=>openSabyCatalog(page,{
+    reuse:publicFallback&&settings.reuseCatalogHistory===true&&hasSabySessionSocketTracker(page),
+    timeoutMs:settings.timeoutMs
+  }));
+  components.catalog_history_attempted=Number(catalog.historyAttempted);
+  components.catalog_history_hit=Number(catalog.historyHit);
+  if(catalog.historyAttempted&&!catalog.historyHit)components.catalog_history_fallback=1;
   if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
     throw new SabyReview("Saby: список организаций не подтверждён");
   const isListRoute=()=>sabyCardRoute(page.url())==="list";
   const searchOptions={
     timeoutMs:Math.min(15000,settings.timeoutMs),
     actionTimeoutMs:Math.min(8000,settings.timeoutMs),
-    isListRoute,
+    isListRoute,onTiming:addTiming,
     onRetry:({stage,attempt})=>console.warn(
       "[SABY_SEARCH_RETRY] "+JSON.stringify({stage,attempt,reason:"action_timeout"})
     )
@@ -310,9 +330,23 @@ async function openCompany(page, row, settings, timing=null) {
   // look up the safe field again after the settle delay.
   const settleSearch=async()=>{
     if(!publicFallback)return;
-    const state=await waitForSabySearchHydration(page,{
-      isListRoute,timeoutMs:Math.min(8000,settings.timeoutMs)
+    const probe=()=>waitForSabySearchHydration(page,{
+      isListRoute,timeoutMs:Math.min(8000,settings.timeoutMs),
+      deferReacquireToSubmission:true,onTiming:addTiming
     });
+    let state=await probe();
+    if(!state.ok&&catalog.historyHit){
+      // The warm route was not ready. No query was submitted, so it is
+      // safe to fall back to the full cold navigation exactly once.
+      transport?.stop();
+      transport=observeSabySearchTransport(page,inn,{armed:false});
+      components.catalog_history_fallback=1;
+      catalog={historyAttempted:true,historyHit:false};
+      await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
+      if(!isListRoute()||!isSabyProfileUrl(page.url()))
+        throw new SabyReview("Saby: каталог изменился",{code:"search_input_failed"});
+      state=await probe();
+    }
     if(!state.ok){
       console.warn("[SABY_SEARCH_HYDRATION_DIAG] "+JSON.stringify({
         status:"not_ready",
@@ -324,15 +358,20 @@ async function openCompany(page, row, settings, timing=null) {
       throw new SabyReview("Saby: поле поиска ещё не готово",
         {code:"search_input_failed"});
     }
-    console.info("[SABY_SEARCH_HYDRATION_DIAG] ready");
+    console.info("[SABY_SEARCH_HYDRATION_DIAG] initial_ready");
+    return state;
   };
-  await measure("hydration_ms",settleSearch);
+  let readiness=await measure("hydration_ms",settleSearch);
+  const submitSearch=()=>submitSabyCompanySearch(page,inn,{
+    ...searchOptions,
+    ...(readiness?.reacquireTimeoutMs!==undefined?{firstFindTimeoutMs:readiness.reacquireTimeoutMs}:{})
+  });
   // Some loading indicators persist even with a successful result list.
   // Sample AFTER hydration and BEFORE entering the exact INN.
   let beforeSearch=publicFallback?
     await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null)):null;
   transport?.arm();
-  const submitted=await measure("submit_ms",()=>submitSabyCompanySearch(page,inn,searchOptions));
+  const submitted=await measure("submit_ms",submitSearch);
   if(!submitted.ok){
     transport?.stop();
     // Strict, allowlisted statuses only. Never print INN, DOM, URL or
@@ -425,10 +464,11 @@ async function openCompany(page, row, settings, timing=null) {
         if(!isListRoute()||!isSabyProfileUrl(page.url()))
           throw new SabyReview("Saby: каталог изменился при восстановлении поиска",
             {code:"search_input_failed"});
-        await measure("hydration_ms",settleSearch);
+        catalog={historyAttempted:false,historyHit:false};
+        readiness=await measure("hydration_ms",settleSearch);
         beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
         transport.arm();
-        const second=await measure("submit_ms",()=>submitSabyCompanySearch(page,inn,searchOptions));
+        const second=await measure("submit_ms",submitSearch);
         if(!second.ok)
           throw new SabyReview("Saby: повторный безопасный ввод не завершён",
             {code:"search_input_failed"});
@@ -550,6 +590,11 @@ async function openCompany(page, row, settings, timing=null) {
   }
   const r=rows[0].rect;
   const listingUrl=page.url();
+  const acceptIdentity=identity=>{
+    if(settings.reuseCatalogHistory===true&&publicFallback)
+      rememberSabyCatalogOrigin(page,listingUrl,page.url());
+    return identity;
+  };
   await page.mouse.click(r.x+Math.min(120,r.w*.25),r.y+Math.min(20,r.h*.25));
   if(timing)timing.search_ms=Math.round(performance.now()-searchStarted);
   const startCard=Date.now();
@@ -566,7 +611,7 @@ async function openCompany(page, row, settings, timing=null) {
       last=outcome;
       if(outcome.ok) {
         console.info("[SABY_CARD] identity_verified");
-        return {inn,name:outcome.verifiedName,verified:true};
+        return acceptIdentity({inn,name:outcome.verifiedName,verified:true});
       }
     } catch {
       // Rendering may be in progress during the route transition.
@@ -594,7 +639,7 @@ async function openCompany(page, row, settings, timing=null) {
         JSON.stringify(safeSabyAliasDiagnostic(checked)));
       if(checked.ok){
         console.info("[SABY_CARD] registered_alias_verified");
-        return checked.identity;
+        return acceptIdentity(checked.identity);
       }
       // The old path waited out the entire card deadline even if the
       // new private route already had its stable independently verified
@@ -607,7 +652,7 @@ async function openCompany(page, row, settings, timing=null) {
           JSON.stringify(safeSabyPostRouteDiagnostic(early)));
         if(early.ok){
           console.info("[SABY_CARD] post_route_registered_identity_verified_early");
-          return early.identity;
+          return acceptIdentity(early.identity);
         }
       }
     }
@@ -657,7 +702,7 @@ async function openCompany(page, row, settings, timing=null) {
       JSON.stringify(safeSabyPostRouteDiagnostic(inspected)));
     if(inspected.ok) {
       console.info("[SABY_CARD] post_route_registered_identity_verified");
-      return inspected.identity;
+      return acceptIdentity(inspected.identity);
     }
   }
   console.warn("[SABY_CARD_DIAG] "+JSON.stringify(safeCardDiagnostic(last,{
@@ -1658,6 +1703,7 @@ async function openSavedSabyFinanceCard(page,row,settings){
   const name=String(row?.["Организация"]||"").trim();
   let reason="not_verified";
   try{
+    forgetSabyCatalogOrigin(page);
     await page.goto(url,{waitUntil:"commit",timeout:settings.timeoutMs});
     // Private details and their scoped requisites may mount slowly as
     // Wasaby replaces the card. Wait boundedly, without trusting a URL.

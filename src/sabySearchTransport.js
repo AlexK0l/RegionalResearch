@@ -3,6 +3,7 @@
 // leave this module. Exposes only numeric counters used to distinguish
 // a search that was visibly entered from one observed on the wire.
 const ACTIVE=new WeakMap();
+const SESSION_SOCKETS=new WeakMap();
 const VALID_INN=/^(?:\d{10}|\d{12})$/;
 
 export function firstPartySabySearchTransport(url){
@@ -24,6 +25,40 @@ export function exactSabyInnTransportToken(text,inn){
     .test(String(text||""));
 }
 
+// Optional warm-catalog experiment: the list may survive a SPA history
+// return, including sockets created BEFORE the next per-INN observer.
+// Track socket handles, not frames/payloads, for the browser page lifetime.
+export function trackSabySessionSockets(page){
+  if(SESSION_SOCKETS.has(page))throw Error("SABY_SOCKET_TRACKER_ALREADY_ACTIVE");
+  const sockets=new Set(),offBySocket=new Map();
+  const forget=socket=>{
+    sockets.delete(socket);
+    const off=offBySocket.get(socket);
+    offBySocket.delete(socket);
+    off?.();
+  };
+  const seen=socket=>{
+    try{
+      if(!firstPartySabySearchTransport(socket.url())||sockets.has(socket))return;
+      sockets.add(socket);
+      const onClose=()=>forget(socket);
+      socket.on("close",onClose);
+      offBySocket.set(socket,()=>socket.off?.("close",onClose));
+    }catch{forget(socket);}
+  };
+  const stop=()=>{
+    page.off?.("websocket",seen);
+    page.off?.("close",stop);
+    for(const socket of [...sockets])forget(socket);
+    SESSION_SOCKETS.delete(page);
+  };
+  SESSION_SOCKETS.set(page,sockets);
+  page.on("websocket",seen);
+  page.on("close",stop);
+  return stop;
+}
+export const hasSabySessionSocketTracker=page=>SESSION_SOCKETS.has(page);
+
 export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}={}){
   if(!VALID_INN.test(String(inn||"")))throw Error("SABY_TRANSPORT_INN_INVALID");
   ACTIVE.get(page)?.stop();
@@ -34,7 +69,7 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
     async_responses:0,failed_requests:0,
     http_401:0,http_403:0,http_429:0,http_5xx:0
   };
-  const pending=new Set(),socketOff=[];
+  const pending=new Set(),socketOff=[],attachedSockets=new Set();
   let stopped=false,armed=initiallyArmed===true;
   const requestSeen=request=>{
     if(stopped||!armed)return;
@@ -70,7 +105,8 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
   const finished=request=>{pending.delete(request);};
   const socketSeen=socket=>{
     try{
-      if(!firstPartySabySearchTransport(socket.url()))return;
+      if(!firstPartySabySearchTransport(socket.url())||attachedSockets.has(socket))return;
+      attachedSockets.add(socket);
       const onFrame=frame=>{
         if(!stopped&&armed&&typeof frame?.payload==="string"&&
           exactSabyInnTransportToken(frame.payload,inn))
@@ -103,6 +139,7 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
       page.off?.("websocket",socketSeen);
       for(const off of socketOff)try{off();}catch{}
       pending.clear();
+      attachedSockets.clear();
       if(ACTIVE.get(page)===self)ACTIVE.delete(page);
     }
   };
@@ -111,6 +148,7 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
   page.on("requestfailed",failed);
   page.on("requestfinished",finished);
   page.on("websocket",socketSeen);
+  for(const socket of SESSION_SOCKETS.get(page)||[])socketSeen(socket);
   ACTIVE.set(page,self);
   return self;
 }

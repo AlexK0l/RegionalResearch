@@ -129,6 +129,8 @@ export async function submitSabyCompanySearch(page, inn, {
   isListRoute=()=>false,
   findSearch=findSabyCompanySearch,
   timeoutMs=15000,
+  firstFindTimeoutMs=timeoutMs,
+  onTiming=()=>{},
   actionTimeoutMs=8000,
   maxAttempts=2,
   wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
@@ -139,21 +141,32 @@ export async function submitSabyCompanySearch(page, inn, {
      typeof isListRoute!=="function"||!isListRoute())
     return {ok:false,reason:"unsafe_identity_or_route",attempts:0};
   const limit=Math.min(2,Math.max(1,Math.floor(maxAttempts)||2));
+  const measure=async(key,fn)=>{
+    const start=performance.now();
+    try{return await fn();}
+    finally{onTiming(key,Math.round(performance.now()-start));}
+  };
   let stage="find";
   for(let attempt=1;attempt<=limit;attempt++){
     if(!isListRoute())
       return {ok:false,reason:"route_changed",stage,attempts:attempt-1};
-    const found=await findSearch(page,{timeoutMs});
+    // The caller may have already waited for initial hydration. The
+    // first actual action still finds a fresh safe field AFTER that wait.
+    const found=await measure("field_find_ms",()=>findSearch(page,{
+      timeoutMs:attempt===1?firstFindTimeoutMs:timeoutMs
+    }));
+    if(!isListRoute())
+      return {ok:false,reason:"route_changed",stage:"find",attempts:attempt};
     if(!found?.field)
       return {ok:false,reason:found?.reason||"no_safe_search_field",
         diagnostic:found?.diagnostic,stage:"find",attempts:attempt};
     try{
       stage="fill";
-      await found.field.fill(identifier,{timeout:actionTimeoutMs});
+      await measure("field_fill_ms",()=>found.field.fill(identifier,{timeout:actionTimeoutMs}));
       if(!isListRoute())
         return {ok:false,reason:"route_changed",stage,attempts:attempt};
       stage="press";
-      await found.field.press("Enter",{timeout:actionTimeoutMs});
+      await measure("field_press_ms",()=>found.field.press("Enter",{timeout:actionTimeoutMs}));
       return {ok:true,method:found.method,attempts:attempt};
     }catch{
       // Do not log Playwright exceptions, dynamic selectors, DOM or values.
@@ -163,7 +176,7 @@ export async function submitSabyCompanySearch(page, inn, {
         return {ok:false,reason:"search_action_timeout",
           stage,attempts:attempt};
       onRetry({stage,attempt});
-      await wait(600);
+      await measure("field_retry_wait_ms",()=>wait(600));
     }
   }
   return {ok:false,reason:"search_action_timeout",stage,attempts:limit};
@@ -178,26 +191,38 @@ export async function submitSabyCompanySearch(page, inn, {
  * after a bounded settling period, without assuming that a visible input is
  * already wired to the Saby search API.
  *
- * This is an opt-in readiness gate for financial-only fallback searches.
+ * The default returns only after a second safe field lookup. A production
+ * caller that will immediately submit through submitSabyCompanySearch may
+ * fuse that second lookup with the submission's mandatory first lookup.
+ * No field/locator is carried across the settling wait or baseline read.
  * Never read or log any input value, DOM text, URL or credentials.
  */
 export async function waitForSabySearchHydration(page,{
   isListRoute=()=>false,
   findSearch=findSabyCompanySearch,
   timeoutMs=7000,settleMs=1400,
+  deferReacquireToSubmission=false,onTiming=()=>{},
   wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 }={}){
   if(typeof isListRoute!=="function"||!isListRoute())
     return {ok:false,reason:"route_changed"};
   const readyTimeout=Math.max(500,Math.min(10000,Number(timeoutMs)||7000));
-  const first=await findSearch(page,{timeoutMs:readyTimeout});
+  const measure=async(key,fn)=>{
+    const start=performance.now();
+    try{return await fn();}
+    finally{onTiming(key,Math.round(performance.now()-start));}
+  };
+  const first=await measure("initial_field_ms",()=>findSearch(page,{timeoutMs:readyTimeout}));
   if(!first?.field)return {ok:false,reason:first?.reason||"search_not_rendered"};
   const settle=Math.max(1200,Math.min(2500,Number(settleMs)||1400));
-  await wait(settle);
+  await measure("field_settle_ms",()=>wait(settle));
   if(!isListRoute())return {ok:false,reason:"route_changed"};
+  const reacquireTimeoutMs=Math.min(3000,readyTimeout);
+  if(deferReacquireToSubmission)
+    return {ok:true,reacquireTimeoutMs};
   // The first field may have been removed by Wasaby between paint and
   // hydration. Re-find rather than typing into a detached locator.
-  const second=await findSearch(page,{timeoutMs:Math.min(3000,readyTimeout)});
+  const second=await measure("hydration_reacquire_ms",()=>findSearch(page,{timeoutMs:reacquireTimeoutMs}));
   if(!second?.field)return {ok:false,reason:second?.reason||"search_not_stable"};
   return {ok:true,method:second.method};
 }

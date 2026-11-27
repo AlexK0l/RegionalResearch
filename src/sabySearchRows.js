@@ -43,10 +43,21 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
     return yes;
   };
   const branchPattern=new RegExp(branchSource,"iu");
-  const visible=e=>{
-    const rect=e.getBoundingClientRect(),style=getComputedStyle(e);
-    return rect.width>0&&rect.height>0&&
-      style.visibility!=="hidden"&&style.display!=="none";
+  // The entire scan is synchronous and read-only. Reuse layout and
+  // rendered text observations ONLY inside this DOM snapshot.
+  const layout=new WeakMap(),rendered=new WeakMap();
+  const geometry=e=>{
+    if(!layout.has(e)){
+      const rect=e.getBoundingClientRect(),style=getComputedStyle(e);
+      layout.set(e,{rect,visible:rect.width>0&&rect.height>0&&
+        style.visibility!=="hidden"&&style.display!=="none"});
+    }
+    return layout.get(e);
+  };
+  const visible=e=>geometry(e).visible;
+  const rawText=e=>{
+    if(!rendered.has(e))rendered.set(e,String(e.innerText||e.textContent||""));
+    return rendered.get(e);
   };
   const legal=/(?:^|\W)(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)(?:\W|$)/i;
   const relevant=[];
@@ -60,8 +71,8 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
     let node=element;
     for(let depth=0;node&&depth<9;depth++,node=node.parentElement) {
       if(!visible(node))continue;
-      const rect=node.getBoundingClientRect();
-      const raw=String(node.innerText||node.textContent||"");
+      const rect=geometry(node).rect;
+      const raw=rawText(node);
       const text=norm(raw);
       if(rect.height>190||text.length>700)break;
       if(rect.width<190||rect.height<24||!matchesInn(text))continue;
@@ -113,10 +124,19 @@ export function scanSabyResultDOM({
       return false;
     return true;
   };
-  const visible=el=>{
-    const rect=el.getBoundingClientRect(),style=getComputedStyle(el);
-    return rect.width>0 && rect.height>0 &&
-      style.visibility!=="hidden" && style.display!=="none";
+  const layout=new WeakMap(),rendered=new WeakMap();
+  const geometry=el=>{
+    if(!layout.has(el)){
+      const rect=el.getBoundingClientRect(),style=getComputedStyle(el);
+      layout.set(el,{rect,visible:rect.width>0&&rect.height>0&&
+        style.visibility!=="hidden"&&style.display!=="none"});
+    }
+    return layout.get(el);
+  };
+  const visible=el=>geometry(el).visible;
+  const rawText=el=>{
+    if(!rendered.has(el))rendered.set(el,String(el.innerText||el.textContent||""));
+    return rendered.get(el);
   };
   const legal=/(?:^|\W)(?:ООО|ПАО|АО|ОАО|ЗАО|ИП)(?:\W|$)/iu;
   const rows=[];
@@ -130,8 +150,8 @@ export function scanSabyResultDOM({
     let node=leaf;
     for(let depth=0;node&&depth<12;depth++,node=node.parentElement) {
       if(!visible(node))continue;
-      const rect=node.getBoundingClientRect();
-      const raw=String(node.innerText||node.textContent||"");
+      const rect=geometry(node).rect;
+      const raw=rawText(node);
       const text=norm(raw);
       if(rect.height>190||text.length>700)break;
       if(rect.width<190||rect.height<24||!matchesInn(text))continue;
