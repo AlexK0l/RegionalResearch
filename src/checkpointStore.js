@@ -70,6 +70,22 @@ function ensureDb() {
       summary TEXT NOT NULL
     );
 
+    -- Queue intent and cooperative-pause markers remain authoritative for
+    -- automatic admission. This journal is never an automatic replay source.
+    CREATE TABLE IF NOT EXISTS research_job_lifecycle (
+      id TEXT PRIMARY KEY,
+      region TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      pipeline_version INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      source_checkpoint_id TEXT NOT NULL DEFAULT '',
+      percent REAL NOT NULL DEFAULT 0,
+      summary TEXT NOT NULL,
+      result_summary TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE TABLE IF NOT EXISTS runtime_maintenance (
       name TEXT PRIMARY KEY,
       last_at_ms INTEGER NOT NULL
@@ -391,6 +407,84 @@ export function saveQueuedResearchJob(job){
     "source_job_id,checkpoint_ref,checkpoint_payload,summary) VALUES(?,?,?,?,?,?,?,?,?)"
   ).run(id,region,mode,PIPELINE_VERSION,createdAt,source,ref,
     inline?JSON.stringify(inline):null,summary);
+}
+
+// Persist a compact execution marker BEFORE consuming admission intent.
+ // No credentials, raw sources, company rows or model output in this journal.
+export function saveResearchLifecycle(job,state=job?.state){
+  if(!queuedModes.has(job?.mode))return false;
+  const id=String(job.id||""),region=String(job.region||"").trim(),
+    createdAt=Number(job.createdAt);
+  if(!jobIdPattern.test(id)||!region||!Number.isSafeInteger(createdAt)||createdAt<0||
+     !["active","waiting","completed","cancelled","failed","interrupted"].includes(state))
+    throw Error("RESEARCH_LIFECYCLE_INVALID");
+  const raw=String(job.data?.checkpointRef||job.data?.sourceJobId||"");
+  const ref=jobIdPattern.test(raw)&&raw!==id?raw:"";
+  const summary=JSON.stringify(job.latestCheckpointSummary||null);
+  if(summary.length>8192)throw Error("RESEARCH_LIFECYCLE_SUMMARY_LIMIT");
+  const numericFields=(obj,keys)=>Object.fromEntries(keys.filter(k=>
+    typeof obj?.[k]==="number"&&Number.isFinite(obj[k])).map(k=>[k,obj[k]]));
+  const result=state==="completed"&&job.result?.resultStored?JSON.stringify({
+    resultStored:true,
+    counts:numericFields(job.result.counts,["direct_buyers","intermediaries","leasing","total"]),
+    contacts:numericFields(job.result.contacts,["total","ok","deferred"]),
+    saby:{...numericFields(job.result.saby,["processed","verified","deferred","scheduled"]),
+      fullSweepCompleted:job.result.saby?.fullSweepCompleted===true,
+      circuitOpen:job.result.saby?.circuitOpen===true,
+      browserError:Boolean(job.result.saby?.browserError)}
+  }):"{}";
+  ensureDb().prepare(`
+    INSERT INTO research_job_lifecycle(id,region,mode,pipeline_version,created_at_ms,
+      updated_at_ms,state,source_checkpoint_id,percent,summary,result_summary)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms,
+      state=excluded.state,source_checkpoint_id=CASE
+        WHEN excluded.source_checkpoint_id<>'' THEN excluded.source_checkpoint_id
+        ELSE research_job_lifecycle.source_checkpoint_id END,
+      percent=excluded.percent,summary=excluded.summary,result_summary=excluded.result_summary
+  `).run(id,region,job.mode,PIPELINE_VERSION,createdAt,Date.now(),state,ref,
+    Math.max(0,Math.min(100,Number(job.progress?.percent)||0)),summary,result);
+  return true;
+}
+
+// Select only journaled jobs, not arbitrary historical resumable snapshots.
+// Queued/paused markers have already been restored and take precedence.
+export function listResearchLifecycle(){
+  const db=ensureDb();
+  const columns=`SELECT j.*, c.phase AS child_phase,c.status AS child_status,
+    c.completed_stage AS child_stage,c.completed_final_batches AS child_batches,
+    p.phase AS parent_phase,p.status AS parent_status,p.completed_stage AS parent_stage,
+    p.completed_final_batches AS parent_batches
+    FROM research_job_lifecycle j
+    LEFT JOIN research_checkpoints c ON c.id=j.id AND c.region=j.region
+      AND c.pipeline_version=j.pipeline_version
+    LEFT JOIN research_checkpoints p ON p.id=j.source_checkpoint_id AND p.region=j.region
+      AND p.pipeline_version=j.pipeline_version
+    WHERE j.pipeline_version=?`;
+  const rows=[
+    ...db.prepare(columns+" AND j.state IN ('active','waiting','interrupted') ORDER BY j.created_at_ms").all(PIPELINE_VERSION),
+    ...db.prepare(columns+" AND j.state IN ('completed','cancelled','failed') ORDER BY j.updated_at_ms DESC LIMIT 100").all(PIPELINE_VERSION)
+  ];
+  return rows.flatMap(row=>{
+    if(!queuedModes.has(row.mode)||!jobIdPattern.test(row.id))return [];
+    try{
+      const child=row.child_phase&&row.child_status!=="superseded";
+      const parent=!child&&row.parent_phase&&row.parent_status!=="superseded";
+      const saved=JSON.parse(row.summary),result=JSON.parse(row.result_summary);
+      const phase=child?row.child_phase:parent?row.parent_phase:"";
+      const summary=phase?{...(saved||{}),version:1,region:row.region,phase,
+        pipeline_version:row.pipeline_version,
+        completed_stage:child?row.child_stage:row.parent_stage,
+        completed_final_batches:child?row.child_batches:row.parent_batches,
+        stage11_completed:saved?.stage11_completed===true||["saby","priority","completed"].includes(phase)}:null;
+      const completed=row.state==="completed"&&child&&result.resultStored===true&&
+        (row.child_status==="completed"||row.mode==="saby_only"&&phase==="saby");
+      const state=completed?"completed":["cancelled","failed"].includes(row.state)?row.state:"interrupted";
+      return [{id:row.id,region:row.region,mode:row.mode,createdAt:row.created_at_ms,
+        sourceJobId:parent?row.source_checkpoint_id:"",summary,percent:row.percent,
+        state,result:completed?{...result,region:row.region,mode:row.mode}:null}];
+    }catch{return [];}
+  });
 }
 
 export function listQueuedResearchJobs(){

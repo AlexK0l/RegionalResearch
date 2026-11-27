@@ -10,6 +10,7 @@ const SCREENSHOT_DETAIL = process.env.GOOGLE_AI_SCREENSHOT_DETAIL || "low";
 
 export async function launchResearchBrowser() {
   return chromium.launch({
+    ...(process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN==="true"?{handleSIGTERM:false,handleSIGINT:false}:{}),
     headless: true,
     args: [
       "--disable-dev-shm-usage",

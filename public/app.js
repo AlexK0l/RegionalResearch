@@ -444,7 +444,7 @@ function updateJobEtaLabels(){
 
 function jobStateText(job){
   const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
-    completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",
+    completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",interrupted:"Прервано · доступно продолжение",
     cancelling:"Останавливается"};
   if(job.phase==="billing_wait")return "Пауза OpenAI · пополните баланс";
   if(job.phase==="memory_paused")return "Пауза по ОЗУ · автовозобновление";
@@ -514,7 +514,13 @@ function renderJobs(payload){
       (item.mode==="saby_only"?" · только Saby":"");
     const details=document.createElement("span");
     details.className="jobs-details";
+    const savedPhases={starting:"начало",discovery:"поиск",pre_identity:"идентификация",identity:"идентификация",
+      final_batches:"идентификация",dedupe:"дедупликация",qualification:"квалификация",
+      final_inn:"проверка ИНН",enrichment:"обогащение",statistics:"статистика",
+      contacts:"контакты",saby:"Saby",priority:"приоритет",completed:"завершено"};
     details.textContent=jobStateText(item)+
+      (["waiting","interrupted"].includes(item.state)&&savedPhases[item.checkpointPhase]?
+        " · сохранено: "+savedPhases[item.checkpointPhase]:"")+
       (item.state==="active" && item.eta?.status==="estimated"
         ?" · осталось "+etaLabel(item.eta,item.etaReceivedAt)
         :"");
@@ -822,7 +828,7 @@ async function poll(restoring=false){
       return;
     }
 
-    if(d.state==="failed"||d.state==="cancelled"){
+    if(d.state==="failed"||d.state==="cancelled"||d.state==="interrupted"){
       if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
       setControlsRunning(false);
       e.resume.hidden=d.mode==="saby_only"||!d.resume_available;
@@ -831,10 +837,13 @@ async function poll(restoring=false){
       e.sabyResume.disabled=!sabyCanResume;
       e.checkpoint.hidden=!d.resume_available;
       e.checkpoint.disabled=!d.resume_available;
-      e.statusTitle.textContent=d.state==="cancelled"?"Остановлено":"Ошибка";
+      e.statusTitle.textContent=d.state==="interrupted"?"Прервано при остановке сервера":d.state==="cancelled"?"Остановлено":"Ошибка";
       e.statusText.textContent=d.state==="cancelled"
         ?(d.error||"Исследование остановлено пользователем.")
-        :"Исследование завершилось с ошибкой.";
+        :d.state==="interrupted"?(d.resume_available?
+          "Сохранённые данные доступны. Продолжение может повторить незавершённый платный запрос.":
+          "Сохранённая контрольная точка недоступна. Автоматический повтор не выполнялся."):
+          "Исследование завершилось с ошибкой.";
       if(d.state==="failed"){
         e.error.hidden=false;
         e.error.textContent="Ошибка: "+(d.error||"задание завершилось с ошибкой")+
@@ -1207,7 +1216,7 @@ timerTick=setInterval(()=>{
         e.progressCard.hidden=false;
         setProgress(d.progress||{});
         await poll(true);
-        if(!["completed","failed","cancelled"].includes(d.state)&&!pollTimer){
+        if(!["completed","failed","cancelled","interrupted"].includes(d.state)&&!pollTimer){
           pollTimer=setInterval(poll,2000);
         }
       }catch(err){

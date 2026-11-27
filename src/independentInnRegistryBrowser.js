@@ -427,7 +427,8 @@ export async function createPublicRegistryLookup(page,{
 export async function withPublicRegistryLookup(task,options={}){
   let browser,context;
   try{
-    browser=await chromium.launch({headless:true});
+    browser=await chromium.launch({headless:true,
+      ...(process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN==="true"?{handleSIGTERM:false,handleSIGINT:false}:{})});
     context=await browser.newContext({locale:"ru-RU"});
     const page=await context.newPage();
     // Do not load unnecessary large assets. Normal website scripts and

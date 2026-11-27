@@ -147,6 +147,7 @@ export async function withSabyBrowser(task, {env = process.env, autoLogin = true
   try {
     const settings = sabyBrowserSettings(env);
     context = await chromium.launchPersistentContext(settings.profileDir, {
+      ...(process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN==="true"?{handleSIGTERM:false,handleSIGINT:false}:{}),
       ...(settings.channel ? {channel:settings.channel} : {}),
       headless:settings.headless, viewport:{width:1440,height:920},
       acceptDownloads:false,
