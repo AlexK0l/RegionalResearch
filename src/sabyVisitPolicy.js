@@ -126,7 +126,8 @@ export function createSabyAdaptiveDelay(base,env={}){
   }};
 }
 const KEYS=["visit_ms","saved_card_ms","search_card_ms","search_ms","identity_ms",
-  "ready_ms","contacts_ms","financials_ms","fleet_ms","checkpoint_ms","delay_ms",
+  "ready_ms","ready_contacts_ms","ready_financials_ms","ready_fleet_ms",
+  "contacts_ms","financials_ms","fleet_ms","checkpoint_ms","delay_ms",
   "session_open_ms","session_close_ms","admission_ms"];
 const count=n=>Number.isSafeInteger(n)&&n>=0?Math.min(n,Number.MAX_SAFE_INTEGER):0;
 export function restoreSabyTiming(raw){

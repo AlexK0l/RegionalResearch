@@ -54,6 +54,7 @@ import {
   tryEarlySabyPostRouteProof
 } from "./sabyPostRouteIdentity.js";
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
+import {createSabyCardReadiness} from "./sabyCardReadiness.js";
 import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
 
 // Typed review classification prevents a missing or ambiguous individual
@@ -117,6 +118,9 @@ export function sabyBrowserSettings(env = process.env) {
     // Experimental: never assume a history return retains a usable list.
     // Off until measured on the real site with matching identity coverage.
     reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED||"false").toLowerCase()==="true",
+    // Only the full-card strategy shares passive widget hydration time.
+    // Explicit false restores independent legacy section waits.
+    sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
     publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
@@ -196,6 +200,19 @@ async function detailSections(page) {
   };
 }
 
+// This is a readiness signal only, not a selector for data extraction.
+// Playwright's own visible filter avoids count + nth + visibility RPCs for
+// every hidden duplicate. Collection still performs all its original checks.
+async function readFullCardWidgetVisible(page,kind){
+  const locator=kind==="contacts"?page.getByText("Контакты",{exact:true}):
+    kind==="fleet"?page.getByText("Автопарк компании",{exact:true}):
+    page.locator('[data-qa="ContractorCard_Employees"],[data-qa="analytics-finanalysis"],[data-qa="contractorCard-CardRatingBanner__Revenue"]');
+  if(typeof locator.filter==="function"){
+    try{return await locator.filter({visible:true}).first().isVisible();}
+    catch{/* Fall back to the existing bounded visibility lookup. */}
+  }
+  return Boolean(await visibleLocator(locator));
+}
 async function waitForDetailSections(page, timeoutMs=7000, requested=null) {
   const until=Date.now()+Math.max(0,Math.min(timeoutMs,10000));
   // The quick detail reads are opportunistic. They must not make the
@@ -1470,6 +1487,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
   const combined=optimized&&!quick&&sections.combinedDetails===true;
   const fullCard=combined&&sections.fullCard===true;
+  const sharedReadiness=fullCard&&settings.sharedCardReadiness!==false;
   const allVehicles=sections?.allVehicleCategories===true&&shouldUseSabyFleetTree(settings);
   const detailAttempts={financials:false,trucks:false};
   const timing={},timed=async(key,fn)=>{
@@ -1502,10 +1520,29 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const verifiedRoute=page.url();
   const sameCard=()=>page.url()===verifiedRoute&&sabyCardRoute(verifiedRoute)==="detail"||
     compareSabyVerifiedFleetDetail(verifiedRoute,page.url()).ok;
-  // Each full-card section has its own bounded readiness opportunity.
-  // Contacts first, then finance, then fleet, even if a prior section
-  // is missing. No quick/visible-only read substitutes for full details.
+  // One passive hydration window starts at the fresh ownership proof,
+  // not again for each section. Contacts retain first priority. Full lazy
+  // finance and fleet recovery below is NOT limited by this deadline.
+  const readiness=sharedReadiness?createSabyCardReadiness({
+    timeoutMs:Math.min(7000,settings.timeoutMs||45000),
+    sameCard,readVisible:kind=>readFullCardWidgetVisible(page,kind)
+  }):null;
   const ready=async(requested)=>{
+    if(readiness){
+      if(!sameCard())return;
+      const kind=requested.contacts?"contacts":requested.trucks?"fleet":"financials";
+      const begin=performance.now();
+      let outcome;
+      try{outcome=await timed("ready_ms",()=>readiness.waitFor(kind));}
+      catch{/* Still enter the full section collector if ownership holds. */}
+      timing["ready_"+kind+"_ms"]=(timing["ready_"+kind+"_ms"]||0)+
+        Math.round(performance.now()-begin);
+      console.info("[SABY_FULL_CARD_READY] "+JSON.stringify({
+        section:kind,status:outcome?.status||"unavailable",
+        polls:outcome?.polls||0,remaining_ms:Math.round(readiness.remaining())
+      }));
+      return;
+    }
     const wait=()=>timed("ready_ms",()=>waitForDetailSections(page,
       Math.min(7000,settings.timeoutMs||45000),requested));
     if(fullCard){if(sameCard())await wait().catch(()=>{});}
@@ -1513,8 +1550,8 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   };
   const firstReady=fullCard?(sections.contacts?{contacts:true}:
     sections.financials?{financials:true}:{trucks:true}):optimized?sections:null;
-  // A verified legal name and INN does not imply widgets are hydrated.
-  await ready(firstReady);
+  // A fleet-only full visit waits after closing any contact overlay.
+  if(!sharedReadiness||sections.contacts||sections.financials)await ready(firstReady);
   const result={identity,source:"SABY",source_url:optimized?verifiedRoute:page.url(),
     // Navigation-only hint captured immediately after identity proof,
     // before any section/widget changes the route. Its strict URL
@@ -1545,9 +1582,8 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     return result;
   };
   if(optimized&&sections.contacts)await contactRead();
-  // Preserve the full details visit's independent hydration allowance.
-  // A successful contact widget does not prove the fleet is ready.
-  // The shared navigation/identity work is removed, not the fleet wait.
+  // The full collectors keep their own active recovery. The earlier
+  // combined-retry and legacy strategies retain their independent waits.
   if(fullCard){
     if(sections.contacts&&sections.financials)await ready({financials:true});
   }else if(combined&&(sections.trucks||sections.financials)&&sameCard())
@@ -1555,7 +1591,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   if(!sections||sections.financials)await financeRead();
   if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return finish();
-  if(fullCard&&(sections.contacts||sections.financials))await ready({trucks:true});
+  if(fullCard&&!sharedReadiness&&(sections.contacts||sections.financials))await ready({trucks:true});
   if(quick){
     if(allVehicles){
       await read("vehicle_fleet",async()=>{
@@ -1580,8 +1616,16 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   if(optimized&&!sameCard()){result.errors.push("trucks: card_changed");return result;}
   const fleetProgress={phase:"overlay"};
   try {
+    if(sharedReadiness){
+      // Avoid waiting on an obstructed fleet widget while a contact
+      // overlay is still open. Keep readiness time separate from fleet_ms.
+      await timed("fleet_ms",()=>closeContactOverlay(page));
+      if(!sameCard())throw new SabyReview("Saby card changed",{scope:"company",code:"card_changed"});
+      fleetProgress.phase="heading";
+      await ready({trucks:true});
+    }
     await timed("fleet_ms",async()=>{
-      await closeContactOverlay(page);
+      if(!sharedReadiness)await closeContactOverlay(page);
       fleetProgress.phase="heading";
       // A full fleet read must remain tied to the card verified before
       // finance/contact scrolling, including old in-progress cursors.
