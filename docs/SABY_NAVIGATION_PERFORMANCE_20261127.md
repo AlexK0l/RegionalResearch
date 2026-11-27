@@ -3,7 +3,8 @@
 - Production full-card jobs default to the observed history return (explicit
   SABY_REUSE_CATALOG_HISTORY_ENABLED=false opts out). At most two back
   operations within 2.5 seconds, same verified card and known UI state
-  only; three failures disable history for that browser Page. The existing
+  only; three failures (including unresolved warm queries) disable history
+  for that browser Page. The existing
   exact INN search, fresh detail verification, browser serial lease,
   pacing, cold fallback and rotation remain. No extra persistent tab.
 - The observed normal local=false card URL is now valid as a navigation

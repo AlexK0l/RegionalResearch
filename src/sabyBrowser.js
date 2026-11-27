@@ -315,7 +315,8 @@ async function openCompany(page, row, settings, timing=null) {
     card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
     catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
-    scoped_owner_hits:0,public_rejection_reused:0,scoped_empty_hits:0};
+    scoped_owner_hits:0,public_rejection_reused:0,scoped_empty_hits:0,
+    catalog_history_unresolved:0};
   const verifyPublic=createSabyVisitPublicVerifier(undefined,()=>{
     components.public_rejection_reused=1;
   });
@@ -431,6 +432,10 @@ async function openCompany(page, row, settings, timing=null) {
   transport?.arm();
   const submitted=await measure("submit_ms",submitSearch);
   if(!submitted.ok){
+    if(catalog.historyHit){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_unresolved=1;
+    }
     transport?.stop();
     // Strict, allowlisted statuses only. Never print INN, DOM, URL or
     // the raw Playwright exception, which can include private context.
@@ -495,7 +500,13 @@ async function openCompany(page, row, settings, timing=null) {
         {scope:"company",code:"search_ambiguous"});
     }
     rows=selected.row?[selected.row]:[];
-    if(rows.length===1)break;
+    // A warm list can contain a previous render after history restore.
+    // Before clicking, require the exact newly submitted INN to still
+    // be visibly entered. Normal full card verification remains mandatory.
+    if(rows.length===1){
+      if(!catalog.historyHit||await readSabySearchState(page,inn).then(x=>x.inputExact===true).catch(()=>false))break;
+      rows=[];
+    }
     // Do not wait the entire 18s when a newly appeared, query-scoped
     // empty result is stable and all exact-INN HTTP requests finished.
     // On unrecognized layouts/global spinners retain the old behavior.
@@ -593,7 +604,8 @@ async function openCompany(page, row, settings, timing=null) {
         if(isListRoute()){
           lastSelected=lastRead;selection=lastRead.reason;
           rows=lastRead.row&&!["ambiguous","ambiguous_exact","result_window_full",
-            "primary_window_full"].includes(lastRead.reason)?[lastRead.row]:[];
+            "primary_window_full"].includes(lastRead.reason)&&
+            (!catalog.historyHit||sampleB?.inputExact===true)?[lastRead.row]:[];
           classification=classifySabySearchZeroState(sampleA,sampleB,{
             onListRoute:true,beforeSearch
           });
@@ -605,6 +617,13 @@ async function openCompany(page, row, settings, timing=null) {
       console.info("[SABY_SEARCH_LATE_RESULT] "+JSON.stringify({status:"candidate_requires_card_verification"}));
   }
   if(rows.length!==1){
+    // No repeated dispatched query just because the warm list failed.
+    // Preserve the existing later retry, but after a few warm failures
+    // automatically use cold navigation for the rest of this Page.
+    if(catalog.historyHit){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_unresolved=1;
+    }
     if(publicFallback){
       const observed=transport?.summary()||{};
       console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
@@ -816,7 +835,7 @@ async function openCompany(page, row, settings, timing=null) {
   }finally{
     transport?.stop();
     if(timing)for(const key of ["catalog_history_attempted","catalog_history_hit","catalog_history_fallback",
-      "public_rejection_reused","scoped_empty_hits"])timing[key]=components[key];
+      "catalog_history_unresolved","public_rejection_reused","scoped_empty_hits"])timing[key]=components[key];
     console.info("[SABY_SEARCH_COMPONENT_TIMING] "+JSON.stringify({
       ...components,total_ms:Math.round(performance.now()-searchStarted)
     }));

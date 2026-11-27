@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
-  forgetSabyCatalogOrigin,noteSabyCatalogColdFallback} from "../src/sabyCatalogNavigation.js";
+  forgetSabyCatalogOrigin,rememberSabyEmptyCatalog,noteSabyCatalogColdFallback} from "../src/sabyCatalogNavigation.js";
 
 const detail="https://profile.saby.ru/page/contractor-info?id=11111111-1111-4111-8111-111111111111";
 function fixture(initial=detail,{back=SABY_CATALOG_URL,fail=false}={}){
@@ -83,4 +83,15 @@ test("unsafe local values and different IDs never use history; three misses disa
   rememberSabyCatalogOrigin(page,SABY_CATALOG_URL,detail);
   assert.deepEqual(await openSabyCatalog(page,{reuse:true}),{historyAttempted:false,historyHit:false});
   assert.equal(events.at(-1)[0],"goto");
+});
+
+test("confirmed empty list can stay mounted for only the next query, then requires fresh observation",async()=>{
+  const {page,events}=fixture(SABY_CATALOG_URL);
+  assert.equal(rememberSabyEmptyCatalog(page),true);
+  assert.deepEqual(await openSabyCatalog(page,{reuse:true}),{historyAttempted:true,historyHit:true});
+  assert.equal(events.length,0);
+  assert.deepEqual(await openSabyCatalog(page,{reuse:true}),{historyAttempted:false,historyHit:false});
+  assert.deepEqual(events.map(x=>x[0]),["goto"]);
+  page.change(detail);
+  assert.equal(rememberSabyEmptyCatalog(page),false);
 });

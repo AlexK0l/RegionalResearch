@@ -129,7 +129,7 @@ export function createSabyAdaptiveDelay(base,env={}){
 }
 const MARKUP_COUNTERS=["markup_scans","markup_scope_hits","markup_owner_hits",
   "markup_contacts_hits","markup_financial_hits","markup_fleet_hits","markup_contacts_more",
-  "catalog_history_attempted","catalog_history_hit","catalog_history_fallback",
+  "catalog_history_attempted","catalog_history_hit","catalog_history_fallback","catalog_history_unresolved",
   "scoped_empty_hits","public_rejection_reused"];
 const KEYS=["visit_ms","saved_card_ms","search_card_ms","search_ms","identity_ms","markup_ms",
   "ready_ms","ready_contacts_ms","ready_financials_ms","ready_fleet_ms",
