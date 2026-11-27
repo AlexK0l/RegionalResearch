@@ -238,7 +238,10 @@ export async function runSabyContactFirst({
             (sections.financials&&Boolean(validSabyFinancialEvidence(record?.financials)));
           // Save a valid navigation hint even when all requested widgets
           // were absent. The next visit still freshly verifies the card.
-          if(optimized)rememberSabyNavigationHint(row,record);
+          // Navigation hints do not change any pass cursor, required
+          // section, attempt budget or completion evidence. Legacy
+          // in-flight sweeps can safely reuse them too.
+          rememberSabyNavigationHint(row,record);
           const applied=relevant?applySabyEnrichment(row,record,{phoneOwners:ownerMap,transport}):null;
           gaps.set(entry,workGaps(entry));
           // A navigation/identity failure or an unentered section must

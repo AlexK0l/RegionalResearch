@@ -63,7 +63,10 @@ export function safeSabyNavigationUrl(raw){
 }
 export function rememberSabyNavigationHint(row,record){
   const inn=sabyInn(row?.["ИНН"]),name=String(row?.["Организация"]||"").trim(),
-    url=safeSabyNavigationUrl(record?.source_url);
+    // Explicit null means the actual verified route failed the allowlist.
+    // Never fall back to a later widget URL in that case.
+    url=safeSabyNavigationUrl(Object.hasOwn(record||{},"verified_navigation_url")?
+      record.verified_navigation_url:record?.source_url);
   if(!inn||!name||!url||record?.identity?.verified!==true||
     sabyInn(record.identity.inn)!==inn||!sabyNameMatches(name,record.identity.name)||
     !Number.isFinite(Date.parse(record.collected_at)))return false;
@@ -75,6 +78,13 @@ export function rememberSabyNavigationHint(row,record){
     new URL(oldUrl).searchParams.get("id")!==new URL(url).searchParams.get("id"))return false;
   const kpp=String(record.identity.kpp||"");
   if(stored?.inn===inn&&stored.kpp&&kpp&&stored.kpp!==kpp)return false;
+  // A navigation-only observation is not allowed to replace a conflicting
+  // previously verified navigation-only observation either.
+  const previous=e.saby_navigation_hint;
+  const previousUrl=previous?.inn===inn&&previous.name===name?
+    safeSabyNavigationUrl(previous.source_url):null;
+  if(previousUrl&&new URL(previousUrl).searchParams.get("id")!==new URL(url).searchParams.get("id"))return false;
+  if(previousUrl&&previous.kpp&&kpp&&previous.kpp!==kpp)return false;
   const hint={inn,name,source_url:url,verified_at:record.collected_at,
     ...( /^\d{9}$/.test(kpp)?{kpp}:{})};
   if(JSON.stringify(e.saby_navigation_hint)===JSON.stringify(hint))return false;

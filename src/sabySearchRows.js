@@ -29,6 +29,19 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
   const norm=s=>String(s||"").replace(/\s+/g," ").trim();
   const exactInn=new RegExp("(^|\\D)"+inn+"(?!\\d)");
   const matchesInn=s=>exactInn.test(s);
+  // During one synchronous DOM read only, reuse the exact-INN predicate.
+  // For a validated digit token whitespace normalization cannot change
+  // either its digits or the non-digit boundaries. Avoid normalizing
+  // entire unrelated subtrees on every 450ms polling iteration.
+  const digitToken=/^(?:\d{10}|\d{12})$/.test(inn);
+  const matched=new WeakMap();
+  const hasInn=element=>{
+    if(matched.has(element))return matched.get(element);
+    const raw=String(element.textContent||"");
+    const yes=digitToken?raw.includes(inn)&&matchesInn(raw):matchesInn(norm(raw));
+    matched.set(element,yes);
+    return yes;
+  };
   const branchPattern=new RegExp(branchSource,"iu");
   const visible=e=>{
     const rect=e.getBoundingClientRect(),style=getComputedStyle(e);
@@ -40,8 +53,8 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
   for(const element of document.querySelectorAll("body *")){
     // Reject nonmatching text and nested fragments before forcing layout.
     // Keep the identical name, geometry, branch and candidate rules.
-    if(!matchesInn(norm(element.textContent)))continue;
-    if([...element.children].some(child=>matchesInn(norm(child.textContent))))
+    if(!hasInn(element))continue;
+    if([...element.children].some(hasInn))
       continue;
     if(!visible(element))continue;
     let node=element;
@@ -76,6 +89,19 @@ export function scanSabyResultDOM({
   const norm=s=>String(s||"").replace(/\s+/g," ").trim();
   const exactInn=new RegExp("(?:^|\\D)"+inn+"(?!\\d)");
   const matchesInn=s=>exactInn.test(s);
+  // During one synchronous DOM read only, reuse the exact-INN predicate.
+  // For a validated digit token whitespace normalization cannot change
+  // either its digits or the non-digit boundaries. Avoid normalizing
+  // entire unrelated subtrees on every 450ms polling iteration.
+  const digitToken=/^(?:\d{10}|\d{12})$/.test(inn);
+  const matched=new WeakMap();
+  const hasInn=element=>{
+    if(matched.has(element))return matched.get(element);
+    const raw=String(element.textContent||"");
+    const yes=digitToken?raw.includes(inn)&&matchesInn(raw):matchesInn(norm(raw));
+    matched.set(element,yes);
+    return yes;
+  };
   const branchPattern=new RegExp(branchSource,"iu");
   const eligibleFirstLine=raw=>{
     const prefix=String(raw||"").split(inn,1)[0];
@@ -97,8 +123,8 @@ export function scanSabyResultDOM({
   let leafHits=0,rawCapped=false;
   const leaves=document.querySelectorAll("body *");
   for(const leaf of leaves) {
-    if(!matchesInn(norm(leaf.textContent)))continue;
-    if([...leaf.children].some(child=>matchesInn(norm(child.textContent))))continue;
+    if(!hasInn(leaf))continue;
+    if([...leaf.children].some(hasInn))continue;
     if(!visible(leaf))continue;
     leafHits++;
     let node=leaf;
