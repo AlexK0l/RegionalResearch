@@ -12,7 +12,8 @@ import {observeSabySearchTransport,shouldRecoverSilentSabySearch,
   trackSabySessionSockets,hasSabySessionSocketTracker}
   from "./sabySearchTransport.js";
 import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
-  forgetSabyCatalogOrigin,noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
+  forgetSabyCatalogOrigin,rememberSabyEmptyCatalog,noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
+import {readScopedSabyEmpty,scopedSabyEmptyConfirmed} from "./sabyScopedSearchEmpty.js";
 import {createSabyVisitPublicVerifier} from "./sabyPublicRegisteredIdentity.js";
 import {readSabySearchState,classifySabySearchZeroState,
   isUnconfirmedSabyZeroResult} from "./sabySearchState.js";
@@ -63,7 +64,7 @@ import {readSabyMarkupSnapshot} from "./sabyMarkupSnapshot.js";
 // contractor from tripping the circuit breaker for a site-wide failure.
 // Default is 'systemic' until the precise call site proves company-specific.
 export class SabyReview extends Error {
-  constructor(message,{scope="systemic",code="review"}={}) {
+  constructor(message,{scope="systemic",code="review",scopedEmptyVerified=false}={}) {
     super(message);
     this.name="SabyReview";
     this.scope=scope==="company"?"company":"systemic";
@@ -73,6 +74,7 @@ export class SabyReview extends Error {
       "search_input_failed","search_confirmed_empty",
       "search_service_unavailable","search_loading_stalled",
       "search_zero_unconfirmed","card_legal_name_unverified"]).has(code)?code:"review";
+    this.scopedEmptyVerified=this.code==="search_confirmed_empty"&&this.scope==="company"&&scopedEmptyVerified===true;
   }
 }
 
@@ -121,6 +123,10 @@ export function sabyBrowserSettings(env = process.env) {
     // Explicit false opts out; diagnostics/smoke keep their old default.
     reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED??
       (env.SABY_SMOKE_ONLY!=="true"&&String(env.SABY_FULL_CARD_PASS_ENABLED||"").toLowerCase()==="true"?"true":"false")).toLowerCase()==="true",
+    // A conservative early empty-result proof, only in full production.
+    scopedSearchEmpty:env.SABY_SMOKE_ONLY!=="true"&&
+      String(env.SABY_FULL_CARD_PASS_ENABLED||"").toLowerCase()==="true"&&
+      String(env.SABY_SCOPED_EMPTY_ENABLED??"true").toLowerCase()!=="false",
     // Only the full-card strategy shares passive widget hydration time.
     // Explicit false restores independent legacy section waits.
     sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
@@ -309,7 +315,7 @@ async function openCompany(page, row, settings, timing=null) {
     card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
     catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
-    scoped_owner_hits:0,public_rejection_reused:0};
+    scoped_owner_hits:0,public_rejection_reused:0,scoped_empty_hits:0};
   const verifyPublic=createSabyVisitPublicVerifier(undefined,()=>{
     components.public_rejection_reused=1;
   });
@@ -419,6 +425,9 @@ async function openCompany(page, row, settings, timing=null) {
       beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
     }
   }
+  let beforeScoped=publicFallback&&settings.scopedSearchEmpty===true?
+    await readScopedSabyEmpty(page,inn):null;
+  let nextScopedProbe=0;
   transport?.arm();
   const submitted=await measure("submit_ms",submitSearch);
   if(!submitted.ok){
@@ -487,6 +496,32 @@ async function openCompany(page, row, settings, timing=null) {
     }
     rows=selected.row?[selected.row]:[];
     if(rows.length===1)break;
+    // Do not wait the entire 18s when a newly appeared, query-scoped
+    // empty result is stable and all exact-INN HTTP requests finished.
+    // On unrecognized layouts/global spinners retain the old behavior.
+    if(publicFallback&&selected.reason==="not_found"&&selected.observed===0&&
+       beforeScoped?.scope&&beforeScoped.inputExact===false&&beforeScoped.empty===false&&
+       Date.now()-submissionAt>=3000&&Date.now()>=nextScopedProbe&&
+       transport?.hasSettledExactInnResponse()&&isListRoute()){
+      nextScopedProbe=Date.now()+1200;
+      const first=await readScopedSabyEmpty(page,inn);
+      if(first?.scope===beforeScoped.scope&&first.inputExact&&first.empty&&!first.busy){
+        await delay(500);
+        const second=await readScopedSabyEmpty(page,inn);
+        let fresh=null;
+        try{fresh=await candidates();}catch{/* No safe empty proof. */}
+        if(fresh&&scopedSabyEmptyConfirmed(beforeScoped,first,second,{
+          settled:transport.hasSettledExactInnResponse(),observed:fresh.observed,
+          onListRoute:isListRoute()&&fresh.reason==="not_found"&&!fresh.row
+        })){
+          components.scoped_empty_hits=1;
+          if(settings.reuseCatalogHistory===true)rememberSabyEmptyCatalog(page);
+          console.info("[SABY_SCOPED_EMPTY] confirmed_exact_query");
+          throw new SabyReview("Saby: подтверждено отсутствие результата текущего поиска",{
+            scope:"company",code:"search_confirmed_empty",scopedEmptyVerified:true});
+        }
+      }
+    }
     if(publicFallback&&shouldRecoverSilentSabySearch({
       route:sabyCardRoute(page.url()),reason:selected.reason,
       observed:Number(selected.observed||0),
@@ -520,6 +555,8 @@ async function openCompany(page, row, settings, timing=null) {
         catalog={historyAttempted:false,historyHit:false};
         readiness=await measure("hydration_ms",settleSearch);
         beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
+        beforeScoped=settings.scopedSearchEmpty===true?await readScopedSabyEmpty(page,inn):null;
+        nextScopedProbe=0;
         transport.arm();
         const second=await measure("submit_ms",submitSearch);
         if(!second.ok)
@@ -779,7 +816,7 @@ async function openCompany(page, row, settings, timing=null) {
   }finally{
     transport?.stop();
     if(timing)for(const key of ["catalog_history_attempted","catalog_history_hit","catalog_history_fallback",
-      "public_rejection_reused"])timing[key]=components[key];
+      "public_rejection_reused","scoped_empty_hits"])timing[key]=components[key];
     console.info("[SABY_SEARCH_COMPONENT_TIMING] "+JSON.stringify({
       ...components,total_ms:Math.round(performance.now()-searchStarted)
     }));

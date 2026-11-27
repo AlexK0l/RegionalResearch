@@ -69,10 +69,10 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
     first_party_async_requests:0,
     exact_inn_async_requests:0,
     exact_inn_ws_frames:0,
-    async_responses:0,failed_requests:0,
+    async_responses:0,failed_requests:0,exact_inn_successful_responses:0,
     http_401:0,http_403:0,http_429:0,http_5xx:0
   };
-  const pending=new Set(),socketOff=[],attachedSockets=new Set();
+  const pending=new Set(),exactPending=new Map(),socketOff=[],attachedSockets=new Set();
   let stopped=false,armed=initiallyArmed===true;
   const requestSeen=request=>{
     if(stopped||!armed)return;
@@ -85,8 +85,10 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
       // URL / postData only used in memory to compare the caller's exact INN.
       // Do not retain their text or write anything to logs.
       if(exactSabyInnTransportToken(request.url(),inn)||
-        exactSabyInnTransportToken(request.postData?.(),inn))
+        exactSabyInnTransportToken(request.postData?.(),inn)){
         counts.exact_inn_async_requests++;
+        exactPending.set(request,false);
+      }
     }catch{
       // A diagnostic must never prevent a company search.
     }
@@ -96,6 +98,8 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
       if(!pending.has(response.request()))return;
       counts.async_responses++;
       const status=Number(response.status());
+      if(exactPending.has(response.request()))
+        exactPending.set(response.request(),status>=200&&status<300);
       if(status===401)counts.http_401++;
       else if(status===403)counts.http_403++;
       else if(status===429)counts.http_429++;
@@ -104,8 +108,13 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
   };
   const failed=request=>{
     if(pending.delete(request))counts.failed_requests++;
+    exactPending.delete(request);
   };
-  const finished=request=>{pending.delete(request);};
+  const finished=request=>{
+    pending.delete(request);
+    if(exactPending.get(request)===true)counts.exact_inn_successful_responses++;
+    exactPending.delete(request);
+  };
   const socketSeen=socket=>{
     try{
       if(!firstPartySabySearchTransport(socket.url())||attachedSockets.has(socket))return;
@@ -126,12 +135,19 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
     arm(){
       if(stopped)return;
       for(const key of Object.keys(counts))counts[key]=0;
-      pending.clear();
+      pending.clear();exactPending.clear();
       armed=true;
     },
     summary:()=>({...counts}),
     hasExactInnEvidence:()=>
       counts.exact_inn_async_requests>0||counts.exact_inn_ws_frames>0,
+    // Transmission alone does not prove a completed search. Require
+    // every observed exact-INN HTTP request to have finished
+    // successfully, with no observed failure or blocking status.
+    hasSettledExactInnResponse:()=>!stopped&&armed&&exactPending.size===0&&
+      counts.exact_inn_async_requests>0&&
+      counts.exact_inn_async_requests===counts.exact_inn_successful_responses&&
+      !counts.failed_requests&&!counts.http_401&&!counts.http_403&&!counts.http_429&&!counts.http_5xx,
     stop(){
       if(stopped)return;
       stopped=true;
@@ -141,7 +157,7 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
       page.off?.("requestfinished",finished);
       page.off?.("websocket",socketSeen);
       for(const off of socketOff)try{off();}catch{}
-      pending.clear();
+      pending.clear();exactPending.clear();
       attachedSockets.clear();
       if(ACTIVE.get(page)===self)ACTIVE.delete(page);
     }

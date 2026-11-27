@@ -720,6 +720,8 @@ function setProgress(p){
       (stats.phoneCoverage?" ("+Number(stats.phoneCoverage.with_phone||0)+" / "+Number(stats.phoneCoverage.rows||0)+")":"")+
       " · транспорт: +"+Number(stats.transportsAdded||0)+
       " · на проверку: "+Number(stats.review||0)+
+      (stats.passIndex===1&&Number.isFinite(stats.retryPending)?" · кандидатов на повтор: до "+stats.retryPending:"")+
+      (stats.retrySkippedScopedEmpty?" · подтверждено пустых запросов: "+stats.retrySkippedScopedEmpty:"")+
       (p.sabyRecoveryText?" · "+p.sabyRecoveryText:"");
   }else if(p.phase==="priority"){
     e.contactBox.hidden=true;
