@@ -1,6 +1,7 @@
 // Saby company identity gate. Contact and transport sections are NOT proof
 // of identity: they may load later, or be absent entirely.
-import { sabyInn, sabyNameMatches } from "./sabyEnrichment.js";
+import { sabyInn, sabyNameMatches,sabyNameTokens,SABY_LEGAL_NAME_WORDS } from "./sabyEnrichment.js";
+import {scanSabyMarkupOwnerDOM} from "./sabyMarkupOwnerDOM.js";
 
 export function sabyCardRoute(url) {
   try {
@@ -37,61 +38,85 @@ export function assessSabyCardEvidence(url, inn, expectedName, evidence) {
   return {ok:true,verifiedName:matchingName,reason:"verified",detail};
 }
 
-/** Read only short identity text into Node memory; do not log or persist it. */
-export async function verifySabyCard(page,inn,expectedName) {
-  const url=page.url();
-  if(sabyCardRoute(url)!=="detail") {
-    return assessSabyCardEvidence(url,inn,expectedName,null);
+// Existing broad identity scan: unchanged fallback for all other layouts.
+function scanSabyBroadCardDOM({inn}){
+  const visible=element=>{
+    const r=element.getBoundingClientRect(),s=getComputedStyle(element);
+    return r.width>0 && r.height>0 && s.display!=="none" &&
+      s.visibility!=="hidden";
+  };
+  const normalize=s=>String(s||"").replace(/\s+/g," ").trim();
+  const exact=new RegExp("(?:^|\\D)"+inn+"(?!\\d)");
+  const labeled=new RegExp(
+    "(?:ИНН|INN)(?:\\s*[/\\\\]\\s*КПП)?\\s*[:№#—-]?\\s*"+inn+"(?!\\d)","i"
+  );
+  const main=(document.body?.innerText||"").slice(0,65000);
+  const rootBlocks=[...document.querySelectorAll(
+    'main,article,[role="main"],[class*="company" i],' +
+    '[class*="card" i],[class*="overview" i],[class*="info" i]'
+  )].filter(e=>{
+    const r=e.getBoundingClientRect();
+    return visible(e) && r.width>220 && r.height>100;
+  }).slice(0,120);
+  let scopedExactInn=false,scopedLabeledInn=false;
+  for(const block of rootBlocks){
+    const text=normalize((block.innerText||"").slice(0,5000));
+    if(!text)continue;
+    scopedExactInn||=exact.test(text);
+    scopedLabeledInn||=labeled.test(text);
+    // Both existential proofs are now true. Additional card blocks
+    // cannot change either flag; avoid expensive innerText reads.
+    if(scopedExactInn&&scopedLabeledInn)break;
   }
-  const evidence=await page.evaluate(({inn})=>{
-    const visible=element=>{
-      const r=element.getBoundingClientRect(),s=getComputedStyle(element);
-      return r.width>0 && r.height>0 && s.display!=="none" &&
-        s.visibility!=="hidden";
-    };
-    const normalize=s=>String(s||"").replace(/\s+/g," ").trim();
-    const exact=new RegExp("(?:^|\\D)"+inn+"(?!\\d)");
-    const labeled=new RegExp(
-      "(?:ИНН|INN)(?:\\s*[/\\\\]\\s*КПП)?\\s*[:№#—-]?\\s*"+inn+"(?!\\d)","i"
-    );
-    const main=(document.body?.innerText||"").slice(0,65000);
-    const rootBlocks=[...document.querySelectorAll(
-      'main,article,[role="main"],[class*="company" i],' +
-      '[class*="card" i],[class*="overview" i],[class*="info" i]'
-    )].filter(e=>{
-      const r=e.getBoundingClientRect();
-      return visible(e) && r.width>220 && r.height>100;
-    }).slice(0,120);
-    let scopedExactInn=false,scopedLabeledInn=false;
-    for(const block of rootBlocks){
-      const text=normalize((block.innerText||"").slice(0,5000));
-      if(!text)continue;
-      scopedExactInn||=exact.test(text);
-      scopedLabeledInn||=labeled.test(text);
-      // Both existential proofs are now true. Additional card blocks
-      // cannot change either flag; avoid expensive innerText reads.
-      if(scopedExactInn&&scopedLabeledInn)break;
-    }
-    const headerElements=[...document.querySelectorAll(
-      'h1,h2,h3,[role="heading"],[class*="companyName" i],' +
-      '[class*="company-name" i]'
-    )].filter(visible).slice(0,80);
-    const headings=headerElements.map(e=>normalize(e.innerText))
-      .filter(x=>x.length>=3&&x.length<=180).slice(0,50);
-    // Saby sometimes renders legal titles as a div, not a semantic heading.
-    // Require a complete line near the top of the actual company detail.
-    const introLines=main.slice(0,6500).split(/[\r\n]+/)
-      .map(normalize).filter(Boolean).slice(0,80);
-    return {
-      headings,introLines,
-      bodyLabeledInn:labeled.test(normalize(main)),
-      scopedLabeledInn,scopedExactInn,
-      contactSectionPresent:/\bКонтакты\b/i.test(main),
-      detailContentPresent:main.trim().length>60 &&
-        (rootBlocks.length>0 || headerElements.length>0)
-    };
-  },{inn});
-  return assessSabyCardEvidence(url,inn,expectedName,evidence);
+  const headerElements=[...document.querySelectorAll(
+    'h1,h2,h3,[role="heading"],[class*="companyName" i],' +
+    '[class*="company-name" i]'
+  )].filter(visible).slice(0,80);
+  const headings=headerElements.map(e=>normalize(e.innerText))
+    .filter(x=>x.length>=3&&x.length<=180).slice(0,50);
+  // Saby sometimes renders legal titles as a div, not a semantic heading.
+  // Require a complete line near the top of the actual company detail.
+  const introLines=main.slice(0,6500).split(/[\r\n]+/)
+    .map(normalize).filter(Boolean).slice(0,80);
+  return {
+    headings,introLines,
+    bodyLabeledInn:labeled.test(normalize(main)),
+    scopedLabeledInn,scopedExactInn,
+    contactSectionPresent:/\bКонтакты\b/i.test(main),
+    detailContentPresent:main.trim().length>60 &&
+      (rootBlocks.length>0 || headerElements.length>0)
+  };
+}
+function inspectSabyIdentityDOM(args,ownerScan,broadScan){
+  if(args.markupFirst){
+    const own=ownerScan(args);
+    if(own)return {headings:[own.name],introLines:[],
+      bodyLabeledInn:false,scopedLabeledInn:true,scopedExactInn:true,
+      detailContentPresent:true,contactSectionPresent:false,scopedMarkup:true};
+  }
+  return broadScan(args);
+}
+// Compose ONLY trusted local standalone function source, once at module
+// load. Playwright serializes this function; all company inputs are
+// separate structured arguments. Never execute markup or Saby scripts.
+const readSabyIdentityDOM=new Function("args",
+  "return ("+inspectSabyIdentityDOM.toString()+")(args,("+
+  scanSabyMarkupOwnerDOM.toString()+"),("+scanSabyBroadCardDOM.toString()+"));");
+
+/** Read only short identity evidence into Node memory; never log it. */
+export async function verifySabyCard(page,inn,expectedName,{markupFirst=false}={}) {
+  const url=page.url();
+  if(sabyCardRoute(url)!=="detail")return assessSabyCardEvidence(url,inn,expectedName,null);
+  const evidence=await page.evaluate(readSabyIdentityDOM,{
+    inn,markupFirst:markupFirst===true,
+    nameTokens:sabyNameTokens(expectedName),legalWords:SABY_LEGAL_NAME_WORDS
+  });
+  // Do not accept a scoped proof from a route that changed during the read.
+  if(evidence?.scopedMarkup===true&&page.url()!==url)
+    return assessSabyCardEvidence(page.url(),inn,expectedName,null);
+  const assessment=assessSabyCardEvidence(url,inn,expectedName,evidence);
+  if(assessment.ok&&evidence?.scopedMarkup===true)assessment.proof="scoped_markup";
+  return assessment;
 }
 
 export function safeCardDiagnostic(assessment, extra={}) {

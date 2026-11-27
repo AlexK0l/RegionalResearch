@@ -125,7 +125,9 @@ export function createSabyAdaptiveDelay(base,env={}){
     return stable>=4?floor:base;
   }};
 }
-const KEYS=["visit_ms","saved_card_ms","search_card_ms","search_ms","identity_ms",
+const MARKUP_COUNTERS=["markup_scans","markup_scope_hits","markup_owner_hits",
+  "markup_contacts_hits","markup_financial_hits","markup_fleet_hits","markup_contacts_more"];
+const KEYS=["visit_ms","saved_card_ms","search_card_ms","search_ms","identity_ms","markup_ms",
   "ready_ms","ready_contacts_ms","ready_financials_ms","ready_fleet_ms",
   "contacts_ms","financials_ms","fleet_ms","checkpoint_ms","delay_ms",
   "session_open_ms","session_close_ms","admission_ms"];
@@ -135,6 +137,7 @@ export function restoreSabyTiming(raw){
     saved_card_hits:count(raw?.saved_card_hits),saved_card_misses:count(raw?.saved_card_misses),
     full_searches:count(raw?.full_searches),quick_finance_filled:count(raw?.quick_finance_filled),
     quick_fleet_completed:count(raw?.quick_fleet_completed),
+    ...Object.fromEntries(MARKUP_COUNTERS.map(k=>[k,count(raw?.[k])])),
     ...Object.fromEntries(KEYS.map(k=>[k,count(raw?.[k])]))};
 }
 export function sabyAddTiming(target,key,ms){
@@ -152,4 +155,6 @@ export function recordSabyVisitTiming(target,record,ms){
   if(t.saved_card==="hit")target.saved_card_hits++;
   if(t.saved_card==="miss")target.saved_card_misses++;
   if(t.full_search===true)target.full_searches++;
+  for(const k of MARKUP_COUNTERS)if(t[k]===1)
+    target[k]=Math.min(Number.MAX_SAFE_INTEGER,count(target[k])+1);
 }

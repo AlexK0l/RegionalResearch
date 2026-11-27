@@ -267,89 +267,93 @@ async function revealLazySabyFinance(page,inspect){
 
 // Re-read only the already-verified card. A bounded in-card scroll is allowed
 // when Saby has not yet mounted the bottom finance section; no new search.
-export async function readSabyFinancials(page,{visibleOnly=false,needsRevenue=true}={}){
-  const inspect=()=>page.evaluate(() => {
-    const text=el=>(el?.textContent||"").replace(/\s+/gu," ").trim();
-    const visible=el=>Boolean(el&&el.isConnected&&el.getClientRects().length);
-    const employees=[...document.querySelectorAll('[data-qa="ContractorCard_Employees"]')]
-      .filter(el=>visible(el)&&/сотрудник/iu.test(
-        text(el.closest?.(".contractor-Employees__hovered")||el.parentElement)))
-      .map(text);
-    const revenueWidgets=[...document.querySelectorAll(
-      '[data-qa="contractorCard-CardRatingBanner__Revenue"]')]
-      .filter(visible).map(text);
-    const banner=revenueWidgets.length===1?revenueWidgets[0]:"";
+// Standalone browser DOM parser, shared by the single-card projection and
+// the original full recovery. Default document preserves existing reads.
+export function scanSabyFinancialDOM(root=document){
+  const text=el=>(el?.textContent||"").replace(/\s+/gu," ").trim();
+  const visible=el=>Boolean(el&&el.isConnected&&el.getClientRects().length);
+  const employees=[...root.querySelectorAll('[data-qa="ContractorCard_Employees"]')]
+    .filter(el=>visible(el)&&/сотрудник/iu.test(
+      text(el.closest?.(".contractor-Employees__hovered")||el.parentElement)))
+    .map(text);
+  const revenueWidgets=[...root.querySelectorAll(
+    '[data-qa="contractorCard-CardRatingBanner__Revenue"]')]
+    .filter(visible).map(text);
+  const banner=revenueWidgets.length===1?revenueWidgets[0]:"";
 
-    // "analytics-finanalysis" can wrap an entire widget; its textContent
-    // then contains labels, years and figures, not only the heading.
-    const financeNodes=[...document.querySelectorAll('[data-qa="analytics-finanalysis"]')];
-    const headings=financeNodes
-      .filter(el=>visible(el)&&/Выручк\p{L}*\s*\/\s*Финанс/iu.test(text(el)));
-    const containers=headings.map(heading=>
-      heading.closest?.(".analytics-FinAnalysis__margin") ||
-      heading.querySelector?.(".analytics-FinAnalysis__margin") ||
-      heading.parentElement?.querySelector?.(".analytics-FinAnalysis__margin") ||
-      (heading.querySelectorAll?.('[data-qa="row"]').length?heading:null)
-    ).filter(Boolean);
-    // The visible heading already anchors this exact financial container;
-    // a container may not itself expose a layout rectangle in Saby.
-    const distinct=[...new Set(containers)];
-    const report=distinct.length===1?distinct[0]:null;
+  // "analytics-finanalysis" can wrap an entire widget; its textContent
+  // then contains labels, years and figures, not only the heading.
+  const financeNodes=[...root.querySelectorAll('[data-qa="analytics-finanalysis"]')];
+  const headings=financeNodes
+    .filter(el=>visible(el)&&/Выручк\p{L}*\s*\/\s*Финанс/iu.test(text(el)));
+  const containers=headings.map(heading=>
+    heading.closest?.(".analytics-FinAnalysis__margin") ||
+    heading.querySelector?.(".analytics-FinAnalysis__margin") ||
+    heading.parentElement?.querySelector?.(".analytics-FinAnalysis__margin") ||
+    (heading.querySelectorAll?.('[data-qa="row"]').length?heading:null)
+  ).filter(Boolean);
+  // The visible heading already anchors this exact financial container;
+  // a container may not itself expose a layout rectangle in Saby.
+  const distinct=[...new Set(containers)];
+  const report=distinct.length===1?distinct[0]:null;
 
-    // Year headers are the only valid year source. A year in a tooltip,
-    // date of registration, footer or unrelated graph must never be used.
-    const headers=report?[...report.querySelectorAll(
-      ".analytics-FinAnalysis__stickerHeader_right")].filter(visible):[];
-    const leaves=headers.filter(header=>
-      !headers.some(other=>other!==header&&header.contains?.(other)));
-    const years=leaves.flatMap(el=>
-      [...text(el).matchAll(/(?<!\d)(?:19|20)\d{2}(?!\d)/gu)].map(m=>m[0]));
-    const reportScale=report?text(report.querySelector?.(
-      ".analytics-FinAnalysis__stickerHeader_left")):"";
+  // Year headers are the only valid year source. A year in a tooltip,
+  // date of registration, footer or unrelated graph must never be used.
+  const headers=report?[...report.querySelectorAll(
+    ".analytics-FinAnalysis__stickerHeader_right")].filter(visible):[];
+  const leaves=headers.filter(header=>
+    !headers.some(other=>other!==header&&header.contains?.(other)));
+  const years=leaves.flatMap(el=>
+    [...text(el).matchAll(/(?<!\d)(?:19|20)\d{2}(?!\d)/gu)].map(m=>m[0]));
+  const reportScale=report?text(report.querySelector?.(
+    ".analytics-FinAnalysis__stickerHeader_left")):"";
 
-    const revenueRows=[];
-    if(report&&years.length){
-      const rows=[...report.querySelectorAll('[data-qa="row"]')];
-      for(const row of rows){
-        // Saby GridReact renders rows with CSS display: contents (tw-contents).
-        // Such rows have zero client rects even when their cells are visible;
-        // requiring visible(row) silently dropped ALL revenue rows.
-        if(!row.isConnected)continue;
-        const cells=[...row.querySelectorAll('[data-qa="cell"]')]
-          .filter(el=>visible(el)&&
-            (!el.closest?.('[data-qa="row"]')||
-              el.closest('[data-qa="row"]')===row))
-          .map(text);
-        if(!cells.length)continue;
-        // One to three descriptor cells precede exactly one value for
-        // each year. Never shift amounts into a different accounting year.
-        const labelCount=cells.length-years.length;
-        if(labelCount<1||labelCount>3)continue;
-        const descriptors=cells.slice(0,labelCount);
-        const label=descriptors.join(" ");
-        const primary=/^От\s+основной\s+деятельности(?:\s|$)/iu.test(label);
-        const line2110=/(?:^|\D)2110(?!\d)/u.test(label);
-        const revenue=/^Выручка(?:\s|$)/iu.test(label)&&
-          !/\/|рост|динамик|процент|изменени/iu.test(label)&&
-          (line2110||labelCount===1);
-        if(primary||revenue)revenueRows.push(cells.slice(labelCount));
-      }
+  const revenueRows=[];
+  if(report&&years.length){
+    const rows=[...report.querySelectorAll('[data-qa="row"]')];
+    for(const row of rows){
+      // Saby GridReact renders rows with CSS display: contents (tw-contents).
+      // Such rows have zero client rects even when their cells are visible;
+      // requiring visible(row) silently dropped ALL revenue rows.
+      if(!row.isConnected)continue;
+      const cells=[...row.querySelectorAll('[data-qa="cell"]')]
+        .filter(el=>visible(el)&&
+          (!el.closest?.('[data-qa="row"]')||
+            el.closest('[data-qa="row"]')===row))
+        .map(text);
+      if(!cells.length)continue;
+      // One to three descriptor cells precede exactly one value for
+      // each year. Never shift amounts into a different accounting year.
+      const labelCount=cells.length-years.length;
+      if(labelCount<1||labelCount>3)continue;
+      const descriptors=cells.slice(0,labelCount);
+      const label=descriptors.join(" ");
+      const primary=/^От\s+основной\s+деятельности(?:\s|$)/iu.test(label);
+      const line2110=/(?:^|\D)2110(?!\d)/u.test(label);
+      const revenue=/^Выручка(?:\s|$)/iu.test(label)&&
+        !/\/|рост|динамик|процент|изменени/iu.test(label)&&
+        (line2110||labelCount===1);
+      if(primary||revenue)revenueRows.push(cells.slice(labelCount));
     }
-    return {employeeTexts:employees,banner,years,reportScale,revenueRows,
-      financeHeadings:headings.length,financeNodes:financeNodes.length,
-      financeItemMounted:document.querySelectorAll(
-        '[data-qa="item"][item-key="finance"]').length>0,
-      dialogRoots:document.querySelectorAll(
-        '[data-qa="contractorCard-dialog-Stack"]').length,
-      profileScrollNodes:document.querySelectorAll(
-        '[data-qa="contractorCard-dialog-Stack"] '+
-        '.controls-SlidingPanel__scrollWrapper > '+
-        '[data-qa="controls-Scroll__content"]').length,
-      dialogScrollNodes:document.querySelectorAll(
-        '[data-qa="contractorCard-dialog-Stack"] '+
-        '[data-qa="controls-Scroll__content"]').length,
-      reportFound:Boolean(report)};
-  });
+  }
+  return {employeeTexts:employees,banner,years,reportScale,revenueRows,
+    financeHeadings:headings.length,financeNodes:financeNodes.length,
+    financeItemMounted:root.querySelectorAll(
+      '[data-qa="item"][item-key="finance"]').length>0,
+    dialogRoots:root.querySelectorAll(
+      '[data-qa="contractorCard-dialog-Stack"]').length,
+    profileScrollNodes:root.querySelectorAll(
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '.controls-SlidingPanel__scrollWrapper > '+
+      '[data-qa="controls-Scroll__content"]').length,
+    dialogScrollNodes:root.querySelectorAll(
+      '[data-qa="contractorCard-dialog-Stack"] '+
+      '[data-qa="controls-Scroll__content"]').length,
+    reportFound:Boolean(report)};
+}
+
+export async function readSabyFinancials(page,{visibleOnly=false,needsRevenue=true}={}){
+  const inspect=()=>page.evaluate(scanSabyFinancialDOM);
 
   let snapshot=await inspect();
   let result=parseSabyFinancialSnapshot(snapshot);

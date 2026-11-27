@@ -56,6 +56,7 @@ import {
 import {recoverSabyFleetHeading} from "./sabyFleetReadiness.js";
 import {createSabyCardReadiness} from "./sabyCardReadiness.js";
 import {collectSabyVehicleInventory} from "./sabyVehicleSummary.js";
+import {readSabyMarkupSnapshot} from "./sabyMarkupSnapshot.js";
 
 // Typed review classification prevents a missing or ambiguous individual
 // contractor from tripping the circuit breaker for a site-wide failure.
@@ -121,6 +122,9 @@ export function sabyBrowserSettings(env = process.env) {
     // Only the full-card strategy shares passive widget hydration time.
     // Explicit false restores independent legacy section waits.
     sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
+    // A single scoped DOM projection; disable for a matched fallback
+    // comparison without changing the durable full-card cursor.
+    markupFastPath:String(env.SABY_MARKUP_FAST_PATH_ENABLED??"true").toLowerCase()!=="false",
     // First enabled in explicitly selected smoke tests. Production still
     // rejects abbreviated aliases unless this opt-in is set.
     publicIdentityFallback: String(env.SABY_PUBLIC_IDENTITY_FALLBACK_ENABLED||"false").toLowerCase()==="true",
@@ -302,7 +306,8 @@ async function openCompany(page, row, settings, timing=null) {
     card_scan_ms:0,card_scans:0,alias_ms:0,post_route_ms:0,
     card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
-    catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0};
+    catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
+    scoped_owner_hits:0};
   const addTiming=(key,value)=>{
     if(Object.hasOwn(components,key)&&Number.isFinite(value)&&value>=0)
       components[key]+=value;
@@ -624,10 +629,16 @@ async function openCompany(page, row, settings, timing=null) {
   while(Date.now()<cardUntil) {
     try {
       components.card_scans++;
-      const outcome=await measure("card_scan_ms",()=>verifySabyCard(page,inn,name));
+      const outcome=await measure("card_scan_ms",()=>verifySabyCard(page,inn,name,{
+        markupFirst:settings.markupFastPath!==false
+      }));
       last=outcome;
       if(outcome.ok) {
-        console.info("[SABY_CARD] identity_verified");
+        if(outcome.proof==="scoped_markup"){
+          components.scoped_owner_hits++;
+          if(timing)timing.markup_owner_hits=1;
+        }
+        console.info("[SABY_CARD] "+(outcome.proof==="scoped_markup"?"identity_verified_markup":"identity_verified"));
         if(settings.reuseCatalogHistory===true&&publicFallback)
           rememberSabyCatalogOrigin(page,listingUrl,page.url());
         return {inn,name:outcome.verifiedName,verified:true};
@@ -1527,7 +1538,25 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     timeoutMs:Math.min(7000,settings.timeoutMs||45000),
     sameCard,readVisible:kind=>readFullCardWidgetVisible(page,kind)
   }):null;
+  // Snapshot once before section interactions. The shared hydration
+  // deadline includes this read; an incomplete snapshot never shortens
+  // the original active section recovery or consumes another visit.
+  let markup=null;
+  if(fullCard&&settings.markupFastPath!==false&&sameCard()){
+    timing.markup_scans=1;
+    try{markup=await timed("markup_ms",()=>readSabyMarkupSnapshot(page,{
+      row,identity,originalUrl:verifiedRoute,sections,allVehicles
+    }));}catch{/* Unrecognized layout: run the unchanged collectors. */}
+    if(markup){
+      timing.markup_scope_hits=1;
+      if(markup.moreContacts)timing.markup_contacts_more=1;
+    }
+  }
   const ready=async(requested)=>{
+    if(markup&&sameCard()&&(
+      requested?.contacts&&markup.contacts||
+      requested?.financials&&markup.financials||
+      requested?.trucks&&markup.fleet))return;
     if(readiness){
       if(!sameCard())return;
       const kind=requested.contacts?"contacts":requested.trucks?"fleet":"financials";
@@ -1569,11 +1598,23 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       result[key]=value;
     }catch{result.errors.push(key+": unavailable");}
   };
-  const contactRead=()=>read("contacts",()=>ownContacts(page));
-  const financeRead=()=>read("financials",()=>readSabyFinancials(page,{
-    visibleOnly:quick,
-    needsRevenue:!optimized||sabyFinancialGaps(row).revenue
-  }));
+  const contactRead=()=>read("contacts",()=>{
+    if(markup?.contacts){
+      timing.markup_contacts_hits=1;
+      return markup.contacts;
+    }
+    return ownContacts(page);
+  });
+  const financeRead=()=>read("financials",()=>{
+    if(markup?.financials){
+      timing.markup_financial_hits=1;
+      return markup.financials;
+    }
+    return readSabyFinancials(page,{
+      visibleOnly:quick,
+      needsRevenue:!optimized||sabyFinancialGaps(row).revenue
+    });
+  });
   // New production contact visits read contacts FIRST, then only visible
   // finance/fleet. The old collector still uses its original full order.
   const finish=()=>{
@@ -1591,6 +1632,20 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   if(!sections||sections.financials)await financeRead();
   if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return finish();
+  if(fullCard&&allVehicles&&markup?.fleet&&sameCard()&&
+     compareSabyVerifiedFleetDetail(verifiedRoute,page.url()).ok){
+    // All rows and the independent total already reconciled. No Escape,
+    // heading wait, scroll, or drawer is needed for this complete fleet.
+    detailAttempts.trucks=true;
+    timing.markup_fleet_hits=1;
+    result.vehicle_fleet=markup.fleet;
+    if(markup.trucks)result.trucks=markup.trucks;
+    console.info("[SABY_ALL_VEHICLE_OUTCOME] "+JSON.stringify({
+      status:"verified",count:markup.fleet.count,groups:markup.fleet.groups.length,
+      announced_count:null,partial_groups:0,partial_vehicles:0,markup:true
+    }));
+    return finish();
+  }
   if(fullCard&&!sharedReadiness&&(sections.contacts||sections.financials))await ready({trucks:true});
   if(quick){
     if(allVehicles){
@@ -1773,9 +1828,9 @@ async function openSavedSabyFinanceCard(page,row,settings){
         break;
       }
       try{
-        const assessment=await verifySabyCard(page,inn,name);
+        const assessment=await verifySabyCard(page,inn,name,{markupFirst:settings.markupFastPath!==false});
         if(assessment.ok&&assessment.detail?.hasScopedInn&&sameSabyDetailId(url,page.url())){
-          console.info("[SABY_FINANCE_SAVED_CARD] verified");
+          console.info("[SABY_FINANCE_SAVED_CARD] "+(assessment.proof==="scoped_markup"?"verified_markup":"verified"));
           return {inn,name:assessment.verifiedName,verified:true};
         }
         // Only allowlisted classification; never emit raw names or page DOM.
