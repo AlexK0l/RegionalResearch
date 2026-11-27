@@ -12,7 +12,8 @@ import {observeSabySearchTransport,shouldRecoverSilentSabySearch,
   trackSabySessionSockets,hasSabySessionSocketTracker}
   from "./sabySearchTransport.js";
 import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
-  forgetSabyCatalogOrigin} from "./sabyCatalogNavigation.js";
+  forgetSabyCatalogOrigin,noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
+import {createSabyVisitPublicVerifier} from "./sabyPublicRegisteredIdentity.js";
 import {readSabySearchState,classifySabySearchZeroState,
   isUnconfirmedSabyZeroResult} from "./sabySearchState.js";
 import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
@@ -116,9 +117,10 @@ export function sabyBrowserSettings(env = process.env) {
     channel: String(env.SABY_BROWSER_CHANNEL || "").trim(),
     timeoutMs: bound(env.SABY_COMPANY_TIMEOUT_MS, 15000, 90000, 45000),
     delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500),
-    // Experimental: never assume a history return retains a usable list.
-    // Off until measured on the real site with matching identity coverage.
-    reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED||"false").toLowerCase()==="true",
+    // Full production pass can reuse the observed catalog history.
+    // Explicit false opts out; diagnostics/smoke keep their old default.
+    reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED??
+      (env.SABY_SMOKE_ONLY!=="true"&&String(env.SABY_FULL_CARD_PASS_ENABLED||"").toLowerCase()==="true"?"true":"false")).toLowerCase()==="true",
     // Only the full-card strategy shares passive widget hydration time.
     // Explicit false restores independent legacy section waits.
     sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
@@ -307,7 +309,10 @@ async function openCompany(page, row, settings, timing=null) {
     card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
     catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
-    scoped_owner_hits:0};
+    scoped_owner_hits:0,public_rejection_reused:0};
+  const verifyPublic=createSabyVisitPublicVerifier(undefined,()=>{
+    components.public_rejection_reused=1;
+  });
   const addTiming=(key,value)=>{
     if(Object.hasOwn(components,key)&&Number.isFinite(value)&&value>=0)
       components[key]+=value;
@@ -353,7 +358,7 @@ async function openCompany(page, row, settings, timing=null) {
   const settleSearch=async()=>{
     if(!publicFallback)return;
     const probe=()=>waitForSabySearchHydration(page,{
-      isListRoute,timeoutMs:Math.min(8000,settings.timeoutMs),
+      isListRoute,timeoutMs:Math.min(catalog.historyHit?2000:8000,settings.timeoutMs),
       deferReacquireToSubmission:true,onTiming:addTiming
     });
     let state=await probe();
@@ -363,6 +368,8 @@ async function openCompany(page, row, settings, timing=null) {
       transport?.stop();
       transport=observeSabySearchTransport(page,inn,{armed:false});
       components.catalog_history_fallback=1;
+      components.catalog_history_hit=0;
+      noteSabyCatalogColdFallback(page);
       catalog={historyAttempted:true,historyHit:false};
       await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
       if(!isListRoute()||!isSabyProfileUrl(page.url()))
@@ -392,6 +399,26 @@ async function openCompany(page, row, settings, timing=null) {
   // Sample AFTER hydration and BEFORE entering the exact INN.
   let beforeSearch=publicFallback?
     await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null)):null;
+  // Before submitting on a warm catalog, reject an already-entered INN
+  // or pre-existing candidate for that INN. Cold fallback sends no
+  // duplicate query and keeps all normal result/identity checks.
+  if(catalog.historyHit){
+    let stale=true;
+    try{
+      stale=!beforeSearch||beforeSearch.inputExact||
+        (await findResultRows(page,inn,{includeInnOnly:true,includeBranches:true})).length>0;
+    }catch{}
+    if(stale){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_fallback=1;components.catalog_history_hit=0;
+      transport?.stop();
+      transport=observeSabySearchTransport(page,inn,{armed:false});
+      catalog={historyAttempted:true,historyHit:false};
+      await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
+      readiness=await measure("hydration_ms",()=>settleSearch());
+      beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
+    }
+  }
   transport?.arm();
   const submitted=await measure("submit_ms",submitSearch);
   if(!submitted.ok){
@@ -474,6 +501,10 @@ async function openCompany(page, row, settings, timing=null) {
       // still-hydrating input that had no event handler. A SINGLE reload
       // and re-submit is permitted; never repeat a dispatched query.
       transportRecoveryUsed=true;
+      if(catalog.historyHit){
+        noteSabyCatalogColdFallback(page);
+        components.catalog_history_hit=0;components.catalog_history_fallback=1;
+      }
       console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
         state:"exact_inn_transport_not_observed",
         action:"reload_and_submit_once",
@@ -661,7 +692,7 @@ async function openCompany(page, row, settings, timing=null) {
       publicFallbackAttempted=true;
       const checked=await measure("alias_ms",()=>verifySabyPublicNameFallback(
         page,inn,name,last,{
-          selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+          selectedSearchTitle:auditSearchName(rows[0]?.text,inn),verifyPublic
         }));
       publicFallbackFailureReason=String(checked?.reason||"");
       publicFallbackRejection=checked;
@@ -675,7 +706,8 @@ async function openCompany(page, row, settings, timing=null) {
       // new private route already had its stable independently verified
       // owner. Only the EXISTING strict proof can finish early.
       const early=await measure("post_route_ms",()=>tryEarlySabyPostRouteProof(page,inn,name,{
-        priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+        priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn),
+        verifyPostRoute:(p,i,n,a,opts)=>verifySabyPostRouteOwnerIdentity(p,i,n,a,{...opts,verifyPublic})
       }));
       if(early){
         console.info("[SABY_POST_ROUTE_EARLY_DIAG] "+
@@ -726,7 +758,7 @@ async function openCompany(page, row, settings, timing=null) {
     const inspected=await measure("post_route_ms",()=>verifySabyPostRouteOwnerIdentity(
       page,inn,name,last,{
         priorFailure:publicFallbackRejection,
-        selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+        selectedSearchTitle:auditSearchName(rows[0]?.text,inn),verifyPublic
       }));
     console.info("[SABY_POST_ROUTE_DIAG] "+
       JSON.stringify(safeSabyPostRouteDiagnostic(inspected)));
@@ -746,6 +778,8 @@ async function openCompany(page, row, settings, timing=null) {
     {scope:"company",code:reviewCode});
   }finally{
     transport?.stop();
+    if(timing)for(const key of ["catalog_history_attempted","catalog_history_hit","catalog_history_fallback",
+      "public_rejection_reused"])timing[key]=components[key];
     console.info("[SABY_SEARCH_COMPONENT_TIMING] "+JSON.stringify({
       ...components,total_ms:Math.round(performance.now()-searchStarted)
     }));
@@ -1798,16 +1832,7 @@ export function savedSabyFinanceCardUrl(row){
   if(!inn||sabyInn(saved?.inn)!==inn||
      !String(row?.["Организация"]||"").trim()||
      !String(saved?.verified_at||"").trim())return null;
-  try{
-    const target=new URL(String(saved.source_url||""));
-    const id=String(target.searchParams.get("id")||"");
-    if(target.protocol!=="https:"||target.hostname!=="profile.saby.ru"||
-       target.username||target.password||target.port||
-       target.pathname!=="/page/contractor-info"||target.searchParams.getAll("id").length!==1||
-       !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
-      return null;
-    return target.href;
-  }catch{return null;}
+  return safeSabyNavigationUrl(saved.source_url);
 }
 
 async function openSavedSabyFinanceCard(page,row,settings){

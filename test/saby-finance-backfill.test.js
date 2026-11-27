@@ -694,6 +694,15 @@ test("saved Saby finance card is a strict navigation hint, not accepted identity
   allowed.__evidence.saby.source_url=approved;
   allowed.__evidence.saby.verified_at="2026-11-20T08:50:02.150Z";
   assert.equal(savedSabyFinanceCardUrl(allowed),approved);
+  const {safeSabyNavigationUrl,rememberSabyNavigationHint,storedSabyNavigationHint}=await import("../src/sabyVisitPolicy.js");
+  assert.equal(safeSabyNavigationUrl(approved),approved);
+  assert.equal(safeSabyNavigationUrl(approved.replace("local=false","local=true")),null);
+  assert.equal(safeSabyNavigationUrl(approved+"&local=false"),null);
+  const hinted=structuredClone(allowed);
+  assert.equal(rememberSabyNavigationHint(hinted,{source_url:approved,verified_navigation_url:approved,
+    identity:{inn:hinted["ИНН"],name:hinted["Организация"],verified:true},
+    collected_at:"2026-11-27T13:00:00Z"}),true);
+  assert.equal(storedSabyNavigationHint(hinted),approved);
   const wrongInn=structuredClone(allowed);
   wrongInn.__evidence.saby.inn="4718000936";
   assert.equal(savedSabyFinanceCardUrl(wrongInn),null);

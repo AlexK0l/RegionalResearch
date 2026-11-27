@@ -435,3 +435,21 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
     if(tab)await tab.close().catch(()=>{});
   }
 }
+
+/** One visit only. Reuse an independently proven hard SOURCE mismatch for
+ * the same INN/KPP/name. Positive proof, unavailable UI, title mismatch,
+ * or missing requisites must still be freshly checked; no durable cache. */
+export function createSabyVisitPublicVerifier(verify=verifyPublicSabyIdentity,onReuse=()=>{}){
+  const rejected=new Map();
+  return async(page,inn,kpp,name)=>{
+    const key=JSON.stringify([inn,kpp,name]);
+    if(rejected.has(key)){onReuse();return rejected.get(key);}
+    const result=await verify(page,inn,kpp,name);
+    if(result?.status==="review"&&result.official_inn===inn&&result.official_kpp===kpp&&
+      result.diagnostic?.independent_bridge_attempted===true&&
+      result.diagnostic?.independent_bridge_verified===false&&
+      result.diagnostic?.independent_bridge_reason==="independent_registered_name_mismatch")
+      rejected.set(key,result);
+    return result;
+  };
+}
