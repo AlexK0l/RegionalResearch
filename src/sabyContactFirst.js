@@ -4,6 +4,7 @@
 import {setTimeout as sleep} from "node:timers/promises";
 import {parsePhoneEntries} from "./phoneExport.js";
 import {contactResearchPriority} from "./researchCostPolicy.js";
+import {acceptedLegalStatusProof} from "./qualificationSafety.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
 import {applySabyEnrichment,sabyEligibleRows,sabyInn,
   sabyWorkGaps,sabyHasWork,sabyFleetCoverage,reconcileStoredSabyPhones,
@@ -65,7 +66,7 @@ function phoneOwnersForResult(result){
   }
   return map;
 }
-function safeState(raw,entries,limit,env,fleetScope,gaps){
+function safeState(raw,entries,limit,env,fleetScope,gaps,ceased){
   const strategy=sabyVisitStrategy(env,raw);
   const full=strategy===SABY_FULL_CARD_STRATEGY;
   const all=new Set(entries.map(e=>sabyInn(e.row["ИНН"])));
@@ -108,11 +109,11 @@ function safeState(raw,entries,limit,env,fleetScope,gaps){
       phase_index:migrating?0:Math.max(0,Math.min(phases.length,Math.trunc(Number(raw.phase_index)||0))),
       stats:Object.fromEntries(counters.map(k=>[k,Math.max(0,Number(raw.stats?.[k])||0)]))};
   }
-  const pending=entries.filter(e=>any(gaps.get(e)));
+  const pending=entries.filter(e=>!ceased.has(e)&&any(gaps.get(e)));
   return {version:1,strategy,fleet_scope:fleetScope,timing:restoreSabyTiming(),planned_inns:(limit?pending.slice(0,limit):pending).map(e=>sabyInn(e.row["ИНН"])),
     attempted:[],verified_inns:[],combined_detail_attempts:{},
     ...(full?{full_card_attempts:{}}:{}),
-    initially_complete:entries.length-pending.length,phase_index:0,stats:emptyStats()};
+    initially_complete:entries.length-ceased.size-pending.length,phase_index:0,stats:emptyStats()};
 }
 export async function runSabyContactFirst({
   result,passState=null,env=process.env,signal=null,
@@ -147,7 +148,12 @@ export async function runSabyContactFirst({
   const allVehicleCategories=fleetCategories===SABY_ALL_VEHICLE_CATEGORIES;
   const workGaps=entry=>sabyWorkGaps(entry,{allVehicleCategories});
   const gaps=new Map(entries.map(entry=>[entry,workGaps(entry)]));
-  const state=safeState(passState,entries,settings.maxCompanies,env,fleetScope,gaps);
+  // Existing official, entity-specific cessation proof is already
+  // accepted by final commercial QA. Do not spend Saby visits on it.
+  // No-result searches, status hints and third-party snippets are NOT
+  // sufficient. Keep the row and its evidence for the existing final QA.
+  const ceased=new Set(entries.filter(entry=>acceptedLegalStatusProof(entry.row)));
+  const state=safeState(passState,entries,settings.maxCompanies,env,fleetScope,gaps,ceased);
   state.fleet_categories=fleetCategories;
   const fullCard=state.strategy===SABY_FULL_CARD_STRATEGY;
   const PHASES=sabyPassPhases(state);
@@ -158,6 +164,7 @@ export async function runSabyContactFirst({
   const optimized=state.strategy===SABY_FAST_STRATEGY||combineRetry;
   const pacing=createSabyAdaptiveDelay(settings.delayMs,env);
   const needs=(entry,phase)=>{
+    if(ceased.has(entry))return {contacts:false,financials:false,trucks:false};
     const id=sabyInn(entry.row["ИНН"]);
     const sections=fullCard?fullCardNeeds(gaps.get(entry),phase,fullCounts.get(id)):
       sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
@@ -177,9 +184,11 @@ export async function runSabyContactFirst({
     combined_detail_attempts:{...state.combined_detail_attempts},
     ...(fullCard?{full_card_attempts:{...state.full_card_attempts}}:{})});
   const snapshot=()=>{
-    const deferred=[],done=[];
+    const deferred=[],done=[],skipped=[];
     for(const entry of entries){
-      (any(gaps.get(entry))?deferred:done).push(sabyInn(entry.row["ИНН"]));
+      const inn=sabyInn(entry.row["ИНН"]);
+      if(ceased.has(entry)){skipped.push(inn);continue;}
+      (any(gaps.get(entry))?deferred:done).push(inn);
     }
     const visited=new Set([...attempted].map(key=>key.split(":")[1]));
     const phase=PHASES[state.phase_index]||"completed";
@@ -193,6 +202,7 @@ export async function runSabyContactFirst({
         passProcessed:phaseDone,passTotal:phaseTotal,passIndex:Math.min(state.phase_index+1,PHASES.length),passCount:PHASES.length,
         maxDurationMs:null,unlimited:true,deadlineReached:false,fullSweepCompleted,unscheduled,
         previouslyCompleted:state.initially_complete,deferred:settings.enabled?deferred.length:0,
+        skippedLegalCessation:skipped.length,
         circuitOpen,browserError,browserRestarts:restarts,maxBrowserRestarts:maxRestarts,
         browserRotations:rotations,browserSessionTaskLimit:sessionLimit,
         visitStrategy:state.strategy,fleetScope:state.fleet_scope,
@@ -203,6 +213,7 @@ export async function runSabyContactFirst({
         fleetCoverage:sabyFleetCoverage(result,all,gaps),
         phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
+      skippedLegalCessationInns:skipped,
       attemptedInns:[...visited].filter(id=>deferred.includes(id)),
       passState:stateSnapshot()
     };
@@ -211,7 +222,9 @@ export async function runSabyContactFirst({
     const out=snapshot(),start=performance.now();
     await persistCheckpoint("saby",{completed_stage:9,stage11_completed:true,final_result:result,
       saby_completed_inns:out.completedInns,saby_deferred_inns:out.deferredInns,
-      saby_attempted_inns:out.attemptedInns,saby_pass_state:out.passState,saby_stats:out.stats});
+      saby_attempted_inns:out.attemptedInns,
+      saby_skipped_legal_cessation_inns:out.skippedLegalCessationInns,
+      saby_pass_state:out.passState,saby_stats:out.stats});
     sabyAddTiming(state.timing,"checkpoint_ms",performance.now()-start);
     return out;
   };
@@ -234,9 +247,25 @@ export async function runSabyContactFirst({
     let visits=0;
     for(;state.phase_index<PHASES.length;){
       const phase=PHASES[state.phase_index];
+      const visitedBefore=new Set([...attempted].map(key=>key.split(":")[1]));
       const tasks=planned.filter(e=>any(needs(e,phase))&&
         !attempted.has(phase+":"+sabyInn(e.row["ИНН"])))
-        .sort((a,b)=>contactResearchPriority(b.row)-contactResearchPriority(a.row));
+        .sort((a,b)=>{
+          // In a migrated full pass, repeatedly failed companies from
+          // old contact passes must not exhaust the first-phone cohort
+          // before genuinely new companies have a chance. Keep missing
+          // phones ahead of known phones, then fresh before historical
+          // repeats within the same cohort. All frozen attempts survive.
+          if(fullCard&&phase==="full"){
+            const hasPhone=e=>parsePhoneEntries(e.row["Телефон"]).length>0;
+            const phoneOrder=Number(hasPhone(a))-Number(hasPhone(b));
+            if(phoneOrder)return phoneOrder;
+            const freshOrder=Number(visitedBefore.has(sabyInn(a.row["ИНН"])))-
+              Number(visitedBefore.has(sabyInn(b.row["ИНН"])));
+            if(freshOrder)return freshOrder;
+          }
+          return contactResearchPriority(b.row)-contactResearchPriority(a.row);
+        });
       phaseDone=[...attempted].filter(key=>key.startsWith(phase+":")).length;
       phaseTotal=phaseDone+tasks.length;
       log("SABY_SECTION_PLAN",{phase,scheduled:phaseTotal,visited:phaseDone});

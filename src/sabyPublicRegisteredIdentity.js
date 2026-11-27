@@ -398,6 +398,8 @@ export async function verifyPublicSabyIdentity(page,inn,kpp,sourceName,{
               reason:"independent_registry_alias_verified",
               match_type:"independent_registry_full_short_bridge",
               official_name:proof.official_full_name,
+              ...(typeof proof.official_short_name==="string"&&proof.official_short_name?
+                {official_short_name:proof.official_short_name}:{}),
               diagnostic
             };
           }
