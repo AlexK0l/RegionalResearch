@@ -7,12 +7,15 @@ import { validSabyFinancialEvidence } from "./sabyFinancials.js";
 import {verifiedSabyVehicleFleet,verifiedSabyVehiclePartial,mergeSabyVehiclePartial,
   sabyVehicleSnapshotAgrees} from "./sabyVehicleInventory.js";
 
-const LEGAL_WORDS = new Set([
+// Shared immutable name normalization vocabulary for the exact scoped
+// markup proof. The old name comparison uses the identical word set.
+export const SABY_LEGAL_NAME_WORDS = Object.freeze([
   "ооо", "ао", "пао", "оао", "зао", "ип", "общество", "с",
   "ограниченной", "ответственностью", "акционерное",
   "публичное", "открытое", "закрытое", "индивидуальный",
   "предприниматель"
 ]);
+const LEGAL_WORDS=new Set(SABY_LEGAL_NAME_WORDS);
 
 export function sabyInn(value) {
   const inn = String(value ?? "").trim();

@@ -4,7 +4,7 @@ import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
 import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
 import {readSabyFleetTree,collectSabyFleetTree} from "./sabyFleetTree.js";
 import {recoverSabyVehicleNavigation} from "./sabyVehicleNavigation.js";
-export function scanSabyVehicleSummaryDOM(){
+export function scanSabyVehicleSummaryDOM(root=document){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
   const visible=e=>{
     if(!e?.getBoundingClientRect)return false;
@@ -27,22 +27,22 @@ export function scanSabyVehicleSummaryDOM(){
   const navTitleSelector='.contractor-Dialog-Accordion__title';
   const totalSelector='.contractor-Dialog-Accordion__counter .controls-DecoratorNumber';
   const listSelector='[data-qa="items-container"].controls-TileView';
-  const widget=one(document,widgetSelector);
-  if(!widget)return failure("missing","widget_not_unique",document,widgetSelector);
+  const widget=one(root,widgetSelector);
+  if(!widget)return failure("missing","widget_not_unique",root,widgetSelector);
   const header=one(widget,headerSelector);
   if(!header)return failure("missing","widget_header_not_unique",widget,headerSelector);
   if(clean(header.textContent)!=="Автопарк компании")return failure("missing","widget_heading_mismatch");
   // VPS has the same exact visible accordion title in a generic row,
   // without the transport-specific row markers. Keep the unique title
   // and independent total proof; do not rely on the virtual row geometry.
-  const precise=[...document.querySelectorAll(navSelector)].filter(visible);
+  const precise=[...root.querySelectorAll(navSelector)].filter(visible);
   const generic='[data-qa="row"] [data-qa="cell"] .contractor-Dialog-Accordion__item';
-  const matches=[...document.querySelectorAll(generic)].filter(e=>visible(e)&&
+  const matches=[...root.querySelectorAll(generic)].filter(e=>visible(e)&&
     [...e.querySelectorAll(navTitleSelector)].some(h=>visible(h)&&clean(h.textContent)==="Автопарк компании"));
   if(precise.length>1||matches.length>1||(precise.length===1&&matches.length===1&&precise[0]!==matches[0]))
-    return failure("review","navigation_not_unique",document,generic);
+    return failure("review","navigation_not_unique",root,generic);
   const nav=precise[0]||matches[0];
-  if(!nav)return failure("review","navigation_not_unique",document,generic);
+  if(!nav)return failure("review","navigation_not_unique",root,generic);
   const navTitle=one(nav,navTitleSelector);
   if(!navTitle)return failure("review","navigation_title_not_unique",nav,navTitleSelector);
   if(clean(navTitle.textContent)!=="Автопарк компании")return failure("review","navigation_heading_mismatch");
