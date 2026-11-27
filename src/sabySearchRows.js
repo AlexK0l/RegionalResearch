@@ -34,6 +34,12 @@ export function scanSabyLegacyDOM({inn,branchSource}) {
   // either its digits or the non-digit boundaries. Avoid normalizing
   // entire unrelated subtrees on every 450ms polling iteration.
   const digitToken=/^(?:\d{10}|\d{12})$/.test(inn);
+  // Every descendant's textContent is a substring of the body's
+  // textContent. No token substring means no matching descendant.
+  // Never use an exact-boundary test here: adjacent text nodes could
+  // alter boundaries. Keep the original scan whenever a token exists.
+  const bodyText=digitToken?document.body?.textContent:null;
+  if(typeof bodyText==="string"&&!bodyText.includes(inn))return [];
   const matched=new WeakMap();
   const hasInn=element=>{
     if(matched.has(element))return matched.get(element);
@@ -105,6 +111,9 @@ export function scanSabyResultDOM({
   // either its digits or the non-digit boundaries. Avoid normalizing
   // entire unrelated subtrees on every 450ms polling iteration.
   const digitToken=/^(?:\d{10}|\d{12})$/.test(inn);
+  const bodyText=digitToken?document.body?.textContent:null;
+  if(typeof bodyText==="string"&&!bodyText.includes(inn))
+    return {rows:[],leafHits:0,rawCapped:false};
   const matched=new WeakMap();
   const hasInn=element=>{
     if(matched.has(element))return matched.get(element);
@@ -191,10 +200,10 @@ export function consolidateSabyResultRows(input,inn,{maxRows=120}={}) {
   const raw=Array.isArray(input)?input:
     Array.isArray(input?.rows)?input.rows:[];
   const merged=[];
+  const exactInn=new RegExp("(?:^|\\D)"+String(inn||"")+"(?!\\d)");
   let rejectedFragments=0,geometryDuplicates=0;
   for(const item of raw) {
-    if(!new RegExp("(?:^|\\D)"+String(inn||"")+"(?!\\d)")
-      .test(String(item?.text||"")) ||
+    if(!exactInn.test(String(item?.text||"")) ||
       !plausibleSabySearchName(item?.text,inn)) {
       rejectedFragments++;
       continue;

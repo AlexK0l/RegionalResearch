@@ -3,6 +3,7 @@
 import {sabyCardRoute} from "./sabyCard.js";
 import {safeSabyNavigationUrl} from "./sabyVisitPolicy.js";
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
+import {readSabySearchState} from "./sabySearchState.js";
 
 export const SABY_CATALOG_URL="https://profile.saby.ru/page/company-list-prof";
 const origins=new WeakMap(),misses=new WeakMap();
@@ -36,14 +37,65 @@ export function rememberSabyEmptyCatalog(page){
   origins.set(page,{listing,empty:true});
   return true;
 }
+// A completed query can leave the authenticated catalog mounted even
+// when no unique result was found. This is a navigation optimization,
+// NOT evidence that the previous company does not exist. Reuse only
+// the same document, exact old query, stable flags and idle transport.
+const validInn=inn=>/^(?:\d{10}|\d{12})$/.test(inn||"");
+async function documentStamp(page){
+  try{
+    const stamp=await page.evaluate(()=>performance.timeOrigin);
+    return Number.isFinite(stamp)&&stamp>0?stamp:null;
+  }catch{return null;}
+}
+export async function rememberSabySettledCatalog(page,{
+  inn,observed,selection,beforeSearch,first,last,isSettled=()=>false
+}={}){
+  const listing=listUrl(page.url());
+  if(!listing||!validInn(inn)||selection!=="not_found"||observed!==0||
+     beforeSearch?.inputExact!==false||beforeSearch?.serviceError!==false||
+     ![first,last].every(s=>s?.inputExact===true&&s.serviceError===false&&
+       typeof s.explicitEmpty==="boolean"&&typeof s.spinnerVisible==="boolean")||
+     first.explicitEmpty!==last.explicitEmpty||
+     first.spinnerVisible!==last.spinnerVisible||
+     (last.spinnerVisible&&beforeSearch.spinnerVisible!==true))return false;
+  try{
+    if(isSettled()!==true)return false;
+    const stamp=await documentStamp(page);
+    if(stamp===null||page.url()!==listing||isSettled()!==true)return false;
+    origins.set(page,{listing,settled:true,previousInn:inn,stamp,
+      empty:last.explicitEmpty,busy:last.spinnerVisible});
+    return true;
+  }catch{return false;}
+}
 export function forgetSabyCatalogOrigin(page){origins.delete(page);}
 export function noteSabyCatalogColdFallback(page){
   misses.set(page,Math.min(MAX_MISSES,(misses.get(page)||0)+1));
 }
-export async function openSabyCatalog(page,{reuse=false,timeoutMs=45000}={}){
+export async function openSabyCatalog(page,{
+  reuse=false,timeoutMs=45000,inn,readSearchState=readSabySearchState
+}={}){
   const prior=origins.get(page);
   origins.delete(page);
   const permitted=reuse===true&&(misses.get(page)||0)<MAX_MISSES;
+  if(permitted&&prior?.settled){
+    // Consume this one-use observation before ANY new submission.
+    // A changed document, repeated INN, or changed UI goes cold.
+    try{
+      if(validInn(inn)&&inn!==prior.previousInn&&page.url()===prior.listing&&
+         await documentStamp(page)===prior.stamp){
+        const state=await readSearchState(page,prior.previousInn);
+        if(state?.inputExact===true&&state.serviceError===false&&
+           state.explicitEmpty===prior.empty&&state.spinnerVisible===prior.busy&&
+           await documentStamp(page)===prior.stamp&&page.url()===prior.listing)
+          return {historyAttempted:true,historyHit:true,mountedAttempted:true,
+            mountedReuse:true,mountedPreviousInn:prior.previousInn};
+      }
+    }catch{/* Cold fallback before sending any new query. */}
+    noteSabyCatalogColdFallback(page);
+    await page.goto(SABY_CATALOG_URL,{waitUntil:"commit",timeout:timeoutMs});
+    return {historyAttempted:true,historyHit:false,mountedAttempted:true};
+  }
   if(permitted&&prior?.empty&&page.url()===prior.listing)
     return {historyAttempted:true,historyHit:true};
   const canReuse=permitted&&prior?.detail&&sameHistoryCard(prior.detail,page.url())&&

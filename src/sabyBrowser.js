@@ -12,7 +12,8 @@ import {observeSabySearchTransport,shouldRecoverSilentSabySearch,
   trackSabySessionSockets,hasSabySessionSocketTracker}
   from "./sabySearchTransport.js";
 import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
-  forgetSabyCatalogOrigin,rememberSabyEmptyCatalog,noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
+  forgetSabyCatalogOrigin,rememberSabyEmptyCatalog,rememberSabySettledCatalog,
+  noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
 import {readScopedSabyEmpty,scopedSabyEmptyConfirmed} from "./sabyScopedSearchEmpty.js";
 import {createSabyVisitPublicVerifier} from "./sabyPublicRegisteredIdentity.js";
 import {readSabySearchState,classifySabySearchZeroState,
@@ -317,7 +318,8 @@ async function openCompany(page, row, settings, timing=null) {
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
     catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
     scoped_owner_hits:0,public_rejection_reused:0,scoped_empty_hits:0,
-    catalog_history_unresolved:0};
+    catalog_history_unresolved:0,catalog_mounted_attempted:0,catalog_mounted_hit:0,
+    catalog_mounted_remembered:0,mounted_field_proof_ms:0};
   const verifyPublic=createSabyVisitPublicVerifier(undefined,()=>{
     components.public_rejection_reused=1;
   });
@@ -343,8 +345,10 @@ async function openCompany(page, row, settings, timing=null) {
   // This avoids a 45s DOMContentLoaded timeout during slow Wasaby hydration.
   let catalog=await measure("catalog_ms",()=>openSabyCatalog(page,{
     reuse:publicFallback&&settings.reuseCatalogHistory===true&&hasSabySessionSocketTracker(page),
-    timeoutMs:settings.timeoutMs
+    timeoutMs:settings.timeoutMs,inn
   }));
+  components.catalog_mounted_attempted=Number(catalog.mountedAttempted===true);
+  components.catalog_mounted_hit=Number(catalog.mountedReuse===true);
   components.catalog_history_attempted=Number(catalog.historyAttempted);
   components.catalog_history_hit=Number(catalog.historyHit);
   if(catalog.historyAttempted&&!catalog.historyHit)components.catalog_history_fallback=1;
@@ -367,7 +371,8 @@ async function openCompany(page, row, settings, timing=null) {
     if(!publicFallback)return;
     const probe=()=>waitForSabySearchHydration(page,{
       isListRoute,timeoutMs:Math.min(catalog.historyHit?2000:8000,settings.timeoutMs),
-      deferReacquireToSubmission:true,onTiming:addTiming
+      deferReacquireToSubmission:true,onTiming:addTiming,
+      mountedPreviousInn:catalog.mountedReuse===true?catalog.mountedPreviousInn:""
     });
     let state=await probe();
     if(!state.ok&&catalog.historyHit){
@@ -376,7 +381,7 @@ async function openCompany(page, row, settings, timing=null) {
       transport?.stop();
       transport=observeSabySearchTransport(page,inn,{armed:false});
       components.catalog_history_fallback=1;
-      components.catalog_history_hit=0;
+      components.catalog_history_hit=0;components.catalog_mounted_hit=0;
       noteSabyCatalogColdFallback(page);
       catalog={historyAttempted:true,historyHit:false};
       await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
@@ -419,6 +424,7 @@ async function openCompany(page, row, settings, timing=null) {
     if(stale){
       noteSabyCatalogColdFallback(page);
       components.catalog_history_fallback=1;components.catalog_history_hit=0;
+      components.catalog_mounted_hit=0;
       transport?.stop();
       transport=observeSabySearchTransport(page,inn,{armed:false});
       catalog={historyAttempted:true,historyHit:false};
@@ -551,6 +557,7 @@ async function openCompany(page, row, settings, timing=null) {
       if(catalog.historyHit){
         noteSabyCatalogColdFallback(page);
         components.catalog_history_hit=0;components.catalog_history_fallback=1;
+        components.catalog_mounted_hit=0;
       }
       console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
         state:"exact_inn_transport_not_observed",
@@ -618,11 +625,21 @@ async function openCompany(page, row, settings, timing=null) {
       console.info("[SABY_SEARCH_LATE_RESULT] "+JSON.stringify({status:"candidate_requires_card_verification"}));
   }
   if(rows.length!==1){
-    // No repeated dispatched query just because the warm list failed.
-    // Preserve the existing later retry, but after a few warm failures
-    // automatically use cold navigation for the rest of this Page.
+    // A dispatched, fully settled but unresolved query can leave the
+    // catalog ready for a DIFFERENT INN. Keep the existing review outcome
+    // and full search window; this is only a one-use navigation hint.
+    const remembered=publicFallback&&settings.reuseCatalogHistory===true&&
+      hasSabySessionSocketTracker(page)&&
+      await rememberSabySettledCatalog(page,{
+        inn,selection,observed:lastSelected?.observed,beforeSearch,
+        first:finalZero?.sampleA,last:finalZero?.sampleB,
+        isSettled:()=>transport?.hasIdleCompletedExactInnQuery()===true
+      });
+    if(remembered)components.catalog_mounted_remembered=1;
+    // Do not repeat a dispatched query. A proven idle mounted list is
+    // not a navigation failure merely because the company is unresolved.
     if(catalog.historyHit){
-      noteSabyCatalogColdFallback(page);
+      if(!remembered)noteSabyCatalogColdFallback(page);
       components.catalog_history_unresolved=1;
     }
     if(publicFallback){

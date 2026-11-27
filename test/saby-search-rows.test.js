@@ -219,3 +219,33 @@ test("large search DOM rejects irrelevant text before geometry and style reads",
     if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
   }
 });
+
+
+test("no exact digit substring in the complete body avoids enumerating ANY descendants",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  let scans=0;
+  try{
+    globalThis.document={body:{textContent:"a large catalog without the requested identifier"},
+      querySelectorAll:()=>{scans++;throw Error("unnecessary scan");}};
+    globalThis.getComputedStyle=()=>assert.fail("unnecessary layout");
+    assert.deepEqual(scanSabyResultDOM({inn,includeInnOnly:true,includeBranches:true,
+      branchSource:SABY_BRANCH_MARKER_SOURCE}),{rows:[],leafHits:0,rawCapped:false});
+    assert.deepEqual(scanSabyLegacyDOM({inn,branchSource:SABY_BRANCH_MARKER_SOURCE}),[]);
+    assert.equal(scans,0);
+    // A substring anywhere, including concatenated adjacent nodes,
+    // retains the existing exact-boundary/geometry/ambiguity scan.
+    const leaf={textContent:inn,innerText:inn,children:[],
+      getBoundingClientRect:()=>({x:20,y:120,width:160,height:20})};
+    const parent={textContent:"Company, ООО "+inn,innerText:"Company, ООО\n"+inn,
+      children:[leaf],getBoundingClientRect:()=>({x:10,y:100,width:400,height:80})};
+    leaf.parentElement=parent;
+    globalThis.document={body:{textContent:"0"+inn+"0"},querySelectorAll:()=>{scans++;return [leaf,parent];}};
+    globalThis.getComputedStyle=()=>({visibility:"visible",display:"block"});
+    assert.equal(scanSabyResultDOM({inn,includeInnOnly:true,includeBranches:true,
+      branchSource:SABY_BRANCH_MARKER_SOURCE}).rows.length,1);
+    assert.equal(scans,1);
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
+});

@@ -297,3 +297,40 @@ test("exact search HTTP completion is not inferred from dispatch, headers or fai
   probe.stop();
   assert.equal(probe.hasSettledExactInnResponse(),false);
 });
+
+
+test("mounted reuse needs successful exact HTTP and idle ALL observed requests; websocket dispatch is insufficient",()=>{
+  const page=new EventEmitter(),probe=observeSabySearchTransport(page,INN);
+  const req=inn=>({url:()=>"https://profile.saby.ru/service",resourceType:()=>"xhr",postData:()=>inn});
+  const a=req(INN),unrelated=req("other");
+  page.emit("request",a);page.emit("request",unrelated);
+  page.emit("response",{request:()=>a,status:()=>200});page.emit("requestfinished",a);
+  assert.equal(probe.hasSettledExactInnResponse(),true);
+  assert.equal(probe.hasIdleCompletedExactInnQuery(),false);
+  page.emit("response",{request:()=>unrelated,status:()=>200});page.emit("requestfinished",unrelated);
+  assert.equal(probe.hasIdleCompletedExactInnQuery(),true);
+  const ws=new EventEmitter();ws.url=()=>"wss://profile.saby.ru/ws";
+  page.emit("websocket",ws);ws.emit("framesent",{payload:INN});
+  assert.equal(probe.hasIdleCompletedExactInnQuery(),false);
+  probe.stop();assert.equal(probe.hasIdleCompletedExactInnQuery(),false);
+});
+test("fresh safe field can skip cold settle only with exact mounted previous input; submission still reacquires",async()=>{
+  for(const matches of [true,false]){
+    let finds=0,waits=0,proofs=0,filled=0;
+    const fresh={fill:async()=>{filled++;},press:async()=>{}};
+    const result=await waitForSabySearchHydration({},{
+      isListRoute:()=>true,mountedPreviousInn:INN,deferReacquireToSubmission:true,
+      findSearch:async()=>{finds++;return {field:{evaluate:async(fn,prior)=>{
+        proofs++;assert.equal(prior,INN);return fn({value:matches?INN:""},prior);
+      }}};},wait:async()=>{waits++;}
+    });
+    assert.equal(result.ok,matches);assert.equal(finds,1);assert.equal(proofs,1);assert.equal(waits,0);
+    if(matches){
+      const submitted=await submitSabyCompanySearch({},"7707083893",{
+        isListRoute:()=>true,firstFindTimeoutMs:result.reacquireTimeoutMs,
+        findSearch:async()=>{finds++;return {field:fresh,method:"search_selector"};}
+      });
+      assert.equal(submitted.ok,true);assert.equal(finds,2);assert.equal(filled,1);
+    }else assert.equal(result.reason,"search_not_stable");
+  }
+});
