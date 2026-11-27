@@ -20,7 +20,8 @@ test("Saby admission counts additional browser RAM, not a second research alloca
     requiredAvailableMiB:1024,requiredHeapMiB:320});
   assert.equal(check(1023).canOpen,false);
   assert.equal(check(1500,2).canOpen,false);
-  assert.equal(check(2500,2,4096).canOpen,true);
+  assert.equal(check(2500,2,4096).canOpen,false);
+  assert.equal(check(2500,1,4096).canOpen,true);
   assert.equal(check(2500,2,4096,300).canOpen,false);
 });
 
@@ -91,7 +92,7 @@ test("two ordinary regions run; Saby drains peer, waits for real RAM, then resum
   }finally{release?.();holdA.resolve();holdB.resolve();holdB2.resolve();holdC.resolve();q.close();}
 });
 
-test("large host retains existing peer; simultaneous Saby contender yields instead of deadlocking",async()=>{
+test("large host also drains existing peer; simultaneous Saby contender yields instead of deadlocking",async()=>{
   let now=0;
   const memory=createMemoryAdmission({settings,now:()=>now,sample:()=>sample(3500,8192,3500)});
   const a=job("a","A"),b=job("b","B"),goB=deferred(),doneA=deferred(),doneB=deferred();
@@ -112,12 +113,15 @@ test("large host retains existing peer; simultaneous Saby contender yields inste
     q.enqueue(a,"key");q.enqueue(b,"key");await tick();
     now+=1000;q.poll();await tick();
     const lease=a.acquireSabyBrowser();
-    assert.equal(b.memoryPauseRequested,false);
-    now+=1000;q.poll();release=await lease;
+    assert.equal(b.memoryPauseRequested,true);
+    now+=1000;q.poll();await tick();
+    assert.equal(q.snapshot().memory.saby_browser.state,"waiting");
     assert.equal(q.snapshot().active,2);
     goB.resolve();await tick();
     assert.equal(secondPaused,true);
     assert.equal(q.snapshot().active,1);
+    now+=1000;q.poll();release=await lease;
+    assert.equal(q.snapshot().memory.saby_browser.state,"active");
     assert.equal(q.snapshot().memory.saby_browser.job_id,"a");
     assert.equal(b.progress.phase,"memory_paused");
     release();release=null;
@@ -266,4 +270,49 @@ test("Saby-only continuation uses the same durable pre-browser admission and rel
   assert.equal(events.filter(x=>x==="released").length,1);
   assert.ok(events.indexOf("closed")<events.indexOf("released"));
   assert.ok(events.indexOf("released")<events.indexOf("priority"));
+});
+
+test("three concurrent research jobs drain every other region before Saby opens, then resume",async()=>{
+  let now=0;
+  const settings={...memoryGuardSettings({RESEARCH_MEMORY_JOB_MIB:"640"}),stableMs:1000,startSpacingMs:1000};
+  const memory=createMemoryAdmission({settings,now:()=>now,sample:()=>sample(1500,1967,950)});
+  const a=job("a","A"),b=job("b","B"),c=job("c","C"),d=job("d","D");
+  const started=[],gates=new Map(),errors=[];
+  let release=null,granted=false;
+  const q=createFullJobQueue({limit:10,memory,autoPoll:false,collectGarbage:null,log:()=>{},
+    onError:e=>errors.push(e),execute:async j=>{
+      j.state="active";started.push(j.id);
+      const g=deferred();gates.set(j.id,g);await g.promise;
+      try{j.memorySafePoint();}catch(e){
+        if(!isMemoryPause(e))throw e;
+        return {memoryPaused:true};
+      }
+      j.state="completed";
+    }});
+  try{
+    q.enqueue(a,"key");q.enqueue(b,"key");q.enqueue(c,"key");await tick();
+    now+=1000;q.poll();await tick();now+=1000;q.poll();await tick();
+    assert.deepEqual(started,["a","b","c"]);
+    const lease=a.acquireSabyBrowser().then(v=>{release=v;granted=true;});
+    assert.ok(b.memoryPauseRequested&&c.memoryPauseRequested);
+    q.enqueue(d,"key");
+    gates.get("b").resolve();await tick();
+    now+=2000;q.poll();await tick();assert.equal(granted,false);
+    assert.equal(q.snapshot().active,2);
+    gates.get("c").resolve();await tick();
+    assert.equal(q.snapshot().active,1);
+    now+=1000;q.poll();await lease;
+    assert.equal(q.snapshot().memory.effectiveLimit,1);
+    now+=10000;q.poll();await tick();
+    assert.deepEqual(started,["a","b","c"]);
+    release();release=null;
+    now+=1000;q.poll();await tick();
+    now+=1000;q.poll();await tick();
+    assert.equal(q.snapshot().active,3);
+    assert.deepEqual(new Set(started.slice(3)),new Set(["b","c"]));
+    assert.deepEqual(errors,[]);
+  }finally{
+    q.beginShutdown();release?.();for(const g of gates.values())g.resolve();
+    await tick();q.close();
+  }
 });

@@ -485,7 +485,9 @@ function renderJobs(payload){
     const free=Number(guard.availableMiB),reserve=Number(guard.reserveMiB);
     e.runtimeMemory.textContent+=(Number.isFinite(free)?" · доступно "+free+" МиБ":"")+
       (Number.isFinite(reserve)?" · резерв "+reserve+" МиБ":"")+
-      (Number.isFinite(guard.effectiveLimit)?" · лимит по ОЗУ: "+guard.effectiveLimit:"")+
+      (Number.isFinite(guard.effectiveLimit)?" · расчётный допуск по ОЗУ: "+guard.effectiveLimit:"")+
+      (Number.isFinite(guard.requiredAvailableMiB)&&!guard.saby_browser?
+        " · для следующего запуска нужно "+guard.requiredAvailableMiB+" МиБ":"")+
       (guard.limitedByMemory?" · запуск по памяти ограничен":"")+
       (guard.paused?" · на паузе: "+guard.paused:"");
     if(guard.saby_browser){
