@@ -2,7 +2,7 @@
 // Wasaby renders invisible-tile-item-* measurement clones. Never count them.
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
 import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
-import {readSabyFleetTree,collectSabyFleetTree} from "./sabyFleetTree.js";
+import {readSabyFleetTree,collectSabyFleetTree,safeSabyFleetTreeReport} from "./sabyFleetTree.js";
 import {recoverSabyVehicleNavigation} from "./sabyVehicleNavigation.js";
 export function scanSabyVehicleSummaryDOM(root=document){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
@@ -132,13 +132,91 @@ export async function readSabyVehicleSummary(page,originalUrl,{onDiagnostic}={})
     return value;
   }catch{notify(onDiagnostic,{reason:"summary_evaluate_failed"});return null;}
 }
+// Categories in the SAME open drawer share a hydration window. Probe
+// all remaining groups once per round instead of serially waiting 7.6s
+// for EACH unavailable group. Ready groups are collected immediately;
+// remaining groups get a new read after successful active collection.
+// No group is inferred absent, and exact count/row/route gates remain.
+export async function collectSabyPendingVehicleGroups(page,pending,{
+  originalUrl,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,
+  wait=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>Date.now(),
+  deadline=now()+175000,onDiagnostic
+}={}){
+  const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
+  const todo=new Set(pending),polls=new Map(pending.map(g=>[g,0]));
+  const spent=new Map(pending.map(g=>[g,0])),lastSeed=new Map();
+  const transient=new Set(["tree_missing","truck_category_missing","read_failed"]);
+  const seedReasons=new Set([...transient,"multiple_tree_panels","truck_category_ambiguous",
+    "truck_count_mismatch","invalid_group_key","footer_ambiguous","invalid_setup"]);
+  const report=(g,reason,tree=null)=>{
+    const safe=safeSabyFleetTreeReport(tree||{reason,expected:g.count,same_company:same()});
+    notify(onDiagnostic,{reason:"category_collection",category:g.category,
+      expected:g.count,seed_polls:polls.get(g),
+      work_ms:Math.max(0,Math.round(spent.get(g))),
+      seed_state:lastSeed.get(g)||"not_observed",
+      result:safe.status,tree_reason:safe.reason,rows:safe.rows,
+      clicks:safe.clicks,samples:safe.samples,same_company:safe.same_company});
+  };
+  let idle=0;
+  while(todo.size&&same()&&now()<deadline){
+    let active=false;
+    for(const g of [...todo]){
+      if(!same()||now()>=deadline)break;
+      polls.set(g,polls.get(g)+1);
+      let x;
+      const readStarted=now();
+      try{x=await readTree(page,{expected:g.count,category:g.category});}
+      catch{x={status:"invalid",reason:"read_failed"};}
+      spent.set(g,spent.get(g)+Math.max(0,now()-readStarted));
+      lastSeed.set(g,x?.status==="observed"?
+        (x.rows?.length>0||x.hasMore===true?"ready":"observed_no_rows"):
+        seedReasons.has(x?.reason)?x.reason:"unknown");
+      if(!same())return false;
+      if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){
+        if(/^-/u.test(g.key)&&x.groupKey!==g.key){
+          report(g,"invalid_group_key");todo.delete(g);continue;
+        }
+        let r;
+        const collectStarted=now();
+        try{
+          r=await collectTree(page,{expected:g.count,category:g.category,
+            originalUrl,initialSnapshot:x,read:readTree,wait,
+            maxMs:Math.max(1000,deadline-now())});
+        }catch{r={status:"incomplete",reason:"read_failed",expected:g.count,same_company:same()};}
+        spent.set(g,spent.get(g)+Math.max(0,now()-collectStarted));
+        if(!same())return false;
+        if(r?.status==="complete"&&r.expected===g.count&&r.vehicles?.length===g.count)
+          g.vehicles=r.vehicles;
+        report(g,"read_failed",r);
+        todo.delete(g);active=true;continue;
+      }
+      if(x?.status!=="observed"&&!transient.has(x?.reason)){
+        report(g,x?.reason);todo.delete(g);
+      }
+    }
+    if(!same())return false;
+    if(!todo.size||now()>=deadline)break;
+    // At most the same 20 no-progress rounds as the old per-group
+    // loop. An active collection may have allowed other groups to
+    // mount, so re-check them before spending another passive wait.
+    if(active){idle=0;continue;}
+    if(++idle>=20)break;
+    await wait(400);
+  }
+  if(!same())return false;
+  for(const g of todo)report(g,now()>=deadline?"time_limit":
+    transient.has(lastSeed.get(g))?lastSeed.get(g):
+    lastSeed.get(g)==="observed_no_rows"?"footer_missing":"read_failed");
+  return true;
+}
 // Complete small fleets need one DOM read. For longer lists, use
 // existing scoped tree/footer protocol and one exact tile disclosure.
 export async function collectSabyVehicleInventory(page,{
   originalUrl,quick=false,wait=ms=>new Promise(r=>setTimeout(r,ms)),
   readSummary=readSabyVehicleSummary,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,now=()=>Date.now(),
   recoverSummary=null,pollAfterHeading=false,openNavigation=false,
-  recoverNavigation=recoverSabyVehicleNavigation,onDiagnostic
+  recoverNavigation=recoverSabyVehicleNavigation,onDiagnostic,
+  sharedCategoryHydration=false,preferNavigation=false
 }={}){
   const guard=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.());
   const same=()=>guard().ok===true;
@@ -150,7 +228,19 @@ export async function collectSabyVehicleInventory(page,{
   // Only after the existing full path found its exact heading: the title
   // may precede asynchronously mounted category tiles and counters.
   // No extra visit, scroll or click; quick contact-first reads never wait.
-  if(!raw&&!quick&&pollAfterHeading){
+  // A known visible accordion can directly reveal the summary or
+  // drawer. Use the already established one-click recovery before
+  // repeating the same missing-summary scan in full production.
+  let opened=false,navigationTried=false;
+  if(!raw&&!quick&&openNavigation&&preferNavigation&&same()){
+    const recovery=await recoverNavigation(page,{
+      originalUrl,wait,onDiagnostic,readSummary:()=>readSummary(page,originalUrl)
+    });
+    missing.navigationAttempted=recovery?.navigationAttempted===true;
+    navigationTried=missing.navigationAttempted||Boolean(recovery?.summary);
+    raw=recovery?.summary||null;opened=recovery?.drawerOpened===true;
+  }
+  if(!raw&&!quick&&pollAfterHeading&&!navigationTried){
     for(let i=0;i<3&&!raw&&same();i++){
       await wait(350);
       if(!same())return missing;
@@ -163,8 +253,7 @@ export async function collectSabyVehicleInventory(page,{
     const recovery=await recoverSummary(page,{readHeading:read,sameCompany:same,wait});
     raw=recovery?.heading||null;
   }
-  let opened=false;
-  if(!raw&&!quick&&openNavigation&&same()){
+  if(!raw&&!quick&&openNavigation&&!navigationTried&&same()){
     const recovery=await recoverNavigation(page,{
       originalUrl,wait,onDiagnostic,readSummary:()=>readSummary(page,originalUrl)
     });
@@ -204,6 +293,12 @@ export async function collectSabyVehicleInventory(page,{
       const target=page.locator('[data-qa="contractorCard-transport"] [data-qa="item"][item-key="'+pending[0].key+'"] .contractorCard-transport__tileContainer');
       if(await target.count()!==1||!await target.isVisible()||!same())return outcome();
       await target.click({timeout:4000});opened=true;
+    }
+    if(sharedCategoryHydration){
+      const safe=await collectSabyPendingVehicleGroups(page,pending,{
+        originalUrl,readTree,collectTree,wait,now,deadline,onDiagnostic
+      });
+      return safe?outcome():missing;
     }
     for(const g of pending){
       if(!same()||now()>=deadline)return outcome();

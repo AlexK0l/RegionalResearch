@@ -77,7 +77,7 @@ test("real Saby category footer keys are dynamic; title=Ещё is on a child",()
   for(const x of ["3","",null,"node-footer--3","-a"])
     assert.equal(sabyFleetTreeFooterKey(x),null);
   const src=fs.readFileSync(new URL("../src/sabyFleetTree.js",import.meta.url),"utf8");
-  assert.match(src,/\[data-qa="item"\]\[item-parent-key\]\[item-key\]/);
+  assert.ok(src.includes(`[data-qa="item"][item-parent-key="'+key+'"][item-key]`));
   assert.match(src,/\[data-qa="item"\]\[item-key\]/);
   assert.match(src,/\[data-qa="navigation-button"\]/);
   assert.match(src,/\[title="Ещё"\]/);
@@ -343,4 +343,27 @@ test("route changes during drawer discovery prohibit all further reads and click
     collect:async()=>assert.fail("changed company")
   });
   assert.equal(result.reason,"wrong_company");assert.equal(result.vehicles,null);
+});
+
+test("temporary tree remount after one footer action keeps the exact old prefix and does not issue another click",async()=>{
+  const m=fakeBrowser({counts:[24,220]});
+  let remounts=0;
+  const r=await collectSabyFleetTree(m.page,{expected:220,originalUrl:firstParty,
+    read:async(...args)=>m.clicks===1&&remounts++<2?
+      {status:"invalid",reason:"tree_missing"}:m.read(...args),
+    wait:async()=>{},maxPolls:4});
+  assert.equal(r.status,"complete");
+  assert.equal(m.clicks,1);
+  assert.equal(r.rows,220);
+});
+test("transient remount never authorizes a changed prefix or another company's rows",async()=>{
+  const m=fakeBrowser({counts:[24,220],wrongPrefix:true});
+  let remounts=0;
+  const r=await collectSabyFleetTree(m.page,{expected:220,originalUrl:firstParty,
+    read:async(...args)=>m.clicks===1&&remounts++===0?
+      {status:"invalid",reason:"read_failed"}:m.read(...args),
+    wait:async()=>{}});
+  assert.equal(r.reason,"row_prefix_changed");
+  assert.equal(r.vehicles,null);
+  assert.equal(m.clicks,1);
 });
