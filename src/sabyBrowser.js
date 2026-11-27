@@ -146,7 +146,9 @@ export async function withSabyBrowser(task, {env = process.env, autoLogin = true
   let context;
   try {
     const settings = sabyBrowserSettings(env);
+    if(process.env.REGIONALRESEARCH_SHUTDOWN_REQUESTED==="true")throw Error("SERVICE_SHUTDOWN_BROWSER_BLOCKED");
     context = await chromium.launchPersistentContext(settings.profileDir, {
+      ...(process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN==="true"?{handleSIGTERM:false,handleSIGINT:false}:{}),
       ...(settings.channel ? {channel:settings.channel} : {}),
       headless:settings.headless, viewport:{width:1440,height:920},
       acceptDownloads:false,

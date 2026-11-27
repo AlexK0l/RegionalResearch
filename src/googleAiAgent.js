@@ -9,7 +9,9 @@ const VIEWPORT_HEIGHT = Math.max(600, Number(process.env.GOOGLE_AI_VIEWPORT_HEIG
 const SCREENSHOT_DETAIL = process.env.GOOGLE_AI_SCREENSHOT_DETAIL || "low";
 
 export async function launchResearchBrowser() {
+  if(process.env.REGIONALRESEARCH_SHUTDOWN_REQUESTED==="true")throw Error("SERVICE_SHUTDOWN_BROWSER_BLOCKED");
   return chromium.launch({
+    ...(process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN==="true"?{handleSIGTERM:false,handleSIGINT:false}:{}),
     headless: true,
     args: [
       "--disable-dev-shm-usage",

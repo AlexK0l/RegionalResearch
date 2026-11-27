@@ -36,11 +36,14 @@ import {
   supersedeRegionCheckpoints,
   saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs,
   saveQueuedResearchJob,listQueuedResearchJobs,loadQueuedResearchSource,
-  takeQueuedResearchJob,clearQueuedResearchJob,
+  clearQueuedResearchJob,
+  saveResearchLifecycle,listResearchLifecycle,beginResearchExecution,cancelResearchIntent,checkpointMetadata,
   shrinkCheckpointMemory,claimIdleMemoryRecycle,
   getOpenAIBillingHold,setOpenAIBillingHold,clearOpenAIBillingHold
 } from "./src/checkpointStore.js";
 
+// Playwright must not race the application-owned SIGTERM/SIGINT drain.
+process.env.REGIONALRESEARCH_MANAGED_SHUTDOWN="true";
 initializeFileLogging();
 
 const app = express();
@@ -506,13 +509,12 @@ async function executeJob(job, apiKey) {
     }));
 
     try {
-      // Consume durable queue intent before any paid work. A crash after
-      // this boundary requires explicit resume from a checkpoint.
-      if(job.queuedPersisted){
-        const inline=takeQueuedResearchJob(job.id);
-        job.queuedPersisted=false;
-        if(inline)job.data.checkpoint=inline;
-      }
+      // Atomically record admission and consume the queued intent.
+      // An orphaned active marker is visible, never automatically replayed.
+      if(job.cancelled)throw Error("JOB_CANCELLED");
+      const inline=beginResearchExecution(job);
+      job.queuedPersisted=false;
+      if(inline)job.data.checkpoint=inline;
       // Load large source snapshots only after the memory gate admits the job.
       if(job.data?.checkpointRef){
         const cp=await loadCheckpoint(job.data.checkpointRef);
@@ -631,6 +633,8 @@ async function executeJob(job, apiKey) {
       // Resume/Saby source payloads are already durably preserved in SQLite.
       // Avoid retaining them in the in-memory jobs list for another 24 hours.
       if(job.data?.checkpoint)delete job.data.checkpoint;
+      try{saveResearchLifecycle(job);}
+      catch(error){console.error("[RESEARCH_LIFECYCLE_WRITE_ERROR]",error?.message||String(error));}
       console.log("[JOB_FINISH] " + JSON.stringify({
         id: job.id,
         region: job.region,
@@ -656,6 +660,7 @@ const fullQueue = createFullJobQueue({
 });
 
 function queueJob(job, apiKey) {
+  if(recycling)throw Error("RESEARCH_QUEUE_QUIESCED");
   if (job.mode === "full" || job.mode === "resume" || job.mode === "saby_only") {
     const existing=fullQueue.conflict(job.region);
     if(existing)return {accepted:false,existing};
@@ -669,7 +674,10 @@ function queueJob(job, apiKey) {
   // Diagnostic jobs use RAM too; apply admission without pretending that
   // they have a resumable production checkpoint or reserving their region.
   if(memoryAdmission.settings.enabled||billingHoldAt)return fullQueue.enqueue(job,apiKey,{reserveRegion:false});
-  queueMicrotask(() => executeJob(job, apiKey));
+  queueMicrotask(() => {
+    if(!recycling)return executeJob(job,apiKey);
+    job.cancelled=true;job.state="cancelled";job.error="Служба останавливается";
+  });
   return { accepted: true };
 }
 
@@ -689,7 +697,9 @@ function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
     async updateCheckpoint(checkpoint){
       if(Number(checkpoint?.version)!==1||!String(checkpoint?.region||"").trim())
         throw Error("Некорректный checkpoint pipeline");
-      await saveCheckpoint(this.id,checkpoint);
+      // Update the compact lifecycle within the existing durable checkpoint
+      // transaction. Do not pay another fsync per Saby company.
+      await saveCheckpoint(this.id,checkpoint,this.state==="active"?this:null);
       this.latestCheckpointSummary=checkpointSummary(checkpoint);
       this.latestCheckpoint=null;
     }
@@ -733,6 +743,22 @@ function restoreQueuedResearchJobs(){
     }catch(error){
       console.error("[QUEUED_JOB_RESTORE_ERROR] "+JSON.stringify({job_id:item.id,error:error?.message||String(error)}));
     }
+  }
+}
+function restoreDurableResearchHistory(){
+  for(const item of listResearchLifecycle()){
+    if(jobs.has(item.id))continue;
+    const job=makeResearchJob({...item,data:{region:item.region,
+      sourceJobId:item.sourceJobId,checkpointRef:item.sourceJobId},
+      progress:{phase:item.summary?.phase||item.state,percent:item.percent}});
+    job.state=item.state;
+    job.result=item.result;
+    if(job.state==="interrupted"){
+      job.error="Работа прервана при остановке сервера. Продолжение требует подтверждения.";
+      console.warn("[RESEARCH_JOB_INTERRUPTED] "+JSON.stringify({job_id:job.id,region:job.region,
+        phase:item.summary?.phase||null}));
+    }
+    jobs.set(job.id,job);
   }
 }
 function activeRegionConflict(region, res) {
@@ -844,6 +870,8 @@ app.post("/api/jobs", async (req, res) => {
       req.body?.checkpointId || req.body?.sourceJobId || ""
     ).trim();
     const sourceJob = checkpointId ? jobs.get(checkpointId) : null;
+    if(checkpointId&&checkpointMetadata(checkpointId)?.status==="superseded")
+      return res.status(409).json({code:"CHECKPOINT_SUPERSEDED",error:"Для региона есть более новый завершённый результат"});
     const storedCheckpoint = checkpointId ? await loadCheckpoint(checkpointId) : null;
     const checkpoint = normalizeCheckpoint(
       sourceJob?.latestCheckpoint || storedCheckpoint || req.body?.checkpoint
@@ -939,8 +967,9 @@ app.get("/api/jobs", (_req, res) => {
     billing:{blocked:Boolean(billingHoldAt),since_ms:billingHoldAt||null},
     memory:processMemorySnapshot(),
     jobs: [...jobs.values()]
-      .sort((a,b)=>b.createdAt-a.createdAt)
-      .slice(0,100)
+      .sort((a,b)=>Number(["active","waiting","interrupted"].includes(b.state))-
+        Number(["active","waiting","interrupted"].includes(a.state))||b.createdAt-a.createdAt)
+      .filter((job,index)=>["active","waiting","interrupted"].includes(job.state)||index<100)
       .map(job=>({
         id: job.id,
         region: job.region,
@@ -949,6 +978,8 @@ app.get("/api/jobs", (_req, res) => {
         phase: job.progress?.phase || "",
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
+        checkpointPhase:lightweightJobCheckpointSummary(job)?.phase||null,
+        checkpointStage:lightweightJobCheckpointSummary(job)?.completed_stage??null,
         memoryPauseRequested:!!job.memoryPauseRequested,
         memoryPauseCount:Number(job.memoryPauseCount||0),
         createdAt: job.createdAt,
@@ -993,7 +1024,7 @@ app.get("/api/jobs/:id", (req, res) => {
     resume_available:Boolean(lightweightJobCheckpointSummary(job)),
     continuation_available:Boolean(lightweightJobCheckpointSummary(job)?.continuation_available),
     log: jobLogPublicInfo(job),
-    error: ["failed", "cancelled"].includes(job.state) ? job.error : null
+    error: ["failed", "cancelled","interrupted"].includes(job.state) ? job.error : null
   });
 });
 
@@ -1029,6 +1060,9 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   const sourceJob = jobs.get(req.params.id);
+  const meta=checkpointMetadata(req.params.id);
+  if(meta?.status==="superseded")return res.status(409).json({
+    code:"CHECKPOINT_SUPERSEDED",error:"Для региона есть более новый завершённый результат"});
   const checkpoint=await savedJobCheckpoint(sourceJob,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
@@ -1080,13 +1114,13 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: "Задание не найдено" });
 
+  if(!["waiting","active","cancelling"].includes(job.state))
+    return res.status(409).json({error:"Задание уже не выполняется"});
   const wasWaiting = job.state === "waiting";
-  // A cancelled memory-paused job must not resurrect on service restart.
-  if(wasWaiting&&job.data?.memoryResume)clearMemoryPausedJob(job.id);
-  if(wasWaiting&&job.queuedPersisted){
-    clearQueuedResearchJob(job.id);
-    job.queuedPersisted=false;
-  }
+  // A cancellation must survive even a kill during the abort. Clear its
+  // durable queue/pause markers atomically with the terminal journal row.
+  cancelResearchIntent(job);
+  if(wasWaiting)job.queuedPersisted=false;
   job.cancelled = true;
   job.state = wasWaiting ? "cancelled" : "cancelling";
   job.error = wasWaiting ? "Остановлено пользователем" : job.error;
@@ -1201,7 +1235,7 @@ app.get("/api/jobs/:id/download-json", async (req, res) => {
 setInterval(() => {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   for (const [id, job] of jobs.entries()) {
-    if (job.createdAt < cutoff && !["active", "waiting"].includes(job.state)) {
+    if (job.createdAt < cutoff && !["active", "waiting","interrupted"].includes(job.state)) {
       jobs.delete(id);
     }
   }
@@ -1237,6 +1271,8 @@ const httpServer = app.listen(port, BIND_HOST, () => {
   catch(error){console.error("[MEMORY_RESTORE_ERROR] "+String(error?.message||error));}
   try{restoreQueuedResearchJobs();}
   catch(error){console.error("[QUEUED_RESTORE_ERROR] "+String(error?.message||error));}
+  try{restoreDurableResearchHistory();}
+  catch(error){console.error("[RESEARCH_HISTORY_RESTORE_ERROR]",error?.message||String(error));}
   // The launch smoke-test exercises HTTP and SQLite without downloading or
   // opening Chromium. Normal local launches still perform the self-test.
   if (process.env.SKIP_CHROMIUM_SELF_TEST === "true") return;
@@ -1251,7 +1287,7 @@ const httpServer = app.listen(port, BIND_HOST, () => {
   setTimeout(async () => {
     let browser;
     try {
-      if(fullQueue.snapshot().active||fullQueue.snapshot().pending)return;
+      if(recycling||fullQueue.snapshot().active||fullQueue.snapshot().pending)return;
       browser = await launchResearchBrowser();
       console.log("Chromium self-test passed");
     } catch (error) {
@@ -1263,11 +1299,42 @@ const httpServer = app.listen(port, BIND_HOST, () => {
   }, 1000).unref();
 });
 
+// Graceful systemd stop: stop admission and HTTP first, then let active
+// jobs reach existing durable boundaries. A forced kill leaves their
+// lifecycle markers visible as interrupted, not eligible for paid replay.
+let shutdownRequested=false;
+function requestServiceShutdown(signal){
+  if(shutdownRequested)return;
+  shutdownRequested=true;
+  recycling=true;
+  process.env.REGIONALRESEARCH_SHUTDOWN_REQUESTED="true";
+  console.info("[SERVICE_SHUTDOWN_REQUEST] "+JSON.stringify({signal,...fullQueue.snapshot()}));
+  fullQueue.beginShutdown();
+  for(const job of jobs.values()){
+    if(job.state==="active"&&!["full","resume","saby_only"].includes(job.mode)){
+      job.cancelled=true;
+      job.abortController?.abort(Error("JOB_CANCELLED"));
+    }
+  }
+  let httpClosed=false;
+  httpServer.close(()=>{httpClosed=true;});
+  httpServer.closeIdleConnections?.();
+  const poll=setInterval(()=>{
+    if(!httpClosed||activeHttp||startupBrowserBusy||fullQueue.snapshot().active||
+      [...jobs.values()].some(job=>["active","cancelling"].includes(job.state)))return;
+    clearInterval(poll);
+    console.info("[SERVICE_SHUTDOWN_DRAINED]");
+    process.exit(0);
+  },250);
+}
+process.on("SIGTERM",()=>requestServiceShutdown("SIGTERM"));
+process.on("SIGINT",()=>requestServiceShutdown("SIGINT"));
+
 if(idleRecycleEnabled&&memoryAdmission.settings.enabled){
   const guard=createIdleMemoryRecycleGuard({
     settings:idleRecycleSettings,
     candidates:()=>fullQueue.idleBlockedJobs(),
-    canExit:()=>!startupBrowserBusy&&activeHttp===0&&
+    canExit:()=>!recycling&&!startupBrowserBusy&&activeHttp===0&&
       ![...jobs.values()].some(job=>job.state==="active"||
         // A diagnostic result may live only in the HTTP job map. Refuse to
         // recycle rather than silently discard any non-durable output.

@@ -71,7 +71,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
       item.job.state!=="active")return false;
     item.job.memoryPauseRequested=true;
     item.job.progress={...item.job.progress,memoryPauseRequested:true};
-    log("[MEMORY_PAUSE_REQUEST] "+JSON.stringify({job_id:item.job.id,pressure:lastMemory.pressure,
+    log("[MEMORY_PAUSE_REQUEST] "+JSON.stringify({job_id:item.job.id,pressure:lastMemory?.pressure||reason,
       available_mib:lastMemory?.availableMiB,heap_available_mib:lastMemory?.heapAvailableMiB,reason}));
     return true;
   }
@@ -81,7 +81,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
   function acquireSabyBrowser(item){
     if(item.job.cancelled||item.job.abortController?.signal?.aborted)
       throw Error("JOB_CANCELLED");
-    if(item.job.memoryPauseRequested)throw new MemoryPauseError();
+    if(quiesced||item.job.memoryPauseRequested)throw new MemoryPauseError();
     if(sabyLease){
       if(sabyLease.item===item)throw Error("SABY_BROWSER_LEASE_REENTRANT");
       if(requestPause(item,"saby_browser_priority")||item.job.memoryPauseRequested)
@@ -104,7 +104,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     if(sabyLease!==lease||lease.state!=="active")throw Error("SABY_BROWSER_LEASE_INVALID");
     const {job}=lease.item;
     if(job.cancelled||job.abortController?.signal?.aborted)throw Error("JOB_CANCELLED");
-    if(job.memoryPauseRequested)throw new MemoryPauseError();
+    if(quiesced||job.memoryPauseRequested)throw new MemoryPauseError();
     return new Promise((resolve,reject)=>{
       Object.assign(lease,{state:"waiting",resolve,reject,healthySince:null,
         waitingSince:memory.now(),lastGcAt:-Infinity});
@@ -265,20 +265,24 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
       if(index<0)break;
       const [item]=pending.splice(index,1);
       active++;item.started=++sequence;running.set(item.job.id,item);
-      if(enabled){
-        nextStartAt=memory.now()+memory.settings.startSpacingMs;
-        item.job.memorySafePoint=()=>{
-          if(item.job.cancelled)throw Error("JOB_CANCELLED");
-          inspect();
-          if(item.job.memoryPauseRequested)throw new MemoryPauseError();
-        };
-        if(item.preemptible)item.job.acquireSabyBrowser=()=>acquireSabyBrowser(item);
-      }
+      if(enabled)nextStartAt=memory.now()+memory.settings.startSpacingMs;
+      if(enabled||item.preemptible)item.job.memorySafePoint=()=>{
+        if(item.job.cancelled)throw Error("JOB_CANCELLED");
+        if(enabled&&!quiesced)inspect();
+        if(quiesced||item.job.memoryPauseRequested)throw new MemoryPauseError();
+      };
+      if(enabled&&item.preemptible)item.job.acquireSabyBrowser=()=>acquireSabyBrowser(item);
       item.job.memoryPauseRequested=false;
       updatePositions();
       queueMicrotask(async()=>{
         let paused=false;
         try{
+          // Shutdown may arrive before the queued microtask runs. Leave its
+          // durable admission intent untouched; do not start paid work.
+          if(quiesced){
+            pending.unshift(item);
+            return;
+          }
           const output=await execute(item.job,item.apiKey);
           paused=(output?.memoryPaused===true||output?.billingPaused===true)&&!item.job.cancelled;
         }catch(error){
@@ -300,7 +304,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
             // Give the just-unwound job time to reclaim its heap before
             // asking another region to suspend. Critical pressure overrides.
             if(enabled)nextPauseAt=memory.now()+2*memory.settings.pollMs;
-          }else{
+          }else if(!pending.includes(item)){
             if(item.job.cancelled&&item.job.state==="waiting")item.job.state="cancelled";
             release(item);
           }
@@ -350,8 +354,17 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     if(timer)clearInterval(timer);
     return true;
   }
+  function beginShutdown(){
+    quiesced=true;
+    if(timer)clearInterval(timer);
+    for(const item of running.values())requestPause(item,"service_shutdown");
+    // Reject an owner blocked on opening/reopening Chromium immediately.
+    // Active browser sessions unwind at the existing durable safe point.
+    if(sabyLease?.state==="waiting")advanceSabyBrowser(memory.now());
+    return snapshot();
+  }
   const timer=enabled&&autoPoll?setInterval(pump,memory.settings.pollMs):null;
   timer?.unref?.();
-  return {enqueue,cancelQueued,conflict,snapshot,poll:pump,idleBlockedJobs,freezeForRecycle,
+  return {enqueue,cancelQueued,conflict,snapshot,poll:pump,idleBlockedJobs,freezeForRecycle,beginShutdown,
     close:()=>{if(timer)clearInterval(timer);}};
 }

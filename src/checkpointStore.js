@@ -70,6 +70,22 @@ function ensureDb() {
       summary TEXT NOT NULL
     );
 
+    -- Queue intent and cooperative-pause markers remain authoritative for
+    -- automatic admission. This journal is never an automatic replay source.
+    CREATE TABLE IF NOT EXISTS research_job_lifecycle (
+      id TEXT PRIMARY KEY,
+      region TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      pipeline_version INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      source_checkpoint_id TEXT NOT NULL DEFAULT '',
+      percent REAL NOT NULL DEFAULT 0,
+      summary TEXT NOT NULL,
+      result_summary TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE TABLE IF NOT EXISTS runtime_maintenance (
       name TEXT PRIMARY KEY,
       last_at_ms INTEGER NOT NULL
@@ -113,7 +129,7 @@ function metadataFromRow(row) {
   };
 }
 
-export async function saveCheckpoint(jobId, checkpoint) {
+function writeCheckpoint(jobId, checkpoint) {
   if (!jobId || !checkpoint) return { sqliteSaved: false };
 
   // The caller already holds an immutable snapshot. A JSON stringify/parse
@@ -168,6 +184,46 @@ export async function saveCheckpoint(jobId, checkpoint) {
   );
 
   return { sqliteSaved: true, path: CHECKPOINT_DB_PATH };
+}
+
+// All operations in this transaction are synchronous. No await is allowed
+// while the SQLite write lock is held.
+function researchWriteTransaction(task){
+  const db=ensureDb();
+  db.exec("BEGIN IMMEDIATE");
+  try{const result=task();db.exec("COMMIT");return result;}
+  catch(error){try{db.exec("ROLLBACK");}catch{}throw error;}
+}
+
+export async function saveCheckpoint(jobId,checkpoint,lifecycleJob=null){
+  if(!lifecycleJob||!queuedModes.has(lifecycleJob.mode))
+    return writeCheckpoint(jobId,checkpoint);
+  return researchWriteTransaction(()=>{
+    const saved=writeCheckpoint(jobId,checkpoint);
+    const summary=checkpointSummary({...checkpoint,pipeline_version:PIPELINE_VERSION});
+    const sections=["direct_buyers","intermediaries","leasing","statistics"];
+    const complete=checkpoint.phase==="completed"&&
+      sections.every(key=>Array.isArray(checkpoint.final_result?.[key]));
+    const result=complete?{
+      resultStored:true,
+      counts:Object.fromEntries(sections.map(key=>[key,checkpoint.final_result[key].length])),
+      contacts:{...checkpoint.contact_stats,total:sections.slice(0,3)
+        .reduce((n,key)=>n+checkpoint.final_result[key].length,0)},
+      saby:checkpoint.saby_stats,
+      quality:checkpoint.final_quality_gate
+    }:null;
+    saveResearchLifecycle({...lifecycleJob,latestCheckpointSummary:summary,
+      progress:{...lifecycleJob.progress,...(complete?{percent:100}:{})},result},
+      complete?"completed":"active");
+    return saved;
+  });
+}
+
+export function checkpointMetadata(id){
+  return metadataFromRow(ensureDb().prepare(`
+    SELECT id,region,mode,pipeline_version,status,phase,completed_stage,
+      completed_final_batches,created_at,updated_at FROM research_checkpoints WHERE id=?
+  `).get(String(id)));
 }
 
 export async function loadCheckpoint(jobId) {
@@ -393,6 +449,90 @@ export function saveQueuedResearchJob(job){
     inline?JSON.stringify(inline):null,summary);
 }
 
+// Persist a compact execution marker BEFORE consuming admission intent.
+// No credentials, raw sources, company rows or model output in this journal.
+export function saveResearchLifecycle(job,state=job?.state){
+  if(!queuedModes.has(job?.mode))return false;
+  const id=String(job.id||""),region=String(job.region||"").trim(),
+    createdAt=Number(job.createdAt);
+  if(!jobIdPattern.test(id)||!region||!Number.isSafeInteger(createdAt)||createdAt<0||
+     !["active","waiting","completed","cancelled","failed","interrupted"].includes(state))
+    throw Error("RESEARCH_LIFECYCLE_INVALID");
+  const raw=String(job.data?.checkpointRef||job.data?.sourceJobId||"");
+  const ref=jobIdPattern.test(raw)&&raw!==id?raw:"";
+  const summary=JSON.stringify(job.latestCheckpointSummary||null);
+  if(summary.length>8192)throw Error("RESEARCH_LIFECYCLE_SUMMARY_LIMIT");
+  const numericFields=(obj,keys)=>Object.fromEntries(keys.filter(k=>
+    typeof obj?.[k]==="number"&&Number.isFinite(obj[k])).map(k=>[k,obj[k]]));
+  const result=state==="completed"&&job.result?.resultStored?JSON.stringify({
+    resultStored:true,
+    counts:numericFields(job.result.counts,["direct_buyers","intermediaries","leasing","statistics","total"]),
+    contacts:numericFields(job.result.contacts,["total","ok","deferred"]),
+    quality:job.result.quality?{...numericFields(job.result.quality,
+      ["review_records","excluded_records","without_inn_commercial"]),
+      grades:numericFields(job.result.quality.grades,["A","B","C"])}:null,
+    saby:{...numericFields(job.result.saby,["processed","verified","deferred","scheduled","browserRestarts"]),
+      fullSweepCompleted:job.result.saby?.fullSweepCompleted===true,
+      circuitOpen:job.result.saby?.circuitOpen===true,
+      browserError:Boolean(job.result.saby?.browserError)}
+  }):"{}";
+  ensureDb().prepare(`
+    INSERT INTO research_job_lifecycle(id,region,mode,pipeline_version,created_at_ms,
+      updated_at_ms,state,source_checkpoint_id,percent,summary,result_summary)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms,
+      state=excluded.state,source_checkpoint_id=CASE
+        WHEN excluded.source_checkpoint_id<>'' THEN excluded.source_checkpoint_id
+        ELSE research_job_lifecycle.source_checkpoint_id END,
+      percent=excluded.percent,summary=excluded.summary,result_summary=excluded.result_summary
+  `).run(id,region,job.mode,PIPELINE_VERSION,createdAt,Date.now(),state,ref,
+    Math.max(0,Math.min(100,Number(job.progress?.percent)||0)),summary,result);
+  return true;
+}
+
+// Select only journaled jobs, not arbitrary historical resumable snapshots.
+// Queued/paused markers have already been restored and take precedence.
+export function listResearchLifecycle(){
+  const db=ensureDb();
+  const columns=`SELECT j.*, c.phase AS child_phase,c.status AS child_status,
+    c.completed_stage AS child_stage,c.completed_final_batches AS child_batches,
+    p.phase AS parent_phase,p.status AS parent_status,p.completed_stage AS parent_stage,
+    p.completed_final_batches AS parent_batches
+    FROM research_job_lifecycle j
+    LEFT JOIN research_checkpoints c ON c.id=j.id AND c.region=j.region
+      AND c.pipeline_version=j.pipeline_version
+    LEFT JOIN research_checkpoints p ON p.id=j.source_checkpoint_id AND p.region=j.region
+      AND p.pipeline_version=j.pipeline_version
+    WHERE j.pipeline_version=?`;
+  const rows=[
+    ...db.prepare(columns+" AND j.state IN ('active','waiting','interrupted') ORDER BY j.created_at_ms").all(PIPELINE_VERSION),
+    ...db.prepare(columns+" AND j.state IN ('completed','cancelled','failed') ORDER BY j.updated_at_ms DESC LIMIT 100").all(PIPELINE_VERSION)
+  ];
+  return rows.flatMap(row=>{
+    if(!queuedModes.has(row.mode)||!jobIdPattern.test(row.id))return [];
+    try{
+      // A completed replacement supersedes its old resumable lineage.
+      // Never surface that older child as a new actionable interruption.
+      if(row.child_status==="superseded")return [];
+      const child=Boolean(row.child_phase);
+      const parent=!child&&row.parent_phase&&row.parent_status!=="superseded";
+      const saved=JSON.parse(row.summary),result=JSON.parse(row.result_summary);
+      const phase=child?row.child_phase:parent?row.parent_phase:"";
+      const summary=phase?{...(saved||{}),version:1,region:row.region,phase,
+        pipeline_version:row.pipeline_version,
+        completed_stage:child?row.child_stage:row.parent_stage,
+        completed_final_batches:child?row.child_batches:row.parent_batches,
+        stage11_completed:saved?.stage11_completed===true||["saby","priority","completed"].includes(phase)}:null;
+      const completed=row.state==="completed"&&child&&result.resultStored===true&&
+        (row.child_status==="completed"||row.mode==="saby_only"&&phase==="saby");
+      const state=completed?"completed":["cancelled","failed"].includes(row.state)?row.state:"interrupted";
+      return [{id:row.id,region:row.region,mode:row.mode,createdAt:row.created_at_ms,
+        sourceJobId:parent?row.source_checkpoint_id:"",summary,percent:row.percent,
+        state,result:completed?{...result,region:row.region,mode:row.mode}:null}];
+    }catch{return [];}
+  });
+}
+
 export function listQueuedResearchJobs(){
   // Do not hydrate large imported checkpoints while restoring the queue.
   return ensureDb().prepare(
@@ -423,6 +563,29 @@ export function takeQueuedResearchJob(id){
   ).get(String(id),PIPELINE_VERSION);
   if(!row)throw Error("QUEUED_RESEARCH_JOB_NOT_DURABLE");
   return row.checkpoint_payload?JSON.parse(row.checkpoint_payload):null;
+}
+
+// Commit the execution identity and consume the unstarted intent together.
+ // An uploaded inline resume snapshot must survive even before its first
+ // pipeline checkpoint; copy it under the child ID in this same transaction.
+export function beginResearchExecution(job){
+  if(!queuedModes.has(job?.mode))return null;
+  return researchWriteTransaction(()=>{
+    saveResearchLifecycle(job,"active");
+    const inline=job.queuedPersisted?takeQueuedResearchJob(job.id):null;
+    if(inline)writeCheckpoint(job.id,inline);
+    return inline;
+  });
+}
+
+export function cancelResearchIntent(job){
+  if(!queuedModes.has(job?.mode))return false;
+  return researchWriteTransaction(()=>{
+    saveResearchLifecycle(job,"cancelled");
+    clearQueuedResearchJob(job.id);
+    clearMemoryPausedJob(job.id);
+    return true;
+  });
 }
 
 export function clearQueuedResearchJob(id){

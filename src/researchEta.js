@@ -60,7 +60,7 @@ export function estimateResearchEta(job, {
     return { status: "completed", reason: "Исследование завершено",
       remainingMs: 0, confidence: "final" };
   }
-  if (job.state === "failed" || job.state === "cancelled") {
+  if (job.state === "failed" || job.state === "cancelled" || job.state === "interrupted") {
     return unestimated(job.state, "Исследование не выполняется");
   }
   if(["memory_paused","memory_wait","saby_memory_wait"].includes(job?.progress?.phase))

@@ -33,5 +33,5 @@ test("research queue allows two full jobs with distinct regions",()=>{
   assert.match(server,/id,\s*region,\s*mode,\s*data/);
   // No full JSON clone on every checkpoint write: the database receives
   // the validated original snapshot and the HTTP job keeps only metadata.
-  assert.match(server,/await saveCheckpoint\(this\.id,checkpoint\)/);
+  assert.match(server,/await saveCheckpoint\(this\.id,checkpoint,this\.state==="active"\?this:null\)/);
 });
