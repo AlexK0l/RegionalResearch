@@ -149,9 +149,12 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false,categ
       if(countNodes.length!==1||!/^\d{1,5}$/.test(countText)||
          announced<1||announced>5000||(!discover&&announced!==expected))
         return {status:"invalid",reason:"truck_count_mismatch"};
+      // The exact negative numeric group key was validated above.
+      // Let the browser select only its children instead of repeatedly
+      // materializing all categories' thousands of vehicle DOM handles.
       const vehicleEls=[...list.querySelectorAll(
-        '[data-qa="item"][item-parent-key][item-key]'
-      )].filter(el=>el.getAttribute("item-parent-key")===key);
+        '[data-qa="item"][item-parent-key="'+key+'"][item-key]'
+      )];
       const rows=[];
       for(const element of vehicleEls){
         // First direct model child only: gray VIN and GRZ metadata
@@ -167,8 +170,8 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false,categ
       }
       const footerKey="node-footer-"+key;
       const footers=[...list.querySelectorAll(
-        '[data-qa="item"][item-key]'
-      )].filter(el=>el.getAttribute("item-key")===footerKey);
+        '[data-qa="item"][item-key="'+footerKey+'"]'
+      )];
       if(footers.length>1)
         return {status:"invalid",reason:"footer_ambiguous"};
       const footer=footers[0]||null;
@@ -260,6 +263,11 @@ export async function collectSabyFleetTree(page,{
         expected,previousRows:rows,previousGroupKey:groupKey,category
       });
       if(checked.status!=="valid"){
+        // Wasaby may temporarily unmount the list during an accepted
+        // footer update. Keep the existing poll deadline, exact count,
+        // group ID and ordered prefix; never click again during the
+        // remount. A real contradiction is still immediately fatal.
+        if(["tree_missing","read_failed"].includes(checked.reason))continue;
         invalid=checked.reason;break;
       }
       if(checked.rows.length>rows.length){

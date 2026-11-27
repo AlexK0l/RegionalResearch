@@ -130,6 +130,7 @@ export function sabyBrowserSettings(env = process.env) {
     // Only the full-card strategy shares passive widget hydration time.
     // Explicit false restores independent legacy section waits.
     sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
+    sharedFleetHydration:String(env.SABY_SHARED_FLEET_HYDRATION_ENABLED??"true").toLowerCase()!=="false",
     // A single scoped DOM projection; disable for a matched fallback
     // comparison without changing the durable full-card cursor.
     markupFastPath:String(env.SABY_MARKUP_FAST_PATH_ENABLED??"true").toLowerCase()!=="false",
@@ -1780,7 +1781,11 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       const collectAll=async(pollAfterHeading=false)=>{
         const all=await collectSabyVehicleInventory(page,{originalUrl:verifiedRoute,wait:delay,pollAfterHeading,
           openNavigation:pollAfterHeading,
-          onDiagnostic:diagnostic=>console.info("[SABY_VEHICLE_SUMMARY_DIAG] "+JSON.stringify({
+          // Opt out without changing any cursor or verified data.
+          sharedCategoryHydration:fullCard&&settings.sharedFleetHydration!==false,
+          preferNavigation:fullCard&&settings.sharedFleetHydration!==false,
+          onDiagnostic:diagnostic=>console.info("["+
+            (diagnostic.reason==="category_collection"?"SABY_FLEET_CATEGORY_TIMING":"SABY_VEHICLE_SUMMARY_DIAG")+"] "+JSON.stringify({
             inn:identity.inn,phase:pollAfterHeading?"after_heading":"initial",...diagnostic
           }))
         });

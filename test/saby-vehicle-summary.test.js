@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory,readSabyVehicleSummary} from "../src/sabyVehicleSummary.js";
+import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory,readSabyVehicleSummary,collectSabyPendingVehicleGroups} from "../src/sabyVehicleSummary.js";
 import {validateSabyFleetTreeSnapshot} from "../src/sabyFleetTree.js";
 const url="https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc";
 const raw=()=>({status:"observed",total:2,groups:[{key:"1",category:"Легковые",count:1,labels:["PEUGEOT PARTNER VP, 2023"]},{key:"2",category:"Коммерческие",count:1,labels:["PEUGEOT BOXER, 2024"]}]});
@@ -169,4 +169,65 @@ test("full navigation recovery uses exact existing tree collector and never clic
   const wrong=await collectSabyVehicleInventory(p,{...options,readTree:async(_p,{category,expected})=>
     ({status:"observed",expected,category,groupKey:"-99",rows:[{key:"1",label:"MODEL"}]})});
   assert.equal(wrong.fleet,null);assert.equal(trees,2);
+});
+
+test("all missing categories share 19 passive waits instead of waiting separately",async()=>{
+  const groups=["Легковые","Коммерческие","Грузовые","Автобусы"].map((category,i)=>({category,key:String(i+1),count:100,vehicles:null}));
+  let waits=0,reads=0,time=0;
+  const diag=[];
+  const ok=await collectSabyPendingVehicleGroups({url:()=>url},groups,{
+    originalUrl:url,now:()=>time,deadline:175000,
+    wait:async ms=>{assert.equal(ms,400);waits++;time+=ms;},
+    readTree:async()=>{reads++;return {status:"invalid",reason:"tree_missing"};},
+    collectTree:async()=>assert.fail("unavailable group not collectable"),
+    onDiagnostic:d=>diag.push(d)});
+  assert.equal(ok,true);
+  assert.equal(waits,19);
+  assert.equal(reads,80);
+  assert.equal(time,7600);
+  assert.equal(diag.length,4);
+  assert.ok(diag.every(d=>d.result==="incomplete"&&d.seed_polls===20));
+  assert.ok(groups.every(g=>g.vehicles===null));
+});
+test("a missing first category cannot delay ready later categories or prevent a late mount",async()=>{
+  const a={category:"Легковые",key:"1",count:2,vehicles:null},
+    b={category:"Грузовые",key:"2",count:1,vehicles:null};
+  const order=[];let waits=0;
+  const ok=await collectSabyPendingVehicleGroups({url:()=>url},[a,b],{
+    originalUrl:url,wait:async()=>{waits++;},
+    readTree:async(_p,{category,expected})=>{
+      if(category===a.category&&!order.length)return {status:"invalid",reason:"truck_category_missing"};
+      return {status:"observed",category,expected,groupKey:"-1",rows:[{key:"1",label:"MODEL"}],hasMore:false};
+    },
+    collectTree:async(_p,{category,expected})=>{
+      order.push(category);
+      return {status:"complete",reason:"complete",expected,rows:expected,clicks:0,samples:1,
+        same_company:true,vehicles:Array.from({length:expected},()=>({model:"MODEL",year:2024}))};
+    }});
+  assert.equal(ok,true);assert.equal(waits,0);
+  assert.deepEqual(order,[b.category,a.category]);
+  assert.equal(a.vehicles.length,2);assert.equal(b.vehicles.length,1);
+});
+test("shared category hydration refuses structural group mismatch and aborts on a different card",async()=>{
+  let current=url;
+  const a={category:"Грузовые",key:"-3",count:1,vehicles:null};
+  const p={url:()=>current};
+  const opts={originalUrl:url,collectTree:async()=>assert.fail("wrong group/card"),
+    readTree:async()=>({status:"observed",expected:1,category:a.category,groupKey:"-4",rows:[{}]})};
+  assert.equal(await collectSabyPendingVehicleGroups(p,[a],opts),true);
+  assert.equal(a.vehicles,null);
+  assert.equal(await collectSabyPendingVehicleGroups(p,[a],{...opts,
+    readTree:async()=>{current=url.replace("12345678-","22345678-");return {status:"observed",rows:[{}]};}}),false);
+  assert.equal(a.vehicles,null);
+});
+test("known menu recovery is preferred to repeated absent widget scans, but no second menu click follows an attempt",async()=>{
+  let reads=0,waits=0,calls=0;
+  const p={url:()=>url};
+  const opts={originalUrl:url,preferNavigation:true,openNavigation:true,pollAfterHeading:true,
+    readSummary:async()=>{reads++;return null;},wait:async()=>{waits++;},
+    recoverNavigation:async()=>{calls++;return {summary:validateSabyVehicleSummary(raw()),navigationAttempted:true};}};
+  const r=await collectSabyVehicleInventory(p,opts);
+  assert.equal(r.fleet.count,2);assert.equal(reads,1);assert.equal(waits,0);assert.equal(calls,1);
+  const x=await collectSabyVehicleInventory(p,{...opts,recoverNavigation:async()=>{calls++;return {summary:null,navigationAttempted:true};}});
+  assert.equal(x.fleet,null);assert.equal(calls,2);assert.equal(x.navigationAttempted,true);
 });
