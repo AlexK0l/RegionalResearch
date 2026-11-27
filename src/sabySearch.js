@@ -201,7 +201,7 @@ export async function waitForSabySearchHydration(page,{
   isListRoute=()=>false,
   findSearch=findSabyCompanySearch,
   timeoutMs=7000,settleMs=1400,
-  deferReacquireToSubmission=false,onTiming=()=>{},
+  deferReacquireToSubmission=false,mountedPreviousInn="",onTiming=()=>{},
   wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 }={}){
   if(typeof isListRoute!=="function"||!isListRoute())
@@ -214,8 +214,22 @@ export async function waitForSabySearchHydration(page,{
   };
   const first=await measure("initial_field_ms",()=>findSearch(page,{timeoutMs:readyTimeout}));
   if(!first?.field)return {ok:false,reason:first?.reason||"search_not_rendered"};
-  const settle=Math.max(1200,Math.min(2500,Number(settleMs)||1400));
-  await measure("field_settle_ms",()=>wait(settle));
+  // Only the independently revalidated, already-used mounted document
+  // can skip a cold handler-settle delay. Confirm the freshly found SAFE
+  // field still contains the prior exact query (boolean only). The
+  // submission must still reacquire the field, not reuse this locator.
+  if(/^(?:\d{10}|\d{12})$/.test(mountedPreviousInn)){
+    let matches=false;
+    try{
+      matches=await measure("mounted_field_proof_ms",()=>first.field.evaluate(
+        (el,previous)=>el.value===previous,mountedPreviousInn));
+    }catch{}
+    if(!isListRoute())return {ok:false,reason:"route_changed"};
+    if(matches!==true)return {ok:false,reason:"search_not_stable"};
+  }else{
+    const settle=Math.max(1200,Math.min(2500,Number(settleMs)||1400));
+    await measure("field_settle_ms",()=>wait(settle));
+  }
   if(!isListRoute())return {ok:false,reason:"route_changed"};
   const reacquireTimeoutMs=Math.min(3000,readyTimeout);
   if(deferReacquireToSubmission)

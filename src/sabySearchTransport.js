@@ -148,6 +148,11 @@ export function observeSabySearchTransport(page,inn,{armed:initiallyArmed=true}=
       counts.exact_inn_async_requests>0&&
       counts.exact_inn_async_requests===counts.exact_inn_successful_responses&&
       !counts.failed_requests&&!counts.http_401&&!counts.http_403&&!counts.http_429&&!counts.http_5xx,
+    // More conservative than scoped-empty classification: reusing the
+    // mounted catalog requires ALL observed async work to be idle.
+    // WebSocket dispatch has no matching completion proof here.
+    hasIdleCompletedExactInnQuery:()=>self.hasSettledExactInnResponse()&&
+      pending.size===0&&counts.exact_inn_ws_frames===0,
     stop(){
       if(stopped)return;
       stopped=true;

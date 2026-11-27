@@ -40,8 +40,8 @@ export function assessSabyCardEvidence(url, inn, expectedName, evidence) {
 
 // Existing broad identity scan: unchanged fallback for all other layouts.
 function scanSabyBroadCardDOM({inn}){
-  const visible=element=>{
-    const r=element.getBoundingClientRect(),s=getComputedStyle(element);
+  const visible=(element,r=element.getBoundingClientRect())=>{
+    const s=getComputedStyle(element);
     return r.width>0 && r.height>0 && s.display!=="none" &&
       s.visibility!=="hidden";
   };
@@ -56,7 +56,7 @@ function scanSabyBroadCardDOM({inn}){
     '[class*="card" i],[class*="overview" i],[class*="info" i]'
   )].filter(e=>{
     const r=e.getBoundingClientRect();
-    return visible(e) && r.width>220 && r.height>100;
+    return r.width>220 && r.height>100 && visible(e,r);
   }).slice(0,120);
   let scopedExactInn=false,scopedLabeledInn=false;
   for(const block of rootBlocks){
