@@ -1,0 +1,9 @@
+# Evidence-based fleet opening: interactive widget header
+
+PR177 live log: all 54 visits are retry; four positive partial summaries announce 179 vehicles, five vehicles in complete groups. Eight category-tile clicks across the four cards never mounted the expected drawer or changed the URL. More tile clicks or longer waits are not supported by this evidence.
+
+The user supplied a screenshot, exact outerHTML and a 12-second screen recording for INN 1657064926 (Современный ДОМ). The visible summary has seven passenger cars and one truck. Clicking the exact "Автопарк компании" header opens the complete eight-vehicle popup. The user closes it and opens it again via the same header. This is a manually confirmed opening action, not an automated VPS acceptance result.
+
+Exact selector: [data-qa="contractorCard-transport"] span[data-qa="contractorCard-transport__header"].contractor-Dialog-customHeader__clickable, with exact text and unique visible target. In shared all-category collection, replace the PR177 two tile clicks with at most ONE header click. Keep the fresh independently reconciled total, all category keys/counts, same-card guard, actual popup presence and bounded existing hydration wait. Never click a drawer-derived index, open/mounted/ambiguous popup, or an uncertain duplicate header. Do not retry a toggle. Legacy opt-out path is unchanged.
+
+Offline fixtures use the actual observed four named passenger vehicles, three separate unknown makes (no invented year), and MAZ 5551, 2012. Verify full count 8 after real presence, partial preservation otherwise, delayed mount, uniqueness, wrong-card/changed-total and no duplicate click. Diagnostics identify opening_target=widget_header. No raw HTML, screenshots, item IDs, vehicle registration identifiers or account information committed. No checkpoint reset, extra visits, DB/schema/dependency changes. Live confirmation on VPS is still required.
