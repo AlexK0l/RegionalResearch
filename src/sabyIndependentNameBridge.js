@@ -9,6 +9,9 @@ const compact=value=>String(value||"").normalize("NFKC")
   .replace(/\s+/gu," ").trim();
 const numbered=value=>compact(value).replace(/\s/gu,"");
 const legalTypes=[
+  // The registered form "ЗАО работников" is not ordinary ЗАО.
+  // Keep the entire registered name, except its explicit legal form.
+  ["ЗАОР",/^(?:ЗАОР|ЗАКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО\s+РАБОТНИКОВ)(?=$|[\s"«„(])/iu],
   ["ФГУП",/^(?:ФГУП|ФЕДЕРАЛЬНОЕ\s+ГОСУДАРСТВЕННОЕ\s+УНИТАРНОЕ\s+ПРЕДПРИЯТИЕ)(?=$|[\s"«„(])/iu],
   ["ГУП",/^(?:ГУП|ГОСУДАРСТВЕННОЕ\s+УНИТАРНОЕ\s+ПРЕДПРИЯТИЕ)(?=$|[\s"«„(])/iu],
   ["МУП",/^(?:МУП|МУНИЦИПАЛЬНОЕ\s+УНИТАРНОЕ\s+ПРЕДПРИЯТИЕ)(?=$|[\s"«„(])/iu]
@@ -23,7 +26,7 @@ function unitaryName(value){
     }
   }
   if(!form){
-    const end=/,\s*(ФГУП|ГУП|МУП)\s*$/iu.exec(name);
+    const end=/,\s*(ФГУП|ГУП|МУП|ЗАОР)\s*$/iu.exec(name);
     if(end){
       form=end[1].toUpperCase();
       name=name.slice(0,end.index).trim();
@@ -44,6 +47,18 @@ export function sameRegisteredName(a,b){
   const formA=auditLegalForm(a),formB=auditLegalForm(b);
   if(formA&&formB&&formA!==formB)return false;
   return sabyNameMatches(a,b);
+}
+
+// One observed Saby DISPLAY decoration, not a general parenthesis
+// stripper or an identity rule. Only call this after obtaining the exact
+// registered INN/KPP/OGRN record. Never use it to normalize research
+// names, registered requisite fields, branch selection or search rows.
+export function sameRegisteredSabyDisplayName(display,registered){
+  if(sameRegisteredName(display,registered))return true;
+  if(auditLegalForm(registered)!=="ЗАОР")return false;
+  const title=compact(display);
+  const marker=/^(.+,\s*ЗАОР)\s*\(Бухгалтерия\s+Управления\)$/iu.exec(title);
+  return Boolean(marker&&sameRegisteredName(marker[1],registered));
 }
 
 export function independentRegistryRoute(ogrn){
@@ -163,13 +178,15 @@ export function compareIndependentRegistryAlias({
   // Saby "Название" in requisites may be registered full OR short. Its
   // independently observed H1 must also equal one of those aliases.
   const requisitesRole=registryRole(sabyShortName);
-  const titleRole=registryRole(sabyPublicTitle);
+  const displayFull=sameRegisteredSabyDisplayName(sabyPublicTitle,record.full_name);
+  const displayShort=sameRegisteredSabyDisplayName(sabyPublicTitle,record.short_name);
+  const titleRole=displayFull&&displayShort?"both":displayFull?"full":displayShort?"short":"none";
   const roles={source_role:sourceRole,
     requisites_role:requisitesRole,title_role:titleRole};
   if(requisitesRole==="none"||titleRole==="none")
     return {status:"review",reason:"independent_short_name_mismatch",...roles};
   return {status:"verified",reason:"independent_registry_alias_verified",
-    official_full_name:record.full_name,inn,kpp,ogrn,...roles};
+    official_full_name:record.full_name,official_short_name:record.short_name,inn,kpp,ogrn,...roles};
 }
 export async function verifyIndependentRegistryAlias(page,options,{
   timeoutMs=12000

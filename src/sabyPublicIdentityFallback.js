@@ -8,7 +8,7 @@ import {compareSabyPrivateDetailUrl,summarizeSabyPrivateRouteDelta} from "./saby
 import {sabyInn,sabyNameMatches,sabyNameTokens} from "./sabyEnrichment.js";
 import {auditSelectSearchResult,auditExtractRequisites} from "./sabyIdentityAudit.js";
 import {verifyPublicSabyIdentity} from "./sabyPublicRegisteredIdentity.js";
-import {sameRegisteredName} from "./sabyIndependentNameBridge.js";
+import {sameRegisteredName,sameRegisteredSabyDisplayName} from "./sabyIndependentNameBridge.js";
 
 const label=(line,key)=>{
   const s=String(line||"").trim();
@@ -270,7 +270,9 @@ export function acceptSabyPublicIdentityFallback({
     // comparison after all independent INN/KPP/OGRN proof succeeded.
     (independentlyProven&&(
       (publicName&&sameRegisteredName(x,publicName)) ||
-      sameRegisteredName(x,registered))));
+      sameRegisteredName(x,registered) ||
+      (publicResult.official_short_name&&
+        sameRegisteredSabyDisplayName(x,publicResult.official_short_name)))));
   if(!privateName)return reject("private_public_name_disconnected");
   return {
     ok:true,reason:"registered_alias_verified",

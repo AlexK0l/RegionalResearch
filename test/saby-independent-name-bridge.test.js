@@ -309,3 +309,31 @@ test("public registry failures have safe, stage-specific reason codes",async()=>
     assert.doesNotMatch(JSON.stringify(result),/secret|4703144282|1167847156300/);
   }
 });
+
+test("observed ZAOR display decoration can bridge exact official full and short names only after all three IDs agree",async()=>{
+  const {sameRegisteredSabyDisplayName}=await import("../src/sabyIndependentNameBridge.js");
+  const {auditLegalForm}=await import("../src/sabyIdentityAudit.js");
+  const officialFull='ЗАКРЫТОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО РАБОТНИКОВ "НАРОДНОЕ ПРЕДПРИЯТИЕ НАБЕРЕЖНОЧЕЛНИНСКИЙ КАРТОННО-БУМАЖНЫЙ КОМБИНАТ ИМ.С.П.ТИТОВА"';
+  const officialShort='ЗАОР "НП НЧ КБК ИМ.С.П.ТИТОВА"';
+  const decorated='НП НЧ КБК им.С.П.Титова, ЗАОР (Бухгалтерия Управления)';
+  const r={inn:"1650017638",kpp:"165001001",ogrn:"1021602014500",
+    full_name:officialFull,short_name:officialShort};
+  const opt={expectedInn:r.inn,expectedKpp:r.kpp,expectedOgrn:r.ogrn,
+    sourceName:officialShort,sabyShortName:officialFull,sabyPublicTitle:decorated,record:r};
+  assert.equal(auditLegalForm(officialFull),"ЗАОР");
+  assert.equal(auditLegalForm(officialShort),"ЗАОР");
+  assert.equal(sameRegisteredName(decorated,officialShort),false);
+  assert.equal(sameRegisteredSabyDisplayName(decorated,officialShort),true);
+  const out=compareIndependentRegistryAlias(opt);
+  assert.equal(out.status,"verified");
+  assert.equal(out.official_short_name,officialShort);
+  for(const change of [
+    {sourceName:decorated},{sabyShortName:decorated},
+    {sabyPublicTitle:decorated.replace("ЗАОР","ЗАО")},
+    {sabyPublicTitle:decorated.replace("Бухгалтерия Управления","Филиал")},
+    {sabyPublicTitle:decorated.replace("Бухгалтерия Управления","Другое название")},
+    {sabyPublicTitle:decorated.replace("Титова","Иванова")},
+    {expectedInn:"7707083893"},{expectedKpp:"165001002"},{expectedOgrn:"1021602014501"}
+  ])assert.notEqual(compareIndependentRegistryAlias({...opt,...change}).status,"verified");
+  assert.equal(sameRegisteredName(officialShort,officialShort.replace("ЗАОР","ЗАО")),false);
+});

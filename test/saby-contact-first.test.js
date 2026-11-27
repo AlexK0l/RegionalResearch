@@ -639,3 +639,39 @@ test("finished legacy cursor is never silently migrated or re-opened",async()=>{
   assert.equal(out.passState.phase_index,4);
   assert.deepEqual(out.passState.attempted,old.attempted);
 });
+
+test("migrated full pass prioritizes unvisited phone gaps without dropping previously attempted companies",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета","B");
+  const old={version:1,strategy:"combined_visible_v1",fleet_scope:"all_commercial_v1",
+    planned_inns:[innA,innB],attempted:["contacts:"+innA],verified_inns:[],
+    phase_index:0};
+  const calls=[];
+  const out=await runSabyContactFirst({result:result([a,b]),env:fullEnv,passState:old,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{calls.push(r["ИНН"]);return record(r,sections);}});
+  assert.deepEqual(calls,[innB,innA]);
+  assert.ok(out.passState.attempted.includes("contacts:"+innA));
+  assert.equal(out.stats.fullSweepCompleted,true);
+});
+test("existing entity-specific official cessation is skipped, never counted as completed collection, and remains in input for final QA",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета");
+  a.__evidence.legal_status_verification={status:"liquidated",inn:innA,
+    ogrn:"1027700132195",source_url:"https://pb.nalog.ru/company.html?inn="+innA,
+    evidence_excerpt:"ИНН "+innA+" юридическое лицо ликвидировано"};
+  const db=result([a,b]),calls=[];
+  const out=await runSabyContactFirst({result:db,env:fullEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{calls.push(r["ИНН"]);return record(r,sections);}});
+  assert.deepEqual(calls,[innB]);
+  assert.equal(db.direct_buyers.length,2);
+  assert.equal(out.stats.skippedLegalCessation,1);
+  assert.deepEqual(out.skippedLegalCessationInns,[innA]);
+  assert.deepEqual(out.completedInns,[innB]);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  // A third-party hint or absent search result is not official cessation.
+  const unproven=row(innA,"Альфа");
+  unproven.__evidence.legal_status_verification={...a.__evidence.legal_status_verification,
+    source_url:"https://example.test/1659029846"};
+  const next=await runSabyContactFirst({result:result([unproven]),env:fullEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>record(r,sections)});
+  assert.equal(next.stats.skippedLegalCessation,0);
+  assert.equal(next.stats.fullCardVisits,1);
+});

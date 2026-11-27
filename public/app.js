@@ -712,8 +712,10 @@ function setProgress(p){
     e.contactBox.hidden=false;
     e.contactBox.textContent=(stats.passCount?
       "Проход "+stats.passIndex+"/"+stats.passCount+" · "+Number(stats.passProcessed||0)+" / "+Number(stats.passTotal||0)+" · ":
-      "")+"Компаний проверено: "+Number(p.sabyCurrent||0)+
+      "")+"Посещено компаний: "+Number(p.sabyCurrent||0)+
       " / "+Number(p.sabyTotal||0)+
+      (Number.isFinite(stats.verified)?" · подтверждено: "+stats.verified:"")+
+      (stats.skippedLegalCessation?" · прекращена деятельность: "+stats.skippedLegalCessation:"")+
       " · телефоны: +"+Number(stats.phonesAdded||0)+
       (stats.phoneCoverage?" ("+Number(stats.phoneCoverage.with_phone||0)+" / "+Number(stats.phoneCoverage.rows||0)+")":"")+
       " · транспорт: +"+Number(stats.transportsAdded||0)+

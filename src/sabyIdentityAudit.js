@@ -9,6 +9,7 @@ const lineList=text=>String(text||"").slice(0,135000)
   .split(/[\r\n]+/).map(compact).filter(Boolean);
 const fieldLimit=value=>compact(value).slice(0,250);
 const legalTypes=[
+  ["ЗАОР",/^(?:ЗАОР|ЗАКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО\s+РАБОТНИКОВ)(?=$|[\s"«„(])/iu],
   ["ПАО",/^(?:ПАО|ПУБЛИЧНОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
   ["ОАО",/^(?:ОАО|ОТКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
   ["ЗАО",/^(?:ЗАО|ЗАКРЫТОЕ\s+АКЦИОНЕРНОЕ\s+ОБЩЕСТВО)(?=$|[\s"«„(])/i],
@@ -20,7 +21,7 @@ export function auditLegalForm(name) {
   const text=compact(name).replace(/^[«"']+|[»"']+$/g,"");
   for(const [type,re] of legalTypes)
     if(re.test(text))return type;
-  const suffix=/,\s*(ООО|ПАО|АО|ОАО|ЗАО|ИП)\s*$/i.exec(text);
+  const suffix=/,\s*(ООО|ПАО|АО|ОАО|ЗАО|ЗАОР|ИП)\s*$/i.exec(text);
   return suffix?suffix[1].toUpperCase():"";
 }
 export function auditCompareName(expected,observed) {
