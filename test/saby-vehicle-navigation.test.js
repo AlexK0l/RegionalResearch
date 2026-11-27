@@ -58,7 +58,7 @@ test("navigation rejects total changes and does not click ambiguous or absent co
   }
 });
 test("generic navigation scanner and drawer index use exact scoped real-source structures",()=>{
-  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle,oldWidth=globalThis.innerWidth;
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle,oldWidth=globalThis.innerWidth,oldHeight=globalThis.innerHeight;
   const node=(text="",attrs={},children={})=>({textContent:text,getAttribute:k=>attrs[k]??null,
     querySelectorAll:s=>children[s]||[],querySelector:s=>children[s]?.[0]||null,
     getBoundingClientRect:()=>({width:300,height:300,right:1400})});
@@ -84,9 +84,16 @@ test("generic navigation scanner and drawer index use exact scoped real-source s
   try{
     globalThis.getComputedStyle=()=>({display:"flex",visibility:"visible",opacity:"1"});
     globalThis.innerWidth=1440;
+    globalThis.innerHeight=800;
     globalThis.document=fixture([nav("2 всего")]);
     assert.deepEqual(scanSabyFleetNavigationDOM(),{status:"found",total:2});
     assert.deepEqual(scanSabyVehicleDrawerIndexDOM(["Легковые","Коммерческие"]),index());
+    panel.closest=s=>s==='[templateforlog="ContractorCard/Cards/transportCard:All"]'?{}:null;
+    panel.getBoundingClientRect=()=>({width:210,height:240,left:100,right:310,top:50,bottom:290});
+    assert.deepEqual(scanSabyVehicleDrawerIndexDOM(["Легковые","Коммерческие"]),index());
+    panel.closest=()=>null;
+    assert.equal(scanSabyVehicleDrawerIndexDOM(["Легковые","Коммерческие"]).status,"missing");
+    panel.getBoundingClientRect=()=>({width:300,height:300,right:1400});
     globalThis.document=fixture([nav("2")]);
     assert.deepEqual(scanSabyFleetNavigationDOM(),{status:"found",total:null});
     globalThis.document=fixture([nav("2 всего"),nav("2 всего")]);
@@ -96,5 +103,6 @@ test("generic navigation scanner and drawer index use exact scoped real-source s
     if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
     if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
     if(oldWidth===undefined)delete globalThis.innerWidth;else globalThis.innerWidth=oldWidth;
+    if(oldHeight===undefined)delete globalThis.innerHeight;else globalThis.innerHeight=oldHeight;
   }
 });

@@ -12,7 +12,9 @@ const excluded=new RegExp(SABY_NON_VEHICLE_LABEL_PATTERN,"iu");
 export function isSabyTruckVehicleLabel(input) {
   if(typeof input!=="string")return false;
   const text=input.replace(/\s+/g," ").trim();
-  return text.length>=3&&text.length<=150&&
+  // Live source contains the exact two-letter designation DS, including
+  // a record without a year. Do not admit arbitrary short metadata.
+  return (text.length>=3||/^DS$/iu.test(text))&&text.length<=150&&
     /[a-zа-яё]/iu.test(text)&&!excluded.test(text)&&
     !/(?:\.\.\.|…)\s*$/.test(text);
 }

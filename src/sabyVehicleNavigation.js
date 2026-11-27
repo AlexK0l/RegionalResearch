@@ -42,8 +42,11 @@ export function scanSabyVehicleDrawerIndexDOM(categories){
   const norm=t=>String(t||"").replace(/\s+/g," ").trim();
   const visible=e=>{
     const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-    return r.width>230&&r.height>260&&r.right>innerWidth*.6&&
-      s.display!=="none"&&s.visibility!=="hidden";
+    if(s.display==="none"||s.visibility==="hidden"||s.visibility==="collapse"||
+       s.opacity==="0"||r.width<=0||r.height<=0)return false;
+    if(r.width>230&&r.height>260&&r.right>innerWidth*.6)return true;
+    return Boolean(e.closest?.('[templateforlog="ContractorCard/Cards/transportCard:All"]'))&&
+      r.right>0&&r.left<innerWidth&&r.bottom>0&&r.top<innerHeight;
   };
   const panels=[...document.querySelectorAll(".controls-StackTemplate-content")]
     .filter(e=>visible(e)&&[...e.querySelectorAll(".controls-StackTemplate__caption [title]")]
