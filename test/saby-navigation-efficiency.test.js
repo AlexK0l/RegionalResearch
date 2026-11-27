@@ -23,6 +23,9 @@ test("verified navigation observation survives changed widget route; unsafe or c
   assert.equal(rememberSabyNavigationHint(r,record({identity:{inn,name,verified:false}})),false);
   assert.equal(storedSabyNavigationHint(r),route);
   assert.equal(r.__evidence.saby,undefined);
+  const invalid=row();
+  assert.equal(rememberSabyNavigationHint(invalid,record({verified_navigation_url:null})),false);
+  assert.equal(storedSabyNavigationHint(invalid),null);
 });
 
 test("legacy cursor remembers verified navigation even with absent widgets, without changing its attempts",async()=>{

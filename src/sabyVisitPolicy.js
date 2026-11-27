@@ -63,7 +63,10 @@ export function safeSabyNavigationUrl(raw){
 }
 export function rememberSabyNavigationHint(row,record){
   const inn=sabyInn(row?.["ИНН"]),name=String(row?.["Организация"]||"").trim(),
-    url=safeSabyNavigationUrl(record?.verified_navigation_url??record?.source_url);
+    // Explicit null means the actual verified route failed the allowlist.
+    // Never fall back to a later widget URL in that case.
+    url=safeSabyNavigationUrl(Object.hasOwn(record||{},"verified_navigation_url")?
+      record.verified_navigation_url:record?.source_url);
   if(!inn||!name||!url||record?.identity?.verified!==true||
     sabyInn(record.identity.inn)!==inn||!sabyNameMatches(name,record.identity.name)||
     !Number.isFinite(Date.parse(record.collected_at)))return false;

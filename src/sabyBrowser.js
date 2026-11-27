@@ -5,7 +5,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { extractSabyPhoneDetails } from "./phoneExport.js";
 import { readSabyFinancials } from "./sabyFinancials.js";
-import {storedSabyNavigationHint} from "./sabyVisitPolicy.js";
+import {storedSabyNavigationHint,safeSabyNavigationUrl} from "./sabyVisitPolicy.js";
 import {submitSabyCompanySearch,waitForSabySearchHydration}
   from "./sabySearch.js";
 import {observeSabySearchTransport,shouldRecoverSilentSabySearch}
@@ -1461,7 +1461,7 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
     // Navigation-only hint captured immediately after identity proof,
     // before any section/widget changes the route. Its strict URL
     // allowlist and fresh ownership verification remain mandatory.
-    verified_navigation_url:verifiedRoute,
+    verified_navigation_url:safeSabyNavigationUrl(verifiedRoute),
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
     financials:{status:"missing"},errors:[],timing};
