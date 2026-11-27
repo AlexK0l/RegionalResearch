@@ -17,6 +17,7 @@ import {sabyEligibleRows,sabyInn,sabyStoredSectionCoverage,sabyWorkGaps,sabyHasW
 import {sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor,
   sabyVehicleCategoryScope,SABY_ALL_VEHICLE_CATEGORIES} from "./sabyVisitPolicy.js";
 import {contactPhoneCoverage} from "./publicContactEnrichment.js";
+import {sabyPassFinished} from "./sabyPassCursor.js";
 
 // Older completed regional studies may predate Stage12 entirely. Derive a
 // bounded Saby work plan strictly from their existing, finalized commercial
@@ -73,7 +74,7 @@ export function validateSabyOnlySource(value, {pipelineVersion=PIPELINE_VERSION,
     return {ok:false,code:"SABY_SNAPSHOT_INCOMPLETE"};
 
   const raw=checkpoint.saby_pass_state;
-  const ongoing=validSabyPassCursor(raw)&&(memoryResume||Number(raw.phase_index)<4)?raw:null;
+  const ongoing=validSabyPassCursor(raw)&&(memoryResume||!sabyPassFinished(raw))?raw:null;
   const plan=sabyEligibleRows(result,{
     includeFinanceGaps:contactFirst||raw?.version===1,
     includeAll:contactFirst,
@@ -165,7 +166,7 @@ export async function runSabyOnlyContinuation({
   // the first durable safe point. A memory pause there must not accidentally
   // resurrect the already exhausted parent sweep.
   const savedPass=source.saby_pass_state;
-  const contactPassState=savedPass&&(memoryResume||Number(savedPass.phase_index)<4)?savedPass:null;
+  const contactPassState=validSabyPassCursor(savedPass)&&(memoryResume||!sabyPassFinished(savedPass))?savedPass:null;
   const startedAt=Date.now();
   const rootJobId=String(source.saby_continuation_root_job_id||sourceJobId);
   let snapshot={

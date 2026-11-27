@@ -83,3 +83,34 @@ test("one scan retains exact token boundaries, distinct cards and visibility",()
     if(saved.getComputedStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=saved.getComputedStyle;
   }
 });
+
+test("layout and rendered text are cached only within one synchronous result scan",()=>{
+  const reads=new Map();
+  const make=(text,rect,children=[])=>{
+    const n={textContent:text,children,hidden:false,
+      get innerText(){const r=reads.get(n);r.text++;return this.textContent;},
+      getBoundingClientRect(){const r=reads.get(n);r.layout++;return rect;}};
+    reads.set(n,{layout:0,style:0,text:0});
+    children.forEach(x=>{x.parentElement=n;});return n;
+  };
+  const leafA=make("ИНН "+inn,{x:10,y:5,width:110,height:15});
+  const leafB=make("ИНН "+inn,{x:10,y:25,width:110,height:15});
+  const parent=make(name+"\nИНН "+inn+"\nИНН "+inn,
+    {x:5,y:0,width:420,height:60},[leafA,leafB]);
+  const saved={document:globalThis.document,getComputedStyle:globalThis.getComputedStyle};
+  try{
+    globalThis.document={querySelectorAll:()=>[parent,leafA,leafB]};
+    globalThis.getComputedStyle=e=>{reads.get(e).style++;
+      return {visibility:e.hidden?"hidden":"visible",display:"block"};};
+    const args={inn,branchSource:"филиал",includeInnOnly:true,includeBranches:true};
+    assert.equal(scanSabyResultDOM(args).rows.length,2);
+    assert.deepEqual(reads.get(parent),{layout:1,style:1,text:1});
+    parent.hidden=true;
+    assert.equal(scanSabyResultDOM(args).rows.length,0);
+    assert.equal(reads.get(parent).layout,2,"fresh geometry on next poll");
+    assert.equal(reads.get(parent).style,2,"fresh visibility on next poll");
+  }finally{
+    if(saved.document===undefined)delete globalThis.document;else globalThis.document=saved.document;
+    if(saved.getComputedStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=saved.getComputedStyle;
+  }
+});

@@ -512,3 +512,130 @@ test("partial nontruck categories persist across full retries and never synthesi
   assert.match(db.direct_buyers[0]["Наличие транспорта"],/неполный перечень/);
   assert.match(db.direct_buyers[0]["Наличие транспорта"],/PEUGEOT BOXER/);
 });
+
+const fullEnv={...env,SABY_FULL_CARD_PASS_ENABLED:"true"};
+test("one verified full card visit per company collects all requested sections and skips resolved rows",async()=>{
+  const db=result(),calls=[],saved=[];
+  const out=await runSabyContactFirst({result:db,env:fullEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});return record(r,sections);
+    },persistCheckpoint:async(_phase,p)=>saved.push(structuredClone(p))});
+  assert.equal(out.passState.strategy,"full_card_v3");
+  assert.equal(out.stats.passCount,2);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.equal(out.stats.fullCardVisits,2);
+  assert.equal(out.stats.totalAttempts,2);
+  assert.deepEqual(calls.map(c=>c.inn),[innA,innB]);
+  assert.ok(calls.every(c=>c.contacts&&c.financials&&c.trucks&&c.fullCard&&
+    c.combinedDetails&&!c.quickDetails));
+  assert.deepEqual(out.deferredInns,[]);
+  assert.deepEqual(out.passState.attempted,["full:"+innA,"full:"+innB]);
+  assert.deepEqual(out.passState.full_card_attempts["full:"+innA],
+    {contacts:true,financials:true,trucks:true});
+  assert.equal(saved.at(-1).saby_pass_state.phase_index,2);
+});
+test("full card retries only unresolved sections; no contacts never suppresses finances or fleet",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const out=await runSabyContactFirst({result:db,env:fullEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({...sections});
+      return record(r,sections,{emptyContacts:true});
+    }});
+  assert.deepEqual(calls.map(c=>[c.contacts,c.financials,c.trucks]),[[true,true,true],[true,false,false]]);
+  assert.equal(out.stats.phonesAdded,0);
+  assert.equal(out.stats.vehiclesVerified,1);
+  assert.equal(out.stats.revenuesAdded,1);
+  assert.equal(out.stats.employeesAdded,1);
+  assert.deepEqual(out.deferredInns,[innA]);
+  assert.equal(out.stats.fullSweepCompleted,true);
+});
+test("full card pass keeps finance-only and fleet-only work independent of contact gaps",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета");
+  for(const r of [a,b]){
+    r["Телефон"]=r===a?"74951234567":"74951234568";
+    r["Электронная почта"]=r===a?"sales@alpha.ru":"sales@beta.ru";
+  }
+  b["Выручка последнего подтвержденного года"]=1000000;b["Численность"]=12;
+  const db={direct_buyers:[],intermediaries:[a],leasing:[b],statistics:[]};
+  const calls=[];
+  const out=await runSabyContactFirst({result:db,env:fullEnv,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});return record(r,sections);
+    }});
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.equal(calls.length,2);
+  assert.deepEqual(calls.map(c=>[c.inn,c.contacts,c.financials,c.trucks]),
+    [[innA,false,true,true],[innB,false,false,true]]);
+});
+test("migrate unfinished quick cursor without counting quick details as full or repeating completed contacts",async()=>{
+  const a=row(innA,"Альфа"),b=row(innB,"Бета","B");
+  a["Телефон"]="74951234567";a["Электронная почта"]="sales@alpha.ru";
+  const db=result([a,b]),calls=[],saved=[];
+  const old={version:1,strategy:"combined_visible_v1",fleet_scope:"all_commercial_v1",
+    planned_inns:[innA,innB],attempted:["contacts:"+innA],verified_inns:[innA],
+    phase_index:0,stats:{phonesAdded:1,emailsAdded:1,verified:1},timing:{visits:1}};
+  const oldCopy=structuredClone(old);
+  const out=await runSabyContactFirst({result:db,env:fullEnv,passState:old,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({inn:r["ИНН"],...sections});return record(r,sections);
+    },persistCheckpoint:async(_phase,p)=>saved.push(structuredClone(p))});
+  assert.deepEqual(old,oldCopy);
+  assert.equal(saved[0].saby_pass_state.strategy,"full_card_v3");
+  assert.deepEqual(saved[0].saby_pass_state.attempted,old.attempted);
+  assert.deepEqual(saved[0].saby_pass_state.full_card_attempts,{});
+  assert.equal(saved[0].saby_pass_state.full_card_migration.legacy_attempts,1);
+  assert.equal(out.stats.totalAttempts,3);
+  assert.equal(out.stats.legacyAttempts,1);
+  assert.equal(out.stats.phonesAdded,2);
+  assert.deepEqual(calls.map(c=>[c.inn,c.contacts,c.financials,c.trucks]).sort(),
+    [[innA,false,true,true],[innB,true,true,true]].sort());
+  assert.deepEqual(out.deferredInns,[]);
+});
+test("migration honors old contact retry and attested combined detail budgets",async()=>{
+  const db=result([row(innA,"Альфа")]),calls=[];
+  const old={version:1,strategy:"combined_retry_full_v2",fleet_scope:"all_commercial_v1",
+    planned_inns:[innA],attempted:["contacts:"+innA,"contact_retry:"+innA],
+    combined_detail_attempts:{[innA]:{financials:true,trucks:false}},phase_index:2};
+  const out=await runSabyContactFirst({result:db,env:fullEnv,passState:old,sessionRunner,
+    collectSections:async(_p,r,_s,sections)=>{
+      calls.push({...sections});
+      const value=record(r,sections);value.trucks={status:"missing"};value.financials={status:"missing"};
+      return value;
+    }});
+  assert.deepEqual(calls.map(c=>[c.contacts,c.financials,c.trucks]),[[false,true,true],[false,false,true]]);
+  assert.equal(out.stats.legacyAttempts,2);
+  assert.deepEqual(out.deferredInns,[innA]);
+  assert.equal(out.stats.fullSweepCompleted,true);
+});
+test("new cursor is pinned and committed section masks survive memory pause without redoing completed visits",async()=>{
+  let saved;
+  const calls=[];
+  const collectSections=async(_p,r,_s,sections)=>{
+    calls.push(r["ИНН"]);return record(r,sections);
+  };
+  await assert.rejects(runSabyContactFirst({result:result(),env:fullEnv,sessionRunner,
+    collectSections,persistCheckpoint:async(_phase,p)=>{
+      saved=structuredClone(p);
+      if(p.saby_pass_state.attempted.length===1)throw new MemoryPauseError();
+    }}),isMemoryPause);
+  assert.deepEqual(saved.saby_pass_state.attempted,["full:"+innA]);
+  const out=await runSabyContactFirst({result:saved.final_result,env:{...fullEnv,SABY_FULL_CARD_PASS_ENABLED:"false"},
+    passState:saved.saby_pass_state,sessionRunner,collectSections});
+  assert.deepEqual(calls,[innA,innB]);
+  assert.equal(out.passState.strategy,"full_card_v3");
+  assert.equal(out.stats.fullSweepCompleted,true);
+  const broken=structuredClone(saved.saby_pass_state);
+  broken.full_card_attempts={};
+  await assert.rejects(runSabyContactFirst({result:saved.final_result,env:fullEnv,
+    passState:broken,sessionRunner:async()=>assert.fail("corrupt cursor must not open browser"),
+    collectSections}),/SABY_FULL_CARD_CURSOR_INVALID/);
+});
+test("finished legacy cursor is never silently migrated or re-opened",async()=>{
+  const old={version:1,strategy:"combined_visible_v1",planned_inns:[innA],
+    attempted:["contacts:"+innA,"details:"+innA],phase_index:4};
+  const out=await runSabyContactFirst({result:result([row(innA,"Альфа")]),env:fullEnv,passState:old,
+    sessionRunner:async()=>assert.fail("finished legacy cursor must not reopen")});
+  assert.equal(out.passState.strategy,"combined_visible_v1");
+  assert.equal(out.passState.phase_index,4);
+  assert.deepEqual(out.passState.attempted,old.attempted);
+});
