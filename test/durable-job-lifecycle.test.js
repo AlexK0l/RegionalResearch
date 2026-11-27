@@ -24,21 +24,19 @@ test("hard process death preserves active identity and checkpoint without replay
       const job=(i)=>({id:ids[i],region:"Region "+i,mode:"full",state:"active",
         createdAt:Date.now()+i,data:{},progress:{percent:45}});
       for(let i=0;i<4;i++)s.saveQueuedResearchJob(job(i));
-      s.saveResearchLifecycle(job(0),"active");
-      s.takeQueuedResearchJob(ids[0]);
+      const first=job(0);first.queuedPersisted=true;
+      s.beginResearchExecution(first);
       await s.saveCheckpoint(ids[0],{version:1,region:"Region 0",phase:"discovery",completed_stage:4});
       s.saveResearchLifecycle(job(1),"active"); // died before consuming intent
-      s.takeQueuedResearchJob(ids[2]);
-      s.saveResearchLifecycle(job(2),"active");
-      await s.saveCheckpoint(ids[2],{version:1,region:"Region 2",phase:"completed",final_result:{}});
-      const done=job(2);done.result={resultStored:true,counts:{direct_buyers:1}};
-      s.saveResearchLifecycle(done,"completed");
-      s.takeQueuedResearchJob(ids[3]);
-      s.saveResearchLifecycle(job(3),"active");
-      s.saveResearchLifecycle(job(3),"cancelled");
+      const done=job(2);done.queuedPersisted=true;s.beginResearchExecution(done);
+      await s.saveCheckpoint(ids[2],{version:1,region:"Region 2",phase:"completed",
+        final_result:{direct_buyers:[{}],intermediaries:[],leasing:[],statistics:[]}},done);
+      // Hard kill after final checkpoint but before the executor returns.
+      s.cancelResearchIntent(job(3));
       process.kill(process.pid,"SIGKILL");
     `);
-    assert.ok(killed.signal==="SIGKILL"||killed.status!==0,String(killed.stderr));
+    assert.equal(killed.error,undefined,String(killed.error));
+    assert.ok(killed.signal==="SIGKILL"||process.platform==="win32"&&killed.status!==0,String(killed.stderr));
     const checked=run(`
       console.log(JSON.stringify({queued:s.listQueuedResearchJobs(),history:s.listResearchLifecycle()}));
     `);
@@ -51,6 +49,8 @@ test("hard process death preserves active identity and checkpoint without replay
     assert.equal(by[ids[0]].summary.phase,"discovery");
     assert.equal(by[ids[2]].state,"completed");
     assert.equal(by[ids[2]].result.resultStored,true);
+    assert.equal(by[ids[2]].result.counts.direct_buyers,1);
+    assert.equal(by[ids[2]].percent,100);
     assert.equal(by[ids[3]].state,"cancelled");
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
@@ -87,4 +87,31 @@ test("shutdown before admitted microtask does not consume its job",async()=>{
   assert.equal(queue.snapshot().pending,1);
   assert.equal(queue.snapshot().active,0);
   queue.close();
+});
+
+test("admission retains inline imported checkpoint, cancellation and superseded history are safe",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"rr-lifecycle-inline-"));
+  try{
+    const result=spawnSync(process.execPath,["--input-type=module","-e",
+      "import * as s from "+JSON.stringify(store)+"; const ids="+JSON.stringify(ids)+";"+`
+      const j={id:ids[0],mode:"resume",region:"R",createdAt:Date.now(),state:"waiting",
+        progress:{},data:{checkpoint:{version:1,region:"R",phase:"discovery",completed_stage:3}}};
+      s.saveQueuedResearchJob(j);j.queuedPersisted=true;
+      s.beginResearchExecution(j);
+      if((await s.loadCheckpoint(j.id)).completed_stage!==3)throw Error("lost inline");
+      if(s.listQueuedResearchJobs().length)throw Error("stale intent");
+      const bad={...j,id:ids[1]};
+      try{s.beginResearchExecution(bad);throw Error("unexpected success");}
+      catch(e){if(e.message!=="QUEUED_RESEARCH_JOB_NOT_DURABLE")throw e;}
+      if(s.listResearchLifecycle().some(x=>x.id===bad.id))throw Error("failed transaction committed");
+      await s.markCheckpointStatus(j.id,"superseded");
+      if(s.listResearchLifecycle().some(x=>x.id===j.id))throw Error("superseded offered for replay");
+      const waiting={id:ids[2],mode:"full",region:"W",createdAt:Date.now(),state:"waiting",data:{},progress:{}};
+      s.saveQueuedResearchJob(waiting);s.cancelResearchIntent(waiting);
+      if(s.listQueuedResearchJobs().length)throw Error("cancelled resurrected");
+      if(s.listResearchLifecycle().find(x=>x.id===waiting.id)?.state!=="cancelled")throw Error("cancel lost");
+      `],{env:{...process.env,CHECKPOINT_DB_PATH:path.join(dir,"db.sqlite"),PIPELINE_VERSION:"1"},
+        encoding:"utf8",timeout:15000});
+    assert.equal(result.status,0,result.stderr);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

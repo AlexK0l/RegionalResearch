@@ -36,8 +36,8 @@ import {
   supersedeRegionCheckpoints,
   saveMemoryPausedJob,clearMemoryPausedJob,listMemoryPausedJobs,
   saveQueuedResearchJob,listQueuedResearchJobs,loadQueuedResearchSource,
-  takeQueuedResearchJob,clearQueuedResearchJob,
-  saveResearchLifecycle,listResearchLifecycle,
+  clearQueuedResearchJob,
+  saveResearchLifecycle,listResearchLifecycle,beginResearchExecution,cancelResearchIntent,checkpointMetadata,
   shrinkCheckpointMemory,claimIdleMemoryRecycle,
   getOpenAIBillingHold,setOpenAIBillingHold,clearOpenAIBillingHold
 } from "./src/checkpointStore.js";
@@ -509,15 +509,12 @@ async function executeJob(job, apiKey) {
     }));
 
     try {
-      // Record active execution before consuming queue/pause intent. If
-      // killed between the writes, the still-present intent wins on restart.
-      // An orphaned active marker is visible, but never automatically replayed.
-      saveResearchLifecycle(job,"active");
-      if(job.queuedPersisted){
-        const inline=takeQueuedResearchJob(job.id);
-        job.queuedPersisted=false;
-        if(inline)job.data.checkpoint=inline;
-      }
+      // Atomically record admission and consume the queued intent.
+      // An orphaned active marker is visible, never automatically replayed.
+      if(job.cancelled)throw Error("JOB_CANCELLED");
+      const inline=beginResearchExecution(job);
+      job.queuedPersisted=false;
+      if(inline)job.data.checkpoint=inline;
       // Load large source snapshots only after the memory gate admits the job.
       if(job.data?.checkpointRef){
         const cp=await loadCheckpoint(job.data.checkpointRef);
@@ -677,7 +674,10 @@ function queueJob(job, apiKey) {
   // Diagnostic jobs use RAM too; apply admission without pretending that
   // they have a resumable production checkpoint or reserving their region.
   if(memoryAdmission.settings.enabled||billingHoldAt)return fullQueue.enqueue(job,apiKey,{reserveRegion:false});
-  queueMicrotask(() => executeJob(job, apiKey));
+  queueMicrotask(() => {
+    if(!recycling)return executeJob(job,apiKey);
+    job.cancelled=true;job.state="cancelled";job.error="Служба останавливается";
+  });
   return { accepted: true };
 }
 
@@ -697,10 +697,11 @@ function makeResearchJob({id,region,mode,data,summary=null,createdAt=Date.now(),
     async updateCheckpoint(checkpoint){
       if(Number(checkpoint?.version)!==1||!String(checkpoint?.region||"").trim())
         throw Error("Некорректный checkpoint pipeline");
-      await saveCheckpoint(this.id,checkpoint);
+      // Update the compact lifecycle within the existing durable checkpoint
+      // transaction. Do not pay another fsync per Saby company.
+      await saveCheckpoint(this.id,checkpoint,this.state==="active"?this:null);
       this.latestCheckpointSummary=checkpointSummary(checkpoint);
       this.latestCheckpoint=null;
-      if(this.state==="active")saveResearchLifecycle(this,"active");
     }
   };
 }
@@ -869,6 +870,8 @@ app.post("/api/jobs", async (req, res) => {
       req.body?.checkpointId || req.body?.sourceJobId || ""
     ).trim();
     const sourceJob = checkpointId ? jobs.get(checkpointId) : null;
+    if(checkpointId&&checkpointMetadata(checkpointId)?.status==="superseded")
+      return res.status(409).json({code:"CHECKPOINT_SUPERSEDED",error:"Для региона есть более новый завершённый результат"});
     const storedCheckpoint = checkpointId ? await loadCheckpoint(checkpointId) : null;
     const checkpoint = normalizeCheckpoint(
       sourceJob?.latestCheckpoint || storedCheckpoint || req.body?.checkpoint
@@ -976,6 +979,7 @@ app.get("/api/jobs", (_req, res) => {
         percent: Number(job.progress?.percent || 0),
         queuePosition: Number(job.progress?.queuePosition || 0),
         checkpointPhase:lightweightJobCheckpointSummary(job)?.phase||null,
+        checkpointStage:lightweightJobCheckpointSummary(job)?.completed_stage??null,
         memoryPauseRequested:!!job.memoryPauseRequested,
         memoryPauseCount:Number(job.memoryPauseCount||0),
         createdAt: job.createdAt,
@@ -1056,6 +1060,9 @@ app.post("/api/jobs/:id/resume", async (req, res) => {
   if (!apiKey) return res.status(503).json({ error: "OPENAI_API_KEY не настроен" });
 
   const sourceJob = jobs.get(req.params.id);
+  const meta=checkpointMetadata(req.params.id);
+  if(meta?.status==="superseded")return res.status(409).json({
+    code:"CHECKPOINT_SUPERSEDED",error:"Для региона есть более новый завершённый результат"});
   const checkpoint=await savedJobCheckpoint(sourceJob,req.params.id);
   if (!checkpoint) {
     return res.status(404).json({ error: "Checkpoint для возобновления не найден" });
@@ -1110,22 +1117,17 @@ app.post("/api/jobs/:id/cancel", (req, res) => {
   if(!["waiting","active","cancelling"].includes(job.state))
     return res.status(409).json({error:"Задание уже не выполняется"});
   const wasWaiting = job.state === "waiting";
-  // A cancelled memory-paused job must not resurrect on service restart.
-  if(wasWaiting&&job.data?.memoryResume)clearMemoryPausedJob(job.id);
-  if(wasWaiting&&job.queuedPersisted){
-    clearQueuedResearchJob(job.id);
-    job.queuedPersisted=false;
-  }
+  // A cancellation must survive even a kill during the abort. Clear its
+  // durable queue/pause markers atomically with the terminal journal row.
+  cancelResearchIntent(job);
+  if(wasWaiting)job.queuedPersisted=false;
   job.cancelled = true;
   job.state = wasWaiting ? "cancelled" : "cancelling";
   job.error = wasWaiting ? "Остановлено пользователем" : job.error;
   if (!job.abortController?.signal?.aborted) {
     job.abortController?.abort(new Error("JOB_CANCELLED"));
   }
-  if (wasWaiting) {
-    fullQueue.cancelQueued(job.id);
-    saveResearchLifecycle(job,"cancelled");
-  }
+  if (wasWaiting) fullQueue.cancelQueued(job.id);
   res.json({ ok: true, state: job.state });
 });
 
@@ -1305,6 +1307,7 @@ function requestServiceShutdown(signal){
   if(shutdownRequested)return;
   shutdownRequested=true;
   recycling=true;
+  process.env.REGIONALRESEARCH_SHUTDOWN_REQUESTED="true";
   console.info("[SERVICE_SHUTDOWN_REQUEST] "+JSON.stringify({signal,...fullQueue.snapshot()}));
   fullQueue.beginShutdown();
   for(const job of jobs.values()){

@@ -35,3 +35,13 @@ with queued and interrupted jobs before any production stop test.
 
 No changes to research budgets, eligibility, browser concurrency, Saby
 selectors, output schema or existing checkpoint payload versions.
+
+Review follow-up: the queued intent, active journal and an inline imported
+checkpoint now commit in the same SQLite transaction. Subsequent journal
+refreshes share the existing checkpoint transaction; no extra durable
+commit per Saby visit. A completed full result and its metadata commit
+together. Explicit cancellation commits its terminal marker and removes
+both admission sources together. Superseded snapshots are not offered as
+interrupted jobs. The UI shows the saved discovery stage, not a fabricated
+percentage. A job interrupted before its first checkpoint remains visible
+but needs an explicit new start if no source snapshot exists.

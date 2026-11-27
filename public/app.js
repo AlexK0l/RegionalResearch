@@ -444,7 +444,7 @@ function updateJobEtaLabels(){
 
 function jobStateText(job){
   const names={active:"Выполняется",waiting:"Ожидает",queued:"В очереди",
-    completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",interrupted:"Прервано · доступно продолжение",
+    completed:"Завершено",failed:"Ошибка",cancelled:"Остановлено",interrupted:"Прервано",
     cancelling:"Останавливается"};
   if(job.phase==="billing_wait")return "Пауза OpenAI · пополните баланс";
   if(job.phase==="memory_paused")return "Пауза по ОЗУ · автовозобновление";
@@ -520,7 +520,9 @@ function renderJobs(payload){
       contacts:"контакты",saby:"Saby",priority:"приоритет",completed:"завершено"};
     details.textContent=jobStateText(item)+
       (["waiting","interrupted"].includes(item.state)&&savedPhases[item.checkpointPhase]?
-        " · сохранено: "+savedPhases[item.checkpointPhase]:"")+
+        " · сохранено: "+savedPhases[item.checkpointPhase]+
+          (item.checkpointPhase==="discovery"&&Number(item.checkpointStage)>0?
+            " "+Number(item.checkpointStage)+"/9":""):"")+
       (item.state==="active" && item.eta?.status==="estimated"
         ?" · осталось "+etaLabel(item.eta,item.etaReceivedAt)
         :"");
@@ -837,6 +839,7 @@ async function poll(restoring=false){
       e.sabyResume.disabled=!sabyCanResume;
       e.checkpoint.hidden=!d.resume_available;
       e.checkpoint.disabled=!d.resume_available;
+      e.resume.textContent="Продолжить исследование (возможны OpenAI-запросы)";
       e.statusTitle.textContent=d.state==="interrupted"?"Прервано при остановке сервера":d.state==="cancelled"?"Остановлено":"Ошибка";
       e.statusText.textContent=d.state==="cancelled"
         ?(d.error||"Исследование остановлено пользователем.")
