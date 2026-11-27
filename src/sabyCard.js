@@ -89,10 +89,12 @@ function scanSabyBroadCardDOM({inn}){
 }
 function inspectSabyIdentityDOM(args,ownerScan,broadScan){
   if(args.markupFirst){
-    const own=ownerScan(args);
-    if(own)return {headings:[own.name],introLines:[],
-      bodyLabeledInn:false,scopedLabeledInn:true,scopedExactInn:true,
-      detailContentPresent:true,contactSectionPresent:false,scopedMarkup:true};
+    try{
+      const own=ownerScan(args);
+      if(own)return {headings:[own.name],introLines:[],
+        bodyLabeledInn:false,scopedLabeledInn:true,scopedExactInn:true,
+        detailContentPresent:true,contactSectionPresent:false,scopedMarkup:true};
+    }catch{/* An unfamiliar/remounting scoped DOM retains the broad proof. */}
   }
   return broadScan(args);
 }

@@ -27,7 +27,7 @@ export function scanSabyVehicleSummaryDOM(root=document){
   const navTitleSelector='.contractor-Dialog-Accordion__title';
   const totalSelector='.contractor-Dialog-Accordion__counter .controls-DecoratorNumber';
   const listSelector='[data-qa="items-container"].controls-TileView';
-  const widget=one(document,widgetSelector);
+  const widget=one(root,widgetSelector);
   if(!widget)return failure("missing","widget_not_unique",root,widgetSelector);
   const header=one(widget,headerSelector);
   if(!header)return failure("missing","widget_header_not_unique",widget,headerSelector);

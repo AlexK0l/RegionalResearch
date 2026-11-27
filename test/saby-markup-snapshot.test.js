@@ -148,7 +148,7 @@ test("snapshot counters survive checkpoints, legacy/full fallback remains and op
   assert.equal(t.markup_scans,3);assert.equal(t.markup_ms,150);
   assert.equal(t.markup_contacts_hits,1);assert.equal(t.markup_fleet_hits,0);
   assert.equal(restoreSabyTiming(t).markup_scope_hits,1);
-  const source=fs.readFileSync(new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
+  const source=fs.readFileSync(new globalThis.URL("../src/sabyBrowser.js",import.meta.url),"utf8");
   assert.match(source,/if\(fullCard&&settings\.markupFastPath!==false&&sameCard\(\)\)/);
   assert.match(source,/readSabyMarkupSnapshot\(page,/);
   assert.match(source,/return ownContacts\(page\)/);
