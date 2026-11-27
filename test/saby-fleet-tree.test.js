@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {
   sabyFleetTreeFooterKey,parseSabyFleetTreeRow,
   validateSabyFleetTreeSnapshot,safeSabyFleetTreeReport,
-  collectSabyFleetTree,readSabyFleetTree
+  collectSabyFleetTree,readSabyFleetTree,setSabyFleetCategoryExpanded
 } from "../src/sabyFleetTree.js";
 import {safeSabyFleetFailure} from "../src/sabyFleetDiagnostic.js";
 
@@ -366,4 +366,76 @@ test("transient remount never authorizes a changed prefix or another company's r
   assert.equal(r.reason,"row_prefix_changed");
   assert.equal(r.vehicles,null);
   assert.equal(m.clicks,1);
+});
+
+test("real collapsed/expanded classes gate one fresh category-specific expander action",async()=>{
+  let state="collapsed",clicks=0,route=firstParty,selectorLog=[];
+  const loc={filter:()=>loc,locator:s=>{selectorLog.push(s);return loc;},
+    count:async()=>1,isVisible:async()=>true,click:async()=>{clicks++;state="expanded";}};
+  const page={url:()=>route,locator:s=>{selectorLog.push(s);return loc;}};
+  const read=async()=>({...raw(0,{expected:76,hasMore:false,category:"-3"}),
+    category:"Грузовые",expanderState:state});
+  const args={originalUrl:firstParty,category:"Грузовые",expected:76,groupKey:"-3",expanded:true,read};
+  assert.equal(await setSabyFleetCategoryExpanded(page,args),"clicked");
+  assert.equal(clicks,1);
+  assert.ok(selectorLog.some(s=>s.includes('templateforlog="ContractorCard/Cards/transportCard:All"')));
+  assert.ok(selectorLog.some(s=>s.includes('item-key="-3"')));
+  assert.ok(selectorLog.some(s=>s.includes('[data-qa="item-expander"].controls-TreeGrid__row-expander_collapsed')));
+  assert.equal(await setSabyFleetCategoryExpanded(page,args),"already");
+  assert.equal(clicks,1);
+  state="unknown";assert.equal(await setSabyFleetCategoryExpanded(page,args),"unavailable");
+  state="collapsed";
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,expected:75}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,groupKey:"-5"}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,category:"Легковые"}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,read:async()=>({...await read(),rows:makeRows(1)})}),"unavailable");
+  assert.equal(await setSabyFleetCategoryExpanded(page,{...args,read:async()=>{route=otherCompany;return read();}}),"wrong_company");
+  assert.equal(clicks,1);
+});
+test("collapsed header with contradictory loaded rows is not a valid data seed",()=>{
+  assert.equal(validateSabyFleetTreeSnapshot({...raw(1),expanderState:"collapsed"},{expected:220}).reason,"category_state_conflict");
+});
+
+test("actual drawer DOM shape distinguishes exact collapsed, expanded and contradictory expander classes",async()=>{
+  const make=(options={})=>{
+    const nodes=options.nodes||{};
+    return {textContent:options.text||"",getAttribute:k=>options.attrs?.[k]??null,
+      querySelectorAll:s=>nodes[s]||[],querySelector:s=>(nodes[s]||[])[0]||null,
+      classList:{contains:c=>(options.classes||[]).includes(c)},
+      getBoundingClientRect:()=>options.rect||{width:24,height:24,right:950},
+      closest:s=>options.template&&s==='[templateforlog="ContractorCard/Cards/transportCard:All"]'?{}:null};
+  };
+  const pageFor=(state,{duplicate=false,wrongDrawer=false,hidden=false,contradiction=false,partialClass=false}={})=>{
+    const head=make({text:"Грузовые"}),num=make({text:"76"});
+    const classes=["controls-TreeGrid__row-expander_"+state];
+    if(!partialClass)classes.push("controls-TreeGrid__row-expander_hiddenNode_default_"+state);
+    if(contradiction)classes.push("controls-TreeGrid__row-expander_"+(state==="collapsed"?"expanded":"collapsed"));
+    const expander=make({classes,rect:hidden?{width:0,height:0,right:950}:undefined});
+    const group=make({attrs:{"item-key":"-3"},classes:["controls-Tree__item"],nodes:{
+      ".controls-fontsize-2xl":[head],".controls-DecoratorNumber":[num],
+      '[data-qa="item-expander"]':duplicate?[expander,expander]:[expander]}});
+    const rows=state==="expanded"?[make({attrs:{"item-key":"123"},nodes:{
+      ".controls-margin_left-2xs.controls-padding_left-3xl":[make({nodes:{
+        ":scope > div:first-child":[make({text:"MODEL, 2023"})]}})]}})]:[];
+    const list=make({nodes:{
+      '[data-qa="item"][item-key]:not([item-parent-key])':[group],
+      '[data-qa="item"][item-parent-key="-3"][item-key]':rows}});
+    const panel=make({template:!wrongDrawer,rect:{width:600,height:500,right:1000},
+      nodes:{".controls-ListViewV":[list],
+        ".controls-StackTemplate__caption [title]":[make({attrs:{title:"Автопарк"}})]}});
+    const doc=make({nodes:{".controls-StackTemplate-content":[panel]}});
+    return {url:()=>firstParty,evaluate:async(fn,args)=>{
+      const vm=await import("node:vm");
+      return vm.runInNewContext("("+fn.toString()+")(args)",{args,document:doc,innerWidth:1000,
+        getComputedStyle:()=>({display:"block",visibility:"visible",opacity:"1"})});
+    }};
+  };
+  const read=async(state,opts)=>await readSabyFleetTree(pageFor(state,opts),{expected:76,category:"Грузовые"});
+  const collapsed=await read("collapsed");
+  assert.equal(collapsed.expanderState,"collapsed");assert.equal(collapsed.rows.length,0);
+  const expanded=await read("expanded");
+  assert.equal(expanded.expanderState,"expanded");assert.equal(expanded.rows.length,1);
+  for(const opts of [{duplicate:true},{wrongDrawer:true},{hidden:true},{contradiction:true},{partialClass:true}]){
+    assert.equal((await read("collapsed",opts)).expanderState,"unknown");
+  }
 });

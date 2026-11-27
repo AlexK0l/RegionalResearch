@@ -2,7 +2,7 @@
 // Wasaby renders invisible-tile-item-* measurement clones. Never count them.
 import {compareSabyVerifiedFleetDetail} from "./sabyFleetRouteContinuity.js";
 import {isSabyVehicleCategory,parseSabyVehicleModel,verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
-import {readSabyFleetTree,collectSabyFleetTree,safeSabyFleetTreeReport} from "./sabyFleetTree.js";
+import {readSabyFleetTree,collectSabyFleetTree,safeSabyFleetTreeReport,setSabyFleetCategoryExpanded} from "./sabyFleetTree.js";
 import {recoverSabyVehicleNavigation} from "./sabyVehicleNavigation.js";
 export function scanSabyVehicleSummaryDOM(root=document){
   const clean=t=>String(t||"").replace(/\s+/g," ").trim();
@@ -140,11 +140,25 @@ export async function readSabyVehicleSummary(page,originalUrl,{onDiagnostic}={})
 export async function collectSabyPendingVehicleGroups(page,pending,{
   originalUrl,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,
   wait=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>Date.now(),
-  deadline=now()+175000,onDiagnostic
+  deadline=now()+175000,onDiagnostic,
+  setExpanded=setSabyFleetCategoryExpanded,completedGroups=[]
 }={}){
   const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
   const todo=new Set(pending),polls=new Map(pending.map(g=>[g,0]));
   const spent=new Map(pending.map(g=>[g,0])),lastSeed=new Map();
+  const expandedAttempts=new Map(),released=new Map(),groupKeys=new Map();
+  const releasable=new Set(completedGroups.filter(g=>Array.isArray(g.vehicles)&&g.vehicles.length===g.count));
+  const actions=new Set(["clicked","already","unavailable","wrong_company","click_failed"]);
+  const toggle=async(g,key,expanded)=>{
+    if(!same()||now()>=deadline)return "unavailable";
+    let action;
+    const start=now();
+    try{action=await setExpanded(page,{originalUrl,category:g.category,expected:g.count,
+      groupKey:key,expanded,read:readTree,timeoutMs:Math.min(2500,deadline-now())});}
+    catch{action="click_failed";}
+    if(spent.has(g))spent.set(g,spent.get(g)+Math.max(0,now()-start));
+    return actions.has(action)?action:"unavailable";
+  };
   const transient=new Set(["tree_missing","truck_category_missing","read_failed"]);
   const seedReasons=new Set([...transient,"multiple_tree_panels","truck_category_ambiguous",
     "truck_count_mismatch","invalid_group_key","footer_ambiguous","invalid_setup"]);
@@ -154,6 +168,8 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
       expected:g.count,seed_polls:polls.get(g),
       work_ms:Math.max(0,Math.round(spent.get(g))),
       seed_state:lastSeed.get(g)||"not_observed",
+      expansion:expandedAttempts.get(g)||"not_attempted",
+      release:released.get(g)||"not_attempted",
       result:safe.status,tree_reason:safe.reason,rows:safe.rows,
       clicks:safe.clicks,samples:safe.samples,same_company:safe.same_company});
   };
@@ -169,13 +185,34 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
       catch{x={status:"invalid",reason:"read_failed"};}
       spent.set(g,spent.get(g)+Math.max(0,now()-readStarted));
       lastSeed.set(g,x?.status==="observed"?
-        (x.rows?.length>0||x.hasMore===true?"ready":"observed_no_rows"):
+        (x.expanderState==="collapsed"?"category_collapsed":
+          x.rows?.length>0||x.hasMore===true?"ready":
+          x.expanderState==="expanded"?"expanded_no_rows":"observed_no_rows"):
         seedReasons.has(x?.reason)?x.reason:"unknown");
       if(!same())return false;
-      if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){
-        if(/^-/u.test(g.key)&&x.groupKey!==g.key){
+      if(x?.status==="observed"){
+        if((/^-/u.test(g.key)&&x.groupKey!==g.key)||
+           (groupKeys.has(g)&&groupKeys.get(g)!==x.groupKey)){
           report(g,"invalid_group_key");todo.delete(g);continue;
         }
+        if(x.category===g.category&&x.expected===g.count&&/^-\d{1,9}$/.test(x.groupKey||""))
+          groupKeys.set(g,x.groupKey);
+        if(x.expanderState==="collapsed"){
+          if(!Array.isArray(x.rows)||x.rows.length||x.hasMore===true){
+            report(g,"category_state_conflict");todo.delete(g);continue;
+          }
+          if(groupKeys.has(g)&&!expandedAttempts.has(g)){
+            // One state-specific open attempt per category. Never close
+            // an already-open group just because it has no rows.
+            const action=await toggle(g,groupKeys.get(g),true);
+            expandedAttempts.set(g,action);
+            if(!same()||action==="wrong_company")return false;
+            if(action==="clicked"){active=true;break;}
+          }
+          continue;
+        }
+      }
+      if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){
         let r;
         const collectStarted=now();
         try{
@@ -187,8 +224,19 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
         if(!same())return false;
         if(r?.status==="complete"&&r.expected===g.count&&r.vehicles?.length===g.count)
           g.vehicles=r.vehicles;
-        report(g,"read_failed",r);
-        todo.delete(g);active=true;continue;
+        todo.delete(g);active=true;
+        // The live HTML demonstrates a shared rendered-row window:
+        // collapsing one group can expose rows in a different group.
+        // Release only fully collected groups; their rows are retained
+        // in memory, and a fresh exact expander state gates the action.
+        if(g.vehicles&&todo.size&&groupKeys.has(g)&&x.expanderState==="expanded"){
+          const action=await toggle(g,groupKeys.get(g),false);
+          released.set(g,action);
+          if(!same()||action==="wrong_company")return false;
+          report(g,"read_failed",r);
+          if(action==="clicked")break;
+        }else report(g,"read_failed",r);
+        continue;
       }
       if(x?.status!=="observed"&&!transient.has(x?.reason)){
         report(g,x?.reason);todo.delete(g);
@@ -200,13 +248,34 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
     // loop. An active collection may have allowed other groups to
     // mount, so re-check them before spending another passive wait.
     if(active){idle=0;continue;}
+    // A group completed directly from summary tiles can also occupy
+    // the drawer's rendered row window. Only on a stalled round, try
+    // releasing those independently complete groups once, and only
+    // from a freshly observed matching expanded header.
+    let freed=false;
+    for(const g of [...releasable]){
+      releasable.delete(g);
+      if(!same()||now()>=deadline)break;
+      let seed;
+      try{seed=await readTree(page,{expected:g.count,category:g.category});}catch{}
+      if(!same())return false;
+      if(seed?.status!=="observed"||seed.category!==g.category||seed.expected!==g.count||
+         !/^-\d{1,9}$/.test(seed.groupKey||"")||
+         (/^-/u.test(g.key)&&g.key!==seed.groupKey)||seed.expanderState!=="expanded")continue;
+      const action=await toggle(g,seed.groupKey,false);
+      if(!same()||action==="wrong_company")return false;
+      notify(onDiagnostic,{reason:"category_release",category:g.category,expected:g.count,release:action});
+      if(action==="clicked"){freed=true;break;}
+    }
+    if(freed){idle=0;continue;}
     if(++idle>=20)break;
     await wait(400);
   }
   if(!same())return false;
   for(const g of todo)report(g,now()>=deadline?"time_limit":
     transient.has(lastSeed.get(g))?lastSeed.get(g):
-    lastSeed.get(g)==="observed_no_rows"?"footer_missing":"read_failed");
+    lastSeed.get(g)==="category_collapsed"?"category_collapsed":
+    ["observed_no_rows","expanded_no_rows"].includes(lastSeed.get(g))?"footer_missing":"read_failed");
   return true;
 }
 // Complete small fleets need one DOM read. For longer lists, use
@@ -296,7 +365,8 @@ export async function collectSabyVehicleInventory(page,{
     }
     if(sharedCategoryHydration){
       const safe=await collectSabyPendingVehicleGroups(page,pending,{
-        originalUrl,readTree,collectTree,wait,now,deadline,onDiagnostic
+        originalUrl,readTree,collectTree,wait,now,deadline,onDiagnostic,
+        completedGroups:s.groups.filter(g=>Array.isArray(g.vehicles))
       });
       return safe?outcome():missing;
     }

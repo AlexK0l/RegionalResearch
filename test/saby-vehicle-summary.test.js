@@ -231,3 +231,89 @@ test("known menu recovery is preferred to repeated absent widget scans, but no s
   const x=await collectSabyVehicleInventory(p,{...opts,recoverNavigation:async()=>{calls++;return {summary:null,navigationAttempted:true};}});
   assert.equal(x.fleet,null);assert.equal(calls,2);assert.equal(x.navigationAttempted,true);
 });
+
+test("live 22/76/27 group structure: expand only collapsed target and release completed groups",async()=>{
+  const groups=[{key:"-1",category:"Легковые",count:22,vehicles:null},
+    {key:"-3",category:"Грузовые",count:76,vehicles:null},
+    {key:"-5",category:"Спецтехника",count:27,vehicles:null}];
+  const state=new Map([["-1","expanded"],["-3","collapsed"],["-5","expanded"]]),actions=[],diag=[];
+  const p={url:()=>url};
+  let waits=0;
+  const ok=await collectSabyPendingVehicleGroups(p,groups,{
+    originalUrl:url,wait:async()=>{waits++;},
+    readTree:async(_p,{category,expected})=>{
+      const g=groups.find(g=>g.category===category),expanded=state.get(g.key)==="expanded";
+      const otherBlocks=g.key==="-5"&&state.get("-3")==="expanded";
+      const n=expanded&&!otherBlocks?Math.min(expected,14):0;
+      return {status:"observed",expected,category,groupKey:g.key,expanderState:state.get(g.key),
+        rows:Array.from({length:n},(_,i)=>({key:String(i+1),label:"MODEL"})),hasMore:expanded&&!otherBlocks&&expected>n};
+    },
+    setExpanded:async(_p,{category,groupKey,expected,expanded})=>{
+      const g=groups.find(g=>g.category===category);
+      assert.equal(g.key,groupKey);assert.equal(g.count,expected);
+      assert.notEqual(state.get(groupKey),expanded?"expanded":"collapsed");
+      actions.push([groupKey,expanded]);state.set(groupKey,expanded?"expanded":"collapsed");
+      return "clicked";
+    },
+    collectTree:async(_p,{expected,category,initialSnapshot})=>{
+      assert.equal(initialSnapshot.expanderState,"expanded");
+      assert.ok(initialSnapshot.rows.length>0);
+      return {status:"complete",reason:"complete",expected,rows:expected,same_company:true,
+        vehicles:Array.from({length:expected},()=>({model:"MODEL",year:null}))};
+    },onDiagnostic:d=>diag.push(d)});
+  assert.equal(ok,true);
+  assert.deepEqual(groups.map(g=>g.vehicles?.length),[22,76,27]);
+  assert.deepEqual(actions,[["-1",false],["-3",true],["-3",false]]);
+  assert.equal(diag.length,3);assert.equal(diag[1].expansion,"clicked");
+  assert.equal(waits,0);
+});
+test("one attempted expansion, no toggle of unknown or already expanded empty category",async()=>{
+  for(const expanderState of ["collapsed","expanded","unknown"]){
+    const g={key:"-3",category:"Грузовые",count:76,vehicles:null};
+    let actions=0,waits=0;const diag=[];
+    const ok=await collectSabyPendingVehicleGroups({url:()=>url},[g],{
+      originalUrl:url,wait:async()=>{waits++;},
+      readTree:async()=>({status:"observed",expected:76,category:g.category,
+        groupKey:g.key,expanderState,rows:[],hasMore:false}),
+      setExpanded:async()=>{actions++;return "clicked";},
+      collectTree:async()=>assert.fail("no vehicle rows"),
+      onDiagnostic:d=>diag.push(d)});
+    assert.equal(ok,true);
+    assert.equal(actions,expanderState==="collapsed"?1:0);
+    assert.equal(waits,19);
+    assert.equal(g.vehicles,null);
+    assert.equal(diag[0].tree_reason,expanderState==="collapsed"?"category_collapsed":"footer_missing");
+  }
+});
+test("completed tile group may release a blocked drawer window, but no unverified group can",async()=>{
+  const g={key:"-3",category:"Грузовые",count:2,vehicles:null};
+  const done={key:"1",category:"Легковые",count:1,vehicles:[{model:"MODEL",year:null}]};
+  let freed=false,actions=0;
+  const ok=await collectSabyPendingVehicleGroups({url:()=>url},[g],{
+    originalUrl:url,completedGroups:[done,{key:"5",category:"Спецтехника",count:1,vehicles:null}],
+    wait:async()=>{},
+    readTree:async(_p,{category,expected})=>({status:"observed",category,expected,
+      groupKey:category===done.category?"-1":"-3",expanderState:"expanded",
+      rows:category===done.category||freed?[{key:"1",label:"MODEL"}]:[],hasMore:freed&&category===g.category}),
+    setExpanded:async(_p,opts)=>{assert.equal(opts.category,done.category);assert.equal(opts.expanded,false);actions++;freed=true;return "clicked";},
+    collectTree:async()=>({status:"complete",reason:"complete",expected:2,rows:2,
+      vehicles:[{model:"MODEL",year:null},{model:"MODEL",year:null}]})});
+  assert.equal(ok,true);assert.equal(actions,1);assert.equal(g.vehicles.length,2);
+});
+test("count, group-key and card guards hold during expansion",async()=>{
+  const g={key:"-3",category:"Грузовые",count:76,vehicles:null};
+  const p={url:()=>url};
+  let actions=0;
+  for(const mismatch of [{expected:75},{groupKey:"-5"},{category:"Легковые"}]){
+    await collectSabyPendingVehicleGroups(p,[g],{originalUrl:url,wait:async()=>{},
+      readTree:async()=>({status:"observed",category:g.category,expected:76,groupKey:"-3",expanderState:"collapsed",rows:[],hasMore:false,...mismatch}),
+      setExpanded:async()=>{actions++;return "clicked";}});
+  }
+  assert.equal(actions,0);
+  let current=url;
+  assert.equal(await collectSabyPendingVehicleGroups({url:()=>current},[g],{
+    originalUrl:url,readTree:async()=>({status:"observed",category:g.category,expected:76,groupKey:"-3",expanderState:"collapsed",rows:[],hasMore:false}),
+    setExpanded:async()=>{current=url.replace("12345678-","22345678-");return "wrong_company";}
+  }),false);
+  assert.equal(g.vehicles,null);
+});
