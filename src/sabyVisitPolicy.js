@@ -63,6 +63,8 @@ export function safeSabyNavigationUrl(raw){
       if(u.searchParams.getAll(key).length!==1)return null;
       if(key==="id")continue;
       if(key==="source"&&value==="internal")continue;
+      // Exact value observed on the normal authenticated card URL.
+      if(key==="local"&&value==="false")continue;
       if(!["anchor","tab","page","section","subtab","view","panel","mode"].includes(key)||
         !/^[a-z0-9_-]{1,64}$/i.test(value))return null;
     }
@@ -126,7 +128,9 @@ export function createSabyAdaptiveDelay(base,env={}){
   }};
 }
 const MARKUP_COUNTERS=["markup_scans","markup_scope_hits","markup_owner_hits",
-  "markup_contacts_hits","markup_financial_hits","markup_fleet_hits","markup_contacts_more"];
+  "markup_contacts_hits","markup_financial_hits","markup_fleet_hits","markup_contacts_more",
+  "catalog_history_attempted","catalog_history_hit","catalog_history_fallback","catalog_history_unresolved",
+  "scoped_empty_hits","public_rejection_reused"];
 const KEYS=["visit_ms","saved_card_ms","search_card_ms","search_ms","identity_ms","markup_ms",
   "ready_ms","ready_contacts_ms","ready_financials_ms","ready_fleet_ms",
   "contacts_ms","financials_ms","fleet_ms","checkpoint_ms","delay_ms",

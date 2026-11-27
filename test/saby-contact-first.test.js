@@ -675,3 +675,42 @@ test("existing entity-specific official cessation is skipped, never counted as c
   assert.equal(next.stats.skippedLegalCessation,0);
   assert.equal(next.stats.fullCardVisits,1);
 });
+
+test("scoped empty full attempt is durable across pause and skips only redundant same-sweep search",async()=>{
+  const {SabyReview}=await import("../src/sabyBrowser.js");
+  let saved;const calls=[];
+  const db=result();
+  const collectSections=async(_p,r,_s,sections)=>{
+    const inn=r["ИНН"];calls.push(inn);
+    if(inn===innA)throw new SabyReview("empty",{scope:"company",code:"search_confirmed_empty",scopedEmptyVerified:true});
+    return record(r,sections);
+  };
+  await assert.rejects(runSabyContactFirst({result:db,env:fullEnv,sessionRunner,collectSections,
+    persistCheckpoint:async(_phase,p)=>{saved=structuredClone(p);
+      if(p.saby_pass_state.attempted.length===1)throw new MemoryPauseError();}}),isMemoryPause);
+  assert.deepEqual(saved.saby_pass_state.attempted,["full:"+innA]);
+  assert.equal(saved.saby_pass_state.scoped_empty_searches[innA].kind,"scoped_exact_query_empty_v1");
+  const out=await runSabyContactFirst({result:saved.final_result,env:fullEnv,
+    passState:saved.saby_pass_state,sessionRunner,collectSections});
+  assert.deepEqual(calls,[innA,innB]);
+  assert.equal(out.stats.retrySkippedScopedEmpty,1);
+  assert.equal(out.stats.fullSweepCompleted,true);
+  assert.deepEqual(out.deferredInns,[innA]);
+  assert.deepEqual(out.completedInns,[innB]);
+  assert.equal(out.stats.phonesAdded,1);
+  assert.equal(out.stats.retryPending,0);
+});
+test("ordinary empty and uncertain search errors still retain a second full-card attempt",async()=>{
+  const {SabyReview}=await import("../src/sabyBrowser.js");
+  for(const code of ["search_confirmed_empty","search_zero_unconfirmed","card_render_timeout"]){
+    let visits=0;
+    const out=await runSabyContactFirst({result:result([row(innA,"Альфа")]),env:fullEnv,sessionRunner,
+      collectSections:async(_p,r,_s,sections)=>{
+        if(++visits===1)throw new SabyReview("unproven",{scope:"company",code});
+        return record(r,sections);
+      }});
+    assert.equal(visits,2,code);
+    assert.equal(out.stats.retrySkippedScopedEmpty,0);
+    assert.deepEqual(out.deferredInns,[]);
+  }
+});

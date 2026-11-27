@@ -166,6 +166,8 @@ export async function runSabyContactFirst({
   const needs=(entry,phase)=>{
     if(ceased.has(entry))return {contacts:false,financials:false,trucks:false};
     const id=sabyInn(entry.row["ИНН"]);
+    if(fullCard&&phase==="retry"&&Object.hasOwn(scopedEmpty,id))
+      return {contacts:false,financials:false,trucks:false};
     const sections=fullCard?fullCardNeeds(gaps.get(entry),phase,fullCounts.get(id)):
       sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
         state.combined_detail_attempts[id]||{});
@@ -173,6 +175,16 @@ export async function runSabyContactFirst({
   };
   const attempted=new Set(state.attempted),verifiedInns=new Set(state.verified_inns);
   const planned=state.planned_inns.map(id=>byInn.get(id)).filter(Boolean);
+  // A new scoped empty attestation applies only within this frozen pass,
+  // to the unchanged source name and a committed full attempt. Legacy
+  // unconfirmed/ordinary empty reviews are never retroactively skipped.
+  const scopedEmpty=Object.fromEntries(fullCard&&passState?.strategy===SABY_FULL_CARD_STRATEGY?
+    planned.flatMap(({row})=>{
+      const inn=sabyInn(row["ИНН"]),proof=passState.scoped_empty_searches?.[inn];
+      return proof?.kind==="scoped_exact_query_empty_v1"&&proof.name===String(row["Организация"]||"").trim()&&
+        attempted.has("full:"+inn)&&Object.hasOwn(state.full_card_attempts,"full:"+inn)?
+        [[inn,{kind:proof.kind,name:proof.name}]]:[];
+    }):[]);
   const ownerMap=phoneOwnersForResult(result);
   const abort=()=>{if(signal?.aborted)throw Error("JOB_CANCELLED");};
   let restarts=0,consecutive=0,circuitOpen=false,browserError="";
@@ -182,7 +194,8 @@ export async function runSabyContactFirst({
   };
   const stateSnapshot=()=>({...state,timing:{...state.timing},attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats},
     combined_detail_attempts:{...state.combined_detail_attempts},
-    ...(fullCard?{full_card_attempts:{...state.full_card_attempts}}:{})});
+    ...(fullCard?{full_card_attempts:{...state.full_card_attempts},
+      scoped_empty_searches:{...scopedEmpty}}:{})});
   const snapshot=()=>{
     const deferred=[],done=[],skipped=[];
     for(const entry of entries){
@@ -209,7 +222,9 @@ export async function runSabyContactFirst({
         fleetCategoryScope:fleetCategories,timing:{...state.timing},
         combinedDetailVisits:Object.keys(state.combined_detail_attempts).length,
         ...(fullCard?{fullCardVisits:Object.keys(state.full_card_attempts).length,
-          legacyAttempts:attempted.size-Object.keys(state.full_card_attempts).length}:{}),
+          legacyAttempts:attempted.size-Object.keys(state.full_card_attempts).length,
+          retryPending:planned.filter(e=>any(needs(e,"retry"))&&!attempted.has("retry:"+sabyInn(e.row["ИНН"]))).length,
+          retrySkippedScopedEmpty:Object.keys(scopedEmpty).length}:{}),
         fleetCoverage:sabyFleetCoverage(result,all,gaps),
         phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
@@ -359,7 +374,12 @@ export async function runSabyContactFirst({
         }
         // Persist even an unsuccessful attempted task, but keep its data
         // gaps unresolved. Another pass may retry it at most once.
-        if(fullCard)commitFullCardVisit(state,fullCounts,key,sections);
+        if(fullCard){
+          commitFullCardVisit(state,fullCounts,key,sections);
+          if(phase==="full"&&error instanceof SabyReview&&error.scopedEmptyVerified===true&&
+             error.code==="search_confirmed_empty"&&error.scope==="company")
+            scopedEmpty[inn]={kind:"scoped_exact_query_empty_v1",name:String(row["Организация"]||"").trim()};
+        }
         attempted.add(key);phaseDone++;visits++;
         // Drop the last browser record before the GC/snapshot boundary.
         const safeTimings=restoreSabyTiming();

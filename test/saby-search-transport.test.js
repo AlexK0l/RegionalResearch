@@ -274,3 +274,26 @@ test("warm history search observes a pre-existing first-party socket across inde
   assert.equal(ws.listenerCount("framesent"),0);
   assert.equal(ws.listenerCount("close"),0);
 });
+
+test("exact search HTTP completion is not inferred from dispatch, headers or failed requests",()=>{
+  const page=new EventEmitter(),probe=observeSabySearchTransport(page,INN);
+  const request=()=>({url:()=>"https://profile.saby.ru/service",resourceType:()=>"xhr",postData:()=>INN});
+  const a=request(),b=request();
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+  page.emit("request",a);
+  page.emit("response",{request:()=>a,status:()=>200});
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+  page.emit("requestfinished",a);
+  assert.equal(probe.hasSettledExactInnResponse(),true);
+  page.emit("request",b);
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+  page.emit("response",{request:()=>b,status:()=>429});
+  page.emit("requestfinished",b);
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+  probe.arm();
+  page.emit("request",a);
+  page.emit("requestfailed",a);
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+  probe.stop();
+  assert.equal(probe.hasSettledExactInnResponse(),false);
+});

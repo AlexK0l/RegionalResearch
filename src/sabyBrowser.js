@@ -12,7 +12,9 @@ import {observeSabySearchTransport,shouldRecoverSilentSabySearch,
   trackSabySessionSockets,hasSabySessionSocketTracker}
   from "./sabySearchTransport.js";
 import {SABY_CATALOG_URL,openSabyCatalog,rememberSabyCatalogOrigin,
-  forgetSabyCatalogOrigin} from "./sabyCatalogNavigation.js";
+  forgetSabyCatalogOrigin,rememberSabyEmptyCatalog,noteSabyCatalogColdFallback} from "./sabyCatalogNavigation.js";
+import {readScopedSabyEmpty,scopedSabyEmptyConfirmed} from "./sabyScopedSearchEmpty.js";
+import {createSabyVisitPublicVerifier} from "./sabyPublicRegisteredIdentity.js";
 import {readSabySearchState,classifySabySearchZeroState,
   isUnconfirmedSabyZeroResult} from "./sabySearchState.js";
 import {verifySabyCard,sabyCardRoute,safeCardDiagnostic,
@@ -62,7 +64,7 @@ import {readSabyMarkupSnapshot} from "./sabyMarkupSnapshot.js";
 // contractor from tripping the circuit breaker for a site-wide failure.
 // Default is 'systemic' until the precise call site proves company-specific.
 export class SabyReview extends Error {
-  constructor(message,{scope="systemic",code="review"}={}) {
+  constructor(message,{scope="systemic",code="review",scopedEmptyVerified=false}={}) {
     super(message);
     this.name="SabyReview";
     this.scope=scope==="company"?"company":"systemic";
@@ -72,6 +74,7 @@ export class SabyReview extends Error {
       "search_input_failed","search_confirmed_empty",
       "search_service_unavailable","search_loading_stalled",
       "search_zero_unconfirmed","card_legal_name_unverified"]).has(code)?code:"review";
+    this.scopedEmptyVerified=this.code==="search_confirmed_empty"&&this.scope==="company"&&scopedEmptyVerified===true;
   }
 }
 
@@ -116,9 +119,14 @@ export function sabyBrowserSettings(env = process.env) {
     channel: String(env.SABY_BROWSER_CHANNEL || "").trim(),
     timeoutMs: bound(env.SABY_COMPANY_TIMEOUT_MS, 15000, 90000, 45000),
     delayMs: bound(env.SABY_DELAY_MS, 250, 30000, 1500),
-    // Experimental: never assume a history return retains a usable list.
-    // Off until measured on the real site with matching identity coverage.
-    reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED||"false").toLowerCase()==="true",
+    // Full production pass can reuse the observed catalog history.
+    // Explicit false opts out; diagnostics/smoke keep their old default.
+    reuseCatalogHistory:String(env.SABY_REUSE_CATALOG_HISTORY_ENABLED??
+      (env.SABY_SMOKE_ONLY!=="true"&&String(env.SABY_FULL_CARD_PASS_ENABLED||"").toLowerCase()==="true"?"true":"false")).toLowerCase()==="true",
+    // A conservative early empty-result proof, only in full production.
+    scopedSearchEmpty:env.SABY_SMOKE_ONLY!=="true"&&
+      String(env.SABY_FULL_CARD_PASS_ENABLED||"").toLowerCase()==="true"&&
+      String(env.SABY_SCOPED_EMPTY_ENABLED??"true").toLowerCase()!=="false",
     // Only the full-card strategy shares passive widget hydration time.
     // Explicit false restores independent legacy section waits.
     sharedCardReadiness:String(env.SABY_SHARED_CARD_READINESS_ENABLED??"true").toLowerCase()!=="false",
@@ -307,7 +315,11 @@ async function openCompany(page, row, settings, timing=null) {
     card_poll_wait_ms:0,initial_field_ms:0,field_settle_ms:0,
     field_find_ms:0,field_fill_ms:0,field_press_ms:0,field_retry_wait_ms:0,
     catalog_history_attempted:0,catalog_history_hit:0,catalog_history_fallback:0,
-    scoped_owner_hits:0};
+    scoped_owner_hits:0,public_rejection_reused:0,scoped_empty_hits:0,
+    catalog_history_unresolved:0};
+  const verifyPublic=createSabyVisitPublicVerifier(undefined,()=>{
+    components.public_rejection_reused=1;
+  });
   const addTiming=(key,value)=>{
     if(Object.hasOwn(components,key)&&Number.isFinite(value)&&value>=0)
       components[key]+=value;
@@ -353,7 +365,7 @@ async function openCompany(page, row, settings, timing=null) {
   const settleSearch=async()=>{
     if(!publicFallback)return;
     const probe=()=>waitForSabySearchHydration(page,{
-      isListRoute,timeoutMs:Math.min(8000,settings.timeoutMs),
+      isListRoute,timeoutMs:Math.min(catalog.historyHit?2000:8000,settings.timeoutMs),
       deferReacquireToSubmission:true,onTiming:addTiming
     });
     let state=await probe();
@@ -363,6 +375,8 @@ async function openCompany(page, row, settings, timing=null) {
       transport?.stop();
       transport=observeSabySearchTransport(page,inn,{armed:false});
       components.catalog_history_fallback=1;
+      components.catalog_history_hit=0;
+      noteSabyCatalogColdFallback(page);
       catalog={historyAttempted:true,historyHit:false};
       await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
       if(!isListRoute()||!isSabyProfileUrl(page.url()))
@@ -392,9 +406,36 @@ async function openCompany(page, row, settings, timing=null) {
   // Sample AFTER hydration and BEFORE entering the exact INN.
   let beforeSearch=publicFallback?
     await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null)):null;
+  // Before submitting on a warm catalog, reject an already-entered INN
+  // or pre-existing candidate for that INN. Cold fallback sends no
+  // duplicate query and keeps all normal result/identity checks.
+  if(catalog.historyHit){
+    let stale=true;
+    try{
+      stale=!beforeSearch||beforeSearch.inputExact||
+        (await findResultRows(page,inn,{includeInnOnly:true,includeBranches:true})).length>0;
+    }catch{}
+    if(stale){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_fallback=1;components.catalog_history_hit=0;
+      transport?.stop();
+      transport=observeSabySearchTransport(page,inn,{armed:false});
+      catalog={historyAttempted:true,historyHit:false};
+      await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
+      readiness=await measure("hydration_ms",()=>settleSearch());
+      beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
+    }
+  }
+  let beforeScoped=publicFallback&&settings.scopedSearchEmpty===true?
+    await readScopedSabyEmpty(page,inn):null;
+  let nextScopedProbe=0;
   transport?.arm();
   const submitted=await measure("submit_ms",submitSearch);
   if(!submitted.ok){
+    if(catalog.historyHit){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_unresolved=1;
+    }
     transport?.stop();
     // Strict, allowlisted statuses only. Never print INN, DOM, URL or
     // the raw Playwright exception, which can include private context.
@@ -459,7 +500,39 @@ async function openCompany(page, row, settings, timing=null) {
         {scope:"company",code:"search_ambiguous"});
     }
     rows=selected.row?[selected.row]:[];
-    if(rows.length===1)break;
+    // A warm list can contain a previous render after history restore.
+    // Before clicking, require the exact newly submitted INN to still
+    // be visibly entered. Normal full card verification remains mandatory.
+    if(rows.length===1){
+      if(!catalog.historyHit||await readSabySearchState(page,inn).then(x=>x.inputExact===true).catch(()=>false))break;
+      rows=[];
+    }
+    // Do not wait the entire 18s when a newly appeared, query-scoped
+    // empty result is stable and all exact-INN HTTP requests finished.
+    // On unrecognized layouts/global spinners retain the old behavior.
+    if(publicFallback&&selected.reason==="not_found"&&selected.observed===0&&
+       beforeScoped?.scope&&beforeScoped.inputExact===false&&beforeScoped.empty===false&&
+       Date.now()-submissionAt>=3000&&Date.now()>=nextScopedProbe&&
+       transport?.hasSettledExactInnResponse()&&isListRoute()){
+      nextScopedProbe=Date.now()+1200;
+      const first=await readScopedSabyEmpty(page,inn);
+      if(first?.scope===beforeScoped.scope&&first.inputExact&&first.empty&&!first.busy){
+        await delay(500);
+        const second=await readScopedSabyEmpty(page,inn);
+        let fresh=null;
+        try{fresh=await candidates();}catch{/* No safe empty proof. */}
+        if(fresh&&scopedSabyEmptyConfirmed(beforeScoped,first,second,{
+          settled:transport.hasSettledExactInnResponse(),observed:fresh.observed,
+          onListRoute:isListRoute()&&fresh.reason==="not_found"&&!fresh.row
+        })){
+          components.scoped_empty_hits=1;
+          if(settings.reuseCatalogHistory===true)rememberSabyEmptyCatalog(page);
+          console.info("[SABY_SCOPED_EMPTY] confirmed_exact_query");
+          throw new SabyReview("Saby: подтверждено отсутствие результата текущего поиска",{
+            scope:"company",code:"search_confirmed_empty",scopedEmptyVerified:true});
+        }
+      }
+    }
     if(publicFallback&&shouldRecoverSilentSabySearch({
       route:sabyCardRoute(page.url()),reason:selected.reason,
       observed:Number(selected.observed||0),
@@ -474,6 +547,10 @@ async function openCompany(page, row, settings, timing=null) {
       // still-hydrating input that had no event handler. A SINGLE reload
       // and re-submit is permitted; never repeat a dispatched query.
       transportRecoveryUsed=true;
+      if(catalog.historyHit){
+        noteSabyCatalogColdFallback(page);
+        components.catalog_history_hit=0;components.catalog_history_fallback=1;
+      }
       console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
         state:"exact_inn_transport_not_observed",
         action:"reload_and_submit_once",
@@ -489,6 +566,8 @@ async function openCompany(page, row, settings, timing=null) {
         catalog={historyAttempted:false,historyHit:false};
         readiness=await measure("hydration_ms",settleSearch);
         beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
+        beforeScoped=settings.scopedSearchEmpty===true?await readScopedSabyEmpty(page,inn):null;
+        nextScopedProbe=0;
         transport.arm();
         const second=await measure("submit_ms",submitSearch);
         if(!second.ok)
@@ -525,7 +604,8 @@ async function openCompany(page, row, settings, timing=null) {
         if(isListRoute()){
           lastSelected=lastRead;selection=lastRead.reason;
           rows=lastRead.row&&!["ambiguous","ambiguous_exact","result_window_full",
-            "primary_window_full"].includes(lastRead.reason)?[lastRead.row]:[];
+            "primary_window_full"].includes(lastRead.reason)&&
+            (!catalog.historyHit||sampleB?.inputExact===true)?[lastRead.row]:[];
           classification=classifySabySearchZeroState(sampleA,sampleB,{
             onListRoute:true,beforeSearch
           });
@@ -537,6 +617,13 @@ async function openCompany(page, row, settings, timing=null) {
       console.info("[SABY_SEARCH_LATE_RESULT] "+JSON.stringify({status:"candidate_requires_card_verification"}));
   }
   if(rows.length!==1){
+    // No repeated dispatched query just because the warm list failed.
+    // Preserve the existing later retry, but after a few warm failures
+    // automatically use cold navigation for the rest of this Page.
+    if(catalog.historyHit){
+      noteSabyCatalogColdFallback(page);
+      components.catalog_history_unresolved=1;
+    }
     if(publicFallback){
       const observed=transport?.summary()||{};
       console.warn("[SABY_SEARCH_TRANSPORT_DIAG] "+JSON.stringify({
@@ -661,7 +748,7 @@ async function openCompany(page, row, settings, timing=null) {
       publicFallbackAttempted=true;
       const checked=await measure("alias_ms",()=>verifySabyPublicNameFallback(
         page,inn,name,last,{
-          selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+          selectedSearchTitle:auditSearchName(rows[0]?.text,inn),verifyPublic
         }));
       publicFallbackFailureReason=String(checked?.reason||"");
       publicFallbackRejection=checked;
@@ -675,7 +762,8 @@ async function openCompany(page, row, settings, timing=null) {
       // new private route already had its stable independently verified
       // owner. Only the EXISTING strict proof can finish early.
       const early=await measure("post_route_ms",()=>tryEarlySabyPostRouteProof(page,inn,name,{
-        priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+        priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn),
+        verifyPostRoute:(p,i,n,a,opts)=>verifySabyPostRouteOwnerIdentity(p,i,n,a,{...opts,verifyPublic})
       }));
       if(early){
         console.info("[SABY_POST_ROUTE_EARLY_DIAG] "+
@@ -726,7 +814,7 @@ async function openCompany(page, row, settings, timing=null) {
     const inspected=await measure("post_route_ms",()=>verifySabyPostRouteOwnerIdentity(
       page,inn,name,last,{
         priorFailure:publicFallbackRejection,
-        selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
+        selectedSearchTitle:auditSearchName(rows[0]?.text,inn),verifyPublic
       }));
     console.info("[SABY_POST_ROUTE_DIAG] "+
       JSON.stringify(safeSabyPostRouteDiagnostic(inspected)));
@@ -746,6 +834,8 @@ async function openCompany(page, row, settings, timing=null) {
     {scope:"company",code:reviewCode});
   }finally{
     transport?.stop();
+    if(timing)for(const key of ["catalog_history_attempted","catalog_history_hit","catalog_history_fallback",
+      "catalog_history_unresolved","public_rejection_reused","scoped_empty_hits"])timing[key]=components[key];
     console.info("[SABY_SEARCH_COMPONENT_TIMING] "+JSON.stringify({
       ...components,total_ms:Math.round(performance.now()-searchStarted)
     }));
@@ -1798,16 +1888,7 @@ export function savedSabyFinanceCardUrl(row){
   if(!inn||sabyInn(saved?.inn)!==inn||
      !String(row?.["Организация"]||"").trim()||
      !String(saved?.verified_at||"").trim())return null;
-  try{
-    const target=new URL(String(saved.source_url||""));
-    const id=String(target.searchParams.get("id")||"");
-    if(target.protocol!=="https:"||target.hostname!=="profile.saby.ru"||
-       target.username||target.password||target.port||
-       target.pathname!=="/page/contractor-info"||target.searchParams.getAll("id").length!==1||
-       !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
-      return null;
-    return target.href;
-  }catch{return null;}
+  return safeSabyNavigationUrl(saved.source_url);
 }
 
 async function openSavedSabyFinanceCard(page,row,settings){
