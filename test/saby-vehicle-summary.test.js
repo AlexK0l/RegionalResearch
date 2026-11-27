@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory,readSabyVehicleSummary,collectSabyPendingVehicleGroups} from "../src/sabyVehicleSummary.js";
+import {scanSabyVehicleSummaryDOM,validateSabyVehicleSummary,collectSabyVehicleInventory,readSabyVehicleSummary,collectSabyPendingVehicleGroups,openSabyAllVehicleDrawer,scanSabyVehicleDrawerPresenceDOM} from "../src/sabyVehicleSummary.js";
 import {validateSabyFleetTreeSnapshot} from "../src/sabyFleetTree.js";
 const url="https://profile.saby.ru/page/contractor-info?id=12345678-1234-1234-1234-123456789abc";
 const raw=()=>({status:"observed",total:2,groups:[{key:"1",category:"Легковые",count:1,labels:["PEUGEOT PARTNER VP, 2023"]},{key:"2",category:"Коммерческие",count:1,labels:["PEUGEOT BOXER, 2024"]}]});
@@ -327,4 +327,112 @@ test("short source make and unknown make survive summary and final verified flee
   const result=verifiedSabyVehicleFleet({status:"verified",count:4,groups:summary.groups});
   assert.equal(result.count,4);
   assert.deepEqual(result.groups[0].vehicles.map(v=>v.year),[1967,null,null,null]);
+});
+
+
+// Live PR176: 17 missing-panel categories, not a missing inner list.
+// An accepted tile click must never be treated as a mounted drawer.
+const partialSummary=()=>{
+  const a=raw();a.total=3;a.groups[1].count=2;
+  return validateSabyVehicleSummary(a);
+};
+function disclosureFixture({mode="second",knownOpen=false}={}){
+  let current=url+"&anchor=about",clicks=0,reads=0,time=0;
+  const original=current,summary=partialSummary();
+  const page={url:()=>current,locator:selector=>{
+    assert.match(selector,/item-key="2"/);
+    return {count:async()=>1,isVisible:async()=>true,click:async()=>{
+      clicks++;
+      if(mode==="failed")throw Error("PRIVATE");
+      if(mode==="wrong_card")current=current.replace("12345678-","22345678-");
+      else current=url+"&anchor=fleet";
+    }};
+  }};
+  const options={originalUrl:original,summary,group:summary.groups[1],knownOpen,
+    readSummary:async()=>{
+      reads++;
+      if(mode==="changed_summary"&&clicks===1){
+        const changed=partialSummary();changed.count++;return changed;
+      }
+      return partialSummary();
+    },
+    readPresence:async()=>mode==="ambiguous"?"ambiguous":
+      mode==="mounted"&&clicks?"mounted":
+      mode==="appeared_disappeared"&&clicks&&time===0?"mounted":
+      (mode==="first"&&clicks>=1||mode==="second"&&clicks>=2)?"visible":"absent",
+    now:()=>time,deadline:175000,wait:async ms=>{time+=ms;}
+  };
+  return {page,options,get clicks(){return clicks;},get reads(){return reads;},get time(){return time;}};
+}
+test("a same-company UI-only first click without a drawer gets one freshly validated semantic retry",async()=>{
+  const f=disclosureFixture(),r=await openSabyAllVehicleDrawer(f.page,f.options);
+  assert.equal(r.opened,true);
+  assert.equal(r.attempts,2);assert.equal(f.clicks,2);assert.equal(f.reads,2);
+  assert.equal(r.uiChanged,true);assert.equal(r.encountered,true);
+  assert.ok(f.time<=8000);
+});
+test("no speculative repeat on mounted, ambiguous, previously seen or drawer-derived state",async()=>{
+  for(const [mode,knownOpen,clicks] of [
+    ["mounted",false,1],["appeared_disappeared",false,1],["ambiguous",false,0],["second",true,0]
+  ]){
+    const f=disclosureFixture({mode,knownOpen}),r=await openSabyAllVehicleDrawer(f.page,f.options);
+    assert.equal(r.opened,false,mode);assert.equal(f.clicks,clicks,mode);
+    assert.equal(r.encountered,true,mode);
+  }
+  const f=disclosureFixture();
+  const negative={...f.options.group,key:"-2"};
+  const r=await openSabyAllVehicleDrawer(f.page,{...f.options,group:negative,
+    summary:{...f.options.summary,groups:[negative]}});
+  assert.equal(r.opened,false);assert.equal(f.clicks,0);
+});
+test("missing drawer has bounded two actions; changed summary, card or uncertain click fails closed",async()=>{
+  for(const [mode,status,clicks] of [
+    ["never","absent_after_wait",2],["changed_summary","summary_changed",1],
+    ["wrong_card","route_guard",1],["failed","click_failed",1],["first","visible",1]
+  ]){
+    const f=disclosureFixture({mode}),r=await openSabyAllVehicleDrawer(f.page,f.options);
+    assert.equal(r.status,status,mode);assert.equal(f.clicks,clicks,mode);
+    assert.ok(f.time<=8000);
+    assert.doesNotMatch(JSON.stringify(r),/PRIVATE|profile\.saby\.ru/);
+  }
+});
+test("shared inventory collects only after real opening and retains partial without redundant category polls",async()=>{
+  for(const mode of ["second","never","mounted"]){
+    const f=disclosureFixture({mode}),diag=[];let trees=0;
+    const r=await collectSabyVehicleInventory(f.page,{
+      originalUrl:f.options.originalUrl,readSummary:async()=>partialSummary(),
+      sharedCategoryHydration:true,readDrawerPresence:f.options.readPresence,
+      wait:f.options.wait,now:f.options.now,onDiagnostic:d=>diag.push(d),
+      readTree:async(_p,{expected,category})=>{trees++;
+        return {status:"observed",expected,category,groupKey:"-2",rows:[{key:"1",label:"MODEL"}],hasMore:true};},
+      collectTree:async()=>({status:"complete",expected:2,rows:2,
+        vehicles:[{model:"MODEL",year:null},{model:"MODEL",year:null}]})
+    });
+    assert.equal(r.drawerOpened,mode==="second",mode);
+    assert.equal(r.drawerAttempted,true,mode);
+    assert.equal(r.fleet?.count??null,mode==="second"?3:null,mode);
+    assert.equal(trees,mode==="second"?1:0,mode);
+    if(mode!=="second")assert.equal(r.partial.groups.length,1);
+    assert.equal(diag[0].reason,"drawer_opening");
+    assert.equal(diag[0].drawer_seen,mode==="second",mode);
+  }
+});
+test("presence scanner distinguishes exact wrapper, caption, hidden and ambiguous DOM without raw values",()=>{
+  const oldDoc=globalThis.document,oldStyle=globalThis.getComputedStyle;
+  let wrappers=[],captions=[],visible=true;
+  const caption={getBoundingClientRect:()=>({width:visible?200:0,height:24})};
+  const wrapper={contains:x=>x===caption};
+  try{
+    globalThis.document={querySelectorAll:s=>s.startsWith("[templateforlog")?wrappers:captions};
+    globalThis.getComputedStyle=()=>({display:"block",visibility:"visible",opacity:"1"});
+    assert.equal(scanSabyVehicleDrawerPresenceDOM(),"absent");
+    wrappers=[wrapper];assert.equal(scanSabyVehicleDrawerPresenceDOM(),"mounted");
+    captions=[caption];assert.equal(scanSabyVehicleDrawerPresenceDOM(),"visible");
+    visible=false;assert.equal(scanSabyVehicleDrawerPresenceDOM(),"mounted");
+    captions=[caption,caption];assert.equal(scanSabyVehicleDrawerPresenceDOM(),"ambiguous");
+    captions=[caption];wrappers=[{contains:()=>false}];assert.equal(scanSabyVehicleDrawerPresenceDOM(),"ambiguous");
+  }finally{
+    if(oldDoc===undefined)delete globalThis.document;else globalThis.document=oldDoc;
+    if(oldStyle===undefined)delete globalThis.getComputedStyle;else globalThis.getComputedStyle=oldStyle;
+  }
 });

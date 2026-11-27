@@ -1,0 +1,9 @@
+# All-category fleet drawer opening — 27 November 2026
+
+Live log after PR176: 35 section timing events (5 full, 30 retry), 18 category results: 17 tree_missing with panel_not_visible_or_missing, one complete. The 17 unavailable categories announced 1,858 vehicles. This is not a model validation or footer problem. The log does not prove which browser action or popup state caused the missing panel.
+
+The existing truck-only opener already accounts for the observed v26 same-company SPA transition where the first click does not open the drawer. The all-category path incorrectly set drawerOpened immediately after the first click. It then spent the whole shared hydration window polling categories in a drawer that might not exist, and suppressed the truck fallback.
+
+Use a separate bounded disclosure state machine only in the shared all-category path. Inspect exact transport wrapper and caption; after an accepted click poll for visible caption. If nothing ever mounted, re-read and reconcile the entire summary, retain same-company/route proof and re-locate the same exact positive tile before one additional click. Share the original 20-poll hydration budget. Never toggle a mounted, hidden, ambiguous, previously seen or drawer-derived panel; uncertain click failure does not authorize another click. No new coordinates. No new category probes before real drawer presence. Separate attempted/encountered flags prevent an independent legacy opener after the bounded attempt. Preserve all complete groups and strict partial status; never infer zero or complete.
+
+Add sanitized drawer_opening logs and tests for success on second click, no duplicate clicks, wrong company, changed counts, timeout/no panel, partial retention and DOM presence. No reset of historical attempts, no extra paid visits, no DB or export schema changes. The specific cause and improvement still need live confirmation; these tests verify the control flow, not Saby service behavior.

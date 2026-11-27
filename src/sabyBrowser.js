@@ -1805,7 +1805,9 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
       // If all categories are accounted for, there is no truck-only
       // fallback to perform. A partial nontruck-only summary is still
       // useful but is not a verified complete fleet or a verified zero.
-      const handled=all=>all.fleet||all.drawerOpened||all.trucks||
+      // An already attempted/encountered all-category drawer must not
+      // trigger another independent truck-only opener in the same visit.
+      const handled=all=>all.fleet||all.drawerOpened||all.drawerAttempted||all.drawerEncountered||all.trucks||
         all.partial&&!all.partial.categories.some(g=>g.category==="Грузовые");
       let afterHeading=null;
       if(allVehicles){

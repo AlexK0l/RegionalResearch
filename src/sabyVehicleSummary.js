@@ -282,6 +282,96 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
     ["observed_no_rows","expanded_no_rows"].includes(lastSeed.get(g))?"footer_missing":"read_failed");
   return true;
 }
+// An accepted tile click is not proof that the drawer opened. The earlier
+// truck-only collector already handled a first click that only changed
+// the same company's SPA UI route. The live all-category log now shows
+// exactly the missing-panel failure. Detect real drawer presence first;
+// never re-toggle a mounted, hidden, ambiguous or previously seen drawer.
+export function scanSabyVehicleDrawerPresenceDOM(){
+  const wrappers=[...document.querySelectorAll(
+    '[templateforlog="ContractorCard/Cards/transportCard:All"]'
+  )];
+  const captions=[...document.querySelectorAll(
+    '.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]'
+  )];
+  if(wrappers.length>1||captions.length>1)return "ambiguous";
+  if(!captions.length)return wrappers.length?"mounted":"absent";
+  const caption=captions[0];
+  if(wrappers.length===1&&!wrappers[0].contains(caption))return "ambiguous";
+  const r=caption.getBoundingClientRect(),s=getComputedStyle(caption);
+  return r.width>0&&r.height>0&&s.display!=="none"&&
+    s.visibility!=="hidden"&&s.visibility!=="collapse"&&s.opacity!=="0"?
+      "visible":"mounted";
+}
+const readDrawerPresenceDefault=page=>page.evaluate(scanSabyVehicleDrawerPresenceDOM);
+
+export async function openSabyAllVehicleDrawer(page,{
+  originalUrl,summary,group,readSummary,knownOpen=false,
+  readPresence=readDrawerPresenceDefault,
+  wait=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>Date.now(),
+  deadline=now()+175000
+}={}){
+  const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
+  const startingUrl=page?.url?.();
+  let attempts=0,polls=0,encountered=knownOpen===true,lastPresence="unknown";
+  const finish=status=>({status,opened:status==="visible",attempts,polls,
+    encountered,lastPresence,uiChanged:same()&&page.url()!==startingUrl});
+  const inspect=async()=>{
+    if(!same())return "route_guard";
+    if(now()>=deadline)return "time_limit";
+    let x;
+    try{x=await readPresence(page);}catch{return "presence_failed";}
+    polls++;
+    if(!same())return "route_guard";
+    if(!["visible","mounted","absent","ambiguous"].includes(x))return "presence_failed";
+    lastPresence=x;
+    if(x!=="absent")encountered=true;
+    return x;
+  };
+  if(!same())return finish("route_guard");
+  // Only a reconciled summary with a real positive tile key can
+  // authorize disclosure. A drawer-derived negative key is read-only.
+  const canOpen=!knownOpen&&/^\d{1,9}$/.test(group?.key||"")&&
+    summary?.groups?.includes(group)&&typeof readSummary==="function";
+  for(let round=0;round<2;round++){
+    let state=await inspect();
+    if(!["mounted","absent"].includes(state))return finish(state);
+    if(!encountered&&canOpen){
+      let live;
+      try{live=await readSummary();}catch{return finish("summary_changed");}
+      if(!same())return finish("route_guard");
+      if(!live||live.count!==summary.count||signature(live)!==signature(summary))
+        return finish("summary_changed");
+      const target=page.locator('[data-qa="contractorCard-transport"] [data-qa="item"][item-key="'+group.key+'"] .contractorCard-transport__tileContainer');
+      if(await target.count()!==1||!await target.isVisible())return finish("tile_unavailable");
+      if(!same())return finish("route_guard");
+      // Recheck immediately before the action as the popup may have
+      // mounted while the current semantic target was being resolved.
+      state=await inspect();
+      if(!["mounted","absent"].includes(state))return finish(state);
+      if(state==="absent"&&!encountered){
+        if(now()>=deadline)return finish("time_limit");
+        attempts++;
+        try{await target.click({timeout:Math.max(1,Math.min(4000,deadline-now()))});}
+        catch{return finish(same()?"click_failed":"route_guard");}
+        if(!same())return finish("route_guard");
+      }
+    }
+    // Share one bounded 20-poll hydration window across up to two
+    // disclosures; the second requires a fresh reconciled summary and
+    // no evidence that a drawer ever mounted. Never use old coordinates.
+    for(let i=0;i<10;i++){
+      if(i>0||round>0){
+        if(now()>=deadline)return finish("time_limit");
+        await wait(Math.min(400,deadline-now()));
+      }
+      state=await inspect();
+      if(!["mounted","absent"].includes(state))return finish(state);
+    }
+  }
+  return finish(encountered?"mounted_unready":"absent_after_wait");
+}
+
 // Complete small fleets need one DOM read. For longer lists, use
 // existing scoped tree/footer protocol and one exact tile disclosure.
 export async function collectSabyVehicleInventory(page,{
@@ -289,7 +379,8 @@ export async function collectSabyVehicleInventory(page,{
   readSummary=readSabyVehicleSummary,readTree=readSabyFleetTree,collectTree=collectSabyFleetTree,now=()=>Date.now(),
   recoverSummary=null,pollAfterHeading=false,openNavigation=false,
   recoverNavigation=recoverSabyVehicleNavigation,onDiagnostic,
-  sharedCategoryHydration=false,preferNavigation=false
+  sharedCategoryHydration=false,preferNavigation=false,
+  readDrawerPresence=readDrawerPresenceDefault
 }={}){
   const guard=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.());
   const same=()=>guard().ok===true;
@@ -304,7 +395,7 @@ export async function collectSabyVehicleInventory(page,{
   // A known visible accordion can directly reveal the summary or
   // drawer. Use the already established one-click recovery before
   // repeating the same missing-summary scan in full production.
-  let opened=false,navigationTried=false;
+  let opened=false,navigationTried=false,drawerAttempted=false,drawerEncountered=false;
   if(!raw&&!quick&&openNavigation&&preferNavigation&&same()){
     const recovery=await recoverNavigation(page,{
       originalUrl,wait,onDiagnostic,readSummary:()=>readSummary(page,originalUrl)
@@ -347,11 +438,33 @@ export async function collectSabyVehicleInventory(page,{
       groups:s.groups.filter(g=>g.vehicles)
     });
     return {status:fleet?"verified":"partial",fleet,partial,trucks,drawerOpened:opened,
-      navigationAttempted:missing.navigationAttempted};
+      drawerAttempted,drawerEncountered,navigationAttempted:missing.navigationAttempted};
   };
   if(s.groups.every(g=>g.vehicles)||quick)return outcome();
   const deadline=now()+175000,pending=s.groups.filter(g=>!g.vehicles);
   try{
+    if(sharedCategoryHydration){
+      const opening=await openSabyAllVehicleDrawer(page,{
+        originalUrl,summary:s,group:pending[0],readSummary:read,
+        knownOpen:opened,readPresence:readDrawerPresence,wait,now,deadline
+      });
+      if(!same())return missing;
+      opened=opening.opened;
+      drawerAttempted=opening.attempts>0;
+      drawerEncountered=opening.encountered;
+      notify(onDiagnostic,{reason:"drawer_opening",opening_status:opening.status,
+        drawer_clicks:opening.attempts,drawer_polls:opening.polls,
+        drawer_seen:opened,drawer_mounted_seen:opening.encountered,
+        last_presence:opening.lastPresence,ui_changed:opening.uiChanged});
+      // No category polls against a drawer that never appeared. Keep
+      // the summary/complete groups, not a fictional open panel.
+      if(!opened)return outcome();
+      const safe=await collectSabyPendingVehicleGroups(page,pending,{
+        originalUrl,readTree,collectTree,wait,now,deadline,onDiagnostic,
+        completedGroups:s.groups.filter(g=>Array.isArray(g.vehicles))
+      });
+      return safe?outcome():missing;
+    }
     const caption=page.locator('.controls-StackTemplate-content .controls-StackTemplate__caption [title="Автопарк"]');
     const n=await caption.count();
     if(n>1||!same())return outcome();
@@ -366,13 +479,6 @@ export async function collectSabyVehicleInventory(page,{
       const target=page.locator('[data-qa="contractorCard-transport"] [data-qa="item"][item-key="'+pending[0].key+'"] .contractorCard-transport__tileContainer');
       if(await target.count()!==1||!await target.isVisible()||!same())return outcome();
       await target.click({timeout:4000});opened=true;
-    }
-    if(sharedCategoryHydration){
-      const safe=await collectSabyPendingVehicleGroups(page,pending,{
-        originalUrl,readTree,collectTree,wait,now,deadline,onDiagnostic,
-        completedGroups:s.groups.filter(g=>Array.isArray(g.vehicles))
-      });
-      return safe?outcome():missing;
     }
     for(const g of pending){
       if(!same()||now()>=deadline)return outcome();
