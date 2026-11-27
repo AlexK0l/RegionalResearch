@@ -90,38 +90,54 @@ export function evaluateMemoryAdmission(sample,settings,active=0){
   if(!sample?.valid)return {canStart:false,pressure:"unknown",reason:"memory_measurement_unavailable"};
   const reserve=Math.max(settings.reserveMiB,Math.ceil(sample.totalMiB*0.12));
   const heapReserve=Math.max(settings.heapReserveMiB,Math.ceil(sample.heapLimitMiB*0.08));
-  const capacity=Math.max(0,Math.min(10,Math.floor((sample.totalMiB-reserve)/settings.jobMiB),
-    Math.floor((sample.heapLimitMiB-heapReserve)/settings.heapJobMiB)));
+  // Existing jobs are already reflected in MemAvailable and used V8 heap.
+  // Do NOT reserve their whole estimated footprint again against total RAM.
+  // Estimate only incremental admissions from this measured sample.
+  // The queue still admits at most one job per sample/start-spacing window.
+  const hostGrowth=128,heapGrowth=64;
+  const requiredAvailableMiB=reserve+settings.jobMiB+active*hostGrowth;
+  const requiredHeapMiB=heapReserve+settings.heapJobMiB+active*heapGrowth;
   const critical=sample.availableMiB<=reserve/2||sample.heapAvailableMiB<=heapReserve/2;
   // Parallel studies need additional headroom while in-flight batches
   // finish. Once only one study remains, do not repeatedly preempt it merely
   // for using the extra parallel-drain margin (e.g. Chromium at Saby).
   // The full reserve and emergency limits still apply; admission of new
   // studies still requires reserve + job estimate + per-active headroom.
-  const drainMargin=active>1?Math.min(512,Math.ceil(settings.jobMiB/3)):0;
-  const heapDrainMargin=active>1?Math.min(256,Math.ceil(settings.heapJobMiB/2)):0;
+  const drainMargin=active>1?Math.max(Math.min(512,Math.ceil(settings.jobMiB/3)),
+    (active-1)*hostGrowth):0;
+  const heapDrainMargin=active>1?Math.max(Math.min(256,Math.ceil(settings.heapJobMiB/2)),
+    (active-1)*heapGrowth):0;
   const pressured=active>0&&(sample.availableMiB<=reserve+drainMargin||
     sample.heapAvailableMiB<=heapReserve+heapDrainMargin);
-  const enough=sample.availableMiB>=reserve+settings.jobMiB+active*128&&
-    sample.heapAvailableMiB>=heapReserve+settings.heapJobMiB+active*64;
-  return {canStart:!critical&&!pressured&&enough&&active<capacity,
+  const enough=sample.availableMiB>=requiredAvailableMiB&&
+    sample.heapAvailableMiB>=requiredHeapMiB;
+  // Project additional slots assuming each consumes its estimated footprint.
+  // Include the next peer-growth margin for each subsequent slot. This is a
+  // UI estimate, NOT a reservation or a batch-admission authorization.
+  const additional=critical||pressured?0:Math.max(0,Math.min(
+    Math.floor((sample.availableMiB-reserve-active*hostGrowth+hostGrowth)/
+      (settings.jobMiB+hostGrowth)),
+    Math.floor((sample.heapAvailableMiB-heapReserve-active*heapGrowth+heapGrowth)/
+      (settings.heapJobMiB+heapGrowth))));
+  const capacity=Math.min(10,active+additional);
+  return {canStart:!critical&&!pressured&&enough&&active<10,
     pressure:critical?"critical":pressured?"high":"normal",
-    reason:critical?"memory_reserve_reached":pressured?"memory_drain_margin":active>=capacity?"estimated_capacity":
+    reason:critical?"memory_reserve_reached":pressured?"memory_drain_margin":active>=10?"estimated_capacity":
       !enough?"insufficient_headroom":"",
+    admissionPolicy:"measured_headroom_v2",requiredAvailableMiB,requiredHeapMiB,
     reserveMiB:reserve,heapReserveMiB:heapReserve,estimatedCapacity:capacity,
     ...sample};
 }
 // A browser is an additional allocation inside an existing research, not
 // a new research slot. Never count the owner's estimated RAM a second time.
-// Small servers run the browser alone; larger hosts may retain existing peers
-// if measured free RAM and V8 space suffice. No new peers start during the lease.
+// Saby is exclusive: all peers must reach their durable safe points before
+// Chromium starts, regardless of host size. No new peers start during its lease.
 export function evaluateSabyBrowserAdmission(sample,settings,active=1){
   const peers=Math.max(0,active-1);
   const browserMiB=settings.sabyBrowserMiB??640;
   const reserve=Number(sample?.reserveMiB??settings.reserveMiB);
   const heapReserve=Number(sample?.heapReserveMiB??settings.heapReserveMiB);
-  const exclusive=!!sample?.valid&&
-    sample.totalMiB<reserve+2*settings.jobMiB+browserMiB;
+  const exclusive=true;
   const requiredAvailableMiB=reserve+browserMiB+peers*128;
   const requiredHeapMiB=heapReserve+64+peers*64;
   const canOpen=!!sample?.valid&&sample.pressure==="normal"&&

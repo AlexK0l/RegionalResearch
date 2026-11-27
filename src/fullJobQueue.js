@@ -42,7 +42,8 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     return {memory:{enabled:true,blocked,
       effectiveLimit:Math.min(capacity,lastMemory?.estimatedCapacity??capacity,
         sabyLease&&sabyPolicy().exclusive?1:capacity),
-      limitedByMemory:blocked||lastMemory?.reason==="estimated_capacity"&&lastMemory.estimatedCapacity<capacity,
+      limitedByMemory:blocked||Boolean(sabyLease)||active<capacity&&
+        lastMemory?.canStart===false,
       paused:pending.filter(x=>x.paused).length,
       pause_requested:[...running.values()].filter(x=>x.job.memoryPauseRequested).length,
       job_estimate_mib:memory.settings.jobMiB,
@@ -141,13 +142,9 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
     let policy=sabyPolicy();
     const peers=[...running.values()].filter(item=>item!==owner)
       .sort((a,b)=>b.started-a.started);
-    if(policy.exclusive){
-      // 2 GiB hosts must drain every other research before Chromium opens.
-      for(const peer of peers)requestPause(peer,"saby_browser_priority");
-    }else if(!policy.canOpen&&!peers.some(peer=>peer.job.memoryPauseRequested)){
-      const peer=peers.find(p=>p.preemptible&&!p.job.cancelled&&p.job.state==="active");
-      if(peer)requestPause(peer,"saby_browser_headroom");
-    }
+    // Saby owns the browser exclusively. Request ALL production peers
+    // to commit and unwind; non-preemptible diagnostics must finish.
+    for(const peer of peers)requestPause(peer,"saby_browser_priority");
     // The owner is quiescent at its checkpoint, not doing paid work.
     // Collect after peers unwind if unreachable objects still block launch.
     if(active===1&&!policy.canOpen&&typeof collectGarbage==="function"&&
@@ -158,7 +155,7 @@ export function createFullJobQueue({limit=2,execute,onError=console.error,memory
       policy=sabyPolicy();
     }
     const draining=peers.some(peer=>peer.job.memoryPauseRequested);
-    if(!policy.canOpen||draining){
+    if(!policy.canOpen||draining||peers.length){
       lease.healthySince=null;
       // Do not hold the owner's full JS graph forever if its browser
       // cannot be (re)opened after the peers have unwound.

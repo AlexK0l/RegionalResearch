@@ -181,3 +181,50 @@ test("estimated RAM capacity below configured concurrency shows memory wait",asy
   assert.equal(b.progress.phase,"memory_wait");assert.equal(q.snapshot().memory.effectiveLimit,1);
   b.cancelled=true;q.cancelQueued("b");d.resolve();await tick();q.close();
 });
+
+test("measured VPS headroom admits a third research without lowering configured estimates",()=>{
+  const settings=memoryGuardSettings({RESEARCH_MEMORY_JOB_MIB:"640"});
+  const sample={valid:true,totalMiB:1967,availableMiB:1291,heapLimitMiB:1080,heapAvailableMiB:900};
+  const a=evaluateMemoryAdmission(sample,settings,2);
+  assert.equal(a.admissionPolicy,"measured_headroom_v2");
+  assert.equal(a.requiredAvailableMiB,1280);
+  assert.equal(a.requiredHeapMiB,640);
+  assert.equal(a.canStart,true);
+  assert.equal(a.estimatedCapacity,3);
+  assert.equal(evaluateMemoryAdmission({...sample,availableMiB:1279},settings,2).canStart,false);
+  assert.equal(evaluateMemoryAdmission({...sample,heapAvailableMiB:639},settings,2).canStart,false);
+  assert.equal(evaluateMemoryAdmission(sample,settings,3).canStart,false);
+  assert.equal(evaluateMemoryAdmission({...sample,totalMiB:65536,availableMiB:64000,
+    heapLimitMiB:8192,heapAvailableMiB:8000},settings,10).canStart,false);
+});
+test("dynamic admission increases beyond two, rechecks each sample and respects configured queue limit",async()=>{
+  let now=0,available=1500,heap=1000;
+  const settings={...memoryGuardSettings({RESEARCH_MEMORY_JOB_MIB:"640"}),stableMs:1000,startSpacingMs:1000};
+  const memory=createMemoryAdmission({settings,now:()=>now,sample:()=>({
+    valid:true,totalMiB:1967,availableMiB:available,heapLimitMiB:1080,heapAvailableMiB:heap})});
+  const started=[],gates=new Map();
+  const q=createFullJobQueue({limit:4,memory,autoPoll:false,log:()=>{},collectGarbage:null,
+    execute:async j=>{j.state="active";started.push(j.id);const d=deferred();gates.set(j.id,d);
+      await d.promise;j.state="completed";}});
+  const jobs=Array.from({length:5},(_,i)=>job(String(i),"R"+i));
+  try{
+    for(const j of jobs)q.enqueue(j,"key");
+    await tick();assert.deepEqual(started,["0"]);
+    q.poll();await tick();assert.equal(started.length,1);
+    now+=1000;available=1400;heap=950;q.poll();await tick();
+    assert.deepEqual(started,["0","1"]);
+    now+=1000;available=1291;heap=900;q.poll();await tick();
+    assert.deepEqual(started,["0","1","2"]);
+    now+=1000;q.poll();await tick();
+    assert.equal(started.length,3);
+    assert.equal(q.snapshot().memory.requiredAvailableMiB,1408);
+    assert.equal(q.snapshot().memory.canStart,false);
+    available=1500;heap=950;now+=1000;q.poll();await tick();
+    assert.equal(started.length,3,"headroom must stabilize after a blocked sample");
+    now+=1000;q.poll();await tick();assert.deepEqual(started,["0","1","2","3"]);
+    now+=2000;q.poll();await tick();assert.equal(started.length,4);
+  }finally{
+    q.beginShutdown();for(const d of gates.values())d.resolve();
+    await tick();q.close();
+  }
+});

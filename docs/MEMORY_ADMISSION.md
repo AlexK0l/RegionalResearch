@@ -12,6 +12,22 @@ headroom after pressure. Settings are in .env.example. On a small VPS the
 defaults may intentionally admit zero jobs: tune against measured peaks,
 not against available swap or a desired arbitrary concurrency count.
 
+Admission uses measured available RAM and V8 headroom, not a static
+floor(total RAM / estimated study size). Existing jobs are already reflected
+in usage. For one new job require host reserve + job estimate + 128 MiB per
+active job, and heap reserve + heap estimate + 64 MiB per active job. The
+reported capacity projects additional slots from current headroom and is
+recomputed on each sample; the configured maximum remains binding.
+For example, with total 1967 MiB, reserve 384 MiB, job estimate 640 MiB and
+two active jobs, a third requires at least 1280 MiB available RAM and,
+at default heap settings, 640 MiB free V8 heap. No estimate is reduced.
+For multiple active jobs, drain margins also cover their incremental
+growth. When a study reaches Saby all other production studies yield at
+durable checkpoints, regardless of host size. Chromium starts only after
+the owner is alone and required actual headroom is stable; the exclusive
+reservation persists through browser rotations and reconnects. Other jobs
+automatically resume after it is released, subject to measured headroom.
+
 When headroom is insufficient new jobs remain in the queue. A high-pressure
 sample (including a drain margin above the reserve) requests cooperative
 suspension of the newest active resumable job;
@@ -42,8 +58,8 @@ A marker survives a normal service restart, and is removed before actual
 execution or user cancellation. An abrupt OOM/host crash during an active
 attempt is NOT blindly replayed: use the last durable checkpoint manually.
 Existing paid budget accounting is restored from the checkpoint. Pending
-normal jobs are still process-local. Source snapshots that already exist in
-SQLite are loaded only after admission.
+normal jobs are durable in SQLite. Source snapshots are loaded only after
+admission; interrupted active jobs require explicit resume after a hard crash.
 
 UI: memory_wait / memory_paused, pause requested, available memory and
 reserve and effective memory-based concurrency limit in job list; ETA
