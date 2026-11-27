@@ -64,6 +64,12 @@ test("public query and exact project, query, limit are mandatory",()=>{
   }
   assert.throws(()=>inspectSearchPlan({...plan(args),output:[...plan(args).output,plan(args).output[1]]},args),/ONE_APPROVAL/);
   assert.throws(()=>approvalRequest(c,searchRequest(c,args),plan(args),args,false),/OWNER_APPROVAL_REQUIRED/);
+  const ambiguous=plan(args);
+  ambiguous.output[1].arguments='{"query":"another",'+JSON.stringify(args).slice(1);
+  assert.throws(()=>inspectSearchPlan(ambiguous,args),/MCP_ARGUMENTS_INVALID/);
+  const spaced=plan(args);
+  spaced.output[1].arguments=JSON.stringify(args,null,2);
+  assert.deepEqual(inspectSearchPlan(spaced,args).arguments,args);
 });
 
 test("declining the exact proposal never sends a second request",async()=>{

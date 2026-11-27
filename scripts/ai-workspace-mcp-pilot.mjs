@@ -114,7 +114,17 @@ function sameArgs(actual,expected){
     actual.project_id===expected.project_id&&actual.query===expected.query&&actual.limit===expected.limit;
 }
 function parseArgs(item){
-  try{return JSON.parse(item.arguments);}catch{throw new PilotError("MCP_ARGUMENTS_INVALID");}
+  // Reject ambiguous duplicate keys and noncanonical encodings. Different
+  // JSON parsers must not interpret a human-approved query differently.
+  try{
+    require(typeof item.arguments==="string"&&item.arguments.length<=4096,"MCP_ARGUMENTS_INVALID");
+    const raw=item.arguments;
+    const parsed=JSON.parse(raw);
+    // Strip whitespace outside JSON strings, retaining all string escapes.
+    const compact=raw.replace(/"(?:\\.|[^"\\])*"|[\t\r\n ]+/g,s=>s.startsWith('"')?s:"");
+    require(JSON.stringify(parsed)===compact,"MCP_ARGUMENTS_INVALID");
+    return parsed;
+  }catch{throw new PilotError("MCP_ARGUMENTS_INVALID");}
 }
 function approvedItem(response,args){
   const output=readOutput(response);
