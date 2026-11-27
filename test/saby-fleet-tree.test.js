@@ -395,3 +395,47 @@ test("real collapsed/expanded classes gate one fresh category-specific expander 
 test("collapsed header with contradictory loaded rows is not a valid data seed",()=>{
   assert.equal(validateSabyFleetTreeSnapshot({...raw(1),expanderState:"collapsed"},{expected:220}).reason,"category_state_conflict");
 });
+
+test("actual drawer DOM shape distinguishes exact collapsed, expanded and contradictory expander classes",async()=>{
+  const make=(options={})=>{
+    const nodes=options.nodes||{};
+    return {textContent:options.text||"",getAttribute:k=>options.attrs?.[k]??null,
+      querySelectorAll:s=>nodes[s]||[],querySelector:s=>(nodes[s]||[])[0]||null,
+      classList:{contains:c=>(options.classes||[]).includes(c)},
+      getBoundingClientRect:()=>options.rect||{width:24,height:24,right:950},
+      closest:s=>options.template&&s==='[templateforlog="ContractorCard/Cards/transportCard:All"]'?{}:null};
+  };
+  const pageFor=(state,{duplicate=false,wrongDrawer=false,hidden=false,contradiction=false,partialClass=false}={})=>{
+    const head=make({text:"Грузовые"}),num=make({text:"76"});
+    const classes=["controls-TreeGrid__row-expander_"+state];
+    if(!partialClass)classes.push("controls-TreeGrid__row-expander_hiddenNode_default_"+state);
+    if(contradiction)classes.push("controls-TreeGrid__row-expander_"+(state==="collapsed"?"expanded":"collapsed"));
+    const expander=make({classes,rect:hidden?{width:0,height:0,right:950}:undefined});
+    const group=make({attrs:{"item-key":"-3"},classes:["controls-Tree__item"],nodes:{
+      ".controls-fontsize-2xl":[head],".controls-DecoratorNumber":[num],
+      '[data-qa="item-expander"]':duplicate?[expander,expander]:[expander]}});
+    const rows=state==="expanded"?[make({attrs:{"item-key":"123"},nodes:{
+      ".controls-margin_left-2xs.controls-padding_left-3xl":[make({nodes:{
+        ":scope > div:first-child":[make({text:"MODEL, 2023"})]}})]}})]:[];
+    const list=make({nodes:{
+      '[data-qa="item"][item-key]:not([item-parent-key])':[group],
+      '[data-qa="item"][item-parent-key="-3"][item-key]':rows}});
+    const panel=make({template:!wrongDrawer,rect:{width:600,height:500,right:1000},
+      nodes:{".controls-ListViewV":[list],
+        ".controls-StackTemplate__caption [title]":[make({attrs:{title:"Автопарк"}})]}});
+    const doc=make({nodes:{".controls-StackTemplate-content":[panel]}});
+    return {url:()=>firstParty,evaluate:async(fn,args)=>{
+      const vm=await import("node:vm");
+      return vm.runInNewContext("("+fn.toString()+")(args)",{args,document:doc,innerWidth:1000,
+        getComputedStyle:()=>({display:"block",visibility:"visible",opacity:"1"})});
+    }};
+  };
+  const read=async(state,opts)=>await readSabyFleetTree(pageFor(state,opts),{expected:76,category:"Грузовые"});
+  const collapsed=await read("collapsed");
+  assert.equal(collapsed.expanderState,"collapsed");assert.equal(collapsed.rows.length,0);
+  const expanded=await read("expanded");
+  assert.equal(expanded.expanderState,"expanded");assert.equal(expanded.rows.length,1);
+  for(const opts of [{duplicate:true},{wrongDrawer:true},{hidden:true},{contradiction:true},{partialClass:true}]){
+    assert.equal((await read("collapsed",opts)).expanderState,"unknown");
+  }
+});
