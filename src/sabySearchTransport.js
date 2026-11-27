@@ -31,6 +31,7 @@ export function exactSabyInnTransportToken(text,inn){
 export function trackSabySessionSockets(page){
   if(SESSION_SOCKETS.has(page))throw Error("SABY_SOCKET_TRACKER_ALREADY_ACTIVE");
   const sockets=new Set(),offBySocket=new Map();
+  let stopped=false;
   const forget=socket=>{
     sockets.delete(socket);
     const off=offBySocket.get(socket);
@@ -47,6 +48,8 @@ export function trackSabySessionSockets(page){
     }catch{forget(socket);}
   };
   const stop=()=>{
+    if(stopped)return;
+    stopped=true;
     page.off?.("websocket",seen);
     page.off?.("close",stop);
     for(const socket of [...sockets])forget(socket);

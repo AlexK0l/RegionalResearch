@@ -168,7 +168,7 @@ export async function withSabyBrowser(task, {env = process.env, autoLogin = true
     }
     return await task({page, context, settings});
   } finally {
-    stopSocketTracker?.();
+    try{stopSocketTracker?.();}catch{/* Diagnostics must not hold the browser lease. */}
     if (context) await context.close().catch(() => {});
     release();
   }
