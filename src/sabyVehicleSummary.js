@@ -282,10 +282,9 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
     ["observed_no_rows","expanded_no_rows"].includes(lastSeed.get(g))?"footer_missing":"read_failed");
   return true;
 }
-// An accepted tile click is not proof that the drawer opened. The earlier
-// truck-only collector already handled a first click that only changed
-// the same company's SPA UI route. The live all-category log now shows
-// exactly the missing-panel failure. Detect real drawer presence first;
+// PR177 live log: tile clicks did not mount the drawer. The user's
+// 27 November screen recording confirms that the exact interactive
+// widget HEADER opens the whole fleet. Detect real drawer presence;
 // never re-toggle a mounted, hidden, ambiguous or previously seen drawer.
 export function scanSabyVehicleDrawerPresenceDOM(){
   const wrappers=[...document.querySelectorAll(
@@ -306,7 +305,7 @@ export function scanSabyVehicleDrawerPresenceDOM(){
 const readDrawerPresenceDefault=page=>page.evaluate(scanSabyVehicleDrawerPresenceDOM);
 
 export async function openSabyAllVehicleDrawer(page,{
-  originalUrl,summary,group,readSummary,knownOpen=false,
+  originalUrl,summary,readSummary,knownOpen=false,
   readPresence=readDrawerPresenceDefault,
   wait=ms=>new Promise(r=>setTimeout(r,ms)),now=()=>Date.now(),
   deadline=now()+175000
@@ -329,45 +328,46 @@ export async function openSabyAllVehicleDrawer(page,{
     return x;
   };
   if(!same())return finish("route_guard");
-  // Only a reconciled summary with a real positive tile key can
-  // authorize disclosure. A drawer-derived negative key is read-only.
-  const canOpen=!knownOpen&&/^\d{1,9}$/.test(group?.key||"")&&
-    summary?.groups?.includes(group)&&typeof readSummary==="function";
-  for(let round=0;round<2;round++){
-    let state=await inspect();
+  // Only a reconciled summary with real positive tile keys can
+  // authorize disclosure. A drawer-derived index is read-only.
+  const canOpen=!knownOpen&&Array.isArray(summary?.groups)&&
+    summary.groups.length>0&&summary.groups.every(g=>/^\d{1,9}$/.test(g?.key||""))&&
+    typeof readSummary==="function";
+  let state=await inspect();
+  if(!["mounted","absent"].includes(state))return finish(state);
+  if(!encountered&&canOpen){
+    let live;
+    try{live=await readSummary();}catch{return finish("summary_changed");}
+    if(!same())return finish("route_guard");
+    if(!live||live.count!==summary.count||signature(live)!==signature(summary))
+      return finish("summary_changed");
+    // Exact supplied outerHTML, not the side navigation title, a
+    // category tile, vehicle row, broad text locator or old coordinates.
+    const target=page.locator('[data-qa="contractorCard-transport"] span[data-qa="contractorCard-transport__header"].contractor-Dialog-customHeader__clickable')
+      .filter({hasText:/^\s*Автопарк компании\s*$/u,visible:true});
+    try{
+      if(await target.count()!==1||!await target.isVisible())return finish("header_unavailable");
+    }catch{return finish("header_unavailable");}
+    if(!same())return finish("route_guard");
+    state=await inspect();
     if(!["mounted","absent"].includes(state))return finish(state);
-    if(!encountered&&canOpen){
-      let live;
-      try{live=await readSummary();}catch{return finish("summary_changed");}
+    if(state==="absent"&&!encountered){
+      if(now()>=deadline)return finish("time_limit");
+      attempts++;
+      try{await target.click({timeout:Math.max(1,Math.min(4000,deadline-now()))});}
+      catch{return finish(same()?"click_failed":"route_guard");}
       if(!same())return finish("route_guard");
-      if(!live||live.count!==summary.count||signature(live)!==signature(summary))
-        return finish("summary_changed");
-      const target=page.locator('[data-qa="contractorCard-transport"] [data-qa="item"][item-key="'+group.key+'"] .contractorCard-transport__tileContainer');
-      if(await target.count()!==1||!await target.isVisible())return finish("tile_unavailable");
-      if(!same())return finish("route_guard");
-      // Recheck immediately before the action as the popup may have
-      // mounted while the current semantic target was being resolved.
-      state=await inspect();
-      if(!["mounted","absent"].includes(state))return finish(state);
-      if(state==="absent"&&!encountered){
-        if(now()>=deadline)return finish("time_limit");
-        attempts++;
-        try{await target.click({timeout:Math.max(1,Math.min(4000,deadline-now()))});}
-        catch{return finish(same()?"click_failed":"route_guard");}
-        if(!same())return finish("route_guard");
-      }
     }
-    // Share one bounded 20-poll hydration window across up to two
-    // disclosures; the second requires a fresh reconciled summary and
-    // no evidence that a drawer ever mounted. Never use old coordinates.
-    for(let i=0;i<10;i++){
-      if(i>0||round>0){
-        if(now()>=deadline)return finish("time_limit");
-        await wait(Math.min(400,deadline-now()));
-      }
-      state=await inspect();
-      if(!["mounted","absent"].includes(state))return finish(state);
+  }
+  // The recording shows that this header toggles the popup. One
+  // click only; never retry the same toggle during this visit.
+  for(let i=0;i<20;i++){
+    if(i>0){
+      if(now()>=deadline)return finish("time_limit");
+      await wait(Math.min(400,deadline-now()));
     }
+    state=await inspect();
+    if(!["mounted","absent"].includes(state))return finish(state);
   }
   return finish(encountered?"mounted_unready":"absent_after_wait");
 }
@@ -445,14 +445,14 @@ export async function collectSabyVehicleInventory(page,{
   try{
     if(sharedCategoryHydration){
       const opening=await openSabyAllVehicleDrawer(page,{
-        originalUrl,summary:s,group:pending[0],readSummary:read,
+        originalUrl,summary:s,readSummary:read,
         knownOpen:opened,readPresence:readDrawerPresence,wait,now,deadline
       });
       if(!same())return missing;
       opened=opening.opened;
       drawerAttempted=opening.attempts>0;
       drawerEncountered=opening.encountered;
-      notify(onDiagnostic,{reason:"drawer_opening",opening_status:opening.status,
+      notify(onDiagnostic,{reason:"drawer_opening",opening_target:"widget_header",opening_status:opening.status,
         drawer_clicks:opening.attempts,drawer_polls:opening.polls,
         drawer_seen:opened,drawer_mounted_seen:opening.encountered,
         last_presence:opening.lastPresence,ui_changed:opening.uiChanged});
