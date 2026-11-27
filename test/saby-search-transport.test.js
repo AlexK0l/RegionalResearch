@@ -174,7 +174,7 @@ test("production search uses hydration and read-only transport only in opted-in 
   const source=fs.readFileSync(new URL("../src/sabyBrowser.js",import.meta.url),"utf8");
   assert.match(source,/const publicFallback=settings\.publicIdentityFallback===true;/);
   assert.match(source,/if\(!publicFallback\)return;/);
-  assert.match(source,/await settleSearch\(\);/);
+  assert.equal([...source.matchAll(/await measure\("hydration_ms",settleSearch\);/g)].length,2);
   assert.match(source,/observeSabySearchTransport\(page,inn,\{armed:false\}\)/);
   assert.match(source,/transport\?\.arm\(\);/);
   assert.match(source,/shouldRecoverSilentSabySearch\(/);
