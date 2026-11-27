@@ -1,6 +1,8 @@
 // Pure Stage12 scheduling helpers. A fast read is never an attempted
 // full-detail sweep, nor is a saved private route proof of fresh ownership.
 import {sabyInn,sabyNameMatches} from "./sabyEnrichment.js";
+import {SABY_FULL_CARD_STRATEGY,sabyPassFinished} from "./sabyPassCursor.js";
+export {SABY_FULL_CARD_STRATEGY,sabyPassFinished} from "./sabyPassCursor.js";
 export const SABY_FAST_STRATEGY="combined_visible_v1";
 export const SABY_COMBINED_RETRY_STRATEGY="combined_retry_full_v2";
 export const SABY_LEGACY_STRATEGY="section_passes_v1";
@@ -28,15 +30,21 @@ export function sabyFleetScope(env,raw){
     SABY_DIRECT_FLEETS_SCOPE:SABY_ALL_FLEETS_SCOPE;
 }
 export function sabyVisitStrategy(env,raw){
-  // The old v1 cursor already counts section attempts. Keep its scheduling
-  // semantics for the remainder of that sweep, including after a restart.
-  if(validSabyPassCursor(raw))
+  // Explicit rollout may migrate an UNFINISHED old pass using the
+  // section-attempt ledger; never reinterpret a finished cursor.
+  // Once v3 is durably pinned, toggling the flag cannot replay its visits.
+  const full=String(env?.SABY_FULL_CARD_PASS_ENABLED??"false").toLowerCase()==="true";
+  if(validSabyPassCursor(raw)){
+    if(raw.strategy===SABY_FULL_CARD_STRATEGY)return SABY_FULL_CARD_STRATEGY;
+    if(full&&!sabyPassFinished(raw))return SABY_FULL_CARD_STRATEGY;
     return [SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY].includes(raw.strategy)?
       raw.strategy:SABY_LEGACY_STRATEGY;
+  }
+  if(full)return SABY_FULL_CARD_STRATEGY;
   if(String(env?.SABY_FAST_PASS_ENABLED??"true").toLowerCase()==="false")
     return SABY_LEGACY_STRATEGY;
-  // Opt in only after the matched live comparison. Existing v1 cursors
-  // remain unchanged even if the operator enables the new strategy.
+  // The earlier v2 rollout remains pinned unless the operator explicitly
+  // enables the new full-card migration above.
   return String(env?.SABY_COMBINE_RETRY_DETAILS_ENABLED??"false").toLowerCase()==="true"?
     SABY_COMBINED_RETRY_STRATEGY:SABY_FAST_STRATEGY;
 }

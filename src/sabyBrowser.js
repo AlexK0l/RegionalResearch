@@ -611,7 +611,9 @@ async function openCompany(page, row, settings, timing=null) {
       last=outcome;
       if(outcome.ok) {
         console.info("[SABY_CARD] identity_verified");
-        return acceptIdentity({inn,name:outcome.verifiedName,verified:true});
+        if(settings.reuseCatalogHistory===true&&publicFallback)
+          rememberSabyCatalogOrigin(page,listingUrl,page.url());
+        return {inn,name:outcome.verifiedName,verified:true};
       }
     } catch {
       // Rendering may be in progress during the route transition.
@@ -1467,6 +1469,7 @@ export function quickSabyFleetFromPreview(preview,originalUrl,currentUrl){
 async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const optimized=sections?.optimized===true,quick=optimized&&sections.quickDetails===true;
   const combined=optimized&&!quick&&sections.combinedDetails===true;
+  const fullCard=combined&&sections.fullCard===true;
   const allVehicles=sections?.allVehicleCategories===true&&shouldUseSabyFleetTree(settings);
   const detailAttempts={financials:false,trucks:false};
   const timing={},timed=async(key,fn)=>{
@@ -1499,9 +1502,19 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   const verifiedRoute=page.url();
   const sameCard=()=>page.url()===verifiedRoute&&sabyCardRoute(verifiedRoute)==="detail"||
     compareSabyVerifiedFleetDetail(verifiedRoute,page.url()).ok;
+  // Each full-card section has its own bounded readiness opportunity.
+  // Contacts first, then finance, then fleet, even if a prior section
+  // is missing. No quick/visible-only read substitutes for full details.
+  const ready=async(requested)=>{
+    const wait=()=>timed("ready_ms",()=>waitForDetailSections(page,
+      Math.min(7000,settings.timeoutMs||45000),requested));
+    if(fullCard){if(sameCard())await wait().catch(()=>{});}
+    else await wait();
+  };
+  const firstReady=fullCard?(sections.contacts?{contacts:true}:
+    sections.financials?{financials:true}:{trucks:true}):optimized?sections:null;
   // A verified legal name and INN does not imply widgets are hydrated.
-  await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
-    optimized?sections:null));
+  await ready(firstReady);
   const result={identity,source:"SABY",source_url:optimized?verifiedRoute:page.url(),
     // Navigation-only hint captured immediately after identity proof,
     // before any section/widget changes the route. Its strict URL
@@ -1535,12 +1548,14 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   // Preserve the full details visit's independent hydration allowance.
   // A successful contact widget does not prove the fleet is ready.
   // The shared navigation/identity work is removed, not the fleet wait.
-  if(combined&&(sections.trucks||sections.financials)&&sameCard())
-    await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
-      {contacts:false,trucks:sections.trucks,financials:sections.financials}));
+  if(fullCard){
+    if(sections.contacts&&sections.financials)await ready({financials:true});
+  }else if(combined&&(sections.trucks||sections.financials)&&sameCard())
+    await ready({contacts:false,trucks:sections.trucks,financials:sections.financials});
   if(!sections||sections.financials)await financeRead();
   if(!optimized&&(!sections||sections.contacts))await contactRead();
   if(sections&&!sections.trucks)return finish();
+  if(fullCard&&(sections.contacts||sections.financials))await ready({trucks:true});
   if(quick){
     if(allVehicles){
       await read("vehicle_fleet",async()=>{

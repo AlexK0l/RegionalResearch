@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {sabyPassFinished} from "./sabyPassCursor.js";
 
 const DEFAULT_DB_PATH = process.env.RENDER
   ? "/tmp/regionalresearch/checkpoints.sqlite"
@@ -403,7 +404,7 @@ export function checkpointSummary(value) {
       ? value.saby_deferred_inns.length : 0,
     ...(value.phase==="saby"?{saby_browser_pending:
       value.public_contact_post_saby_ready!==true&&value.saby_stats?.fullSweepCompleted!==true&&
-      (value.saby_pass_state?.phase_index??0)<4}:{}),
+      !sabyPassFinished(value.saby_pass_state)}:{}),
     continuation_available:
       (Array.isArray(value.contact_unsearched_ids) &&
        value.contact_unsearched_ids.length > 0) ||

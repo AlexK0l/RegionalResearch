@@ -17,13 +17,18 @@ import {SABY_FAST_STRATEGY,SABY_COMBINED_RETRY_STRATEGY,sabyVisitStrategy,rememb
   sabyFleetScope,SABY_ALL_FLEETS_SCOPE,validSabyPassCursor,
   sabyVehicleCategoryScope,SABY_ALL_VEHICLE_CATEGORIES} from "./sabyVisitPolicy.js";
 import {verifiedSabyVehicleFleet,verifiedSabyVehiclePartial} from "./sabyVehicleInventory.js";
+import {SABY_FULL_CARD_STRATEGY,SABY_LEGACY_PHASES,SABY_FULL_CARD_PHASES,sabyPassPhases}
+  from "./sabyPassCursor.js";
+import {fullCardLedger,fullCardNeeds,commitFullCardVisit} from "./sabyFullCardPolicy.js";
 
-const PHASES=["contacts","contact_retry","details","details_retry"];
+const LEGACY_PHASES=SABY_LEGACY_PHASES;
 const PHASE_LABELS={
   contacts:"Saby: телефоны и почта",
   contact_retry:"Saby: повторный поиск телефонов и почты",
   details:"Saby: финансы и транспорт",
-  details_retry:"Saby: повторная проверка транспорта"
+  details_retry:"Saby: повторная проверка транспорта",
+  full:"Saby: контакты, финансы и весь автопарк",
+  retry:"Saby: повторная проверка недостающих разделов"
 };
 const counters=["verified","review","phonesAdded","emailsAdded","transportsAdded",
   "vehiclesVerified","revenuesAdded","employeesAdded","partialResults","companyReviews","systemicErrors"];
@@ -62,34 +67,51 @@ function phoneOwnersForResult(result){
 }
 function safeState(raw,entries,limit,env,fleetScope,gaps){
   const strategy=sabyVisitStrategy(env,raw);
+  const full=strategy===SABY_FULL_CARD_STRATEGY;
   const all=new Set(entries.map(e=>sabyInn(e.row["ИНН"])));
   const valid=validSabyPassCursor(raw);
+  const migrating=valid&&full&&raw.strategy!==SABY_FULL_CARD_STRATEGY;
+  const phases=sabyPassPhases({strategy});
+  const accepted=full?[...LEGACY_PHASES,...SABY_FULL_CARD_PHASES]:LEGACY_PHASES;
   if(valid){
     const ids=[...new Set(raw.planned_inns.map(sabyInn).filter(id=>all.has(id)))];
     const allowed=new Set(ids);
     const attempted=raw.attempted.filter(key=>{
       if(typeof key!=="string")return false;
       const [phase,id,...rest]=key.split(":");
-      return !rest.length&&PHASES.includes(phase)&&allowed.has(id);
+      return !rest.length&&accepted.includes(phase)&&allowed.has(id);
     });
     const attemptedSet=new Set(attempted);
-    const combined_detail_attempts=strategy===SABY_COMBINED_RETRY_STRATEGY?
+    const combined_detail_attempts=(strategy===SABY_COMBINED_RETRY_STRATEGY||full)?
       Object.fromEntries(ids.filter(id=>attemptedSet.has("contact_retry:"+id))
         .flatMap(id=>{
           const v=raw.combined_detail_attempts?.[id];
           const trucks=v?.trucks===true,financials=v?.financials===true;
           return trucks||financials?[[id,{trucks,financials}]]:[];
         })):{};
+    // The migration preserves the complete old attempted-key history.
+    // A new full-card cursor also requires its exact section masks; a
+    // missing or contradictory mask is a storage error, not a fresh plan.
+    if(full&&!migrating&&attempted.length!==raw.attempted.length)
+      throw Error("SABY_FULL_CARD_CURSOR_INVALID");
     return {version:1,strategy,fleet_scope:fleetScope,timing:restoreSabyTiming(raw.timing),planned_inns:ids,attempted:[...new Set(attempted)],
       combined_detail_attempts,
+      ...(full?{
+        full_card_attempts:migrating?{}:raw.full_card_attempts,
+        ...(migrating?{full_card_migration:{from_strategy:sabyVisitStrategy({},raw),
+          from_phase_index:Math.max(0,Math.min(4,Math.trunc(Number(raw.phase_index)||0))),
+          legacy_attempts:attempted.length}}:
+          raw.full_card_migration?{full_card_migration:raw.full_card_migration}:{})
+      }:{}),
       verified_inns:[...new Set((Array.isArray(raw.verified_inns)?raw.verified_inns:[]).map(sabyInn).filter(id=>allowed.has(id)))],
       initially_complete:Math.max(0,Math.min(entries.length,Number(raw.initially_complete)||0)),
-      phase_index:Math.max(0,Math.min(PHASES.length,Math.trunc(Number(raw.phase_index)||0))),
+      phase_index:migrating?0:Math.max(0,Math.min(phases.length,Math.trunc(Number(raw.phase_index)||0))),
       stats:Object.fromEntries(counters.map(k=>[k,Math.max(0,Number(raw.stats?.[k])||0)]))};
   }
   const pending=entries.filter(e=>any(gaps.get(e)));
   return {version:1,strategy,fleet_scope:fleetScope,timing:restoreSabyTiming(),planned_inns:(limit?pending.slice(0,limit):pending).map(e=>sabyInn(e.row["ИНН"])),
     attempted:[],verified_inns:[],combined_detail_attempts:{},
+    ...(full?{full_card_attempts:{}}:{}),
     initially_complete:entries.length-pending.length,phase_index:0,stats:emptyStats()};
 }
 export async function runSabyContactFirst({
@@ -127,12 +149,19 @@ export async function runSabyContactFirst({
   const gaps=new Map(entries.map(entry=>[entry,workGaps(entry)]));
   const state=safeState(passState,entries,settings.maxCompanies,env,fleetScope,gaps);
   state.fleet_categories=fleetCategories;
+  const fullCard=state.strategy===SABY_FULL_CARD_STRATEGY;
+  const PHASES=sabyPassPhases(state);
+  const fullCounts=fullCard?fullCardLedger(state,{
+    migrating:validSabyPassCursor(passState)&&passState.strategy!==SABY_FULL_CARD_STRATEGY
+  }):null;
   const combineRetry=state.strategy===SABY_COMBINED_RETRY_STRATEGY;
   const optimized=state.strategy===SABY_FAST_STRATEGY||combineRetry;
   const pacing=createSabyAdaptiveDelay(settings.delayMs,env);
   const needs=(entry,phase)=>{
-    const sections=sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
-      state.combined_detail_attempts[sabyInn(entry.row["ИНН"])]||{});
+    const id=sabyInn(entry.row["ИНН"]);
+    const sections=fullCard?fullCardNeeds(gaps.get(entry),phase,fullCounts.get(id)):
+      sectionNeeds(gaps.get(entry),phase,optimized,combineRetry,
+        state.combined_detail_attempts[id]||{});
     return allVehicleCategories&&sections.trucks?{...sections,allVehicleCategories:true}:sections;
   };
   const attempted=new Set(state.attempted),verifiedInns=new Set(state.verified_inns);
@@ -145,7 +174,8 @@ export async function runSabyContactFirst({
     if(typeof collectGarbage==="function")try{collectGarbage();}catch{/* best effort */}
   };
   const stateSnapshot=()=>({...state,timing:{...state.timing},attempted:[...attempted],verified_inns:[...verifiedInns],stats:{...state.stats},
-    combined_detail_attempts:{...state.combined_detail_attempts}});
+    combined_detail_attempts:{...state.combined_detail_attempts},
+    ...(fullCard?{full_card_attempts:{...state.full_card_attempts}}:{})});
   const snapshot=()=>{
     const deferred=[],done=[];
     for(const entry of entries){
@@ -168,6 +198,8 @@ export async function runSabyContactFirst({
         visitStrategy:state.strategy,fleetScope:state.fleet_scope,
         fleetCategoryScope:fleetCategories,timing:{...state.timing},
         combinedDetailVisits:Object.keys(state.combined_detail_attempts).length,
+        ...(fullCard?{fullCardVisits:Object.keys(state.full_card_attempts).length,
+          legacyAttempts:attempted.size-Object.keys(state.full_card_attempts).length}:{}),
         fleetCoverage:sabyFleetCoverage(result,all,gaps),
         phoneCoverage:contactPhoneCoverage(result)},
       completedInns:done,deferredInns:settings.enabled?deferred:[],
@@ -185,6 +217,10 @@ export async function runSabyContactFirst({
   };
   if(!settings.enabled)return snapshot();
   abort();
+  // Save the migrated cursor BEFORE acquiring Chromium. A memory pause
+  // or crash after this boundary cannot migrate it again or erase attempts.
+  if(fullCard&&validSabyPassCursor(passState)&&passState.strategy!==SABY_FULL_CARD_STRATEGY)
+    console.info("[SABY_FULL_CARD_MIGRATED] "+JSON.stringify(state.full_card_migration));
   // Save before waiting for RAM so a competing Saby job can yield safely.
   await save();
   // Skip entirely completed/empty plans without opening Chromium.
@@ -247,7 +283,7 @@ export async function runSabyContactFirst({
           // A navigation/identity failure or an unentered section must
           // not consume its separate full attempt. The browser explicitly
           // attests which reads started on the still-verified same card.
-          if(sections.combinedDetails&&record?.identity?.verified===true&&
+          if(combineRetry&&sections.combinedDetails&&record?.identity?.verified===true&&
              sabyInn(record.identity.inn)===inn&&sabyNameMatches(row["Организация"],record.identity.name)&&
              isSabyProfileUrl(record.source_url)&&applied?.status!=="review"&&
              !(record.errors||[]).some(x=>/card_changed/.test(String(x)))){
@@ -276,7 +312,7 @@ export async function runSabyContactFirst({
               else if(!allVehicleCategories&&record.trucks?.status==="verified"&&applied.verifiedTrucks!==null)
                 state.stats.vehiclesVerified+=applied.verifiedTrucks;
             }
-            if(any(needs(entry,phase)))state.stats.partialResults++;
+            if(fullCard?any(gaps.get(entry)):any(needs(entry,phase)))state.stats.partialResults++;
           }else{state.stats.review++;state.stats.companyReviews++;}
           // Separate full fleet outcomes from contact-only/quick visits.
           // Emit fixed categories, not raw Playwright errors or page data.
@@ -294,6 +330,7 @@ export async function runSabyContactFirst({
         }
         // Persist even an unsuccessful attempted task, but keep its data
         // gaps unresolved. Another pass may retry it at most once.
+        if(fullCard)commitFullCardVisit(state,fullCounts,key,sections);
         attempted.add(key);phaseDone++;visits++;
         // Drop the last browser record before the GC/snapshot boundary.
         const safeTimings=restoreSabyTiming();
@@ -303,7 +340,7 @@ export async function runSabyContactFirst({
         const checkpointStart=performance.now();
         const saved=await save();
         log("SABY_SECTION_TIMING",{inn,phase,quick:sections.quickDetails===true,
-          combined_details:sections.combinedDetails===true,
+          combined_details:sections.combinedDetails===true,full_card:sections.fullCard===true,
           contacts:sections.contacts,financials:sections.financials,trucks:sections.trucks,
           ...safeTimings,checkpoint_ms:Math.round(performance.now()-checkpointStart)});
         await onProgress({...saved.stats,company:row["Организация"]});
