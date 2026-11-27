@@ -270,6 +270,17 @@ export async function findResultRows(page, inn, {
 
 async function openCompany(page, row, settings, timing=null) {
   const searchStarted=performance.now();
+  // Component measurements are nested inside search_card_ms. Log only
+  // elapsed times/counts; never include page text, routes or credentials.
+  const components={catalog_ms:0,hydration_ms:0,baseline_ms:0,submit_ms:0,
+    candidate_scan_ms:0,candidate_scans:0,search_poll_wait_ms:0,
+    card_scan_ms:0,card_scans:0,alias_ms:0,post_route_ms:0,
+    card_poll_wait_ms:0};
+  const measure=async(key,fn)=>{
+    const started=performance.now();
+    try{return await fn();}
+    finally{components[key]+=Math.round(performance.now()-started);}
+  };
   const inn=sabyInn(row?.["ИНН"]);
   const name=String(row?.["Организация"]||"").trim();
   if (!inn || !name) throw new SabyReview("Компания без пригодного ИНН/названия",{scope:"company"});
@@ -281,7 +292,7 @@ async function openCompany(page, row, settings, timing=null) {
   // Wait for navigation commit, NOT every subresource/SPA script. The
   // authenticated list's input is verified and polled below independently.
   // This avoids a 45s DOMContentLoaded timeout during slow Wasaby hydration.
-  await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
+  await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
   if (!isSabyProfileUrl(page.url()) || sabyCardRoute(page.url())!=="list")
     throw new SabyReview("Saby: список организаций не подтверждён");
   const isListRoute=()=>sabyCardRoute(page.url())==="list";
@@ -315,13 +326,13 @@ async function openCompany(page, row, settings, timing=null) {
     }
     console.info("[SABY_SEARCH_HYDRATION_DIAG] ready");
   };
-  await settleSearch();
+  await measure("hydration_ms",settleSearch);
   // Some loading indicators persist even with a successful result list.
   // Sample AFTER hydration and BEFORE entering the exact INN.
   let beforeSearch=publicFallback?
-    await readSabySearchState(page,inn).catch(()=>null):null;
+    await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null)):null;
   transport?.arm();
-  const submitted=await submitSabyCompanySearch(page,inn,searchOptions);
+  const submitted=await measure("submit_ms",()=>submitSabyCompanySearch(page,inn,searchOptions));
   if(!submitted.ok){
     transport?.stop();
     // Strict, allowlisted statuses only. Never print INN, DOM, URL or
@@ -342,9 +353,10 @@ async function openCompany(page, row, settings, timing=null) {
     // For optional fallback retain branch rows for Node-side
     // classification, then exclude them BEFORE opening any candidate.
     // Strict production search still excludes branches.
-    const all=await findResultRows(page,inn,{
+    components.candidate_scans++;
+    const all=await measure("candidate_scan_ms",()=>findResultRows(page,inn,{
       includeInnOnly:publicFallback,includeBranches:publicFallback
-    });
+    }));
     if(!publicFallback) {
       const strict=all.filter(item=>
         sabySearchResultMatches(name,item.text,inn));
@@ -409,14 +421,14 @@ async function openCompany(page, row, settings, timing=null) {
       transport?.stop();
       transport=observeSabySearchTransport(page,inn,{armed:false});
       try{
-        await page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs});
+        await measure("catalog_ms",()=>page.goto(BASE,{waitUntil:"commit",timeout:settings.timeoutMs}));
         if(!isListRoute()||!isSabyProfileUrl(page.url()))
           throw new SabyReview("Saby: каталог изменился при восстановлении поиска",
             {code:"search_input_failed"});
-        await settleSearch();
-        beforeSearch=await readSabySearchState(page,inn).catch(()=>null);
+        await measure("hydration_ms",settleSearch);
+        beforeSearch=await measure("baseline_ms",()=>readSabySearchState(page,inn).catch(()=>null));
         transport.arm();
-        const second=await submitSabyCompanySearch(page,inn,searchOptions);
+        const second=await measure("submit_ms",()=>submitSabyCompanySearch(page,inn,searchOptions));
         if(!second.ok)
           throw new SabyReview("Saby: повторный безопасный ввод не завершён",
             {code:"search_input_failed"});
@@ -433,7 +445,7 @@ async function openCompany(page, row, settings, timing=null) {
           {code:"search_loading_stalled"});
       }
     }
-    await delay(450);
+    await measure("search_poll_wait_ms",()=>delay(450));
   }
   // The two final zero-state reads already allow another 500ms of
   // hydration. Re-scan the original exact-INN candidates after that
@@ -549,7 +561,8 @@ async function openCompany(page, row, settings, timing=null) {
   let publicFallbackRejection=null;
   while(Date.now()<cardUntil) {
     try {
-      const outcome=await verifySabyCard(page,inn,name);
+      components.card_scans++;
+      const outcome=await measure("card_scan_ms",()=>verifySabyCard(page,inn,name));
       last=outcome;
       if(outcome.ok) {
         console.info("[SABY_CARD] identity_verified");
@@ -571,10 +584,10 @@ async function openCompany(page, row, settings, timing=null) {
        last.reason==="legal_name_not_verified" &&
        last.detail?.hasScopedInn===true) {
       publicFallbackAttempted=true;
-      const checked=await verifySabyPublicNameFallback(
+      const checked=await measure("alias_ms",()=>verifySabyPublicNameFallback(
         page,inn,name,last,{
           selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
-        });
+        }));
       publicFallbackFailureReason=String(checked?.reason||"");
       publicFallbackRejection=checked;
       console.info("[SABY_PUBLIC_ALIAS_DIAG] "+
@@ -586,9 +599,9 @@ async function openCompany(page, row, settings, timing=null) {
       // The old path waited out the entire card deadline even if the
       // new private route already had its stable independently verified
       // owner. Only the EXISTING strict proof can finish early.
-      const early=await tryEarlySabyPostRouteProof(page,inn,name,{
+      const early=await measure("post_route_ms",()=>tryEarlySabyPostRouteProof(page,inn,name,{
         priorFailure:checked,selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
-      });
+      }));
       if(early){
         console.info("[SABY_POST_ROUTE_EARLY_DIAG] "+
           JSON.stringify(safeSabyPostRouteDiagnostic(early)));
@@ -615,7 +628,7 @@ async function openCompany(page, row, settings, timing=null) {
         );
       }
     }
-    await delay(450);
+    await measure("card_poll_wait_ms",()=>delay(450));
   }
   // A genuinely missing private KPP must NOT trigger more speculative
   // parsing or guessed public URLs. Capture only structural counters to
@@ -635,11 +648,11 @@ async function openCompany(page, row, settings, timing=null) {
   if(publicFallback &&
      publicFallbackFailureReason==="private_route_changed" &&
      publicFallbackRejection) {
-    const inspected=await verifySabyPostRouteOwnerIdentity(
+    const inspected=await measure("post_route_ms",()=>verifySabyPostRouteOwnerIdentity(
       page,inn,name,last,{
         priorFailure:publicFallbackRejection,
         selectedSearchTitle:auditSearchName(rows[0]?.text,inn)
-      });
+      }));
     console.info("[SABY_POST_ROUTE_DIAG] "+
       JSON.stringify(safeSabyPostRouteDiagnostic(inspected)));
     if(inspected.ok) {
@@ -656,7 +669,12 @@ async function openCompany(page, row, settings, timing=null) {
   });
   throw new SabyReview("Saby: карточка не подтверждена: "+last.reason,
     {scope:"company",code:reviewCode});
-  }finally{transport?.stop();}
+  }finally{
+    transport?.stop();
+    console.info("[SABY_SEARCH_COMPONENT_TIMING] "+JSON.stringify({
+      ...components,total_ms:Math.round(performance.now()-searchStarted)
+    }));
+  }
 }
 
 // Same bounded ancestor rule as the legacy locator loop, but one
@@ -1440,6 +1458,10 @@ async function collectSabyCompanyAttempt(page, row, settings, sections=null) {
   await timed("ready_ms",()=>waitForDetailSections(page,Math.min(7000,settings.timeoutMs||45000),
     optimized?sections:null));
   const result={identity,source:"SABY",source_url:optimized?verifiedRoute:page.url(),
+    // Navigation-only hint captured immediately after identity proof,
+    // before any section/widget changes the route. Its strict URL
+    // allowlist and fresh ownership verification remain mandatory.
+    verified_navigation_url:verifiedRoute,
     collected_at:new Date().toISOString(),
     contacts:{phones:[],emails:[],status:"missing"},trucks:{status:"missing"},
     financials:{status:"missing"},errors:[],timing};
@@ -1647,7 +1669,7 @@ async function openSavedSabyFinanceCard(page,row,settings){
       }
       try{
         const assessment=await verifySabyCard(page,inn,name);
-        if(assessment.ok&&assessment.detail?.hasScopedInn){
+        if(assessment.ok&&assessment.detail?.hasScopedInn&&sameSabyDetailId(url,page.url())){
           console.info("[SABY_FINANCE_SAVED_CARD] verified");
           return {inn,name:assessment.verifiedName,verified:true};
         }
