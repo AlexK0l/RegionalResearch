@@ -144,12 +144,16 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
 }={}){
   const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
   const todo=new Set(pending),polls=new Map(pending.map(g=>[g,0]));
-  const started=new Map(pending.map(g=>[g,now()]));
+  const spent=new Map(pending.map(g=>[g,0])),lastSeed=new Map();
   const transient=new Set(["tree_missing","truck_category_missing","read_failed"]);
+  const seedReasons=new Set([...transient,"multiple_tree_panels","truck_category_ambiguous",
+    "truck_count_mismatch","invalid_group_key","footer_ambiguous","invalid_setup"]);
   const report=(g,reason,tree=null)=>{
     const safe=safeSabyFleetTreeReport(tree||{reason,expected:g.count,same_company:same()});
     notify(onDiagnostic,{reason:"category_collection",category:g.category,
-      expected:g.count,seed_polls:polls.get(g),elapsed_ms:Math.max(0,Math.round(now()-started.get(g))),
+      expected:g.count,seed_polls:polls.get(g),
+      work_ms:Math.max(0,Math.round(spent.get(g))),
+      seed_state:lastSeed.get(g)||"not_observed",
       result:safe.status,tree_reason:safe.reason,rows:safe.rows,
       clicks:safe.clicks,samples:safe.samples,same_company:safe.same_company});
   };
@@ -160,19 +164,26 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
       if(!same()||now()>=deadline)break;
       polls.set(g,polls.get(g)+1);
       let x;
+      const readStarted=now();
       try{x=await readTree(page,{expected:g.count,category:g.category});}
       catch{x={status:"invalid",reason:"read_failed"};}
+      spent.set(g,spent.get(g)+Math.max(0,now()-readStarted));
+      lastSeed.set(g,x?.status==="observed"?
+        (x.rows?.length>0||x.hasMore===true?"ready":"observed_no_rows"):
+        seedReasons.has(x?.reason)?x.reason:"unknown");
       if(!same())return false;
       if(x?.status==="observed"&&(x.rows?.length>0||x.hasMore===true)){
         if(/^-/u.test(g.key)&&x.groupKey!==g.key){
           report(g,"invalid_group_key");todo.delete(g);continue;
         }
         let r;
+        const collectStarted=now();
         try{
           r=await collectTree(page,{expected:g.count,category:g.category,
             originalUrl,initialSnapshot:x,read:readTree,wait,
             maxMs:Math.max(1000,deadline-now())});
         }catch{r={status:"incomplete",reason:"read_failed",expected:g.count,same_company:same()};}
+        spent.set(g,spent.get(g)+Math.max(0,now()-collectStarted));
         if(!same())return false;
         if(r?.status==="complete"&&r.expected===g.count&&r.vehicles?.length===g.count)
           g.vehicles=r.vehicles;
@@ -193,7 +204,9 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
     await wait(400);
   }
   if(!same())return false;
-  for(const g of todo)report(g,now()>=deadline?"time_limit":"tree_missing");
+  for(const g of todo)report(g,now()>=deadline?"time_limit":
+    transient.has(lastSeed.get(g))?lastSeed.get(g):
+    lastSeed.get(g)==="observed_no_rows"?"footer_missing":"read_failed");
   return true;
 }
 // Complete small fleets need one DOM read. For longer lists, use

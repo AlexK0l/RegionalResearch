@@ -22,7 +22,8 @@ were retained. The logs do not establish why each category stopped.
   fail closed, and no new click occurs while remounting.
 * Log a privacy-safe SABY_FLEET_CATEGORY_TIMING for each attempted group,
   including expected count, actual rows, stop reason, reads/clicks and
-  elapsed time. No raw model labels, keys, URL or credentials are logged.
+  category work time (excluding the shared idle waits) and last seed
+  state. No raw model labels, keys, URL or credentials are logged.
 * No change to proof requirements, row data, attempt ledger, skip policy,
   old partial merge semantics or browser/paid request concurrency.
   Explicit SABY_SHARED_FLEET_HYDRATION_ENABLED=false restores old

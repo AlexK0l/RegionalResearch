@@ -77,7 +77,7 @@ test("real Saby category footer keys are dynamic; title=Ещё is on a child",()
   for(const x of ["3","",null,"node-footer--3","-a"])
     assert.equal(sabyFleetTreeFooterKey(x),null);
   const src=fs.readFileSync(new URL("../src/sabyFleetTree.js",import.meta.url),"utf8");
-  assert.ok(src.includes('[data-qa="item"][item-parent-key="'+ "'+key+'" +'"][item-key]'));
+  assert.ok(src.includes(`[data-qa="item"][item-parent-key="'+key+'"][item-key]`));
   assert.match(src,/\[data-qa="item"\]\[item-key\]/);
   assert.match(src,/\[data-qa="navigation-button"\]/);
   assert.match(src,/\[title="Ещё"\]/);
