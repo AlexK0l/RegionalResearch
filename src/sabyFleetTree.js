@@ -113,8 +113,14 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false,categ
       const visible=e=>{
         if(!e?.getBoundingClientRect)return false;
         const r=e.getBoundingClientRect(),st=getComputedStyle(e);
-        return r.width>230&&r.height>260&&st.display!=="none"&&
-          st.visibility!=="hidden"&&r.right>innerWidth*.6;
+        if(st.display==="none"||st.visibility==="hidden"||st.visibility==="collapse"||
+           st.opacity==="0"||r.width<=0||r.height<=0)return false;
+        // Exact transport popup observed in both source snapshots:
+        // the application may resize/reposition it on different screens.
+        // Keep the historical geometry guard for untyped legacy panels.
+        if(r.width>230&&r.height>260&&r.right>innerWidth*.6)return true;
+        return Boolean(e.closest?.('[templateforlog="ContractorCard/Cards/transportCard:All"]'))&&
+          r.right>0&&r.left<innerWidth&&r.bottom>0&&r.top<innerHeight;
       };
       // Summary tiles also say "Грузовые 220", but only this
       // right-hand template with caption "Автопарк" owns the tree.
@@ -124,13 +130,13 @@ export async function readSabyFleetTree(page,{expected,discoverCount=false,categ
         ".controls-StackTemplate__caption [title]"
       )].some(h=>h.getAttribute("title")==="Автопарк"));
       if(!panels.length)
-        return {status:"invalid",reason:"tree_missing"};
+        return {status:"invalid",reason:"tree_missing",detail:"panel_not_visible_or_missing"};
       if(panels.length!==1)
         return {status:"invalid",reason:"multiple_tree_panels"};
       const panel=panels[0];
       const lists=[...panel.querySelectorAll(".controls-ListViewV")];
       if(lists.length!==1)
-        return {status:"invalid",reason:"tree_missing"};
+        return {status:"invalid",reason:"tree_missing",detail:lists.length?"list_ambiguous":"list_missing"};
       const list=lists[0];
       const categories=[...list.querySelectorAll(
         '[data-qa="item"][item-key]:not([item-parent-key])'

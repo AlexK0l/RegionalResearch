@@ -405,7 +405,7 @@ test("actual drawer DOM shape distinguishes exact collapsed, expanded and contra
       getBoundingClientRect:()=>options.rect||{width:24,height:24,right:950},
       closest:s=>options.template&&s==='[templateforlog="ContractorCard/Cards/transportCard:All"]'?{}:null};
   };
-  const pageFor=(state,{duplicate=false,wrongDrawer=false,hidden=false,contradiction=false,partialClass=false}={})=>{
+  const pageFor=(state,{duplicate=false,wrongDrawer=false,hidden=false,contradiction=false,partialClass=false,compact=false,offscreen=false,noList=false,extraList=false}={})=>{
     const head=make({text:"Грузовые"}),num=make({text:"76"});
     const classes=["controls-TreeGrid__row-expander_"+state];
     if(!partialClass)classes.push("controls-TreeGrid__row-expander_hiddenNode_default_"+state);
@@ -420,13 +420,15 @@ test("actual drawer DOM shape distinguishes exact collapsed, expanded and contra
     const list=make({nodes:{
       '[data-qa="item"][item-key]:not([item-parent-key])':[group],
       '[data-qa="item"][item-parent-key="-3"][item-key]':rows}});
-    const panel=make({template:!wrongDrawer,rect:{width:600,height:500,right:1000},
-      nodes:{".controls-ListViewV":[list],
+    const panel=make({template:!wrongDrawer,rect:compact?
+      {width:210,height:240,left:offscreen?-300:100,right:offscreen?-90:310,top:50,bottom:290}:
+      {width:600,height:500,right:1000},
+      nodes:{".controls-ListViewV":noList?[]:extraList?[list,list]:[list],
         ".controls-StackTemplate__caption [title]":[make({attrs:{title:"Автопарк"}})]}});
     const doc=make({nodes:{".controls-StackTemplate-content":[panel]}});
     return {url:()=>firstParty,evaluate:async(fn,args)=>{
       const vm=await import("node:vm");
-      return vm.runInNewContext("("+fn.toString()+")(args)",{args,document:doc,innerWidth:1000,
+      return vm.runInNewContext("("+fn.toString()+")(args)",{args,document:doc,innerWidth:1000,innerHeight:800,
         getComputedStyle:()=>({display:"block",visibility:"visible",opacity:"1"})});
     }};
   };
@@ -438,4 +440,26 @@ test("actual drawer DOM shape distinguishes exact collapsed, expanded and contra
   for(const opts of [{duplicate:true},{wrongDrawer:true},{hidden:true},{contradiction:true},{partialClass:true}]){
     assert.equal((await read("collapsed",opts)).expanderState,"unknown");
   }
+  assert.equal((await read("expanded",{compact:true})).status,"observed");
+  assert.equal((await read("expanded",{compact:true,wrongDrawer:true})).reason,"tree_missing");
+  assert.equal((await read("expanded",{compact:true,offscreen:true})).reason,"tree_missing");
+  assert.equal((await read("expanded",{noList:true})).detail,"list_missing");
+  assert.equal((await read("expanded",{extraList:true})).detail,"list_ambiguous");
+});
+
+// Anonymized rows derived from the two supplied exact source snapshots.
+test("DS and unknown make retain four distinct source vehicles, including absent year",()=>{
+  const models=["DS, 1967","DS","Марка неизвестна","Марка неизвестна"];
+  const rows=models.map((label,i)=>({key:String(i+1),label}));
+  const checked=validateSabyFleetTreeSnapshot({
+    status:"observed",expected:4,category:"Легковые",groupKey:"-1",
+    rows,hasMore:false,footerKey:"node-footer--1"
+  },{expected:4,category:"Легковые"});
+  assert.equal(checked.status,"valid");
+  assert.deepEqual(checked.rows.map(({model,year})=>({model,year})),[
+    {model:"DS",year:1967},{model:"DS",year:null},
+    {model:"Марка неизвестна",year:null},{model:"Марка неизвестна",year:null}
+  ]);
+  for(const label of ["A","XX","VIN","ГРЗ","Ещё","DS…"])
+    assert.equal(parseSabyFleetTreeRow({key:"1",label}),null);
 });

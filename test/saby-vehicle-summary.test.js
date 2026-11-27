@@ -317,3 +317,14 @@ test("count, group-key and card guards hold during expansion",async()=>{
   }),false);
   assert.equal(g.vehicles,null);
 });
+
+test("short source make and unknown make survive summary and final verified fleet",async()=>{
+  const summary=validateSabyVehicleSummary({status:"observed",total:4,groups:[
+    {key:"1",category:"Легковые",count:4,labels:["DS, 1967","DS","Марка неизвестна","Марка неизвестна"]}
+  ]});
+  assert.equal(summary.groups[0].vehicles.length,4);
+  const {verifiedSabyVehicleFleet}=await import("../src/sabyVehicleInventory.js");
+  const result=verifiedSabyVehicleFleet({status:"verified",count:4,groups:summary.groups});
+  assert.equal(result.count,4);
+  assert.deepEqual(result.groups[0].vehicles.map(v=>v.year),[1967,null,null,null]);
+});

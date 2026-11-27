@@ -145,7 +145,7 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
 }={}){
   const same=()=>compareSabyVerifiedFleetDetail(originalUrl,page?.url?.()).ok===true;
   const todo=new Set(pending),polls=new Map(pending.map(g=>[g,0]));
-  const spent=new Map(pending.map(g=>[g,0])),lastSeed=new Map();
+  const spent=new Map(pending.map(g=>[g,0])),lastSeed=new Map(),lastTreeDetail=new Map();
   const expandedAttempts=new Map(),released=new Map(),groupKeys=new Map();
   const releasable=new Set(completedGroups.filter(g=>Array.isArray(g.vehicles)&&g.vehicles.length===g.count));
   const actions=new Set(["clicked","already","unavailable","wrong_company","click_failed"]);
@@ -168,6 +168,7 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
       expected:g.count,seed_polls:polls.get(g),
       work_ms:Math.max(0,Math.round(spent.get(g))),
       seed_state:lastSeed.get(g)||"not_observed",
+      ...(lastTreeDetail.has(g)?{seed_detail:lastTreeDetail.get(g)}:{}),
       expansion:expandedAttempts.get(g)||"not_attempted",
       release:released.get(g)||"not_attempted",
       result:safe.status,tree_reason:safe.reason,rows:safe.rows,
@@ -184,6 +185,9 @@ export async function collectSabyPendingVehicleGroups(page,pending,{
       try{x=await readTree(page,{expected:g.count,category:g.category});}
       catch{x={status:"invalid",reason:"read_failed"};}
       spent.set(g,spent.get(g)+Math.max(0,now()-readStarted));
+      lastTreeDetail.delete(g);
+      if(x?.reason==="tree_missing"&&["panel_not_visible_or_missing","list_missing","list_ambiguous"].includes(x.detail))
+        lastTreeDetail.set(g,x.detail);
       lastSeed.set(g,x?.status==="observed"?
         (x.expanderState==="collapsed"?"category_collapsed":
           x.rows?.length>0||x.hasMore===true?"ready":
